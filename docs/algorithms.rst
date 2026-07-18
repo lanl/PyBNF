@@ -332,6 +332,56 @@ PyBNF implements the DREAM(ZS) variant, which draws proposal donors from a growi
 rather than from the current chain population.  This allows efficient sampling with as few as 3--5 chains regardless
 of the number of parameters.
 
+Variants and how to invoke them
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+PyBNF's DREAM is a **single engine with two orthogonal configuration axes** — the
+*proposal operator* (the ``proposal`` key) and the *evaluation protocol* (the
+``n_try`` key) — so the DREAM-family variants are configuration points rather than
+separate algorithms. The named variants are the products of the two axes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 12 34 28
+
+   * - Variant
+     - Published?
+     - How to invoke
+     - Reference
+   * - DREAM(ZS)
+     - yes
+     - ``job_type = dream`` (defaults ``proposal = de``, ``n_try = 1``)
+     - [terBraak2008]_, [Vrugt2016]_
+   * - MT-DREAM(ZS)
+     - yes
+     - ``job_type = dream``, ``n_try = k`` (:math:`k > 1`)
+     - [Laloy2012]_
+   * - DREAM(KZS)
+     - yes
+     - ``job_type = dream``, ``proposal = kalman``
+     - [Zhang2020]_
+   * - P-DREAM (Preconditioned DREAM)
+     - no (PyBNF)
+     - ``job_type = p_dream`` (equivalently ``dream`` with ``proposal = whitened``)
+     - preconditioning after [Haario2001]_
+   * - MT-P-DREAM
+     - no (PyBNF)
+     - ``proposal = whitened``, ``n_try = k`` (:math:`k > 1`)
+     - —
+
+The first three are published variants — all present in Vrugt's reference
+`DREAM-Suite <https://github.com/jaspervrugt/DREAM-Suite>`_. The last two are
+PyBNF's own: **P-DREAM** applies the adaptive-covariance preconditioning idea of
+[Haario2001]_ to DREAM(ZS)'s differential-evolution proposal (a distinct proposal
+operator, described under :ref:`Preconditioned DREAM <alg-p_dream>` below, not a
+re-tuning of existing keys), and **MT-P-DREAM** is the multi-try protocol composed
+over that preconditioned operator. The ``kalman`` operator is single-try only, so
+``proposal = kalman`` with ``n_try > 1`` is rejected at startup.
+
+Independently of ``proposal``, a **snooker** update ([terBraak2008]_) is mixed in
+each generation at probability ``snooker_prob`` (see *Proposal mechanisms* below)
+and composes with every proposal operator.
+
 Parallelization
 ^^^^^^^^^^^^^^^
 DREAM uses parallel MCMC chains evaluated synchronously in generations.  After all chains in a generation are evaluated,
@@ -339,8 +389,12 @@ the Metropolis-Hastings acceptance criterion is applied, and new proposals are g
 
 Proposal mechanisms
 ^^^^^^^^^^^^^^^^^^^
-DREAM supports two proposal mechanisms, selected randomly each generation with probability controlled by the
-``snooker_prob`` configuration key (default 0.1 for snooker, remainder for parallel direction).
+Under the default ``proposal = de`` operator, DREAM mixes two update types each generation, selected randomly with
+probability controlled by the ``snooker_prob`` configuration key (default 0.1 for snooker, remainder for parallel
+direction). (The ``proposal`` key selects the base, non-snooker operator — ``de``, ``whitened``, or ``kalman``, per
+*Variants and how to invoke them* above; the snooker mix-in composes with all of them. The ``whitened`` and ``kalman``
+operators replace the parallel-direction update below with their own; see :ref:`Preconditioned DREAM <alg-p_dream>` and
+*Kalman-inspired proposal* below.)
 
 **Parallel direction update.** The proposal for chain :math:`X` on iteration :math:`i` is:
 
@@ -360,6 +414,35 @@ dimensions.
 reference archive point, then jumps along that axis with :math:`\gamma_s \sim \mathcal{U}(1.2, 2.2)`.  The acceptance
 criterion includes a Hastings correction factor :math:`\left(\|X_p - Z_c\| / \|X - Z_c\|\right)^{d-1}` to maintain
 detailed balance.
+
+Multi-try (MT-DREAM(ZS))
+^^^^^^^^^^^^^^^^^^^^^^^^^
+With ``n_try = k > 1`` ([Laloy2012]_), each chain draws :math:`k` candidate proposals per generation instead of one,
+selects one in proportion to its posterior importance weight, and accepts it over the current state with a multiple-try
+Metropolis ratio evaluated against a :math:`(k-1)`-point reference set drawn from the winner (the :math:`k`-th reference
+is the current state) — :math:`2k-1` evaluations per chain per generation. Multiple tries per generation raise the
+per-generation acceptance rate and help parameter-rich or strongly correlated posteriors mix. ``n_try = 1`` (the
+default) is the classic single-try engine. Multi-try composes with the ``de`` and ``whitened`` proposals and with the
+snooker update.
+
+Kalman-inspired proposal (DREAM(KZS))
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Setting ``proposal = kalman`` ([Zhang2020]_) steers each proposal toward the data during an initial burn-in window,
+using a Kalman gain built from the archive's parameter-to-model-output cross-covariance:
+
+.. math::
+
+   X_p = X_i + (1 + \lambda)\, K\, \left(d - f(X_i) + \varepsilon\right) + \zeta,
+   \qquad K = C_{ZY}\left(C_{YY} + R\right)^{-1}
+
+where :math:`d` is the observed data, :math:`f(X_i)` the current model output, :math:`C_{ZY}` and :math:`C_{YY}` the
+parameter–output and output–output covariances estimated from an ensemble drawn from the archive,
+:math:`R = \mathrm{diag}(\sigma^2)` the Gaussian measurement covariance, and :math:`\varepsilon \sim \mathcal{N}(0, R)`
+a perturbed-observations draw. This accelerates burn-in on informative, mildly non-linear problems. The Kalman jump
+deliberately breaks detailed balance, so it is confined to the first ``kalman_burnin_frac`` (default 0.3) of
+``burn_in``; after the window the chain reverts to the ``de`` proposal for a reversible sampling phase. Because it forms
+:math:`R` from a Gaussian measurement model, ``proposal = kalman`` requires a linear-scale Gaussian likelihood objective
+(``chi_sq`` or ``chi_sq_dynamic``) and ``n_try = 1``; any other objective or ``n_try > 1`` is rejected at startup.
 
 Subspace sampling
 ^^^^^^^^^^^^^^^^^
@@ -404,13 +487,21 @@ Preconditioned DREAM
 
 Algorithm
 ^^^^^^^^^
-Preconditioned DREAM (``fit_type = p_dream``) is :ref:`DREAM(ZS) <alg-dream>` with
-its proposals computed in a covariance-whitened parameter space. The
-preconditioning transform is estimated from the sampled history (and adapted as
-sampling proceeds), so the differential-evolution donor moves are scaled and
-rotated to the geometry of a correlated posterior rather than the raw parameter
-axes. On posteriors with strong parameter correlations this markedly improves
-mixing over plain DREAM; on well-conditioned posteriors it reduces to DREAM(ZS).
+Preconditioned DREAM (``job_type = p_dream``, equivalently ``job_type = dream``
+with ``proposal = whitened``) is :ref:`DREAM(ZS) <alg-dream>` with its proposals
+computed in a covariance-whitened parameter space. The preconditioning transform
+is estimated from the sampled history and adapted as sampling proceeds (after a
+``precondition_adapt``-iteration warmup during which plain DREAM proposals are
+used), so the differential-evolution donor moves are scaled and rotated to the
+geometry of a correlated posterior rather than the raw parameter axes. On
+posteriors with strong parameter correlations this markedly improves mixing over
+plain DREAM; on well-conditioned posteriors it reduces to DREAM(ZS).
+
+This is PyBNF's own construction rather than a published, named DREAM variant: it
+applies the adaptive-covariance idea of [Haario2001]_ (adaptive Metropolis) to
+DREAM(ZS)'s differential-evolution proposal. It is a distinct proposal *operator*
+— it replaces the parallel-direction update with a whitened one — not merely a
+combination of existing configuration keys.
 
 Parallelization
 ^^^^^^^^^^^^^^^
@@ -718,8 +809,10 @@ information criterion (``az.waic``) can be computed directly.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
 .. [Hoffman2014] Hoffman, M. D.; Gelman, A. The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo. J. Mach. Learn. Res. 2014, 15 (1), 1593–1623.
 .. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
+.. [Haario2001] Haario, H.; Saksman, E.; Tamminen, J. An Adaptive Metropolis Algorithm. Bernoulli 2001, 7 (2), 223–242.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
+.. [Laloy2012] Laloy, E.; Vrugt, J. A. High-Dimensional Posterior Exploration of Hydrologic Models Using Multiple-Try DREAM(ZS) and High-Performance Computing. Water Resour. Res. 2012, 48 (1), W01526.
 .. [Lee2007] Lee, D.; Wiswall, M. A Parallel Implementation of the Simplex Function Minimization Routine. Comput. Econ. 2007, 30 (2), 171–187.
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
 .. [Penas2015] Penas, D. R.; González, P.; Egea, J. A.; Banga, J. R.; Doallo, R. Parallel Metaheuristics in Computational Biology: An Asynchronous Cooperative Enhanced Scatter Search Method. Procedia Comput. Sci. 2015, 51 (1), 630–639.
@@ -729,3 +822,4 @@ information criterion (``az.waic``) can be computed directly.
 .. [terBraak2008] ter Braak, C. J. F.; Vrugt, J. A. Differential Evolution Markov Chain with Snooker Updater and Fewer Chains. Stat. Comput. 2008, 18 (4), 435–446.
 .. [Vehtari2021] Vehtari, A.; Gelman, A.; Simpson, D.; Carpenter, B.; Bürkner, P.-C. Rank-Normalization, Folding, and Localization: An Improved R-hat for Assessing Convergence of MCMC. Bayesian Anal. 2021, 16 (2), 667–718.
 .. [Vrugt2016] Vrugt, J. A. Markov Chain Monte Carlo Simulation Using the DREAM Software Package: Theory, Concepts, and MATLAB Implementation. Environ. Model. Softw. 2016, 75, 273–316.
+.. [Zhang2020] Zhang, J.; Vrugt, J. A.; Shi, X.; Lin, G.; Wu, L.; Zeng, L. Improving Simulation Efficiency of MCMC for Inverse Modeling of Hydrologic Systems with a Kalman-Inspired Proposal Distribution. Water Resour. Res. 2020, 56 (3), e2019WR025474.
