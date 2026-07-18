@@ -1078,6 +1078,33 @@ EXAMPLES = (
         datasets=(),
         confs=(),
     ),
+    Example(
+        folder='47_condition_perturbations',
+        model='reversible_conversion.bngl',
+        # One model + a condition: perturbation (edition-2 Mechanism A): a wildtype and a
+        # reverse-reaction knockout of A <-> B, measured as two time courses, fit with ONE
+        # model file. This is the first tutorial with regular (non-pre-equilibration)
+        # conditions across >1 experiment, so it is the genuine {action} x {condition}
+        # cross-product -- of which only the scored diagonal is simulated (#484, ADR-0069).
+        truth={'kf': 0.7, 'kr': 0.2},
+        build_free={'kf': ('uniform_var', 0.05, 3.0), 'kr': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # WILDTYPE: the reaction as written -- Obs_B relaxes to B_eq = kf/(kf+kr)*A0 at
+            # rate kf+kr, so one time course sees BOTH rates.
+            Dataset('wildtype.exp', obs=('Obs_B',), t_end=8, n_points=17, sd=1.0),
+            # KNOCKOUT: the ko condition sets kr=0, so Obs_B runs irreversibly to the full
+            # total A0 at rate kf -- a clean second look at kf. regenerate_data applies the
+            # condition, so this .exp is the knockout curve (not the wildtype).
+            Dataset('knockout.exp', obs=('Obs_B',), t_end=8, n_points=17, sd=1.0,
+                    condition=('ko', 'kr = 0')),
+        ),
+        confs=(
+            # One fit to both conditions at once on ONE model + a condition: perturbation.
+            # Only the scored (wildtype, knockout-under-ko) diagonal is simulated; the
+            # off-diagonal cross-product is pruned (#484). de + refine.
+            ConfCheck('condition_perturbations.conf', recover={'kf': 0.7, 'kr': 0.2}, tol=0.05),
+        ),
+    ),
 )
 
 

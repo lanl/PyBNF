@@ -1,0 +1,55 @@
+# =============================================================================
+#  Reversible first-order conversion      A <--kf/kr--> B
+# =============================================================================
+#  A single reversible reaction: A converts to B at rate kf, B back to A at rate
+#  kr. The total A + B is conserved; the system relaxes to an equilibrium set by
+#  the ratio of the rates:
+#
+#        dA/dt = -kf*A + kr*B          B(t) -> B_eq = kf/(kf+kr) * A0
+#        dB/dt =  kf*A - kr*B          relaxation rate = kf + kr
+#
+#  Lesson 47 measures this ONE system in two biological conditions and fits both
+#  with ONE model + a `condition:` perturbation (the PEtab-aligned Mechanism A),
+#  NOT two copies of the model file:
+#
+#    * WILDTYPE  -- the reaction as written (both rates active). B relaxes to the
+#      equilibrium B_eq: a single time course sees BOTH kf+kr (the rate) and
+#      kf/(kf+kr) (the equilibrium ratio).
+#    * KNOCKOUT  -- the reverse reaction is ablated (kr set to 0 by the condition).
+#      B now runs irreversibly to the full total A0 at rate kf: a clean second
+#      look at kf, exactly as a real reverse-enzyme knockout would give.
+#
+#  kf and kr are the FITTED rate constants; A0/B0 are fixed initial amounts. The
+#  knockout is expressed as a condition that sets kr = 0 -- an absolute override,
+#  independent of the fitted kr (which still drives the wildtype simulation).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kf  0.7    # /day  forward  A -> B     <- FITTED
+    kr  0.2    # /day  reverse  B -> A     <- FITTED (ablated in the knockout condition)
+    A0  80.0   # AU    initial A
+    B0  0.0    # AU    initial B
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+  end seed species
+
+  begin observables
+    Molecules  Obs_B  B()
+  end observables
+
+  begin reaction rules
+    R_forward: A() -> B()  kf
+    R_reverse: B() -> A()  kr
+  end reaction rules
+
+end model

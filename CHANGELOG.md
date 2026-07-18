@@ -193,6 +193,25 @@ All notable changes to PyBNF are documented below. This project adheres to
   error rather than an unbounded run. ODE/SSA pre-equilibration is unchanged (still
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
+### Changed
+- **Edition-2 one-model + `condition:` jobs now simulate only the scored `(experiment,
+  condition)` diagonal, not the full `{action} × {condition}` cross-product (#484, ADR-0069).**
+  Under edition-2 Mechanism A the single model ran every synthesized action under every
+  `condition:` mutant, but only each experiment under *its own* condition is ever scored — so for
+  **N** experiments and **M** conditions each objective evaluation ran **N×(M+1)** simulations to
+  obtain **N** scored series and discarded the rest (e.g. the Miller et al. 2026 MEK-isoform job:
+  25 simulations for 5 series). PyBNF now records a per-model **emit-set** — the full output
+  suffixes any consumer reads (the scored `exp_data` diagonal ∪ constraint homes/references ∪
+  postprocessing targets) — and each bngsim backend's `execute` skips every `(action, condition)`
+  pair not in it, so the cost is **N** simulations. Results are unchanged (only unscored pairs are
+  removed; the scored objective is provably invariant), and pruning is gated on edition ≥ 2 and
+  action *separability* (no hand-written `begin actions` block mixed in), so legacy `mutant:`,
+  non-edition-2, and mixed-action jobs — and the BNG2.pl / `.net` subprocess paths — are
+  byte-identical. A consumer that references a pair no experiment produces is now a load-time
+  `PybnfError` rather than a silent drop. This makes the #483 `am` `output_trajectory` write-guard
+  defensive (off-diagonal suffixes are no longer produced). New tutorial lesson
+  `47_condition_perturbations` is the reference Mechanism-A example.
+
 ### Fixed
 - **PEtab import now reads a `problem.yaml` whose table-file lists are unindented (a column-0
   `- item`), the shape the official `petab.v2.petab1to2` converter emits (#407).** An externally

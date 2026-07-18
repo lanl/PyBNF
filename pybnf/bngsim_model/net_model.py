@@ -477,8 +477,19 @@ class BngsimModel(NetModel):
 
         if with_mutants:
             for mut in self.mutants:
+                # Off-diagonal cross-product pruning (#484): skip building/running a
+                # condition mutant entirely when no action pairs with it (its whole column
+                # is off-diagonal). A no-op when emit_suffixes is unset.
+                if self.emit_suffixes is not None and not any(
+                        (s[1] + mut.suffix) in self.emit_suffixes for s in self.suffixes):
+                    continue
                 logger.debug('Working on mutant %s', mut.suffix)
                 mut_model = self._get_mutant_model_bngsim(mut)
+                # The mutant runs under its own condition suffix, so _execute_actions keys
+                # its emit-set lookups by <action suffix><mut.suffix> (the diagonal for the
+                # experiments this condition owns). Shares the base model's emit_suffixes via
+                # copy.copy in _get_mutant_model_bngsim (like _sensitivity_offset).
+                mut_model._emit_context_suffix = mut.suffix
                 mut_data = mut_model.execute(
                     folder,
                     filename + mut.suffix,
@@ -527,6 +538,15 @@ class BngsimModel(NetModel):
 
             sim_params = _parse_simulate_action(line)
             if sim_params is not None:
+                # Off-diagonal cross-product pruning (#484): skip a simulate whose
+                # (action, condition) pair no consumer reads. _emit_context_suffix is ''
+                # for the base run and the mutant's suffix on its copy, so this prunes both.
+                # A no-op when emit_suffixes is unset; an unregistered pre-equilibration
+                # phase (<name>_preequil) is never pruned (see Model._emit_skip). The
+                # preceding resetConcentrations() line still ran, so a kept later action
+                # starts clean.
+                if self._emit_skip(sim_params.get('suffix', 'time_course')):
+                    continue
                 plan = self._prepare_simulate_run(
                     state, sim_params, model, action_index, timeout,
                     seed_suffix_prefix='', null_nf_sample_times=True,
@@ -625,6 +645,10 @@ class BngsimModel(NetModel):
 
             ps_params = _parse_parameter_scan_action(line)
             if ps_params is not None:
+                # Off-diagonal cross-product pruning (#484): skip a dose-response scan
+                # whose (action, condition) pair no consumer reads (as for simulate above).
+                if self._emit_skip(ps_params.get('suffix', 'param_scan')):
+                    continue
                 ds.update(self._run_parameter_scan(
                     model, ps_params,
                     action_index=action_index,

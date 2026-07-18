@@ -300,6 +300,10 @@ class BngsimNfModel(Model):
 
                 ps_params = _parse_parameter_scan_action(line)
                 if ps_params is not None:
+                    # Off-diagonal cross-product pruning (#484): skip a dose-response scan
+                    # whose (action, condition) pair no consumer reads.
+                    if self._emit_skip(ps_params.get('suffix', 'param_scan')):
+                        continue
                     ds.update(self._run_nf_parameter_scan(
                         ps_params,
                         current_param_inputs,
@@ -310,6 +314,12 @@ class BngsimNfModel(Model):
 
                 sim_params = _parse_simulate_action(line)
                 if sim_params is not None:
+                    # Off-diagonal cross-product pruning (#484): skip a simulate whose
+                    # (action, condition) pair no consumer reads. _emit_context_suffix is
+                    # '' for the base run and the mutant's suffix on its copy; an
+                    # unregistered <name>_preequil phase is never pruned (Model._emit_skip).
+                    if self._emit_skip(sim_params.get('suffix', 'time_course')):
+                        continue
                     self._nf_simulate_action(
                         sim_params, sess, current_param_overrides, ds, action_index, timeout)
                     continue
@@ -525,8 +535,16 @@ class BngsimNfModel(Model):
     def _run_nf_mutants(self, folder, filename, timeout, ds):
         """Execute each mutant model and merge its outputs into ``ds`` (suffixed)."""
         for mut in self.mutants:
+            # Off-diagonal cross-product pruning (#484): skip a condition mutant entirely
+            # when no action pairs with it. A no-op when emit_suffixes is unset.
+            if self.emit_suffixes is not None and not any(
+                    (s[1] + mut.suffix) in self.emit_suffixes for s in self.suffixes):
+                continue
             logger.debug('Working on mutant %s', mut.suffix)
             mut_model = self._get_mutant_model_nf(mut)
+            # The mutant runs under its own condition suffix (keys its emit-set lookups by
+            # <action suffix><mut.suffix>); shares emit_suffixes via copy.copy.
+            mut_model._emit_context_suffix = mut.suffix
             mut_data = mut_model.execute(
                 folder,
                 filename + mut.suffix,

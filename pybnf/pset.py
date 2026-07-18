@@ -417,6 +417,47 @@ class Model:
     An abstract class representing an executable model
     """
 
+    #: Off-diagonal cross-product pruning (#484, ADR-0069): the set of *full*
+    #: output suffixes (``action suffix + condition suffix``) that some consumer --
+    #: the scored objective, a constraint, or a postprocessing script -- actually
+    #: reads, or ``None`` to disable pruning. Under edition-2 Mechanism A (ONE model
+    #: + ``condition:`` perturbations) a model runs every action under every condition
+    #: mutant, but only the diagonal ``(action, its own condition)`` pairs are scored;
+    #: when this set is populated (by :meth:`Configuration._compute_emit_suffixes`,
+    #: attached to the runtime models in ``algorithms.base._initialize_models``), the
+    #: backend ``execute`` skips any pair not in it, so N experiments × M conditions
+    #: cost N simulations instead of N×(M+1). ``None`` (the default -- legacy jobs,
+    #: non-edition-2, or a model whose actions are not cleanly separable) is a no-op:
+    #: :meth:`_emit_skip` never skips, so behaviour is byte-identical. A superset of the
+    #: gradient path's ``_scored_suffixes`` (which gates *sensitivity computation*, not
+    #: whether a simulation runs at all): a constraint-home suffix must be simulated but
+    #: is not a scored gradient target.
+    emit_suffixes = None
+
+    #: The condition suffix the current ``execute`` is running under ('' for the base
+    #: wildtype run; a mutant's suffix on its copy). Folded onto each action's own suffix
+    #: to key :attr:`emit_suffixes`. A class attribute so an ``object.__new__`` instance
+    #: (test fakes, pickling) is safe. Mirrors ``_sensitivity_offset``.
+    _emit_context_suffix = ''
+
+    def _emit_skip(self, action_suffix):
+        """Whether this ``(action, condition)`` pair is off every consumer's emit-set
+        and can be skipped (#484). ``False`` (never skip) when :attr:`emit_suffixes` is
+        unset -- the byte-identical legacy default -- so only an explicitly pruned model
+        drops any pair.
+
+        Only a **registered** action suffix (an experiment's own output, in
+        ``self.suffixes``) is prunable. An intermediate phase of a multi-phase
+        pre-equilibration block emits its own ``simulate`` line under an *unregistered*
+        suffix (``<name>_preequil``, ADR-0052); that phase carries state into the measured
+        phase and must always run, so it is never skipped -- the measured phase's own
+        (registered) suffix is what the emit-set gates."""
+        if self.emit_suffixes is None:
+            return False
+        if action_suffix not in {s[1] for s in getattr(self, 'suffixes', ())}:
+            return False
+        return (action_suffix + self._emit_context_suffix) not in self.emit_suffixes
+
     def copy_with_param_set(self, pset):
         """Returns a copy of the model with a new parameter set
 

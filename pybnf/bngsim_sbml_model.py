@@ -962,6 +962,14 @@ class BngsimSbmlModelNoTimeout(Model):
                 method = None
                 seed_value = None
                 suffix_with_mut = act.suffix + mut.suffix
+                # Off-diagonal cross-product pruning (#484): under edition-2 one-model +
+                # condition: perturbations this single model runs every action under every
+                # condition mutant, but only the scored (action, its own condition) diagonal
+                # is consumed. Skip any (action, condition) pair not in the emit-set. The
+                # wildtype MutationSet has suffix '', so the base run is pruned by the same
+                # guard. A no-op when emit_suffixes is unset (legacy/non-edition-2).
+                if self.emit_suffixes is not None and suffix_with_mut not in self.emit_suffixes:
+                    continue
                 # Gate this action's sensitivity request on whether its output is
                 # scored (#475/#482): set before any Simulator is built below (each
                 # _run_simulation constructs a fresh Simulator through

@@ -318,6 +318,13 @@ class Configuration:
         self._attach_analytic_scale()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
+        # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
+        # constraints, and postprocessing are all populated: records per model the full
+        # output suffixes any consumer reads, so the backend execute() can skip the
+        # unscored {action} x {condition} cross-product it would otherwise compute and
+        # discard. A no-op (leaves emit_suffixes empty) for every non-edition-2 or
+        # not-cleanly-separable model, so legacy jobs are byte-identical.
+        self._compute_emit_suffixes()
         logger.debug('Completed configuration')
 
     @staticmethod
@@ -1607,6 +1614,84 @@ class Configuration:
                 f"with that name is defined on model '{base}'. Define it with a "
                 "'condition:' line.")
         return name + condition
+
+    def _compute_emit_suffixes(self):
+        """Record, per model, the full output suffixes any consumer actually reads --
+        the emit-set (#484, ADR-0069). Populates ``self.emit_suffixes[model_name]`` only
+        for edition-2 Mechanism-A models whose actions are cleanly separable; every other
+        model is left out (pruning off -> byte-identical).
+
+        Under edition-2 Mechanism A (ONE model + ``condition:`` perturbations) the single
+        model runs every synthesized action under every condition mutant, but only the
+        diagonal ``(action, its own condition)`` pairs are consumed. The emit-set is the
+        union over three consumer channels:
+
+        * the scored objective -- the ``exp_data`` data-keys (the diagonal);
+        * constraints -- each ``ConstraintSet``'s home ``base_suffix`` (which covers a
+          constraint-only experiment whose data-key is not in ``exp_data``) plus any
+          producible ``suffix.observable`` cross-reference (:meth:`_constraint_ref_suffixes`);
+        * postprocessing scripts -- their ``(model, suffix)`` targets (a hard direct index,
+          ``Result.postprocess_data``).
+
+        Enabled per model only when ALL hold: edition >= 2; the model received
+        experiment-synthesized actions; and every action suffix equals an experiment name
+        (**separability** -- no hand-written ``begin actions`` block is mixed in, so each
+        synthesized action is its own reset-independent block that can be skipped
+        individually). Anything else fails safe (the model is absent from
+        ``self.emit_suffixes`` -> the backend guard is a no-op).
+
+        Raises a :class:`PybnfError` if a constraint/postprocessing consumer references a
+        suffix no ``action x condition`` pair produces -- turning a would-be silent drop
+        into an actionable load-time error.
+        """
+        self.emit_suffixes = {}
+        ed = edition.resolve_edition(self.config.get('edition'))
+        if ed < 2:
+            return
+        # Experiment names synthesized as actions onto each model (= the action suffixes).
+        exp_names_by_model = {}
+        for name, (base, _dk) in self._experiment_data_keys.items():
+            exp_names_by_model.setdefault(base, set()).add(name)
+        for base, model in self.models.items():
+            if base not in exp_names_by_model:
+                continue  # no experiment-synthesized actions -> nothing to prune
+            action_suffixes = {s[1] for s in model.suffixes}
+            if action_suffixes != exp_names_by_model[base]:
+                continue  # a begin-actions block is mixed in -> not separable, fail safe
+            producible = set(model.get_suffixes())
+            emit = set(self.exp_data.get(base, {}).keys())
+            for cs in self.constraints:
+                if cs.base_model != base:
+                    continue
+                emit.add(cs.base_suffix)
+                for c in cs.constraints:
+                    emit |= self._constraint_ref_suffixes(c, producible)
+            emit |= {suff for (m, suff) in self.postprocessing if m == base}
+            missing = emit - producible
+            if missing:
+                raise PybnfError(
+                    f"Model '{base}': a constraint or postprocessing script references output "
+                    f"suffix(es) {sorted(missing)} that no experiment x condition pair produces. "
+                    f"Add the missing experiment (e.g. \"experiment: <name>, condition: <cond>\") "
+                    f"so the pair is simulated (lanl/PyBNF#484).")
+            self.emit_suffixes[base] = emit
+
+    @staticmethod
+    def _constraint_ref_suffixes(constraint, producible):
+        """The producible output suffixes one constraint references through a dotted
+        ``suffix.observable`` quantity (its two sides and any ``altpenalty`` sides). A
+        bare observable (no ``.``) resolves to the constraint's own ``base_suffix`` (already
+        unioned by the caller), so only dotted cross-references matter here. Restricting to
+        ``producible`` suffixes keeps a stray token (e.g. a numeric bound that slipped
+        through) from polluting the emit-set; a genuine dotted ref to an off-diagonal cell
+        is kept alive (defensive) rather than silently pruned (#484)."""
+        refs = set()
+        for q in (constraint.quant1, constraint.quant2, constraint.alt1, constraint.alt2):
+            if isinstance(q, str) and '.' in q:
+                prefix = q.split('.', 1)[0]
+                if prefix in producible:
+                    refs.add(prefix)
+        return refs
 
     @staticmethod
     def _partition_experiment_data(name, data_files):

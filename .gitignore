@@ -34,6 +34,9 @@ tests/sim_1_rerun1/
 tests/full_tests/*/fit/
 tests/full_tests/*.log
 
+# PyBNF run logs written into an example/tutorial dir (a fit launched from inside it)
+examples/**/bnf_*.log
+
 # Benchmark run artifacts
 benchmarks/*/runs/
 benchmarks/*/bnf_*.log

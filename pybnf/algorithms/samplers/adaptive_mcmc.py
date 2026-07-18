@@ -218,11 +218,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
                             for j in res.out[i]:
                                 if (j + l) not in self.output_run_current:
                                     # Off-diagonal <action><condition> cross-product suffix.
-                                    # Under edition-2 one-model + condition: perturbations, the
-                                    # single model runs every action suffix under every mutant,
-                                    # but only the scored diagonal (WT, KOko, ...) was allocated
-                                    # in output_run_current. Skip the rest rather than KeyError
-                                    # on the first off-diagonal suffix (lanl/PyBNF#483).
+                                    # Now defensive: edition-2 pruning (#484, ADR-0069) no longer
+                                    # produces off-diagonal suffixes -- res.out carries only the
+                                    # scored diagonal (WT, KOko, ...), which is exactly what
+                                    # output_run_current allocates. This guard remains so a stray
+                                    # unallocated suffix skips rather than KeyError'ing, as it did
+                                    # load-bearingly before pruning (lanl/PyBNF#483).
                                     continue
                                 if l in res.out[i][j].cols:
                                     if self.norm:
@@ -242,9 +243,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         for ib in res.out:
                             for js in res.out[ib]:
                                 if (js + la) not in self.output_run_noise_current:
-                                    # Off-diagonal <action><condition> cross-product suffix;
-                                    # only the scored diagonal keys were allocated. Skip the
-                                    # rest rather than KeyError (lanl/PyBNF#483).
+                                    # Defensive after edition-2 pruning (#484, ADR-0069): only the
+                                    # scored diagonal keys are produced and allocated. Skip a stray
+                                    # unallocated suffix rather than KeyError (lanl/PyBNF#483).
                                     continue
                                 if la in res.out[ib][js].cols:
                                     if self.norm:

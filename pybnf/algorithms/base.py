@@ -712,6 +712,18 @@ class Algorithm(ABC):
                 logger.info(f'Model {m.name} does not require network generation')
                 final_model_list.append(m)
         os.chdir(home_dir)
+        # Off-diagonal cross-product pruning (#484, ADR-0069): attach each model's emit-set
+        # (the full output suffixes any consumer reads) to the *runtime* model, so the
+        # backend execute() simulates only the scored (action, condition) diagonal. Set here
+        # rather than in config because this method rebuilds the models (a fresh
+        # BngsimModel/NetModel per model drops config-set attributes -- the same reason the
+        # gradient path sets set_scored_suffixes on the model_list, not in config). A model
+        # config left out of emit_suffixes gets None -> pruning off -> byte-identical. Rides
+        # copy.copy/scatter to the workers alongside the model.
+        emit_suffixes = getattr(self.config, 'emit_suffixes', {}) or {}
+        if emit_suffixes:  # only edition-2 Mechanism-A jobs; else models keep the None default
+            for model in final_model_list:
+                model.emit_suffixes = emit_suffixes.get(model.name)
         return final_model_list
 
     @abstractmethod
