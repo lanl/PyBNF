@@ -164,6 +164,16 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
+- **PEtab import now reads a `problem.yaml` whose table-file lists are unindented (a column-0
+  `- item`), the shape the official `petab.v2.petab1to2` converter emits (#407).** An externally
+  authored v2 problem — e.g. any `Benchmark-Models-PEtab` problem converted from v1 — imported as
+  `problem.yaml ... has no parameter_files`, because `read_problem_yaml`'s dependency-free
+  hand-rolled scan treated a column-0 list item as a new top-level key and dropped it; only the
+  two-space-indented list shape our own exporter writes was read. The section reset is now guarded
+  on `not stripped.startswith('-')`, so a column-0 `- item` appends to the current section — making
+  the reader a strict superset of both list shapes (our indented output and petab's unindented
+  output parse identically). Two regression tests cover the `petab1to2` shape and the two-shape
+  equivalence.
 - **Adaptive MCMC (`am`) with `output_trajectory` no longer crashes on edition-2 one-model +
   `condition:` jobs (`KeyError` on `<action><mutant>` suffixes) (#483).** An `am` job that saves
   posterior-predictive trajectories (`output_trajectory`) over an edition-2 model with `condition:`
