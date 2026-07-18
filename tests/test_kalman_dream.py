@@ -288,39 +288,56 @@ def test_de_proposal_never_activates_kalman(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Stage 3b: config validation (errors clearly, before the run starts)
+# Stage 3b: config validation matrix (every unsupported point errors clearly, at
+# construction, before the run starts -- the "config points, not subclasses"
+# surface must reject the inexpressible combinations up front rather than fail or
+# silently degenerate mid-run).
 # --------------------------------------------------------------------------- #
-def test_kalman_rejects_non_gaussian_objective(tmp_path):
-    """proposal = kalman with a direct_pass (analytical) objective has no R and must
-    error at construction, not silently degenerate to de."""
+def _direct_pass_kalman_conf(tmp_path):
+    """A proposal = kalman config over a direct_pass (analytical, non-Gaussian)
+    objective -- no measurement R, so kalman must refuse it."""
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0, 0.0], [1.0, 1.0]))
-    conf = H.make_config(tmp_path, 'dream', tgt, exp, 2, proposal='kalman',   # direct_pass
+    return H.make_config(tmp_path, 'dream', tgt, exp, 2, proposal='kalman',
                          population_size=5, max_iterations=100, burn_in=50)
-    with pytest.raises(PybnfError, match='linear-scale Gaussian'):
-        DreamAlgorithm(conf)
 
 
-def test_kalman_rejects_n_try_gt_1(tmp_path):
-    conf = H.make_linear_gaussian_config(tmp_path, _A, _D, _SIGMA, proposal='kalman', n_try=3)
-    with pytest.raises(PybnfError, match='n_try'):
-        DreamAlgorithm(conf)
-
-
-def test_kalman_rejects_out_of_range_burnin_frac(tmp_path):
-    conf = H.make_linear_gaussian_config(tmp_path, _A, _D, _SIGMA,
-                                         proposal='kalman', kalman_burnin_frac=1.5)
-    with pytest.raises(PybnfError, match='kalman_burnin_frac'):
-        DreamAlgorithm(conf)
+@pytest.mark.parametrize('build_conf, match', [
+    # invalid proposal enum value (caught before the kalman-specific checks)
+    (lambda t: H.make_linear_gaussian_config(t, _A, _D, _SIGMA, proposal='banana'),
+     'Invalid proposal'),
+    # kalman requires a linear-scale Gaussian likelihood (direct_pass has no R)
+    (_direct_pass_kalman_conf, 'linear-scale Gaussian'),
+    # kalman is single-try only
+    (lambda t: H.make_linear_gaussian_config(t, _A, _D, _SIGMA, proposal='kalman', n_try=3),
+     'n_try'),
+    # kalman_burnin_frac must be in [0, 1] -- above and below
+    (lambda t: H.make_linear_gaussian_config(t, _A, _D, _SIGMA, proposal='kalman',
+                                             kalman_burnin_frac=1.5), 'kalman_burnin_frac'),
+    (lambda t: H.make_linear_gaussian_config(t, _A, _D, _SIGMA, proposal='kalman',
+                                             kalman_burnin_frac=-0.1), 'kalman_burnin_frac'),
+], ids=['invalid-proposal', 'kalman+non-gaussian', 'kalman+n_try>1',
+        'burnin-frac-too-high', 'burnin-frac-negative'])
+def test_dream_config_rejection_matrix(tmp_path, build_conf, match):
+    with pytest.raises(PybnfError, match=match):
+        DreamAlgorithm(build_conf(tmp_path))
 
 
 # --------------------------------------------------------------------------- #
 # Stage 3b: the closed-form linear-Gaussian posterior-recovery oracle
 # --------------------------------------------------------------------------- #
-def test_kalman_moves_to_mode(tmp_path):
+@pytest.mark.parametrize('snooker_prob', [0.1, 0.5],
+                         ids=['default-snooker', 'snooker-heavy'])
+def test_kalman_moves_to_mode(tmp_path, snooker_prob):
     """FAST: a short kalman run leaves the flat prior and concentrates near the
-    closed-form posterior mode [2, -1]; samples are finite and the chain moves."""
+    closed-form posterior mode [2, -1]; samples are finite and the chain moves.
+
+    Parametrized over ``snooker_prob`` because the Kalman jump is the *non-snooker*
+    branch of DREAM's binary split: the ``snooker-heavy`` case (snooker fires half the
+    time) is the composition check that ``proposal = kalman`` co-exists with the snooker
+    mix-in (the ADR-0067 "orthogonal to proposal" claim) and still recovers the mode --
+    the analogue of the multi-try ``snooker-heavy-k3`` case."""
     conf = H.make_linear_gaussian_config(
-        tmp_path, _A, _D, _SIGMA, proposal='kalman',
+        tmp_path, _A, _D, _SIGMA, proposal='kalman', snooker_prob=snooker_prob,
         population_size=6, burn_in=120, max_iterations=350, rhat_threshold=0,
         sample_every=2, output_hist_every=10 ** 9, hist_bins=10,
         diagnostics_every=10 ** 9, random_seed=7)
