@@ -1095,8 +1095,10 @@ def read_problem_yaml(path):
     surfaced as ``model_file`` / ``model_id`` / ``model_language``. Dependency-free (no YAML
     library): the writer emits a flat ``key:`` + ``  - item`` list shape and a two-level
     ``model_files`` block, which a small indentation-aware scan reads exactly. The scan is
-    **order-independent**, so a real v2 ``problem.yaml`` that lists ``model_files`` first
-    (our writer emits it last) reads identically.
+    **order-independent** (a real v2 ``problem.yaml`` that lists ``model_files`` first, where
+    our writer emits it last, reads identically) **and list-indent-independent**: a
+    column-0 ``- item`` list -- YAML-legal, and what the official ``petab.v2.petab1to2``
+    converter emits -- reads the same as our own two-space-indented items.
 
     This is a pure *reader*: it records each model's ``language`` but does not enforce a
     policy on it. The supported-language scope (BNGL or SBML, ADR-0036) is enforced by the
@@ -1115,7 +1117,12 @@ def read_problem_yaml(path):
             continue
         indent = len(raw) - len(raw.lstrip())
         stripped = raw.strip()
-        if indent == 0:
+        # A column-0 list item (`- item`) is YAML-legal and is exactly what the official
+        # petab v1->v2 converter emits (`petab.v2.petab1to2`); it belongs to the *current*
+        # section, not a new key, so it must not reset the scan. Only a non-list line at
+        # column 0 opens/closes a section -- our own writer indents its list items, so
+        # honoring the unindented shape too makes the reader a strict superset of both.
+        if indent == 0 and not stripped.startswith('-'):
             section, in_model, current = None, False, None
             if stripped.endswith(':') and stripped[:-1] in files:
                 section = stripped[:-1]
