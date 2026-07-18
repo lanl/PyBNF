@@ -28,6 +28,23 @@ All notable changes to PyBNF are documented below. This project adheres to
   Hessian for (a mean-on-log estimated scale, a free-dispersion / median count family, an estimated
   Student-t df, or an estimated constraint scale) refuse with a pointer to `lbfgs`, which fits them.
   `trf` / `lbfgs` are byte-identical (they never form the Hessian).
+- **Kalman-inspired DREAM proposal: `proposal = kalman` (ADR-0067, Stage 3; DREAM(KZS), #358).**
+  The third proposal operator on the unified DREAM engine (Zhang, Vrugt et al. 2020). During a
+  burn-in window each proposal is steered toward the data by a Kalman gain `K = C_ZY (C_YY + R)⁻¹`
+  built from the archive's parameter↔model-output cross-covariance, with the innovation `d - f(xᵢ) +
+  ε` taken at the chain's current state (`ε ~ N(0, R)`), which accelerates burn-in on informative,
+  mildly non-linear problems; after the window the chain reverts to `de` for a reversible sampling
+  phase (the Kalman jump breaks detailed balance by design, so its samples are burn-in and
+  discarded). The gain reads each archive entry's *model output vector* `f(Z)` — surfaced by the new
+  `LikelihoodObjective.aligned_prediction_data` seam and carried in an output-augmented archive that
+  turns on only for this proposal (the "implied axis 2b"; dormant and byte-identical for `de` /
+  `whitened`). `kalman` requires a linear-scale Gaussian likelihood (`chi_sq` / `chi_sq_dynamic`,
+  the source of `R = diag(σ²)`) and `n_try = 1`, and refuses any other objective or `n_try > 1`
+  *before the run starts*. The internal ensemble size is fixed (`M = 20`, clamped to the available
+  archive, falling back to `de` before enough outputs accrue — no new user key); one new
+  proposal-scoped key `kalman_burnin_frac` (default `0.3`) sets the window as a fraction of
+  `burn_in`. Validated end-to-end against a closed-form linear-Gaussian posterior (`f(x) = A x`
+  scored by real `chi_sq`), plus pinned gain-math and burn-in-switch unit tests.
 - **Multi-Try DREAM: the `n_try` count (ADR-0067, Stage 2; MT-DREAM(ZS), #357).** A new integer
   `n_try` config key turns each chain-generation into a multiple-try step (Liu, Liang & Wong 2000;
   Laloy & Vrugt 2012): with `n_try = k > 1` a chain draws `k` candidate proposals, selects one in

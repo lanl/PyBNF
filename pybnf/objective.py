@@ -288,6 +288,18 @@ class ObjectiveFunction:
         variance ``R``); ``LikelihoodObjective`` overrides it for the Gaussian family."""
         return None
 
+    def is_linear_gaussian(self):
+        """Whether every observable this objective scores uses a linear-scale Gaussian
+        noise family -- the config-time precondition for the Kalman-inspired DREAM
+        proposal (ADR-0067 Stage 3, DREAM(KZS)), which forms ``R = diag(sigma**2)`` from a
+        Gaussian measurement covariance and so has no ``R`` for a least-squares / distance
+        / pass-through objective or a non-Gaussian / log-scale likelihood. The base is
+        ``False`` (only a linear-Gaussian ``LikelihoodObjective`` overrides it); it lets
+        ``proposal = kalman`` reject an unsupported objfunc *before the run starts*, rather
+        than silently degenerating to ``de`` because :meth:`aligned_prediction_data` returns
+        ``None`` at every accept."""
+        return False
+
     def residual_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """The standardized residual ``rho`` and its derivative ``d rho/d prediction``
         for one scored point -- the per-point seam the gradient path differentiates
@@ -1095,6 +1107,24 @@ class LikelihoodObjective(SummationObjective):
                 obs.append(observation)
                 var.append(primary ** 2)
         return True
+
+    def is_linear_gaussian(self):
+        """True iff the default family and every per-observable override are a
+        linear-scale Gaussian (ADR-0067 Stage 3; overrides
+        :meth:`ObjectiveFunction.is_linear_gaussian`).
+
+        The config-time twin of :meth:`aligned_prediction_data`'s per-point gate
+        (``isinstance(family, Gaussian) and family.additive_on.ln_base == 0.0``), checked
+        against the *declared* families rather than a walked point set so
+        ``proposal = kalman`` can reject a non-Gaussian objfunc before the run starts. Both
+        ``chi_sq`` (fixed ``_SD`` sigma) and ``chi_sq_dynamic`` (an estimated free sigma)
+        pass -- the family is Gaussian either way, and the Kalman ``R = diag(sigma**2)`` is
+        formed per accept from the current state's sourced sigma. A log-scale (``lognormal``)
+        or non-Gaussian (``laplace`` / ``student_t`` / ``neg_bin``) default or override makes
+        it ``False``."""
+        families = [self.noise] + [fam for fam, _sources in self.overrides.values()]
+        return all(isinstance(f, Gaussian) and f.additive_on.ln_base == 0.0
+                   for f in families)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         family, sources = self._spec_for(col_name)

@@ -1,12 +1,13 @@
 # DREAM is one engine with two orthogonal extension axes — a proposal operator and an evaluation protocol — so its variants are config points, not subclasses (issues #357, #358)
 
-**Status: Accepted (2026-07-16); Stages 1–2 implemented (2026-07-17); Stage 3a in
-progress (2026-07-17, branch `feat/358-dream-kzs-kalman`).** Design accepted; Stage 1
-(proposal Strategy / P-DREAM fold-in) and Stage 2 (`n_try`, Multi-Try DREAM) are shipped.
-Stage 3 (`kalman`) is being landed in two commits — **3a, the output-augmented archive
-plumbing (implied axis 2b), is committed on the branch above** (inert at defaults,
-byte-identical); **3b, the Kalman proposal itself, remains** — see *Stage 3 — confirmed
-algorithm and build decisions* below. The scheduler-contract risk that
+**Status: Accepted (2026-07-16); Stages 1–3 implemented (2026-07-17..18, branch
+`feat/358-dream-kzs-kalman`).** Design accepted; Stage 1 (proposal Strategy / P-DREAM
+fold-in), Stage 2 (`n_try`, Multi-Try DREAM), and Stage 3 (`kalman`, DREAM(KZS)) are all
+shipped. Stage 3 landed in two commits — **3a, the output-augmented archive plumbing
+(implied axis 2b)** (inert at defaults, byte-identical), then **3b, the Kalman proposal
+itself, the `kalman_burnin_frac` key, the burn-in switch, and the closed-form
+linear-Gaussian posterior-recovery oracle** — both per *Stage 3 — confirmed algorithm and
+build decisions* below. The scheduler-contract risk that
 gated acceptance was pressure-tested and resolved — see *Principal risk*. Reframes the DREAM
 family so that DREAM(ZS),
 Preconditioned DREAM, the requested Multi-Try DREAM (#357), and the requested
@@ -176,8 +177,17 @@ the two axes touch the engine at architecturally different depths.
        accept sites and appended at archive growth — all gated on
        `_archive_stores_outputs`, `False` for `de`/`whitened` (byte-identical). BNG-free
        extractor unit tests in `tests/test_kalman_dream.py`.
-     - **3b — the `kalman` proposal + burn-in switch + oracle. — TODO.** See the
-       confirmed algorithm and build decisions below.
+     - **3b — the `kalman` proposal + burn-in switch + oracle. — DONE (2026-07-18).** The
+       `_calculate_kalman_pset` gain (`K = C_ZY (C_YY + R)^-1`, solved with PD jitter; the
+       internal `M = 20` ensemble clamped to available, `de` fallback below the minimum),
+       the current-state innovation `d - f(x_i) + ε` (paper sign), the `is_linear_gaussian`
+       config gate + `(kalman, n_try = 1)` scope check (both error before the run starts),
+       the `kalman_burnin_frac` key (default 0.3 of `burn_in`) and the `_kalman_active`
+       burn-in switch in the proposal dispatch (reverting to `de`, no Hastings correction).
+       Validated by the closed-form linear-Gaussian oracle (`f(x) = A x` scored by real
+       `chi_sq`, `tests/integration_harness.py:LinearGaussianModel`) recovering
+       `N([2,-1], (1/3) I)`, plus pinned gain-math / sign / fallback / window unit tests
+       (`tests/test_kalman_dream.py`).
 
 ### Principal risk — pressure-tested, resolved (2026-07-16)
 

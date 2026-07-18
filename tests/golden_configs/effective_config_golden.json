@@ -557,6 +557,10 @@
     null
    ],
    [
+    "kalman_burnin_frac",
+    0.3
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -985,6 +989,10 @@
    [
     "job_type",
     null
+   ],
+   [
+    "kalman_burnin_frac",
+    0.3
    ],
    [
     "lambda",
@@ -1923,6 +1931,10 @@
     null
    ],
    [
+    "kalman_burnin_frac",
+    0.3
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -2463,6 +2475,10 @@
    [
     "job_type",
     null
+   ],
+   [
+    "kalman_burnin_frac",
+    0.3
    ],
    [
     "lambda",
@@ -3395,6 +3411,10 @@
     null
    ],
    [
+    "kalman_burnin_frac",
+    0.3
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -3823,6 +3843,10 @@
    [
     "job_type",
     null
+   ],
+   [
+    "kalman_burnin_frac",
+    0.3
    ],
    [
     "lambda",
