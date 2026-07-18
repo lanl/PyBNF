@@ -1205,6 +1205,56 @@ class TestProblemYamlReader:
         assert problem['model_file'] == DEMO_MODEL
         assert problem['condition_files'] == [] and problem['experiment_files'] == []
 
+    def test_reads_petab1to2_column0_list_shape(self, tmp_path):
+        # The official petab.v2.petab1to2 converter emits table-file lists at column 0
+        # (`- item`, YAML-legal) rather than the two-space-indented items our own writer
+        # emits. A column-0 list item must be read as belonging to the current section,
+        # not treated as a new top-level key -- the latter silently dropped every table
+        # file, so the whole problem imported as "has no parameter_files". Regression for
+        # the petab1to2 import path (an externally-authored v2 problem.yaml).
+        yaml_path = tmp_path / 'problem.yaml'
+        yaml_path.write_text(
+            'format_version: 2.0.0\n'
+            'parameter_files:\n'
+            '- parameters.tsv\n'
+            'model_files:\n'
+            '  model:\n'
+            '    location: model.xml\n'
+            '    language: sbml\n'
+            'measurement_files:\n'
+            '- measurements.tsv\n'
+            'condition_files:\n'
+            '- conditions.tsv\n'
+            'experiment_files: []\n'
+            'observable_files:\n'
+            '- observables.tsv\n'
+            'mapping_files: []\n'
+            'extensions: {}\n'
+        )
+        problem = read_problem_yaml(yaml_path)
+        assert problem['parameter_files'] == ['parameters.tsv']
+        assert problem['observable_files'] == ['observables.tsv']
+        assert problem['measurement_files'] == ['measurements.tsv']
+        assert problem['condition_files'] == ['conditions.tsv']
+        assert problem['experiment_files'] == []
+        assert problem['model_file'] == 'model.xml'
+        assert problem['model_id'] == 'model'
+        assert problem['model_language'] == 'sbml'
+
+    def test_column0_and_indented_lists_read_identically(self, tmp_path):
+        # The reader is a strict superset of both list shapes: the same problem written
+        # with column-0 (petab1to2) and two-space-indented (our writer) list items parses
+        # to the same result. Guards against a future scan change that re-honors only one.
+        head = ('format_version: 2.0.0\n'
+                'model_files:\n  m:\n    location: m.xml\n    language: sbml\n')
+        keys = ('parameter_files', 'observable_files', 'measurement_files')
+        col0 = head + ''.join(f'{k}:\n- {k[:1]}.tsv\n' for k in keys)
+        indented = head + ''.join(f'{k}:\n  - {k[:1]}.tsv\n' for k in keys)
+        (tmp_path / 'col0.yaml').write_text(col0)
+        (tmp_path / 'indented.yaml').write_text(indented)
+        assert (read_problem_yaml(tmp_path / 'col0.yaml')
+                == read_problem_yaml(tmp_path / 'indented.yaml'))
+
 
 class TestBoundaries:
 
