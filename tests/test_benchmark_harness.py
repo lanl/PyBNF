@@ -150,6 +150,53 @@ def test_mh_is_deprecated_but_still_available():
     assert not rb.is_deprecated('am')
 
 
+# --- _EXCLUDE stays in sync with the schema's post-freeze keys (#497) -------- #
+
+def _oracle_string_keys(sampler):
+    """The set of scalar config keys the frozen oracle carries for ``sampler`` --
+    the string keys of every ``<bench>/<sampler>`` snapshot (the ``(var_type, name)``
+    tuple keys are canonicalized to lists and skipped; they are the per-benchmark
+    priors, not schema fields)."""
+    keys = set()
+    for oracle_key, snap in _ORACLE.items():
+        if oracle_key.split('/')[1] == sampler:
+            keys.update(k for k, _v in snap[1] if isinstance(k, str))
+    return keys
+
+
+def test_exclude_covers_post_freeze_dream_family_keys():
+    """Guard (#497): keep ``_EXCLUDE`` honest against the frozen oracle for the whole
+    DREAM family, so adding a new DREAM config key forces a conscious decision rather
+    than surfacing as a confusing multi-benchmark oracle-diff failure partway through
+    the gate.
+
+    The oracle was frozen from the pre-migration ``<sampler>.conf`` files, which
+    predate the ADR-0067 two-axis keys (``proposal``, ``n_try``, ``kalman_burnin_frac``).
+    Every DREAM-family schema field the oracle does not carry must therefore be in
+    ``_EXCLUDE`` -- else the equivalence test above fails 16-ways the moment such a key
+    is added. Registry-driven (any ``DreamConfig`` subclass schema) and alias-aware
+    (``lambda_`` -> the effective ``lambda`` key), so a future DREAM sampler is covered
+    automatically. Non-goal restated (see module docstring): this does NOT regenerate
+    the oracle -- it only asserts the exclusion set matches it."""
+    import pybnf.algorithms  # noqa: F401 -- populate the registry
+    from pybnf.registry import FIT_TYPE_REGISTRY
+    from pybnf.algorithms.samplers.dream import DreamConfig
+
+    dream_family = {c: e for c, e in FIT_TYPE_REGISTRY.items()
+                    if e.schema is not None and issubclass(e.schema, DreamConfig)}
+    assert dream_family, 'no DREAM-family samplers found in the registry'
+    for code, entry in sorted(dream_family.items()):
+        oracle_keys = _oracle_string_keys(code)
+        assert oracle_keys, 'no frozen oracle entry for DREAM-family sampler %r' % code
+        schema_keys = {(fi.alias or name) for name, fi in entry.schema.model_fields.items()}
+        post_freeze = schema_keys - oracle_keys
+        assert post_freeze <= _EXCLUDE, (
+            'DREAM-family sampler %r has schema key(s) %s absent from the frozen oracle '
+            'but not in _EXCLUDE -- add each new post-freeze config key to _EXCLUDE (see '
+            'the note above it) so the equivalence oracle stays an independent '
+            'pre-migration witness.' % (code, sorted(post_freeze - _EXCLUDE)))
+
+
 # --- config-equivalence: synthesized == pre-migration oracle ---------------- #
 
 @pytest.mark.parametrize('oracle_key', sorted(_ORACLE))
