@@ -25,6 +25,7 @@ from .conditions import (
     read_condition_table,
     read_experiment_table,
 )
+from .convert import petab1to2_preserve_scale
 from .export import clean_model_for_petab, export_job, write_problem_yaml
 from .import_ import import_job, read_problem_yaml
 from .measurements import (
@@ -90,4 +91,6 @@ __all__ = [
     # job importer
     'import_job',
     'read_problem_yaml',
+    # scale-preserving v1 -> v2 converter
+    'petab1to2_preserve_scale',
 ]

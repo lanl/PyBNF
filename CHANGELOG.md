@@ -6,6 +6,19 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Scale-preserving PEtab v1→v2 conversion: `pybnf.petab.petab1to2_preserve_scale`.** The
+  official `petab.v2.petab1to2` **drops** the v1 `parameterScale` column (PEtab v2 removed it) and
+  only *warns* — so a `parameterScale = log10` estimated parameter carrying no objective prior (the
+  common case for a multi-decade kinetic parameter) converts to a *linear* `uniform_var` over the raw
+  bounds: the same argmin, but a far harder, worse-conditioned optimization than the log10 search the
+  modeler specified. This wrapper runs the standard converter and re-injects the dropped estimation
+  scale in the **v2-native** form — `priorDistribution = log-uniform` over each such parameter's
+  bounds — which PyBNF imports as a `loguniform_var` on the Log10 scale. Because the optimizer
+  objective excludes the prior, this sets only the search scale and initial sampling, not the
+  objective, so the fit stays the pure-MLE problem v1 specified; parameters petab1to2 already folded
+  into a prior (`parameterScale*Normal` → `log-normal`, …) are left untouched, as are linear ones.
+  `import_job` stays a pure v2 importer — the conversion is an explicit, named step, not a reach-back
+  to v1 in the read path. Intended as the opt-in migration `petab1to2` itself should offer.
 - **General-objective trust-region optimizer: `fit_type = gntr` (ADR-0068, #481).** Fills the last
   empty cell of the gradient-fitting (objective × curvature-model) matrix. `trf` gives a
   trust-region step with a `JᵀJ` (Gauss-Newton / empirical-Fisher) Hessian but only for an exact
