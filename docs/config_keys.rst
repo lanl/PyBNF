@@ -1849,13 +1849,26 @@ For DREAM
   differential-evolution proposal. ``whitened`` computes the proposal in an online
   covariance-whitened space for better sampling of correlated posteriors — this is what the
   ``p_dream`` job type selects (``p_dream`` is simply ``dream`` with ``proposal = whitened``
-  pinned), and it can also be requested explicitly on a ``dream`` run. Default: ``de``
+  pinned), and it can also be requested explicitly on a ``dream`` run. ``kalman`` is the
+  Kalman-inspired proposal (DREAM(KZS); Zhang, Vrugt et al. 2020): during a burn-in window it
+  steers each proposal toward the data using a Kalman gain built from the archive's
+  parameter↔model-output cross-covariance, which accelerates burn-in on informative, mildly
+  non-linear problems, then reverts to ``de`` for the sampling phase. ``kalman`` requires a
+  linear-scale Gaussian likelihood (``objfunc = chi_sq`` or ``chi_sq_dynamic`` — the source of the
+  measurement covariance ``R = diag(σ²)``) and ``n_try = 1``. Default: ``de``
 
 ``precondition_adapt = int``
   Used only by the ``whitened`` proposal (the ``p_dream`` job type, or ``dream`` with
   ``proposal = whitened``). The iteration at which the sampler switches to proposing in its learned
   covariance-whitened space; until then the online covariance is still being estimated and plain
   DREAM proposals are used. Default: half of ``burn_in``.
+
+``kalman_burnin_frac = float``
+  Used only by the ``kalman`` proposal. The fraction of ``burn_in`` over which the Kalman-inspired
+  proposal is active before the chain reverts to the ``de`` proposal. The Kalman jump deliberately
+  breaks detailed balance (there is no Hastings correction), so its samples are burn-in and
+  discarded; it must switch off before the sampling phase, so this must be between 0 and 1.
+  Default: ``0.3`` (matching Zhang et al. 2020's ``T_K = 0.3 T``, here a fraction of ``burn_in``).
 
 ``n_try = int``
   Number of candidate proposals drawn per chain per generation — the Multi-Try DREAM
@@ -1864,8 +1877,8 @@ For DREAM
   its posterior importance weight, and accepts it over the current state with a multiple-try
   Metropolis ratio evaluated against a reference set (``2k - 1`` evaluations per chain per
   generation). Multiple tries per generation raise the per-generation acceptance rate and help
-  parameter-rich or strongly correlated posteriors mix. Composes with every ``proposal`` value
-  (``de``, ``whitened``) and with the snooker update. Default: ``1``
+  parameter-rich or strongly correlated posteriors mix. Composes with the ``de`` and ``whitened``
+  proposals and with the snooker update; ``proposal = kalman`` requires ``n_try = 1``. Default: ``1``
   If set to a positive value, the algorithm stops automatically once all parameters have
   :math:`\hat{R}` below this threshold (checked after burn-in). Set to 0 to disable. A common
   threshold is 1.05. Default: 0 (disabled)

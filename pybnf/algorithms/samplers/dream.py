@@ -27,6 +27,16 @@ from scipy.special import logsumexp
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
 
+# Kalman-inspired proposal (DREAM(KZS); Zhang, Vrugt et al. 2020) -- ADR-0067 Stage 3.
+# The gain is built from an internal M-member ensemble drawn from the output-augmented
+# archive; M = 20 matches DREAM-Suite's default and is an internal constant, not a user
+# key (the config surface stays minimal). Clamped to the number of archive entries that
+# carry an output; below _KALMAN_MIN_ENSEMBLE such entries the proposal falls back to 'de'
+# (mirroring how 'whitened' falls back before its preconditioner warms up) -- two points
+# are the minimum for a mean-subtracted cross-covariance (the /(M-1) divisor).
+_KALMAN_ENSEMBLE_SIZE = 20
+_KALMAN_MIN_ENSEMBLE = 2
+
 
 class DreamConfig(MCMCFamilyConfig):
     """Config for DREAM(ZS) (dream), co-located with the method (ADR-0006). Adds the
@@ -49,9 +59,16 @@ class DreamConfig(MCMCFamilyConfig):
     outlier_method: str = 'iqr'
     # Proposal operator (ADR-0067 axis 1). 'de' is the classic DREAM(ZS)
     # parallel-direction proposal; 'whitened' is the covariance-preconditioned
-    # proposal (the p_dream default, pinned by ``PDreamConfig``). Additional
-    # operators (e.g. 'kalman') arrive in later ADR-0067 stages.
+    # proposal (the p_dream default, pinned by ``PDreamConfig``); 'kalman' is the
+    # Kalman-inspired proposal (DREAM(KZS); Zhang, Vrugt et al. 2020, ADR-0067
+    # Stage 3), active only during a burn-in window.
     proposal: str = 'de'
+    # Proposal-scoped: the fraction of ``burn_in`` over which the 'kalman' proposal
+    # is active before the chain reverts to 'de' (ADR-0067 Stage 3). Ignored by the
+    # 'de'/'whitened' proposals. The Kalman jump breaks detailed balance, so it must
+    # switch off before the sampling phase; 0.3 matches Zhang et al. (2020)'s T_K =
+    # 0.3 T on PyBNF's natural knob (a fraction of burn_in, not of the whole run).
+    kalman_burnin_frac: float = 0.3
     # Multi-try evaluation protocol (ADR-0067 axis 2, MT-DREAM(ZS); Laloy &
     # Vrugt 2012). n_try = 1 is the classic single-try engine (byte-identical to
     # before this key). n_try = k > 1 draws k candidate proposals per chain per
@@ -113,6 +130,28 @@ class DreamAlgorithm(BayesianAlgorithm):
         self.archive_thin_rate = config.config['archive_thin_rate']
         self.archive = []  # list of PSet objects
 
+        # Output-augmented archive (ADR-0067 Stage 3, axis 2b -- "implied"). When a
+        # proposal declares it needs model outputs (the 'kalman' proposal; see
+        # _archive_stores_outputs, set after the proposal is resolved below), each
+        # archive entry also carries the model's output vector f(Z), stored in
+        # archive_outputs in lockstep with archive. The accepted state's output is
+        # cached per chain at accept time (current_output_vec, mirroring
+        # current_pointwise_loglik) and appended at archive growth. Both stay dormant
+        # for the 'de'/'whitened' proposals (the gate is False), so a plain run stores
+        # only PSets exactly as before -- carrying output vectors for a proposal that
+        # never reads them would spend memory/bandwidth for nothing.
+        self.archive_outputs = []                        # f(Z) per archive entry (or None)
+        self.current_output_vec = [None] * self.num_parallel  # accepted f(x) per chain
+        # The current state's observation vector d and measurement variance R = diag(var)
+        # per chain, cached alongside f(x) at accept time (ADR-0067 Stage 3b). The Kalman
+        # innovation is d - f(x_i) and its perturbation is drawn from N(0, R); both are
+        # properties of the *current* chain state (R follows an estimated sigma), so they
+        # travel with current_output_vec rather than with each archive entry (which needs
+        # only f(Z) for the cross-covariance). Dormant unless proposal = 'kalman'.
+        self.current_output_obs = [None] * self.num_parallel  # observation d per chain
+        self.current_output_var = [None] * self.num_parallel  # R diagonal (sigma**2) per chain
+        self._archive_stores_outputs = False             # set True for 'kalman' below
+
         # Snooker update
         self.snooker_prob = config.config['snooker_prob']
         self.gen_log_snooker_correction = [0.0] * self.num_parallel
@@ -129,9 +168,43 @@ class DreamAlgorithm(BayesianAlgorithm):
         # (guarded everywhere by ``self.proposal == 'whitened'``), so a plain
         # ``dream`` run is byte-identical to before this fold-in.
         self.proposal = config.config['proposal']
-        if self.proposal not in ('de', 'whitened'):
+        if self.proposal not in ('de', 'whitened', 'kalman'):
             raise PybnfError("Invalid proposal '%s'" % self.proposal,
-                             "Config key 'proposal' must be 'de' or 'whitened'.")
+                             "Config key 'proposal' must be 'de', 'whitened', or 'kalman'.")
+
+        # Kalman-inspired proposal (DREAM(KZS); Zhang, Vrugt et al. 2020) -- ADR-0067
+        # Stage 3. Turns on the output-augmented archive (axis 2b) and pins the burn-in
+        # window; the gain math lives in _calculate_kalman_pset. Two hard preconditions,
+        # checked here so the run refuses to start rather than silently degenerating:
+        # (1) the objective must be a linear-scale Gaussian likelihood -- the Kalman
+        #     R = diag(sigma**2) is the Gaussian measurement covariance, so a
+        #     least-squares / distance / log-scale / non-Gaussian objfunc has no R.
+        # (2) n_try must be 1 -- the canonical DREAM(KZS) is (kalman, n_try=1); a
+        #     burn-in-only Kalman jump inside a multi-try reference set is deferred (the
+        #     axes stay expressible, just not this combination yet).
+        self.kalman_window_end = 0
+        if self.proposal == 'kalman':
+            self._archive_stores_outputs = True
+            if not self.objective.is_linear_gaussian():
+                raise PybnfError(
+                    "proposal = 'kalman' requires a linear-scale Gaussian likelihood",
+                    "The Kalman-inspired DREAM proposal (DREAM(KZS)) builds its gain from "
+                    "R = diag(sigma**2), the Gaussian measurement covariance, so it needs an "
+                    "ordinary additive-error Gaussian objfunc (chi_sq or chi_sq_dynamic). "
+                    "The configured objective is not a linear-scale Gaussian likelihood "
+                    "(a least-squares / distance / pass-through objective, or a log-scale / "
+                    "non-Gaussian family such as lognormal / laplace / neg_bin, has no R).")
+            frac = config.config['kalman_burnin_frac']
+            if not (0.0 <= frac <= 1.0):
+                raise PybnfError(
+                    "Invalid kalman_burnin_frac '%s'" % frac,
+                    "Config key 'kalman_burnin_frac' is the fraction of burn_in over which "
+                    "the Kalman proposal is active; it must be between 0 and 1. The Kalman "
+                    "jump breaks detailed balance, so it must switch off within burn_in.")
+            # The Kalman jump is active while iteration < kalman_window_end, then the
+            # non-snooker branch reverts to 'de' (the binary split renormalizes
+            # automatically; DREAM-Suite's snooker-fixed scheme).
+            self.kalman_window_end = int(round(frac * self.burn_in))
 
         # Multi-try count (ADR-0067 axis 2). n_try == 1 is the classic engine;
         # n_try > 1 activates the multiple-try (MT-DREAM(ZS)) barrier in
@@ -141,6 +214,13 @@ class DreamAlgorithm(BayesianAlgorithm):
         if not isinstance(self.n_try, int) or self.n_try < 1:
             raise PybnfError("Invalid n_try '%s'" % self.n_try,
                              "Config key 'n_try' must be an integer >= 1.")
+        if self.proposal == 'kalman' and self.n_try != 1:
+            raise PybnfError(
+                "proposal = 'kalman' does not support n_try > 1",
+                "The canonical DREAM(KZS) is (kalman, n_try = 1); a burn-in-only Kalman "
+                "jump inside a multi-try reference set is not yet supported (ADR-0067 "
+                "Stage 3). Use n_try = 1 with proposal = 'kalman', or an n_try > 1 "
+                "multi-try run with proposal = 'de' or 'whitened'.")
         # Per-chain two-phase multi-try state (dormant unless n_try > 1). A
         # generation for chain i runs TRIALS (k candidates from x) -> select the
         # winner Y in proportion to its importance weight -> REFERENCE (k-1 draws
@@ -171,6 +251,11 @@ class DreamAlgorithm(BayesianAlgorithm):
         first_psets = super().start_run(setup_samples)
         # Initialize the ZS archive with m0 random draws from the prior
         self.archive = [self.random_pset() for _ in range(self.archive_m0)]
+        # The initial archive is random prior draws with no evaluated model output, so
+        # their output slots are None (ADR-0067 Stage 3). Kept index-aligned with archive;
+        # the output-augmented proposals (kalman) draw their ensemble only from entries
+        # whose output is not None (the grown, accepted states).
+        self.archive_outputs = [None] * self.archive_m0
         logger.info('Initialized ZS archive with %d entries (d=%d)' % (self.archive_m0, self.n_dim))
         return first_psets
 
@@ -191,6 +276,38 @@ class DreamAlgorithm(BayesianAlgorithm):
             return self._pset_from_u(xp_vec, reflect=False)
         except OutOfBoundsException:
             return None
+
+    def record_accepted_output(self, res, index):
+        """Cache the just-accepted state's model output vector f(x) for chain ``index``
+        (ADR-0067 Stage 3), mirroring :meth:`record_pointwise_loglik`: computed here,
+        where the accepted pset's simulation data is in hand, and consumed later at
+        archive growth (:meth:`_advance_generation`) and by the Kalman proposal.
+
+        A no-op unless the proposal declared it needs archived outputs
+        (``_archive_stores_outputs``; the 'kalman' proposal). Reads the simdata through
+        :meth:`_result_simdata` so it works whether the objective was scored worker-side
+        or master-side (lanl/PyBNF#480), and extracts the aligned output vector via the
+        objective's :meth:`~pybnf.objective.ObjectiveFunction.aligned_prediction_data`
+        seam. Any failure is logged, never fatal -- the proposal falls back to ``de``
+        when a chain lacks a cached output."""
+        if not self._archive_stores_outputs:
+            return
+        try:
+            aligned = self.objective.aligned_prediction_data(
+                self._result_simdata(res), self.exp_data, res.pset)
+        except Exception:
+            logger.debug('Could not extract model output vector for chain %d',
+                         index, exc_info=True)
+            return
+        if aligned is None:
+            return
+        prediction, observation, variance = aligned
+        self.current_output_vec[index] = prediction
+        # Cache d and R = diag(variance) for the current state too (ADR-0067 Stage 3b):
+        # the Kalman innovation d - f(x_i) and its perturbation N(0, R) are the current
+        # chain state's, so they ride with f(x_i) rather than with each archive entry.
+        self.current_output_obs[index] = observation
+        self.current_output_var[index] = variance
 
     def _snooker_propose(self, idx, x0_vec):
         """Core snooker geometry (ter Braak & Vrugt, 2008), proposing a jump
@@ -371,6 +488,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
+            self.record_accepted_output(res, index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
@@ -488,6 +606,12 @@ class DreamAlgorithm(BayesianAlgorithm):
         if self.iteration[index] % self.archive_thin_rate == 0:
             for i in range(self.num_parallel):
                 self.archive.append(copy.deepcopy(self.current_pset[i]))
+                # Output-augmented archive (ADR-0067 Stage 3): append the accepted
+                # state's cached output vector in lockstep, so archive_outputs stays
+                # index-aligned with archive. Dormant (no-op storage of None slots) for
+                # the 'de'/'whitened' proposals that never read outputs.
+                if self._archive_stores_outputs:
+                    self.archive_outputs.append(self.current_output_vec[i])
             logger.debug('Archive grown to %d entries at iteration %d'
                         % (len(self.archive), self.iteration[index]))
 
@@ -589,6 +713,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
+            self.record_accepted_output(res, index)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
         self.ln_posterior_history[index].append(self.ln_current_P[index])
         self.wait_for_sync[index] = True
@@ -693,6 +818,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(sel['res']), index)
             self.record_pointwise_loglik(sel['res'], index)
+            self.record_accepted_output(sel['res'], index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
@@ -757,21 +883,36 @@ class DreamAlgorithm(BayesianAlgorithm):
         Uses differential evolution-like update to calculate new PSet.
         Returns (PSet, cr_idx) or (None, cr_idx) if the proposal is out of bounds.
 
-        Dispatches on the configured proposal operator (ADR-0067 axis 1): the
-        'whitened' proposal runs once its preconditioner has warmed up, otherwise
-        (and always for 'de') the classic parallel-direction DE proposal below.
+        Dispatches on the configured proposal operator (ADR-0067 axis 1):
+
+        * 'whitened' runs once its preconditioner has warmed up (else falls through
+          to 'de'), and
+        * 'kalman' runs during the burn-in window (:meth:`_kalman_active`, else falls
+          through to 'de'), returning ``cr_idx = None`` since it uses no crossover;
+
+        otherwise (and always for 'de') the classic parallel-direction DE proposal.
 
         ``base`` overrides the point the jump is applied to (default: the current
         chain state). Multi-try (ADR-0067 Stage 2) passes the selected candidate
         Y as ``base`` to draw the reference set from ``T(Y, .)``; with the default
         ``base=None`` this is byte-identical to the classic single-try proposal.
+        ('kalman' is single-try only, so it never receives a ``base``.)
 
         :param idx: Index of PSet to update
-        :return: tuple of (PSet or None, int)
+        :return: tuple of (PSet or None, int or None)
         """
         if self.proposal == 'whitened' and self._preconditioned:
             return self._calculate_whitened_pset(idx, base)
+        if self._kalman_active(idx):
+            return self._calculate_kalman_pset(idx, base)
+        return self._calculate_de_pset(idx, base)
 
+    def _calculate_de_pset(self, idx, base=None):
+        """The classic DREAM(ZS) parallel-direction differential-evolution proposal
+        (the 'de' operator; also the warm-up / out-of-window fallback for 'whitened'
+        and 'kalman'). Returns ``(PSet or None, cr_idx)``. Byte-identical to the body
+        that lived inline in :meth:`calculate_new_pset` before the ADR-0067 Stage 3
+        proposal dispatch was extracted."""
         x0 = self.current_pset[idx] if base is None else base
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
@@ -820,6 +961,115 @@ class DreamAlgorithm(BayesianAlgorithm):
                 return None, cr_idx
 
         return PSet(new_vars), cr_idx
+
+    # ------------------------------------------------------------------ #
+    # Kalman-inspired ('kalman') proposal — DREAM(KZS); Zhang, Vrugt     #
+    # et al. 2020 (arXiv:1707.05431). ADR-0067 Stage 3. Active only      #
+    # during the burn-in window (_kalman_active); the jump breaks        #
+    # detailed balance (no Hastings correction), so its samples are      #
+    # burn-in and discarded, after which the chain reverts to 'de'.      #
+    # ------------------------------------------------------------------ #
+    def _kalman_active(self, idx):
+        """Whether chain ``idx`` should propose with the Kalman operator now: the
+        proposal is 'kalman' and the chain is still inside its burn-in window
+        (``iteration < kalman_window_end``). After the window the non-snooker branch
+        reverts to 'de' -- PyBNF's binary snooker/non-snooker split renormalizes
+        automatically (DREAM-Suite's snooker-fixed scheme, not the paper's
+        proportional one). Always ``False`` for 'de'/'whitened' (kalman_window_end
+        is 0), so those paths are untouched."""
+        return self.proposal == 'kalman' and self.iteration[idx] < self.kalman_window_end
+
+    @staticmethod
+    def _kalman_gain(c_zy, s_yy):
+        """The Kalman gain ``K = C_ZY (C_YY + R)^-1`` (paper Eq. 7), solved rather than
+        inverted, with a PD jitter retry.
+
+        ``c_zy`` is the parameter/output cross-covariance (d_param x d_out) and ``s_yy``
+        the innovation covariance ``C_YY + R`` (d_out x d_out, symmetric). Computes
+        ``K = (S^-1 C_ZY^T)^T`` via :func:`numpy.linalg.solve` (never an explicit inverse).
+        ``S`` is PD whenever every measurement variance is positive (``R`` is then PD), so
+        the solve normally succeeds on the first try; a zero-variance point can make ``S``
+        singular, so a trace-scaled diagonal jitter is added and the solve retried. Returns
+        the gain ``K``, or ``None`` if it stays singular (the caller then falls back to
+        'de')."""
+        d_out = s_yy.shape[0]
+        scale = np.trace(s_yy) / d_out if d_out else 1.0
+        jitter = 0.0
+        for attempt in range(4):
+            try:
+                x = np.linalg.solve(s_yy + jitter * np.eye(d_out), c_zy.T)
+                return x.T
+            except np.linalg.LinAlgError:
+                jitter = max(scale, 1e-12) * 1e-8 * (10 ** attempt)
+        return None
+
+    def _calculate_kalman_pset(self, idx, base=None):
+        """Kalman-inspired proposal (DREAM(KZS); Zhang, Vrugt et al. 2020), ADR-0067
+        Stage 3. Returns ``(PSet or None, None)`` -- the trailing ``None`` is the crossover
+        index, which the Kalman jump does not use (so CR adaptation skips this move).
+
+        Per chain ``i``, during the burn-in window (Eqs. 6/7/11-14)::
+
+            {Z_K, f(Z_K)} : an M-member ensemble drawn without replacement from the
+                            archive entries that carry an output vector
+            C_ZY = Cov(Z_K, f(Z_K))          # d_param x d_out, mean-subtracted, /(M-1)
+            C_YY = Cov(f(Z_K), f(Z_K))        # d_out  x d_out
+            K    = C_ZY (C_YY + R)^-1          # d_param x d_out  (_kalman_gain: solve, PD jitter)
+            eps  ~ N(0, R)
+            x_p  = x_i + (1 + lambda) K (d - f(x_i) + eps) + zeta
+
+        Load-bearing details (ADR-0067 "Stage 3 -- confirmed algorithm"):
+
+        * the innovation uses the **current** chain state's residual ``d - f(x_i)`` (the
+          paper sign, so the deterministic part reduces ``||d - f||``) plus a fresh
+          perturbed-observations draw ``eps`` (dropping it degenerates the proposal);
+        * ``(1 + lambda)`` and ``zeta`` are DREAM's standard e-randomization and small
+          perturbation, drawn exactly as the DE proposal draws them, so the operator
+          composes with the rest of the engine;
+        * ``R = diag(var)`` and ``d`` are the current state's cached measurement variance
+          and observation (:meth:`record_accepted_output`).
+
+        Falls back to the DE proposal when the current state has no cached output/variance
+        yet (early burn-in, before the first accept seeds it) or too few archive entries
+        carry outputs -- mirroring how 'whitened' falls back before its preconditioner
+        warms up. The parameter vectors live in sampling space ``u`` (as for the snooker /
+        whitened proposals), so the gain maps native output residuals to ``u``-space jumps
+        and :meth:`_proposal_pset` materializes / bounds-rejects the result."""
+        f_x = self.current_output_vec[idx]
+        d = self.current_output_obs[idx]
+        r_diag = self.current_output_var[idx]
+        pool = [j for j, o in enumerate(self.archive_outputs) if o is not None]
+        if f_x is None or d is None or r_diag is None or len(pool) < _KALMAN_MIN_ENSEMBLE:
+            return self._calculate_de_pset(idx, base)
+
+        m = min(_KALMAN_ENSEMBLE_SIZE, len(pool))
+        sel = self.chain_rngs[idx].choice(pool, m, replace=False)
+        z = np.array([self._param_vec(self.archive[s]) for s in sel])   # M x d_param (u-space)
+        try:
+            f = np.array([self.archive_outputs[s] for s in sel], dtype=float)  # M x d_out
+        except ValueError:
+            # A ragged output stack (an entry cached a different-length f(Z), e.g. a sim
+            # that scored a shorter observation set) cannot form an aligned gain -> DE.
+            return self._calculate_de_pset(idx, base)
+        if f.ndim != 2 or f.shape[1] != len(d) or len(f_x) != len(d):
+            return self._calculate_de_pset(idx, base)
+
+        zc = z - z.mean(axis=0)
+        fc = f - f.mean(axis=0)
+        c_zy = (zc.T @ fc) / (m - 1)                    # d_param x d_out
+        c_yy = (fc.T @ fc) / (m - 1)                    # d_out  x d_out
+        k_gain = self._kalman_gain(c_zy, c_yy + np.diag(r_diag))
+        if k_gain is None:
+            return self._calculate_de_pset(idx, base)
+
+        x0 = self.current_pset[idx] if base is None else base
+        x0_vec = self._param_vec(x0)
+        eps = self.chain_rngs[idx].normal(0.0, 1.0, size=len(d)) * np.sqrt(np.maximum(r_diag, 0.0))
+        innovation = d - f_x + eps                       # paper sign: reduces ||d - f||
+        lamb = self.chain_rngs[idx].uniform(-self.config.config['lambda'], self.config.config['lambda'])
+        zeta = self.chain_rngs[idx].normal(0, self.config.config['zeta'], size=self.n_dim)
+        xp_vec = x0_vec + (1.0 + lamb) * (k_gain @ innovation) + zeta
+        return self._proposal_pset(xp_vec), None
 
     # ------------------------------------------------------------------ #
     # Whitened ('whitened') proposal — folded in from PDreamAlgorithm    #

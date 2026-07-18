@@ -58,7 +58,7 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
-                 'rhat_threshold', 'snooker_prob',
+                 'rhat_threshold', 'snooker_prob', 'kalman_burnin_frac',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
                  # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the

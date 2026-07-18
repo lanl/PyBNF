@@ -1,8 +1,13 @@
 # DREAM is one engine with two orthogonal extension axes — a proposal operator and an evaluation protocol — so its variants are config points, not subclasses (issues #357, #358)
 
-**Status: Accepted (2026-07-16); Stages 1–2 implemented (2026-07-17).** Design accepted;
-Stage 1 (proposal Strategy / P-DREAM fold-in) and Stage 2 (`n_try`, Multi-Try DREAM) are
-shipped, Stage 3 (`kalman`) remains the build plan below. The scheduler-contract risk that
+**Status: Accepted (2026-07-16); Stages 1–3 implemented (2026-07-17..18, branch
+`feat/358-dream-kzs-kalman`).** Design accepted; Stage 1 (proposal Strategy / P-DREAM
+fold-in), Stage 2 (`n_try`, Multi-Try DREAM), and Stage 3 (`kalman`, DREAM(KZS)) are all
+shipped. Stage 3 landed in two commits — **3a, the output-augmented archive plumbing
+(implied axis 2b)** (inert at defaults, byte-identical), then **3b, the Kalman proposal
+itself, the `kalman_burnin_frac` key, the burn-in switch, and the closed-form
+linear-Gaussian posterior-recovery oracle** — both per *Stage 3 — confirmed algorithm and
+build decisions* below. The scheduler-contract risk that
 gated acceptance was pressure-tested and resolved — see *Principal risk*. Reframes the DREAM
 family so that DREAM(ZS),
 Preconditioned DREAM, the requested Multi-Try DREAM (#357), and the requested
@@ -161,7 +166,28 @@ the two axes touch the engine at architecturally different depths.
      hides at the usual `k = 5`. Correctness validated by moment recovery on a Gaussian target with
      the snooker update active (`tests/test_multitry_dream.py`).
   3. **`kalman` (#358).** Add the Kalman proposal + the output-augmented archive
-     (implied) + the burn-in switch, on the clean base.
+     (implied) + the burn-in switch, on the clean base. Landed in two commits:
+     - **3a — output-augmented archive plumbing. — DONE (2026-07-17, branch
+       `feat/358-dream-kzs-kalman`).** The objective seam
+       `LikelihoodObjective.aligned_prediction_data` (aligned prediction `f(θ)` /
+       observation `d` / variance `σ²`, `None` for a non-Gaussian/`direct_pass`
+       objective), a parallel `archive_outputs` list index-aligned with `archive`
+       (initial random draws seeded `None`), and the accepted state's `f(x)` cached per
+       chain (`current_output_vec`, mirroring `current_pointwise_loglik`) at all three
+       accept sites and appended at archive growth — all gated on
+       `_archive_stores_outputs`, `False` for `de`/`whitened` (byte-identical). BNG-free
+       extractor unit tests in `tests/test_kalman_dream.py`.
+     - **3b — the `kalman` proposal + burn-in switch + oracle. — DONE (2026-07-18).** The
+       `_calculate_kalman_pset` gain (`K = C_ZY (C_YY + R)^-1`, solved with PD jitter; the
+       internal `M = 20` ensemble clamped to available, `de` fallback below the minimum),
+       the current-state innovation `d - f(x_i) + ε` (paper sign), the `is_linear_gaussian`
+       config gate + `(kalman, n_try = 1)` scope check (both error before the run starts),
+       the `kalman_burnin_frac` key (default 0.3 of `burn_in`) and the `_kalman_active`
+       burn-in switch in the proposal dispatch (reverting to `de`, no Hastings correction).
+       Validated by the closed-form linear-Gaussian oracle (`f(x) = A x` scored by real
+       `chi_sq`, `tests/integration_harness.py:LinearGaussianModel`) recovering
+       `N([2,-1], (1/3) I)`, plus pinned gain-math / sign / fallback / window unit tests
+       (`tests/test_kalman_dream.py`).
 
 ### Principal risk — pressure-tested, resolved (2026-07-16)
 
@@ -210,6 +236,62 @@ needed**. This settles the *scheduler-contract* question only — the correctnes
 Multi-Try acceptance math itself (the reference-set Metropolis ratio and the detailed
 balance of the ∝-posterior selection, which reduces to standard MH at `k = 1`; Laloy &
 Vrugt 2012) remains Stage 2's own validation against a stationary-distribution oracle.
+
+## Stage 3 — confirmed algorithm and build decisions (`kalman`, #358)
+
+The DREAM(KZS) proposal math was pinned against the primary source (Zhang, Vrugt et al.
+2020, arXiv:1707.05431 — the open-access WRR manuscript with all equations) **and** Vrugt's
+own reference implementation (DREAM-Suite `dream_kzs`: `Calc_proposal.m`,
+`Calc_likelihood.m`, `DREAM_Suite.m`). The confirmed update, per chain `i`, per proposal,
+during the Kalman window:
+
+```
+Draw an M-member ensemble {Z_K, f(Z_K)} at random (no replacement) from archive entries WITH outputs
+C_ZY = Cov(Z_K, f(Z_K))        # k×n, mean-subtracted, ÷(M−1)      (paper Eq. 14)
+C_YY = Cov(f(Z_K), f(Z_K))     # n×n
+K    = C_ZY · (C_YY + R)^(−1)  # k×n — SOLVE, do not invert; R keeps it PD (jitter if needed)  (Eq. 7)
+ε    ~ N(0, R)
+x_p  = x_i + (1+λ)·K·( d − f(x_i) + ε ) + ζ                        (Eq. 6/11–12)
+```
+
+Load-bearing details (several are easy to get wrong, and the paper and reference code
+diverge on some — decisions recorded here):
+
+- **Innovation uses the *current* chain state's residual** `d − f(x_i)` (not an archived
+  member's), plus a fresh perturbed-observations draw `ε ~ N(0, R)`. Dropping `ε` makes the
+  proposal degenerate — keep it.
+- **Sign:** use the paper's `(d − f)`. The DREAM-Suite literal reads the opposite because of
+  its `E = Y − FX` residual convention; the deterministic jump must *reduce* ‖d − f‖, which a
+  unit test asserts.
+- **No Hastings correction; plain Metropolis accept.** Detailed balance is intentionally
+  broken in the window (α = 1 for the Kalman jump), and those samples are burn-in and
+  discarded. After the window the chain reverts to `de`+snooker (reversible), so the sampled
+  posterior is correct. This is *why* it is burn-in-only.
+- **Gain rebuilt fresh per proposal** (stochastic). Ensemble size **`M = 20` internal
+  constant** (clamped to available), matching DREAM-Suite's default — **no new user key**
+  (keeps the minimal surface). Fall back to `de` when too few archive entries carry outputs,
+  mirroring how `whitened` falls back before its preconditioner warms up.
+- **`R` = `diag(σ²)`** from the Gaussian likelihood, so `kalman` **requires an ordinary
+  additive-error (linear-scale) Gaussian per-point likelihood** (`chi_sq`/`chi_sq_dynamic`)
+  and errors clearly for `direct_pass`/`sos`/log-scale/non-Gaussian families (no residual/σ
+  ⇒ no gain). Stage 3a's `aligned_prediction_data` is the gate (returns `None` otherwise).
+- **`kalman_burnin_frac`** (the one new key, default **0.3**) is a fraction of **`burn_in`**
+  (PyBNF's natural knob), not of the whole run. Paper uses `T_K = 0.3·T` from gen 0;
+  DREAM-Suite uses `[0.1·T, 0.25·T)`. PyBNF pins fraction-of-`burn_in` = 0.3.
+- **Renormalization on switch-off** is automatic in PyBNF's binary split: snooker still
+  fires at `snooker_prob`, and the non-snooker branch swaps `kalman → de` after the window
+  (DREAM-Suite's snooker-fixed scheme, not the paper's proportional one).
+- **Scope:** `kalman` targets the canonical DREAM(KZS) = `(kalman, n_try = 1)`. `kalman` +
+  `n_try > 1` raises a clear "not yet supported" error (burn-in-only Kalman inside a
+  multi-try reference set is deferrable; the axes stay *expressible* for later).
+
+**Build decisions (confirmed with the requester):** land Stage 3 in **two commits** (3a
+plumbing — done — then 3b proposal); validate 3b with a **test-only linear-Gaussian forward
+model** `f(x) = A x` (added to `tests/integration_harness.py`, emitting observable columns
+paired with a generated multi-row `.exp`, scored by the real `chi_sq`), whose posterior
+`x | d ~ N(μ_post, Σ_post)` is closed-form — the honest end-to-end oracle the `direct_pass`
+analytical menu (scalar score only) cannot provide. 3b also carries pinned-RNG unit tests of
+the gain/innovation/sign, the `de` fallback, and the burn-in switch.
 
 ## Considered Options
 

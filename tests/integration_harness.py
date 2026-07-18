@@ -41,6 +41,7 @@ stream per-step output to disk), so:
     ``ground_truth`` with statistical tolerances. Run occasionally / before
     landing the critical algorithm patches.
 """
+import copy
 import json
 import os
 
@@ -48,6 +49,8 @@ import numpy as np
 
 from pybnf import algorithms, config
 from pybnf.algorithms import Result
+from pybnf.data import Data
+from pybnf.pset import Model
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +125,95 @@ def install(monkeypatch):
     monkeypatch.setattr(algorithms.core, 'as_completed', FakeAsCompleted)
     monkeypatch.setattr(algorithms.core, 'run_job', slim_run_job)
     monkeypatch.setattr('pybnf.analytical_model.time.sleep', lambda *a, **k: None)
+
+
+# --------------------------------------------------------------------------- #
+# Linear-Gaussian forward model — the closed-form DREAM(KZS) oracle (ADR-0067
+# Stage 3). Unlike the AnalyticalModel targets (which emit a scalar `score`
+# column for `direct_pass`), this emits observable output columns f(x) = A x
+# scored by the *real* chi_sq likelihood — the shape the Kalman proposal needs
+# (it reads the model output vector, not just the score). With a linear forward
+# map, a Gaussian likelihood, and a flat prior, the posterior is Gaussian in
+# closed form (`linear_gaussian_posterior`): the honest end-to-end oracle.
+# --------------------------------------------------------------------------- #
+class LinearGaussianModel(Model):
+    """Test-only forward model ``f(x) = A x``: emits one observable row per output
+    (``index``, ``y``) scored by chi_sq against a matching ``.exp`` (``index``, ``y``,
+    ``y_SD``). Parameters bind by name ``p1..pD`` (``D = A.shape[1]``), matching
+    :func:`make_config`; the ``target`` suffix matches the generated ``target.exp``."""
+
+    def __init__(self, A, name='g', pset=None):
+        self.A = np.asarray(A, dtype=float)   # n_out x n_params
+        self.name = name
+        self.file_path = name
+        self.suffixes = ['target']
+        self.stochastic = False
+        self.has_observables = True
+        self.param_names = set()              # params come from the config, not the model
+        self._pset = pset
+
+    def copy_with_param_set(self, pset):
+        m = copy.copy(self)
+        m._pset = pset
+        return m
+
+    def save(self, file_prefix, **kwargs):
+        pass
+
+    def get_suffixes(self):
+        return self.suffixes
+
+    def execute(self, folder, filename, timeout):
+        if self._pset is None:
+            raise ValueError('LinearGaussianModel has no parameter set')
+        x = np.array([self._pset['p%d' % (i + 1)] for i in range(self.A.shape[1])])
+        y = self.A @ x                        # n_out forward outputs
+        arr = np.column_stack([np.arange(len(y), dtype=float), y])
+        d = Data(arr=arr)
+        d.cols = {'index': 0, 'y': 1}
+        d.headers = {0: 'index', 1: 'y'}
+        return {'target': d}
+
+
+def linear_gaussian_posterior(A, d, sigma):
+    """Closed-form posterior ``x | d ~ N(mu_post, Sigma_post)`` for the linear-Gaussian
+    model with a flat prior: ``Sigma_post = (A^T R^-1 A)^-1``, ``mu_post = Sigma_post A^T
+    R^-1 d`` with ``R = diag(sigma**2)``. Returns ``(mu_post, Sigma_post)``."""
+    A = np.asarray(A, dtype=float)
+    d = np.asarray(d, dtype=float)
+    r_inv = np.diag(1.0 / np.asarray(sigma, dtype=float) ** 2)
+    prec = A.T @ r_inv @ A
+    cov = np.linalg.inv(prec)
+    return cov @ A.T @ r_inv @ d, cov
+
+
+def make_linear_gaussian_config(tmp_path, A, d, sigma, bounds=(-20.0, 20.0), **overrides):
+    """A real ``objfunc = chi_sq`` DREAM fit over the linear-Gaussian forward model
+    ``f(x) = A x`` scored against ``d`` with per-observation ``sigma``.
+
+    Writes a matching ``target.exp`` (``index``, ``y``, ``y_SD``) and a placeholder
+    ``.target`` so the Configuration loader builds a model named ``g`` with suffix
+    ``target``; then swaps in :class:`LinearGaussianModel` (keeping name+suffix so the
+    loaded exp_data keys still resolve). Parameters are ``p1..pD`` over ``bounds``
+    (a wide flat prior, so the Gaussian posterior sits well inside the box)."""
+    A = np.asarray(A, dtype=float)
+    d = np.asarray(d, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    n_out, n_params = A.shape
+    tgt = tmp_path / 'g.target'
+    tgt.write_text(json.dumps(gaussian_spec([0.0] * n_params, [1.0] * n_params)))
+    exp = tmp_path / 'target.exp'
+    rows = ['# index\ty\ty_SD']
+    rows += ['%d\t%.17g\t%.17g' % (i, d[i], sigma[i]) for i in range(n_out)]
+    exp.write_text('\n'.join(rows) + '\n')
+    # Sampler defaults so callers that only exercise construction/validation need not
+    # restate the required keys; any is overridable via ``overrides``.
+    kw = dict(population_size=5, max_iterations=100, burn_in=50)
+    kw.update(overrides)
+    conf = make_config(tmp_path, 'dream', str(tgt), str(exp), n_params,
+                       bounds=bounds, objfunc='chi_sq', **kw)
+    conf.models['g'] = LinearGaussianModel(A, name='g')
+    return conf
 
 
 # --------------------------------------------------------------------------- #
