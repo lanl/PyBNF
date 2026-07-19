@@ -309,6 +309,14 @@ class Configuration:
         # recognized as used, not mis-flagged as a typo.
         self._load_measurement_models()
         logger.debug('Loaded measurement models')
+        # Prediction-dependent noise (a combined additive+proportional error model whose σ
+        # scales with the simulated output -- ADR-0075). Classifies each PredictionFormulaSigma's
+        # symbols against the model namespace (which are free-parameter coefficients vs simulated
+        # columns), so its estimated nuisances surface through required_free_noise_params to both
+        # the declared check below and the orphan check. After the measurement layer (whose
+        # namespace it shares) and before the orphan check; a no-op when none is declared.
+        self._load_prediction_noise()
+        logger.debug('Loaded prediction-dependent noise')
         if self.config['fit_type'] != 'check':
             self._check_variable_correspondence()
         logger.debug('Loaded variables')
@@ -2081,6 +2089,73 @@ class Configuration:
                 f"which the column-joint objective '{type(self.obj).__name__}' (kl / wasserstein) "
                 f"does not have. Use a per-point objective (chi_sq, sos, laplace, ...).")
         self.obj._per_measurement_models = per_measurement
+
+    def _load_prediction_noise(self):
+        """Classify each prediction-dependent noise source and validate it (ADR-0075).
+
+        A ``noise_model <obs> = <family>, <param> = prediction_formula <expr>`` line builds a
+        :class:`~pybnf.noise.PredictionFormulaSigma`: an expression whose σ scales with the
+        simulated output (a combined additive+proportional error model ``σ_abs + σ_rel * y``).
+        Which of its symbols are **free-parameter coefficients** (the estimated nuisances,
+        resolved from the PSet) vs **model entities** (columns read from the current
+        simulation) is model-namespace dependent, so it is settled here at load -- after the
+        objective and variables are built and the model namespace is available (the same source
+        the measurement layer uses), before the free-parameter orphan check.
+
+        Each formula is validated against the model namespace u the declared free parameters
+        (``compile_petab_formula`` -- a pointed error on an unknown symbol / missing petab
+        extra, so an undeclared coefficient is caught cleanly here rather than at eval), then
+        its free-parameter symbols are recorded on the source (``set_param_names``) so they
+        surface through ``required_free_noise_params`` to the orphan check as legitimate
+        nuisances. Edition-gated (>= 2); a no-op when no prediction_formula source is declared.
+        """
+        sources = self._prediction_noise_sources()
+        if not sources:
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(
+            ed, 2, "a prediction-dependent 'sigma = prediction_formula <expr>' noise source")
+        from .petab.formula import compile_petab_formula
+        namespace, _constants, _rules = self._model_expression_namespace()
+        free_names = {v.name for v in self.variables}
+        allowed = namespace | free_names
+        for label, src in sources:
+            # Validate every symbol is a model entity or a declared free parameter, and adopt the
+            # compiler's canonical ordering (the callable is rebuilt lazily worker-side, dropped
+            # across pickling -- this is the validation pass, ADR-0036 §5).
+            _func, names = compile_petab_formula(
+                src.formula, allowed,
+                detail=(f"Prediction-dependent noise for {label}: allowed symbols are the "
+                        f"model's species/parameters/observables/functions and the fit's free "
+                        f"parameters {sorted(allowed)}."))
+            param_names = set(names) & free_names       # the estimated coefficient nuisances
+            model_entities = set(names) - free_names    # ⊆ namespace (compile validated it)
+            if not model_entities:
+                raise PybnfError(
+                    f"Prediction-dependent noise for {label} references no model output "
+                    f"({src.formula!r}): its σ does not depend on the simulation, so use the "
+                    f"'formula' source (an expression over free parameters), not "
+                    f"'prediction_formula' (ADR-0075).")
+            src.set_param_names(param_names)
+            src.names = names
+        logger.debug("Classified %d prediction-dependent noise source(s)", len(sources))
+
+    def _prediction_noise_sources(self):
+        """The ``(label, PredictionFormulaSigma)`` pairs on the objective -- the whole-fit
+        default sources and every per-observable ``noise_model`` override (ADR-0075). Empty
+        for a job with no prediction_formula source (the common case)."""
+        from .noise import PredictionFormulaSigma
+        obj = self.obj
+        found = []
+        if hasattr(obj, '_default_sources'):
+            for src in obj._default_sources().values():
+                if isinstance(src, PredictionFormulaSigma):
+                    found.append(('the whole-fit noise model', src))
+        for col, (_family, srcs) in getattr(obj, 'overrides', {}).items():
+            for src in srcs.values():
+                if isinstance(src, PredictionFormulaSigma):
+                    found.append((f"observable '{col}'", src))
+        return found
 
     def _model_expression_namespace(self):
         """The union expression namespace + fixed-constant snapshot across the job's models,

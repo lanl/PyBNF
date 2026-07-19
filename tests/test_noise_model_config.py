@@ -111,7 +111,7 @@ def test_formula_sigma_value_reads_the_pset():
     pytest.importorskip('petab')
     src = noise.FormulaSigma('0.1 + 0.05*slope')
     owner = types.SimpleNamespace(_pset_values={'slope': 4.0})
-    assert src.value(owner, None, 0, 'o') == pytest.approx(0.3)
+    assert src.value(owner, None, 0, None, 0, 'o') == pytest.approx(0.3)
 
 
 def test_formula_sigma_pickles_and_recompiles_worker_side():
@@ -120,11 +120,11 @@ def test_formula_sigma_pickles_and_recompiles_worker_side():
     pytest.importorskip('petab')
     import pickle
     src = noise.FormulaSigma('2*a + b')
-    src.value(types.SimpleNamespace(_pset_values={'a': 1.0, 'b': 1.0}), None, 0, 'o')  # compile
+    src.value(types.SimpleNamespace(_pset_values={'a': 1.0, 'b': 1.0}), None, 0, None, 0, 'o')  # compile
     revived = pickle.loads(pickle.dumps(src))
     assert revived._func is None                          # the callable was not pickled
     owner = types.SimpleNamespace(_pset_values={'a': 3.0, 'b': 1.0})
-    assert revived.value(owner, None, 0, 'o') == pytest.approx(7.0)   # recompiles + evaluates
+    assert revived.value(owner, None, 0, None, 0, 'o') == pytest.approx(7.0)   # recompiles + evaluates
 
 
 # --- the relative + column_mean sigma sources (ADR-0031) ----------------------

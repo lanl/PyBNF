@@ -1,0 +1,38 @@
+begin model
+
+  begin parameters
+    # A parabola y = v1*x^2 + v2*x + v3 over a linearly growing counter x.
+    # sd_abs / sd_rel are NOT model parameters: they are the PEtab combined-error noise
+    # coefficients (an additive floor + a term proportional to the simulated output),
+    # declared only in parameters.tsv. On import the noiseFormula sd_abs + sd_rel*y is a
+    # PredictionFormulaSigma whose y reads the current simulation and whose coefficients
+    # resolve from the PSet (ADR-0075).
+    v1 0.5
+    v2 1
+    v3 3
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+# New-era (edition 2): the simulation is synthesized from the experiment: line, so the
+# model carries no actions block (ADR-0028). Carried byte-verbatim on import (ADR-0036).

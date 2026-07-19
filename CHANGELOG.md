@@ -6,6 +6,19 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **PEtab import: `observableParameters`/`noiseParameters` placeholders with a fixed noise
+  parameter, multiple noise tokens, or an affine/prediction-scaling noiseFormula now import (#495,
+  ADR-0075).** Three related gaps in the placeholder→parameter mapping left benchmark-collection
+  problems unimportable. (a) `Oliveira_NatCommun2021` — a `noiseParameters` id (`sd_cumulative_*`)
+  that is **fixed** (`estimate=0`) was emitted as a `fit` free sigma the `.conf` never declared, so
+  the job failed to load; it now inlines as a constant sigma. (b) `Fiedler_BMCSystBiol2016` — a
+  **multi-token** `noiseParameters` cell (`s_gel;sigma`, a `noiseParameter1 * noiseParameter2`
+  formula) was never split (only `observableParameters` was), so the whole cell was mis-read as one
+  id; it now splits and binds each `noiseParameter${n}` per data point when row-varying. (c)
+  `Raia_CancerResearch2011` — an affine `noiseParameter1 + noiseParameter2 * (species…)` produced a
+  `noise_model` line that referenced the simulated trajectory a `formula` sigma cannot see, failing
+  to parse; it now imports as the new `prediction_formula` source (see Added). All three land on
+  crafted simulator-free fixtures scored against a hand-derived NLL.
 - **PEtab SBML import: an `observableFormula` referencing an SBML `assignmentRule` variable now
   imports instead of being rejected as "not a model entity" (#493).** An `assignmentRule`-defined
   variable (a `<parameter>`/`<species>` with `constant="false"` whose value is set by an
@@ -47,6 +60,16 @@ All notable changes to PyBNF are documented below. This project adheres to
     unchanged.
 
 ### Added
+- **Prediction-dependent noise: a `noise_model … = <family>, sigma = prediction_formula <expr>`
+  source whose σ scales with the simulated output (#495, ADR-0075).** The honest combined
+  additive+proportional error model `σ = σ_abs + σ_rel · y` — where `y` is the observable's
+  *predicted* value — previously had no native form: `formula` (ADR-0044) evaluates only over free
+  parameters, and `relative` / `column_mean` (ADR-0031) read the *data*, not the simulation. The new
+  `prediction_formula` verb builds a `PredictionFormulaSigma` whose symbols resolve either from the
+  PSet (the estimated coefficients) or from the current simulation column of that name (a model
+  species / observable / function), evaluated per scored point. Any new-era job may author it; PEtab
+  import is one way to reach it. (Gradient-free score path only — a prediction-dependent σ raises
+  `GradientNotSupported` on the #385 gradient/EFIM path, a later sub-layer.)
 - **Scale-preserving PEtab v1→v2 conversion: `pybnf.petab.petab1to2_preserve_scale`.** The
   official `petab.v2.petab1to2` **drops** the v1 `parameterScale` column (PEtab v2 removed it) and
   only *warns* — so a `parameterScale = log10` estimated parameter carrying no objective prior (the

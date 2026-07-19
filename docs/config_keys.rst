@@ -400,6 +400,14 @@ Required Keys
      heteroscedastic model the legacy ``norm_sos`` fits.
    - ``column_mean`` - ``sigma`` is the observable's experimental column mean (one
      scale per column). This is the model the legacy ``ave_norm_sos`` fits.
+   - ``formula <expr>`` - an arithmetic expression over free parameters (and constants),
+     evaluated per point against the current fit; the PEtab ``noiseFormula`` source.
+   - ``prediction_formula <expr>`` - an expression whose ``sigma`` scales with the
+     **simulated output**: the combined additive+proportional error model
+     ``sigma = sd_abs + sd_rel * <observable>`` where ``<observable>`` is a model
+     species/observable/function read from the current simulation and ``sd_abs`` / ``sd_rel``
+     are estimated free parameters. Use this (not ``formula``) whenever the noise scales with
+     the prediction. Score path only -- a gradient/EFIM fit is unsupported for this source.
 
   The **student_t** family is the heavy-tailed, outlier-robust likelihood (robust
   regression) -- a ``normal`` with a tail-heaviness knob ``df`` (degrees of freedom):

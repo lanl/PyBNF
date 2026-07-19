@@ -44,11 +44,14 @@ class SigmaSource(ABC):
     estimated = False
 
     @abstractmethod
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         """The noise-parameter value for one observation. ``owner`` is the objective
         (used by the free-parameter source to read the resolved pset values);
-        ``exp_data``/``exp_row``/``col_name`` locate the point (used by the data-
-        column source)."""
+        ``sim_data``/``sim_row`` locate the point on the *simulated* trajectory (read
+        only by :class:`PredictionFormulaSigma`, whose σ depends on the model prediction --
+        ADR-0075); ``exp_data``/``exp_row``/``col_name`` locate the point on the
+        experimental data (used by the data-column / relative / column-mean sources). Every
+        source that does not read the simulation ignores ``sim_data``/``sim_row``."""
 
     def required_free_param(self):
         """The ``__FREE`` parameter name this source requires the fit to declare,
@@ -88,7 +91,7 @@ class DataColumnSigma(SigmaSource):
     def exp_column(self, col_name):
         return col_name + self.suffix
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         column = col_name + self.suffix
         try:
             idx = exp_data.cols[column]
@@ -115,7 +118,7 @@ class FreeParameterSigma(SigmaSource):
     def required_free_param(self):
         return self.name
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         # ``owner._pset_values`` is the {name: value} map the objective's
         # evaluate_multiple builds once per evaluation from the pset (ADR-0021).
         return owner._pset_values[self.name]
@@ -131,7 +134,7 @@ class ConstantSigma(SigmaSource):
     def __init__(self, value):
         self.const = value
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         return self.const
 
 
@@ -150,7 +153,7 @@ class RelativeSigma(SigmaSource):
     def __init__(self, cv=1.0):
         self.cv = cv
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         # abs() keeps sigma positive for a negative measurement; the Gaussian uses
         # sigma**2, so the sign never mattered (norm_sos squared the raw ratio).
@@ -210,7 +213,7 @@ class FormulaSigma(SigmaSource):
     def required_free_params(self):
         return set(self._ensure_names())
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         func, names = self._callable()
         return float(func(*[owner._pset_values[n] for n in names]))
 
@@ -271,7 +274,7 @@ class PerMeasurementFormulaSigma(SigmaSource):
         # (they vary by row, so they are not a fixed required-name set here).
         return {n for n in self._ensure_names() if not _PLACEHOLDER.match(n)}
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         func, names = self._callable()
         bindings = self._row_bindings(exp_data, col_name)
         args = []
@@ -306,6 +309,106 @@ class PerMeasurementFormulaSigma(SigmaSource):
             return owner._pset_values[token]    # a per-row parameter id, from the PSet
 
 
+class PredictionFormulaSigma(SigmaSource):
+    """The noise parameter given by an expression that references the **simulated
+    prediction** (model species / observables / functions) in addition to free parameters
+    -- the native ``prediction_formula`` source (ADR-0075).
+
+    ADR-0044's :class:`FormulaSigma` covers a noiseFormula that is an expression over free
+    parameters + constants alone (``0.1 + 0.05*scaling``), evaluated against the PSet. A
+    real PEtab combined-error model instead makes σ depend on the model **output** -- the
+    classic additive-plus-proportional noise ``σ = σ_abs + σ_rel * y`` where ``y`` is the
+    observable's *simulated* value (Raia_CancerResearch2011's
+    ``noiseParameter1_X + noiseParameter2_X * (IL13_Rec + Rec + p_IL13_Rec)``, the noise
+    scaling with the predicted trajectory). Such a σ is neither a PSet-only expression
+    (:class:`FormulaSigma`) nor a data column: it must be evaluated against the *current
+    simulation* at the scored point. This source closes that gap -- it is the noise-side peer
+    of the measurement-model observation layer (ADR-0036), a PEtab-math expression compiled to
+    a ``numpy`` callable whose symbols resolve **either** from ``owner._pset_values`` (a free
+    parameter -- the ``σ_abs`` / ``σ_rel`` coefficients) **or** from the simulated ``Data``
+    column of that name (a model entity -- the trajectory the σ scales with), read at
+    ``(sim_data, sim_row)``.
+
+    It is *estimated* (it references the estimated noise coefficients), so the caller keeps
+    the family's likelihood normalizer (ADR-0011). Its **free-parameter** symbols (not the
+    model-entity ones) are the nuisances the fit must declare; the split is model-namespace
+    dependent, so ``config.py`` classifies it at load (``_load_prediction_noise``) and calls
+    :meth:`set_param_names` -- until then :meth:`required_free_params` is empty (the declared
+    check runs after classification). Lazy-compiled and not pickled (the same
+    compile-once-per-worker pattern as :class:`FormulaSigma`).
+
+    **Gradient boundary (ADR-0075).** A prediction-dependent σ makes the per-point loss
+    depend on the prediction through the scale as well as the residual, which the #385
+    residual/Fisher assembly does not model; a fit that reaches the gradient path with such a
+    source raises :class:`~pybnf.gradient.errors.GradientNotSupported` (the score path is
+    unaffected -- every optimizer/sampler that evaluates the objective directly works)."""
+
+    estimated = True
+
+    def __init__(self, formula, names=None, param_names=None):
+        #: The PEtab-math expression (over free parameters + model-entity symbols).
+        self.formula = formula
+        #: The ordered free-symbol names (PSet keys u sim columns); ``None`` until a parse
+        #: resolves them, then the compiler's canonical sorted order. Picklable.
+        self.names = list(names) if names is not None else None
+        #: The subset of :attr:`names` that are declared free parameters (the estimated
+        #: nuisances), set by ``config.py`` once the model namespace is known; the rest are
+        #: simulated-trajectory columns. ``None`` until classified.
+        self.param_names = set(param_names) if param_names is not None else None
+        self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_func'] = None
+        return state
+
+    def set_param_names(self, param_names):
+        """Record which of the formula's symbols are declared free parameters (the estimated
+        nuisances) -- the model-namespace classification ``config.py`` performs at load."""
+        self.param_names = set(param_names)
+
+    def _ensure_names(self):
+        if self.names is None:
+            from ..petab.formula import formula_free_symbols
+            self.names = formula_free_symbols(self.formula)
+        return self.names
+
+    def _callable(self):
+        if self._func is None:
+            from ..petab.formula import compile_petab_formula
+            func, names = compile_petab_formula(self.formula, self._ensure_names())
+            self._func, self.names = func, names
+        return self._func, self.names
+
+    def required_free_params(self):
+        # Only the model-namespace classification (set_param_names) knows which symbols are
+        # free parameters vs simulated columns; before it runs this is empty, so the load-time
+        # declared check is a no-op here and the validation lives in _load_prediction_noise.
+        return set(self.param_names) if self.param_names is not None else set()
+
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
+        func, names = self._callable()
+        args = [owner._pset_values[n] if n in owner._pset_values
+                else self._sim_value(sim_data, sim_row, n, col_name)
+                for n in names]
+        return float(func(*args))
+
+    @staticmethod
+    def _sim_value(sim_data, sim_row, name, col_name):
+        """The simulated value of model-entity ``name`` at the scored row -- a column of the
+        current simulation ``Data`` (the σ scales with this predicted trajectory)."""
+        try:
+            idx = sim_data.cols[name]
+        except KeyError:
+            raise PybnfError(
+                f"A prediction-dependent noise formula for '{col_name}' references "
+                f"'{name}', which is neither a declared free parameter nor a simulated "
+                f"output column. A prediction_formula σ scales with a model entity the "
+                f"backend outputs (a species / observable / function) plus estimated "
+                f"coefficients (ADR-0075).")
+        return sim_data.data[sim_row, idx]
+
+
 class ColumnMeanSigma(SigmaSource):
     """The noise parameter set to the observable's experimental column mean -- one
     scalar shared by every point of the column (the native ``column_mean`` source,
@@ -318,7 +421,7 @@ class ColumnMeanSigma(SigmaSource):
 
     estimated = False
 
-    def value(self, owner, exp_data, exp_row, col_name):
+    def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         # The mean is a per-column constant; recomputing it per point is O(1) amortized
         # over the small data PyBNF fits and keeps the source stateless (no per-exp_data
         # cache to invalidate across models/suffixes). The legacy ave_norm_sos

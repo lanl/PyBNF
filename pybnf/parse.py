@@ -258,6 +258,13 @@ def parse(s):
     # comma). Uses ``+`` (not ``-``) so a non-``formula`` field backtracks to nm_source_field.
     nm_formula_arg = pp.Regex(r'[^,#\n]+').set_parse_action(lambda t: t[0].strip())
     nm_formula_field = pp.Group(nm_token + equals + pp.CaselessLiteral('formula') + nm_formula_arg)
+    # The ``prediction_formula`` source (ADR-0075): a σ that depends on the *simulated
+    # prediction*, e.g. a combined error model ``sigma = prediction_formula sd_abs + sd_rel*y``
+    # (the σ scales with the model output ``y`` plus estimated coefficients). Same
+    # rest-of-field arg as ``formula``; a distinct literal so ``formula`` never shadows it
+    # (neither string is a prefix of the other at the post-``=`` position).
+    nm_prediction_formula_field = pp.Group(
+        nm_token + equals + pp.CaselessLiteral('prediction_formula') + nm_formula_arg)
     nm_source_field = pp.Group(nm_token - equals - nm_verb - pp.Optional(nm_arg))
     # An optional bare ``cumulative`` flag field (ADR-0051, #418): declares the column's
     # prediction a cumulative count, differenced to its per-interval increment before scoring.
@@ -266,7 +273,8 @@ def parse(s):
     # ('cumulative', observable) structural key. A bare literal (no ``=``), matched first so it
     # never shadows a ``<param> = <source>`` field.
     nm_cumulative_field = pp.Group(pp.CaselessLiteral('cumulative'))
-    nm_field = nm_cumulative_field | nm_location_field | nm_formula_field | nm_source_field
+    nm_field = (nm_cumulative_field | nm_location_field | nm_prediction_formula_field
+                | nm_formula_field | nm_source_field)
     # The observable is optional: present -> a per-observable override; absent
     # (``noise_model = <family>``) -> the whole-fit default (ADR-0031). pyparsing
     # distinguishes them by whether a bare token precedes the ``=``.

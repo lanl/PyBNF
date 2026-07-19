@@ -1,0 +1,6 @@
+parameterId	parameterName	lowerBound	upperBound	nominalValue	estimate
+v1	v1	0	10	0.5	true
+v2	v2	0	10	1	true
+v3	v3	0	10	3	true
+sd_abs	additive noise floor	1e-3	100	0.5	true
+sd_rel	proportional noise	1e-3	100	0.1	true

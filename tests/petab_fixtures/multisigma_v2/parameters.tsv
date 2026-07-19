@@ -1,0 +1,7 @@
+parameterId	parameterName	lowerBound	upperBound	nominalValue	estimate
+v1	v1	0	10	0.5	true
+v2	v2	0	10	1	true
+v3	v3	0	10	3	true
+s_lo	low-gel scale	1e-3	100	0.5	true
+s_hi	high-gel scale	1e-3	100	1	true
+sig	shared sigma	1e-3	100	2	true

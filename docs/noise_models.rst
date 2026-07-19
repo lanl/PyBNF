@@ -77,6 +77,13 @@ The sources, in the vocabulary of the :ref:`noise_model <noise_model_key>` key:
   experimental column mean; the model the legacy ``ave_norm_sos`` fits.
 - **formula** (``formula <expr>``) — an expression over free parameters (and,
   row by row, PEtab noise placeholders); the PEtab ``noiseFormula`` source.
+- **prediction formula** (``prediction_formula <expr>``) — an expression whose
+  :math:`\sigma` scales with the **simulated output**, the combined
+  additive+proportional error model :math:`\sigma = \sigma_\text{abs} +
+  \sigma_\text{rel}\cdot y` where :math:`y` is the observable's predicted value.
+  Symbols resolve either from the fit (the estimated coefficients) or from the
+  current simulation column of that name (a model species/observable/function).
+  Estimated. Gradient-free score path only.
 
 The objective-function codes
 ----------------------------

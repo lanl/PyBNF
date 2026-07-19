@@ -2,7 +2,8 @@
 
 from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
-                    PerMeasurementFormulaSigma, RelativeSigma, StudentT)
+                    PerMeasurementFormulaSigma, PredictionFormulaSigma, RelativeSigma,
+                    StudentT)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -785,6 +786,15 @@ def _build_sigma_source(verb, arg):
         if _PLACEHOLDER_IN_FORMULA.search(arg):
             return PerMeasurementFormulaSigma(arg)
         return FormulaSigma(arg)
+    if verb == 'prediction_formula':
+        # A σ that depends on the simulated prediction (a combined additive+proportional
+        # error model ``σ_abs + σ_rel * y``, ADR-0075): an expression over free-parameter
+        # coefficients AND model-entity symbols read from the current simulation. config.py
+        # classifies which symbols are free parameters (the estimated nuisances) vs simulated
+        # columns once the model namespace is known (_load_prediction_noise); the source
+        # resolves each accordingly at eval time.
+        _require_arg(verb, arg)
+        return PredictionFormulaSigma(arg)
     if verb == 'read_exp_file':
         _require_arg(verb, arg)
         return DataColumnSigma(arg)
@@ -804,7 +814,7 @@ def _build_sigma_source(verb, arg):
     raise PybnfError(f'Unknown noise parameter source "{verb}"',
                      f'The noise parameter source "{verb}" is not recognized. Use one of: '
                      'fit <param__FREE>, read_exp_file <suffix>, fix_at <number>, '
-                     'formula <expr>, relative [<cv>], or column_mean.')
+                     'formula <expr>, prediction_formula <expr>, relative [<cv>], or column_mean.')
 
 
 def _require_arg(verb, arg):
@@ -974,12 +984,16 @@ class LikelihoodObjective(SummationObjective):
         return 'log' if family.additive_on.ln_base != 0.0 else 'linear'
 
     @staticmethod
-    def _noise_values(family, sources, owner, exp_data, exp_row, col_name):
+    def _noise_values(family, sources, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         """Source every noise parameter for one point and split it into the family's
         ``(primary, extra)`` call shape (ADR-0058): the primary scalar (``noise_params``'
         first name) plus a mapping of the rest (``{'df': nu}`` for student_t, ``{}`` for
-        the single-parameter families)."""
-        values = {name: src.value(owner, exp_data, exp_row, col_name)
+        the single-parameter families).
+
+        ``sim_data``/``sim_row`` locate the point on the *simulated* trajectory; only a
+        prediction-dependent σ (:class:`~pybnf.noise.PredictionFormulaSigma`, ADR-0075) reads
+        them, every other source ignores them."""
+        values = {name: src.value(owner, sim_data, sim_row, exp_data, exp_row, col_name)
                   for name, src in sources.items()}
         names = family.noise_params
         return values[names[0]], {n: values[n] for n in names[1:]}
@@ -1045,7 +1059,7 @@ class LikelihoodObjective(SummationObjective):
                     continue
                 family, sources = self._spec_for(col_name)
                 prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
-                primary, extra = self._noise_values(family, sources, self, exp_data, rownum, col_name)
+                primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, rownum, col_name)
                 values.append(family.log_density(prediction, observation, primary, extra))
                 ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, indvar_val))
 
@@ -1102,7 +1116,7 @@ class LikelihoodObjective(SummationObjective):
                 if not (isinstance(family, Gaussian) and family.additive_on.ln_base == 0.0):
                     return False
                 prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
-                primary, _extra = self._noise_values(family, sources, self, exp_data, rownum, col_name)
+                primary, _extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, rownum, col_name)
                 preds.append(prediction)
                 obs.append(observation)
                 var.append(primary ** 2)
@@ -1130,7 +1144,7 @@ class LikelihoodObjective(SummationObjective):
         family, sources = self._spec_for(col_name)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         # data_fit always; each parameter's normalizer iff THAT parameter is estimated --
         # the one rule that makes each legacy objfunc its decoupled default (chi_sq drops
         # +log sigma, chi_sq_dynamic keeps it; ADR-0011/0021) and gates student_t's sigma
@@ -1193,7 +1207,7 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         # Delegate to the family's pure residual math (Gaussian's rho; Student-t's smooth
         # sqrt-loss residual, #459). The offset / scale chain factor is handled inside the
         # family via _mu / additive_on, so a MEDIAN-on-linear Gaussian is byte-identical to the
@@ -1237,7 +1251,7 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         # The family owns the per-noise-parameter derivative of (data_fit + that parameter's
         # normalizer); the gate has restricted the configuration so the closed form is exact. The
         # offset's own dependence on the noise scale (nonzero only for a MEAN on a log scale) is
@@ -1267,7 +1281,7 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         return family.d_data_fit_d_prediction(prediction, observation, primary, extra)
 
     def location_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -1287,7 +1301,7 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         if self.has_least_squares_residual(col_name):
             drho = family.d_residual_d_prediction(prediction, observation, primary, extra)
             return drho * drho
@@ -1309,7 +1323,7 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
         per_param = family.noise_param_fisher(prediction, observation, primary, extra)
         return {src.required_free_param(): per_param[name] for name, src in estimated.items()}
 
@@ -1372,9 +1386,10 @@ class LikelihoodObjective(SummationObjective):
             # free parameter*: a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a
             # per-observable __FREE scale) IS sigma, so its gradient is the closed-form
             # d loss/d sigma (noise_grad_point). A composite estimated source -- an
-            # expression over several free parameters (FormulaSigma) or a row-varying
-            # per-measurement sigma (PerMeasurementFormulaSigma) -- needs the formula's
-            # chain rule and is a later sub-layer.
+            # expression over several free parameters (FormulaSigma), a row-varying
+            # per-measurement sigma (PerMeasurementFormulaSigma), or a prediction-dependent
+            # sigma (PredictionFormulaSigma, whose scale also depends on the prediction --
+            # ADR-0075) -- needs the formula's chain rule and is a later sub-layer.
             if source.estimated and not isinstance(source, FreeParameterSigma):
                 raise GradientNotSupported(
                     "Gradient path supports an estimated noise scale only as a single "

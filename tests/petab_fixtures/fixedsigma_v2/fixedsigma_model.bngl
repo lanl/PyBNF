@@ -1,0 +1,36 @@
+begin model
+
+  begin parameters
+    # A parabola y = v1*x^2 + v2*x + v3 over a linearly growing counter x.
+    # sd_c is a FIXED (estimate=false) PEtab noise parameter: the noiseFormula
+    # noiseParameter1_obs_y binds to it per measurement, but it is a constant, not a fit
+    # (ADR-0075). It is declared only in parameters.tsv (never a model parameter).
+    v1 0.5
+    v2 1
+    v3 3
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+# New-era (edition 2): the simulation is synthesized from the experiment: line, so the
+# model carries no actions block (ADR-0028). Carried byte-verbatim on import (ADR-0036).

@@ -94,11 +94,13 @@ from .measurements import (
     data_from_measurement_rows,
     measurement_param_bindings,
     noise_parameter_ids_by_observable,
+    noise_parameters_by_observable,
     observable_parameters_by_observable,
     read_measurement_table,
     reconstruct_dose_responses,
     reconstruct_preequilibrated_dose_responses,
     row_varying_noise_ids,
+    row_varying_noise_param_ids,
     row_varying_observable_ids,
 )
 from ._measurement_params import write_measurement_params
@@ -124,21 +126,36 @@ _PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
 # placeholder is not a model entity nor a free parameter -- its value is bound per data point.
 _PLACEHOLDER_SYMBOL = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 
+# A noiseFormula that is EXACTLY a single ``noiseParameter${n}_<id>`` placeholder (Boehm /
+# Oliveira / per-point _SD -- the ADR-0037 declared-placeholder shape). A multi-parameter
+# noiseFormula (``noiseParameter1_X + noiseParameter2_X * y``) is NOT a bare placeholder, so it
+# falls through to the substitute-and-classify path (ADR-0075) instead of the _SD/estimated fast
+# path -- the tightening of ADR-0037's ``startswith('noiseParameter')`` test.
+_BARE_NOISE_PLACEHOLDER = re.compile(r'noiseParameter\d+_\w+\Z')
 
-def _placeholder_subs(observable_id, obs_params, noise_param_ids=None):
-    """The ``{placeholder_name: token}`` substitution for one observable (ADR-0044).
+
+def _placeholder_subs(observable_id, obs_params, noise_params=None, fixed_params=None):
+    """The ``{placeholder_name: token}`` substitution for one observable (ADR-0044/0075).
 
     Binds ``observableParameter${n}_${observable_id}`` to the n-th constant-per-observable
     ``observableParameters`` token (``obs_params[observable_id]``), and -- when
-    ``noise_param_ids`` is given (the noiseFormula side) -- ``noiseParameter1_${observable_id}``
-    to that observable's constant ``noiseParameters`` id. An empty map means nothing to
-    substitute (the bare-name / no-placeholder common case stays dependency-free)."""
+    ``noise_params`` is given (the noiseFormula side) -- ``noiseParameter${n}_${observable_id}``
+    to the n-th constant-per-observable ``noiseParameters`` token
+    (``noise_params[observable_id]``, a tuple: one entry for Boehm's single id, several for a
+    multi-parameter noiseFormula like Raia's affine ``σ_abs;σ_rel`` -- ADR-0075). A token that
+    names a **fixed** PEtab parameter (``fixed_params``, estimate=0) is inlined as its numeric
+    value (so Oliveira's ``noiseParameter1_X -> sd_X = 1`` reduces to a constant sigma, not a
+    fit); an estimated-parameter or numeric token stays as-is (an id remains a free symbol).
+    An empty map means nothing to substitute (the bare-name / no-placeholder common case stays
+    dependency-free)."""
     subs = {f'observableParameter{n}_{observable_id}': tok
             for n, tok in enumerate(obs_params.get(observable_id, ()), start=1)}
-    if noise_param_ids is not None:
-        nid = noise_param_ids.get(observable_id)
-        if nid is not None:
-            subs[f'noiseParameter1_{observable_id}'] = nid
+    if noise_params is not None:
+        for n, tok in enumerate(noise_params.get(observable_id, ()), start=1):
+            subs[f'noiseParameter{n}_{observable_id}'] = tok
+    if fixed_params:
+        subs = {ph: (num(fixed_params[tok]) if tok in fixed_params else tok)
+                for ph, tok in subs.items()}
     return subs
 
 
@@ -307,22 +324,38 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # noiseParameters placeholder is a per-observable estimated sigma (Boehm's sd_*); the map
     # drives the per-observable noise_model lines (ADR-0037). A row-varying id routes to the
     # per-measurement binding table (ADR-0045): the per-data-point sidecar carrying the row's
-    # estimated noise id, emitted as a 'sigma = formula <placeholder>' line.
+    # estimated noise id, emitted as a 'sigma = formula <placeholder>' line. A MULTI-token
+    # noiseParameters cell (a multi-parameter noiseFormula -- Raia's affine, Fiedler's product)
+    # is the ADR-0075 generalization: its constant tuple substitutes into the noiseFormula by
+    # index (an id -> a free symbol, a fixed parameter -> its value), and a row-varying tuple
+    # routes to the same sidecar.
     noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
-    row_varying_obs = row_varying_noise_ids(measurement_rows)
-    # One sidecar carries both row-varying frontiers (ADR-0045): the row-varying noise ids and
-    # the row-varying observableParameters scale/offset tokens, keyed by data column. Keyed to a
-    # time-course experiment's rows (a dose-response carries no per-measurement sidecar).
+    noise_param_tuples = noise_parameters_by_observable(measurement_rows)   # multi-token constant
+    # The unified constant-noise substitution map: the single-id Boehm entries as 1-tuples plus
+    # the multi-token tuples, so the n-th token binds noiseParameter${n} for any arity (ADR-0075).
+    noise_subs = {oid: (nid,) for oid, nid in noise_param_ids.items()}
+    noise_subs.update(noise_param_tuples)
+    # Row-varying noise = the single-id frontier (ADR-0045) u the multi-token one (ADR-0075).
+    row_varying_noise = row_varying_noise_ids(measurement_rows) | row_varying_noise_param_ids(measurement_rows)
+    # One sidecar carries both row-varying frontiers (ADR-0045/0075): the row-varying noise
+    # tokens (each noiseParameter${n}) and the row-varying observableParameters scale/offset
+    # tokens, keyed by data column. Keyed to a time-course experiment's rows (a dose-response
+    # carries no per-measurement sidecar).
     param_bindings = measurement_param_bindings(
-        tc_rows, observable_id_to_column, row_varying_obs, row_varying_obs_params)
+        tc_rows, observable_id_to_column, row_varying_noise, row_varying_obs_params)
     # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
     # time courses and dose-response scans (plain + pre-equilibrated) alike.
     dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
     pdr_datas = {(s['name'], s['model_id']): [s['data']] for s in preequil_scans}
+    # A noiseFormula symbol is prediction-dependent (a simulated column) only if it is a model
+    # entity that is NOT a declared free parameter: a fit parameter (even one that binds a model
+    # parameter by id, ADR-0034) resolves from the PSet, not the trajectory. So the σ scales with
+    # the simulation only when it names a model entity outside the free-parameter set (ADR-0075).
+    prediction_entities = namespace - free_names
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
         _column_mean_resolver({**datas, **dr_datas, **pdr_datas}, observable_id_to_column),
-        obs_params, row_varying_obs)
+        obs_params, noise_subs, row_varying_noise, fixed_params, prediction_entities)
     # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis, not
     # a condition: line); a pre-equilibrated scan's per-dose conditions are absorbed too, but its
     # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
@@ -649,7 +682,8 @@ _NOISE_MODEL_PARAM = {'gaussian': 'sigma', 'lognormal': 'sigma', 'laplace': 'sca
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
-                          column_mean_of, obs_params, row_varying_obs=()):
+                          column_mean_of, obs_params, noise_subs=None, row_varying_obs=(),
+                          fixed_params=None, namespace=frozenset()):
     """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
     The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
@@ -677,8 +711,8 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     """
     per_obs = [(row, *_resolve_noise(
                     row, noise_param_ids.get(row.observable_id),
-                    _placeholder_subs(row.observable_id, obs_params, noise_param_ids),
-                    row.observable_id in row_varying_obs))
+                    _placeholder_subs(row.observable_id, obs_params, noise_subs, fixed_params),
+                    row.observable_id in row_varying_obs, fixed_params, namespace))
                for row in observable_rows]
     single = _try_uniform_directive(per_obs, column_mean_of)
     if single is not None:
@@ -686,13 +720,23 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     return _per_observable_directives(per_obs, observable_id_to_column)
 
 
-def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
+def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
+                   fixed_params=None, namespace=frozenset()):
     """One observables row -> ``(family_token, source)`` where ``family_token`` is the native
     noise_model family (``gaussian`` / ``lognormal`` / ``laplace``) and ``source`` is one of
     ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
     ``('free', parameter_id)`` (an estimated sigma), ``('formula', expr)`` (an expression
-    sigma -> ``FormulaSigma``, ADR-0044), or ``('per_measurement', expr)`` (a row-varying
-    placeholder bound per data point -> ``PerMeasurementFormulaSigma``, ADR-0045).
+    sigma over free parameters -> ``FormulaSigma``, ADR-0044), ``('prediction_formula', expr)``
+    (an expression whose σ scales with the simulated prediction -> ``PredictionFormulaSigma``,
+    ADR-0075), or ``('per_measurement', expr)`` (a row-varying placeholder bound per data point
+    -> ``PerMeasurementFormulaSigma``, ADR-0045).
+
+    ``fixed_params`` maps each fixed (estimate=0) PEtab parameter id to its numeric value: a
+    ``noiseParameters`` id that resolves to one is a fixed sigma (``('constant', value)``, e.g.
+    Oliveira's ``sd_cumulative_deaths = 1``), not an estimated ``fit`` (ADR-0075). ``namespace``
+    is the set of **model entities that are not free parameters** (the simulated columns): a
+    substituted arithmetic noiseFormula that references any of them is prediction-dependent
+    (``prediction_formula``), else a pure free-parameter expression (``formula``).
 
     The family token comes from ``noiseDistribution`` (the Gaussian/Laplace family) **and** a
     re-injected ``observableTransformation`` (the additive scale; issue #499): ``log10`` +
@@ -707,31 +751,40 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
     token is bound from the experiment's sidecar binding table at eval time. Checked first,
     before the constant-reduction paths below.
 
-    A **declared placeholder** noiseFormula -- a ``noiseParameter*`` token or a bare id listed
-    in the row's ``noisePlaceholders`` -- has its value supplied per measurement: a parameter
-    id constant across the observable (``noise_param_id``) is an estimated sigma
-    (``('free', id)``, Boehm); otherwise it is the per-point ``_SD`` source
-    (``('placeholder', None)``, chi_sq). Otherwise (ADR-0044) a constant-per-observable
+    A **declared placeholder** noiseFormula -- a lone ``noiseParameter${n}_<id>`` token or a
+    bare id listed in the row's ``noisePlaceholders`` -- has its value supplied per measurement:
+    a parameter id constant across the observable (``noise_param_id``) is an estimated sigma
+    (``('free', id)``, Boehm), unless that id is **fixed** -> a fixed sigma
+    (``('constant', value)``, Oliveira, ADR-0075); otherwise it is the per-point ``_SD`` source
+    (``('placeholder', None)``, chi_sq). Otherwise (ADR-0044/0075) a constant-per-observable
     ``observableParameter*`` / ``noiseParameter*`` placeholder is substituted in (``obs_subs``)
     and the resulting noiseFormula classified: a number -> ``('constant', v)``, a bare id ->
-    ``('free', id)``, an arithmetic expression -> ``('formula', expr)``. A placeholder that
+    ``('free', id)``, a free-parameter expression -> ``('formula', expr)``, an expression that
+    also references a model entity -> ``('prediction_formula', expr)``. A placeholder that
     survives substitution (unresolved, and not row-varying) raises the deferred frontier."""
+    fixed_params = fixed_params or {}
     family_token = _native_noise_family(row)
     formula = (row.noise_formula or '').strip()
     if not formula:
         raise PybnfError(f"Observable '{row.observable_id}' is missing a noiseFormula.")
-    # ADR-0045: a row-varying noiseParameters id is bound per data point from the sidecar; keep
-    # the placeholder in the noiseFormula verbatim (PerMeasurementFormulaSigma resolves it).
+    # ADR-0045/0075: a row-varying noiseParameters cell (a single id, or a multi-parameter tuple
+    # whose per-gel scale differs) is bound per data point from the sidecar; keep the
+    # placeholder(s) in the noiseFormula verbatim (PerMeasurementFormulaSigma resolves them).
     if row_varying:
         return family_token, ('per_measurement', formula)
     placeholders = {p.strip() for p in (row.noise_placeholders or '').split(';') if p.strip()}
-    # ADR-0037 declared-placeholder path FIRST (preserved byte-for-byte: Boehm).
-    if formula.startswith('noiseParameter') or formula in placeholders:
+    # ADR-0037 declared-placeholder path FIRST (byte-for-byte: Boehm/chi_sq). A BARE single
+    # placeholder only -- a multi-parameter noiseFormula (Raia's affine) is an expression and
+    # falls through to substitute-and-classify below (ADR-0075).
+    if _BARE_NOISE_PLACEHOLDER.match(formula) or formula in placeholders:
         if noise_param_id is not None:
-            return family_token, ('free', noise_param_id)  # const-per-observable estimated sigma
-        return family_token, ('placeholder', None)         # per-point _SD (chi_sq/lognormal)
-    # ADR-0044: substitute a constant-per-observable placeholder, then classify. A bare number
-    # / id with no placeholder passes through untouched (substitution stays dependency-free).
+            if noise_param_id in fixed_params:                 # Oliveira: fixed -> constant sigma
+                return family_token, ('constant', fixed_params[noise_param_id])
+            return family_token, ('free', noise_param_id)      # const-per-observable estimated sigma
+        return family_token, ('placeholder', None)             # per-point _SD (chi_sq/lognormal)
+    # ADR-0044/0075: substitute a constant-per-observable placeholder (an id stays a free symbol,
+    # a number/fixed-parameter inlines via obs_subs), then classify. A bare number / id with no
+    # placeholder passes through untouched (substitution stays dependency-free).
     if _PLACEHOLDER.search(formula):
         from .formula import substitute_placeholders
         formula = substitute_placeholders(formula, obs_subs)
@@ -741,11 +794,18 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
     except ValueError:
         pass
     if _IDENTIFIER.match(formula):
+        # A bare id: a fixed parameter is a constant sigma, an estimated one a free sigma.
+        if formula in fixed_params:
+            return family_token, ('constant', fixed_params[formula])
         return family_token, ('free', formula)             # a bare id -> FreeParameterSigma
-    # An arithmetic expression -> FormulaSigma; validate it parses (+ the petab extra present).
+    # An arithmetic expression: prediction-dependent (σ scales with the simulated output, Raia)
+    # if it references a model entity, else a pure free-parameter expression (ADR-0044/0075).
+    # Validate it parses (+ the petab extra present) and read its free symbols.
     from .formula import formula_free_symbols
-    formula_free_symbols(formula)
-    return family_token, ('formula', formula)
+    symbols = formula_free_symbols(formula)
+    if any(s in namespace for s in symbols):
+        return family_token, ('prediction_formula', formula)   # PredictionFormulaSigma (Raia)
+    return family_token, ('formula', formula)                  # FormulaSigma (free params only)
 
 
 def _native_noise_family(row):
@@ -811,6 +871,11 @@ def _try_uniform_directive(per_obs, column_mean_of):
         # noiseFormula carries the observable-specific placeholder noiseParameter1_<id>, so
         # several observables are never "uniform" -- and it is bound from the experiment's
         # sidecar binding table. Always a per-observable noise_model line.
+        return None
+    if kind == 'prediction_formula':
+        # A prediction-dependent sigma (PredictionFormulaSigma, ADR-0075) is inherently
+        # per-observable -- its expression scales with THAT observable's simulated output, so
+        # several observables are never "uniform". Always a per-observable noise_model line.
         return None
     if kind == 'formula':
         # An expression sigma (FormulaSigma, ADR-0044) has no whole-fit objective *token*, but a
@@ -879,6 +944,11 @@ def _per_observable_directives(per_obs, observable_id_to_column):
             # row-varying placeholder, which config.py routes to PerMeasurementFormulaSigma
             # (the placeholder's row token comes from the measurement_params sidecar; ADR-0045).
             lines.append(f'noise_model {column} = {family}, {param} = formula {src[1]}')
+        elif kind == 'prediction_formula':
+            # A σ that scales with the simulated output (Raia's combined additive+proportional
+            # error, ADR-0075): config.py routes 'prediction_formula' to a PredictionFormulaSigma
+            # whose model-entity symbols read the current simulation, its coefficients the PSet.
+            lines.append(f'noise_model {column} = {family}, {param} = prediction_formula {src[1]}')
         elif kind == 'constant':
             lines.append(
                 f'noise_model {column} = {family}, {param} = fix_at {num(src[1])}')

@@ -23,8 +23,8 @@ from .location import MEAN, MEDIAN, LocationInterpretation
 from .negative_binomial import NegBinomial
 from .scale import LINEAR, LN, LOG10, AdditiveNoiseScale
 from .source import (ColumnMeanSigma, ConstantSigma, DataColumnSigma, FormulaSigma,
-                     FreeParameterSigma, PerMeasurementFormulaSigma, RelativeSigma,
-                     SigmaSource)
+                     FreeParameterSigma, PerMeasurementFormulaSigma,
+                     PredictionFormulaSigma, RelativeSigma, SigmaSource)
 from .student_t import StudentT
 
 __all__ = [
@@ -33,4 +33,5 @@ __all__ = [
     'LocationInterpretation', 'MEAN', 'MEDIAN',
     'SigmaSource', 'DataColumnSigma', 'FreeParameterSigma', 'ConstantSigma',
     'RelativeSigma', 'ColumnMeanSigma', 'FormulaSigma', 'PerMeasurementFormulaSigma',
+    'PredictionFormulaSigma',
 ]

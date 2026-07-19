@@ -64,6 +64,14 @@ class PetabMeasurementRow:
     the tuple is constant across an observable's rows it reduces to a per-observable
     scale/offset (substituted into the formula, ADR-0044), else it is the deferred row-varying
     frontier. ``()`` for a blank/absent cell.
+
+    ``noise_param_tokens`` is the analogous semicolon-split tokens of the ``noiseParameters``
+    column (the n-th binds ``noiseParameter${n}_${observableId}`` -- a **multi-parameter**
+    noiseFormula like Raia's ``noiseParameter1_X + noiseParameter2_X * y`` or Fiedler's
+    ``noiseParameter1_X * noiseParameter2_X``, ADR-0075). The single-token special cases keep
+    their dedicated fields for byte-identical backward compatibility: a lone **numeric** token
+    also sets ``noise_parameters`` (the per-point ``_SD`` value), a lone **id** token also sets
+    ``noise_parameter_id`` (Boehm's per-observable estimated sigma). ``()`` for a blank cell.
     """
 
     observable_id: str
@@ -74,6 +82,7 @@ class PetabMeasurementRow:
     noise_parameters: float | None = None
     noise_parameter_id: str | None = None
     observable_parameters: tuple = ()
+    noise_param_tokens: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +651,7 @@ def _measurement_row_from_record(rec):
     if oid is None or oid.strip() == '':
         raise PybnfError("PEtab measurements row is missing an observableId.")
     oid = oid.strip()
-    numeric, param_id = _noise_parameters(rec.get('noiseParameters'))
+    numeric, param_id, tokens = _noise_parameters(rec.get('noiseParameters'))
     return PetabMeasurementRow(
         observable_id=oid,
         time=_require_float(rec.get('time'), 'time', oid),
@@ -652,6 +661,7 @@ def _measurement_row_from_record(rec):
         noise_parameters=numeric,
         noise_parameter_id=param_id,
         observable_parameters=_observable_parameters(rec.get('observableParameters')),
+        noise_param_tokens=tokens,
     )
 
 
@@ -674,29 +684,38 @@ def _require_float(s, column, oid):
 
 
 def _noise_parameters(s):
-    """Split a ``noiseParameters`` cell into ``(numeric, parameter_id)``.
+    """Split a ``noiseParameters`` cell into ``(numeric, parameter_id, tokens)``.
 
-    Two forms occur in real v2 problems, and this read path now records both (ADR-0037):
+    The cell binds the ``noiseParameter${n}_${observableId}`` placeholders of the
+    ``noiseFormula`` (the n-th semicolon token binds the n-th placeholder), exactly as
+    ``observableParameters`` binds the ``observableParameter${n}`` ones. ``tokens`` is that
+    full tuple (ADR-0075). For the two **single-token** shapes PyBNF has always handled,
+    the dedicated scalar fields stay populated so every existing path is byte-identical:
 
-    * a **number** -- the per-point standard deviation (the ``_SD`` cell a ``chi_sq``
-      re-export reads back) -> ``(value, None)``;
-    * a **parameter id** -- a PEtab *placeholder override* substituted into the
-      observable's declared noise placeholder per measurement (Boehm's
-      ``sd_pSTAT5A_rel``) -> ``(None, id)``. When that id is constant across the
-      observable's rows it *is* a per-observable estimated sigma
-      (:func:`noise_parameter_ids_by_observable`, ADR-0021/0037); a genuinely
-      per-measurement-varying id has no PyBNF analogue and is rejected downstream.
+    * a lone **number** -- the per-point standard deviation (the ``_SD`` cell a ``chi_sq``
+      re-export reads back) -> ``(value, None, (tok,))``;
+    * a lone **parameter id** -- a PEtab placeholder override substituted into the
+      observable's declared noise placeholder per measurement (Boehm's ``sd_pSTAT5A_rel``)
+      -> ``(None, id, (tok,))``. When that id is constant across the observable's rows it
+      *is* a per-observable estimated sigma (:func:`noise_parameter_ids_by_observable`,
+      ADR-0021/0037); a genuinely per-measurement-varying id binds per data point (ADR-0045).
 
-    A blank cell is ``(None, None)``. The reader only classifies the token here; the
-    constant-per-observable check is cross-row and lives in the importer.
+    A **multi-token** cell (``sd_abs;sd_rel``) leaves both scalars ``None`` -- it is a
+    multi-parameter noiseFormula (Raia's affine, Fiedler's product) whose tokens are read
+    from ``tokens`` by :func:`noise_parameters_by_observable` and substituted per index
+    (ADR-0075). A blank cell is ``(None, None, ())``. The reader only splits the tokens here;
+    the constant-per-observable / row-varying check is cross-row and lives in the importer.
     """
     if s is None or s.strip() == '':
-        return None, None
-    s = s.strip()
-    try:
-        return float(s), None
-    except ValueError:
-        return None, s
+        return None, None, ()
+    tokens = tuple(tok.strip() for tok in s.split(';') if tok.strip())
+    if len(tokens) == 1:
+        tok = tokens[0]
+        try:
+            return float(tok), None, tokens
+        except ValueError:
+            return None, tok, tokens
+    return None, None, tokens
 
 
 def _classify_noise_ids(rows):
@@ -768,9 +787,10 @@ def measurement_param_bindings(rows, observable_id_to_column, row_varying_noise=
     Returns ``{(experiment_id, model_id): {column: {placeholder: {time: token}}}}``, collecting
     **both** row-varying frontiers into the one sidecar shape:
 
-    * **noise** (``row_varying_noise``) -- each measurement row's ``noiseParameters`` id binds
-      ``noiseParameter1_<observable_id>`` at that row's ``time`` (the :class:`~pybnf.noise.\
-PerMeasurementFormulaSigma` source);
+    * **noise** (``row_varying_noise``) -- each measurement row's ``noiseParameters`` token(s)
+      bind ``noiseParameter${n}_<observable_id>`` at that row's ``time`` (the n-th token to the
+      n-th placeholder: one for a single-id row-varying sigma, ADR-0045; several for a
+      multi-parameter one, ADR-0075) -- the :class:`~pybnf.noise.PerMeasurementFormulaSigma` source;
     * **observable** (``row_varying_obs``) -- the n-th ``observableParameters`` token binds
       ``observableParameter${n}_<observable_id>`` at that row's ``time`` (the
       :class:`~pybnf.measurement.PerMeasurementModel` scale/offset).
@@ -786,10 +806,19 @@ PerMeasurementFormulaSigma` source);
     table = {}
     for row in rows:
         key = (row.experiment_id, row.model_id)
-        if row.observable_id in row_varying_noise and row.noise_parameter_id is not None:
+        # A single-id row (ADR-0045) carries its token in noise_parameter_id; a multi-parameter
+        # row (ADR-0075) carries them in noise_param_tokens. Prefer the tuple, falling back to
+        # the single id, so a row built either way binds correctly.
+        noise_tokens = row.noise_param_tokens or (
+            (row.noise_parameter_id,) if row.noise_parameter_id is not None else ())
+        if row.observable_id in row_varying_noise and noise_tokens:
+            # Bind every noiseParameter${n} token per row (ADR-0075): a single-id row-varying
+            # noise binds noiseParameter1 (byte-identical to ADR-0045); a multi-parameter
+            # row-varying noise (Fiedler's per-gel scale × a shared sigma) binds noiseParameter1..n.
             column = observable_id_to_column[row.observable_id]
-            _bind(table, key, column, f'noiseParameter1_{row.observable_id}', row.time,
-                  row.noise_parameter_id)
+            for n, token in enumerate(noise_tokens, start=1):
+                _bind(table, key, column, f'noiseParameter{n}_{row.observable_id}',
+                      row.time, token)
         if row.observable_id in row_varying_obs and row.observable_parameters:
             column = observable_id_to_column[row.observable_id]
             for n, token in enumerate(row.observable_parameters, start=1):
@@ -859,6 +888,63 @@ def row_varying_observable_ids(rows):
     tuple (:func:`observable_parameters_by_observable`) and a blank cell are absent.
     """
     return _classify_observable_params(rows)[1]
+
+
+def _classify_multi_noise_params(rows):
+    """Split observables whose ``noiseParameters`` is a **multi-token** cell into ``(constant,
+    row_varying)`` (ADR-0075) -- the multi-parameter noiseFormula sibling of
+    :func:`_classify_observable_params`.
+
+    Only observables with **more than one** ``noiseParameters`` token in some row are
+    considered here (a multi-parameter noiseFormula: Raia's affine ``sd_abs;sd_rel``, Fiedler's
+    ``s_gel;sigma``); the single-token id / numeric shapes keep their dedicated ADR-0037/0045
+    paths (:func:`noise_parameter_ids_by_observable` / :func:`row_varying_noise_ids`) untouched.
+
+    ``constant`` is ``{observable_id: (token, ...)}`` for an observable whose token tuple is
+    identical across all its rows (substituted into the noiseFormula by index, Raia); the
+    ``row_varying`` set is those whose tuple **differs** across rows (bound per data point,
+    Fiedler -- the per-row scale token differs). A tuple that varies between a value and a blank
+    also routes to ``row_varying`` (a partial binding surfaces as a clean missing-token error).
+    """
+    seen, multi = {}, set()
+    for row in rows:
+        seen.setdefault(row.observable_id, set()).add(row.noise_param_tokens)
+        if len(row.noise_param_tokens) > 1:
+            multi.add(row.observable_id)
+    constant, row_varying = {}, set()
+    for oid in multi:
+        variants = seen[oid]
+        if len(variants) == 1:
+            constant[oid] = next(iter(variants))
+        else:
+            row_varying.add(oid)
+    return constant, row_varying
+
+
+def noise_parameters_by_observable(rows):
+    """``{observable_id: (token, ...)}`` for observables whose **multi-token**
+    ``noiseParameters`` tuple is constant across all their rows (ADR-0075) -- the noise-side
+    sibling of :func:`observable_parameters_by_observable`.
+
+    The n-th token binds ``noiseParameter${n}_${observableId}`` in a multi-parameter
+    ``noiseFormula`` (Raia's affine ``σ_abs + σ_rel * y``), substituted in by the importer (an
+    id stays a free symbol, a number/fixed-parameter inlines). Single-token observables (the
+    Boehm / per-point / row-varying-single-id shapes) are absent -- they keep their ADR-0037/0045
+    paths.
+    """
+    return _classify_multi_noise_params(rows)[0]
+
+
+def row_varying_noise_param_ids(rows):
+    """The set of ``observable_id``\\ s whose **multi-token** ``noiseParameters`` tuple
+    **differs** across rows -- a row-varying multi-parameter noise (Fiedler's per-gel scale ×
+    a shared sigma), bound per data point from the binding table (ADR-0075).
+
+    The multi-token companion of :func:`row_varying_noise_ids` (which covers the single-id
+    case). A constant-per-observable tuple (:func:`noise_parameters_by_observable`) and every
+    single-token cell are absent.
+    """
+    return _classify_multi_noise_params(rows)[1]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,5 @@
+parameterId	parameterName	lowerBound	upperBound	nominalValue	estimate
+v1	v1	0	10	0.5	true
+v2	v2	0	10	1	true
+v3	v3	0	10	3	true
+sd_c	fixed noise			2	false

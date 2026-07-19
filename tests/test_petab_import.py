@@ -76,6 +76,15 @@ ROWSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'rowsigma_v2
 # PerMeasurementModel evaluated in the objective's prediction step, #428 Phase 2b).
 OBSSCALE_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'obsscale_v2'
 
+# Three crafted PEtab v2 problems exercising the ADR-0075 observableParameters/noiseParameters
+# completions (issue #495): a noiseParameters id that resolves to a FIXED parameter (Oliveira ->
+# a constant sigma); a MULTI-token, row-varying noiseParameters product (Fiedler -> a
+# PerMeasurementFormulaSigma over two placeholders); and a prediction-dependent affine
+# noiseFormula (Raia -> a PredictionFormulaSigma whose sigma scales with the simulated output).
+FIXEDSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'fixedsigma_v2'
+MULTISIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'multisigma_v2'
+PREDSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'predsigma_v2'
+
 # A real-world (externally authored) PEtab v2 problem -- the regression oracle for the
 # table readers, decoupled from the model (see the fixture's SOURCE.md).
 BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
@@ -1948,3 +1957,164 @@ class TestRowVaryingObservableImport:
                 lines.append('profile_objective = kl')
         with pytest.raises(NotImplementedError, match='column-joint'):
             config_mod.Configuration(ploop((l + '\n' for l in lines)))
+
+
+# ---------------------------------------------------------------------------
+# observableParameters / noiseParameters placeholder completions (ADR-0075, issue #495)
+#
+# Three crafted PEtab v2 problems, each import-only (oracled by import correctness + a
+# simulator-free score against a hand-derived NLL), covering the three gaps #495 named:
+#   * fixedsigma_v2 (Oliveira) -- a noiseParameters id that is FIXED -> a constant sigma;
+#   * multisigma_v2 (Fiedler)  -- a MULTI-token, row-varying noiseParameters product ->
+#                                  a PerMeasurementFormulaSigma over two placeholders;
+#   * predsigma_v2  (Raia)     -- a prediction-dependent affine noiseFormula -> a
+#                                  PredictionFormulaSigma whose sigma scales with the sim output.
+# The shared model is the deterministic parabola y = v1*x^2 + v2*x + v3.
+# ---------------------------------------------------------------------------
+
+# A fixed trajectory whose obs_y differs from the data (43, 34.5, 27) by residuals (1, 2, 2).
+_SIM_Y = np.array([[0., 44.], [1., 36.5], [2., 29.]])
+
+
+def _score(cfg, model_name, pset_values):
+    """Score the fixed _SIM_Y trajectory under ``pset_values`` (a simulator-free evaluate)."""
+    import types
+    sim = Data.from_columns(_SIM_Y.copy(), ['time', 'y'], indvar='time')
+    pset = [types.SimpleNamespace(name=n, value=v) for n, v in pset_values.items()]
+    return cfg.obj.evaluate_multiple({model_name: {'epo': sim}}, cfg.exp_data, pset)
+
+
+def _load_conf(out, monkeypatch):
+    from pybnf import config as config_mod
+    monkeypatch.chdir(out)
+    return config_mod.Configuration(
+        ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+
+
+class TestFixedNoiseParamImport:
+    """A noiseParameters id resolving to a FIXED parameter imports as a constant sigma (Oliveira,
+    ADR-0075) -- not a `fit` free sigma the .conf never declares."""
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        return import_job(FIXEDSIGMA_DIR / 'problem.yaml', tmp_path_factory.mktemp('fixed') / 'out')
+
+    def test_fixed_noise_id_imports_as_constant_sigma(self, out):
+        text = (out / 'imported.conf').read_text()
+        # sd_c (estimate=false, value 2) inlines as a fixed sigma, NOT `fit sd_c`.
+        assert 'noise_model = gaussian, sigma = fix_at 2' in text
+        assert 'sd_c' not in text                       # neither a fit source nor a variable line
+
+    def test_imported_conf_loads_and_scores_with_fixed_sigma(self, out, monkeypatch):
+        cfg = _load_conf(out, monkeypatch)
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3'}   # sd_c is not a free param
+        score = _score(cfg, 'fixedsigma_model', {'v1': .5, 'v2': 1., 'v3': 3.})
+        # A fixed-scale Gaussian drops the normalizer: sum of res^2/(2*sigma^2), sigma = 2.
+        expected = float(np.sum(np.array([1., 2., 2.]) ** 2 / (2 * 2. ** 2)))
+        assert score == pytest.approx(expected)
+
+
+class TestMultiTokenRowVaryingNoiseImport:
+    """A multi-token noiseParameters product whose per-row scale differs imports as a
+    PerMeasurementFormulaSigma over BOTH placeholders, bound per data point (Fiedler, ADR-0075)."""
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        return import_job(MULTISIGMA_DIR / 'problem.yaml', tmp_path_factory.mktemp('multi') / 'out')
+
+    def test_multi_token_noise_imports_as_per_measurement_formula(self, out):
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text
+        assert ('noise_model y = gaussian, sigma = formula '
+                'noiseParameter1_obs_y * noiseParameter2_obs_y') in text
+        exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
+        assert 'measurement_params: epo_measparams.tsv' in exp_line
+
+    def test_sidecar_binds_both_noise_placeholders_per_row(self, out):
+        from pybnf.petab._measurement_params import read_measurement_params
+        table = read_measurement_params(out / 'epo_measparams.tsv')
+        # Both noiseParameter1 (the row-varying scale) and noiseParameter2 (the shared sigma)
+        # are bound per data point, keyed by the data column y (ADR-0075).
+        assert table == {'y': {
+            'noiseParameter1_obs_y': {0.0: 's_lo', 1.0: 's_hi', 2.0: 's_lo'},
+            'noiseParameter2_obs_y': {0.0: 'sig', 1.0: 'sig', 2.0: 'sig'}}}
+
+    def test_imported_conf_loads_and_scores_with_per_row_product_sigma(self, out, monkeypatch):
+        cfg = _load_conf(out, monkeypatch)
+        # s_lo/s_hi/sig are recognized as binding-table nuisances, not orphan typos.
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 's_lo', 's_hi', 'sig'}
+        epo = cfg.exp_data['multisigma_model']['epo']
+        assert epo.measurement_params == {'y': {
+            'noiseParameter1_obs_y': ['s_lo', 's_hi', 's_lo'],
+            'noiseParameter2_obs_y': ['sig', 'sig', 'sig']}}
+        score = _score(cfg, 'multisigma_model',
+                       {'v1': .5, 'v2': 1., 'v3': 3., 's_lo': .5, 's_hi': 1., 'sig': 2.})
+        # Estimated Gaussian, sigma_i = scale_i * sig: [1, 2, 1]; residuals [1, 2, 2] -> +log sigma.
+        sig = np.array([.5 * 2, 1. * 2, .5 * 2])
+        res = np.array([1., 2., 2.])
+        assert score == pytest.approx(float(np.sum(res ** 2 / (2 * sig ** 2) + np.log(sig))))
+        # A bug that dropped the second token (sigma = scale alone) would score differently.
+        wrong = np.array([.5, 1., .5])
+        assert not np.isclose(score, float(np.sum(res ** 2 / (2 * wrong ** 2) + np.log(wrong))))
+
+
+class TestPredictionDependentNoiseImport:
+    """An affine noiseFormula whose sigma scales with the simulated output imports as a
+    PredictionFormulaSigma; sigma reads the current simulation, its coefficients the PSet
+    (Raia, ADR-0075)."""
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        return import_job(PREDSIGMA_DIR / 'problem.yaml', tmp_path_factory.mktemp('pred') / 'out')
+
+    def test_affine_prediction_noise_imports_as_prediction_formula(self, out):
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text
+        # The two noiseParameters tokens substitute in by index; y is a model entity, so the
+        # source is prediction_formula (not the free-parameter-only `formula`).
+        line = next(l for l in text.splitlines() if l.startswith('noise_model y'))
+        assert 'prediction_formula sd_abs + sd_rel*y' in line
+
+    def test_imported_conf_loads_and_scores_against_sim_based_nll(self, out, monkeypatch):
+        cfg = _load_conf(out, monkeypatch)
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'sd_abs', 'sd_rel'}
+        score = _score(cfg, 'predsigma_model',
+                       {'v1': .5, 'v2': 1., 'v3': 3., 'sd_abs': .5, 'sd_rel': .1})
+        # sigma_i = sd_abs + sd_rel * y_SIM_i = 0.5 + 0.1*[44, 36.5, 29] = [4.9, 4.15, 3.4].
+        sig = 0.5 + 0.1 * _SIM_Y[:, 1]
+        res = np.array([1., 2., 2.])
+        assert score == pytest.approx(float(np.sum(res ** 2 / (2 * sig ** 2) + np.log(sig))))
+        # A bug that evaluated sigma at the MEASURED value (43, 34.5, 27) scores differently.
+        sig_data = 0.5 + 0.1 * np.array([43., 34.5, 27.])
+        assert not np.isclose(score, float(np.sum(res ** 2 / (2 * sig_data ** 2) + np.log(sig_data))))
+
+    def test_prediction_noise_source_survives_pickle(self, out, monkeypatch):
+        # The objective carrying the PredictionFormulaSigma is scattered to dask workers; the
+        # lambdify callable is dropped + rebuilt worker-side (ADR-0075), so a round-tripped
+        # objective scores identically.
+        import pickle
+        import types
+        cfg = _load_conf(out, monkeypatch)
+        obj = pickle.loads(pickle.dumps(cfg.obj))
+        exp = {m: {s: pickle.loads(pickle.dumps(d)) for s, d in sd.items()}
+               for m, sd in cfg.exp_data.items()}
+        sim = Data.from_columns(_SIM_Y.copy(), ['time', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': .5, 'v2': 1., 'v3': 3., 'sd_abs': .5, 'sd_rel': .1}.items()]
+        score = obj.evaluate_multiple({'predsigma_model': {'epo': sim}}, exp, pset)
+        sig = 0.5 + 0.1 * _SIM_Y[:, 1]
+        res = np.array([1., 2., 2.])
+        assert score == pytest.approx(float(np.sum(res ** 2 / (2 * sig ** 2) + np.log(sig))))
+
+    def test_prediction_formula_over_free_params_only_is_rejected(self, tmp_path, monkeypatch):
+        # prediction_formula must reference a model output; a σ over free parameters alone should
+        # use `formula` instead (ADR-0075) -- config raises a pointed error at load.
+        from pybnf import config as config_mod
+        prob = tmp_path / 'prob'
+        shutil.copytree(PREDSIGMA_DIR, prob)
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        text = (out / 'imported.conf').read_text().replace(
+            'prediction_formula sd_abs + sd_rel*y', 'prediction_formula sd_abs + sd_rel')
+        monkeypatch.chdir(out)   # monkeypatch restores the cwd on teardown (no leak into later tests)
+        with pytest.raises(PybnfError, match='references no model output'):
+            config_mod.Configuration(ploop(text.splitlines(keepends=True)))
