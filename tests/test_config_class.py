@@ -155,8 +155,10 @@ class TestConfig(object):
 
     # --- _check_variable_keyword_combination (var/logvar-vs-prior rule, #404) ---
     # Driven directly on a bare instance (no full build): it only reads self.config
-    # keys + the fit_type. The start-point optimizers are sim/powell (point-only)
-    # and cmaes (also box-capable, start_from_box).
+    # keys + the fit_type. All three start-point optimizers are now box-capable
+    # (start_from_box): cmaes (#404) and -- via concurrent multi-start, #498/ADR-0072
+    # -- sim and powell. So the box rules below hold for the whole set.
+    _BOX_OPTIMIZERS = ['cmaes', 'sim', 'powell']
 
     @staticmethod
     def _kw_checker(var_tuples):
@@ -164,39 +166,32 @@ class TestConfig(object):
         c.config = dict(var_tuples)
         return c
 
-    def test_kw_combo_box_optimizer_accepts_bounded_priors(self):
-        """CMA-ES (start_from_box) accepts a bounded-prior box -> no raise."""
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_box_optimizer_accepts_bounded_priors(self, fit_type):
+        """A box optimizer (start_from_box) accepts a bounded-prior box -> no raise."""
         c = self._kw_checker({('uniform_var', 'p1'): [-10., 10.],
                               ('loguniform_var', 'p2'): [0.1, 100.]})
-        c._check_variable_keyword_combination('cmaes')  # must not raise
+        c._check_variable_keyword_combination(fit_type)  # must not raise
 
-    def test_kw_combo_box_optimizer_accepts_point_start(self):
-        """CMA-ES still accepts a single var/logvar start point -> no raise."""
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_box_optimizer_accepts_point_start(self, fit_type):
+        """A box optimizer still accepts a single var/logvar start point -> no raise."""
         c = self._kw_checker({('var', 'p1'): [1., 0.5], ('logvar', 'p2'): [3.]})
-        c._check_variable_keyword_combination('cmaes')  # must not raise
+        c._check_variable_keyword_combination(fit_type)  # must not raise
 
-    @raises(printing.PybnfError)
-    def test_kw_combo_box_optimizer_rejects_unbounded_prior(self):
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_box_optimizer_rejects_unbounded_prior(self, fit_type):
         """A box search needs a bounded box: normal_var (unbounded) is rejected."""
         c = self._kw_checker({('normal_var', 'p1'): [0., 1.]})
-        c._check_variable_keyword_combination('cmaes')
+        with pytest.raises(printing.PybnfError):
+            c._check_variable_keyword_combination(fit_type)
 
-    @raises(printing.PybnfError)
-    def test_kw_combo_box_optimizer_rejects_mixed_point_and_box(self):
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_box_optimizer_rejects_mixed_point_and_box(self, fit_type):
         """A var point mixed with a uniform_var box is ambiguous -> rejected."""
         c = self._kw_checker({('var', 'p1'): [1.], ('uniform_var', 'p2'): [-10., 10.]})
-        c._check_variable_keyword_combination('cmaes')
-
-    @raises(printing.PybnfError)
-    def test_kw_combo_point_only_optimizer_rejects_bounded_prior(self):
-        """Powell (point-only, not start_from_box) still rejects uniform_var."""
-        c = self._kw_checker({('uniform_var', 'p1'): [-10., 10.]})
-        c._check_variable_keyword_combination('powell')
-
-    def test_kw_combo_point_only_optimizer_accepts_point_start(self):
-        """Negative control: Simplex with var/logvar -> no raise."""
-        c = self._kw_checker({('var', 'p1'): [1., 0.5], ('logvar', 'p2'): [3.]})
-        c._check_variable_keyword_combination('sim')  # must not raise
+        with pytest.raises(printing.PybnfError):
+            c._check_variable_keyword_combination(fit_type)
 
     @raises(printing.PybnfError)
     def test_kw_combo_sampler_rejects_var_keyword(self):

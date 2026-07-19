@@ -1,14 +1,29 @@
 """SimplexAlgorithm — the parallelized Nelder-Mead simplex (the ``sim`` fit type).
 
-Also used as the refinement step after another fit. Extracted byte-identical
-(M1 Step 4). Subclasses Algorithm and sets ``_is_simplex = True`` so the
-inherited run() teardown always clears the Simulations directory at end-of-fit.
-The start value is mapped out of sampling space by the parameter's own scale
-(``FreeParameter.from_sampling_space``), so log10 and natural-log vars both work.
+Also used as the refinement step after another fit. Subclasses
+:class:`~pybnf.algorithms.optimizers.local_base.StartPointOptimizer` (the shared
+start-point / ``u`` <-> ``PSet`` plumbing it now shares with Powell and CMA-ES) and sets
+``_is_simplex = True`` so the inherited ``run()`` teardown always clears the Simulations
+directory at end-of-fit. It runs from a single ``var`` / ``logvar`` start point *or*, over a
+bounded-prior box, from the box center -- its global-start mode (``start_from_box``,
+#404/ADR-0017), which also unlocks concurrent multi-start (``n_starts``, #498). The start
+value is mapped out of sampling space by the parameter's own scale, so log10 and natural-log
+vars both work.
+
+Concurrency (#498). One simplex fans out only ``parallel_count`` (roughly
+``n_variables - 1``) probes per generation. :class:`SimplexRunner` factors the whole
+Nelder-Mead state machine into a headless, picklable per-start object so
+:class:`~pybnf.algorithms.optimizers.local_multistart.LocalMultiStartOptimizer` can run
+``n_starts`` of them **concurrently** (``n_starts x parallel_count`` probes in flight),
+keeping the global best. A point-start / refine fit is a single runner, byte-identical to
+the pre-multi-start behavior; each runner keeps Simplex's exact box-clamped reflection /
+expansion / contraction arithmetic.
 """
 
 
-from ..base import Algorithm
+from .local_base import StartPointOptimizer
+from .local_multistart import DONE, LocalMultiStartOptimizer
+from .multistart import MultiStartConfig
 from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2
@@ -23,15 +38,17 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-class SimplexConfig(PyBNFConfigModel):
+class SimplexConfig(MultiStartConfig, PyBNFConfigModel):
     """Simplex (Nelder-Mead) config fields, co-located with the method (ADR-0002,
     ADR-0006) -- the six defaulted ``simplex_*`` knobs ``__init__`` reads
     unconditionally. NOT here (stay pass-through extras): ``simplex_max_iterations``
     and ``simplex_log_step`` are runtime-guarded (``if 'X' in config.config``) so
     they default at runtime, and ``simplex_start_point`` is an internal key the
-    algorithm sets itself. The Simplex ``var``/``logvar``-only free-parameter rule
-    stays in ``config.py`` (cross-config knowledge, ADR-0006 #5). Values are
-    byte-identical to the old ``GlobalConfig`` defaults.
+    algorithm sets itself. The Simplex ``var``/``logvar``-vs-prior free-parameter rule
+    stays in ``config.py`` (cross-config knowledge, ADR-0006 #5). Inherits the shared
+    ``n_starts`` multi-start field (``MultiStartConfig``, #498): ``sim`` in box /
+    global-start mode runs ``n_starts`` concurrent starts, keeping the global best.
+    Values are byte-identical to the old ``GlobalConfig`` defaults.
 
     The refine->simplex cross-fit_type reach (ADR-0006/0013): ``_refine_best_fit``
     runs Simplex on a *non*-simplex config and reads ``simplex_*``. Under narrowing
@@ -54,97 +71,64 @@ class SimplexConfig(PyBNFConfigModel):
     RUNTIME_KEYS = frozenset({'simplex_max_iterations', 'simplex_log_step'})
 
 
-@register_fit_type('sim', family='optimizer', display_name='Simplex',
-                   schema=SimplexConfig, refiner=True)
-class SimplexAlgorithm(Algorithm):
+class SimplexRunner:
+    """Headless, picklable per-start Nelder-Mead simplex state machine (#498).
+
+    Simplex's parallelized state machine (Lee and Wiswall 2007), factored out of the
+    optimizer so a single fit can run ``N`` of them **concurrently** -- local multi-start,
+    the diversity a purely local method otherwise lacks. A runner owns one start's entire
+    mutable state -- the simplex vertices, the per-iteration reflection / expansion /
+    contraction bookkeeping, the pending map -- and works in :class:`~pybnf.pset.PSet`
+    space with Simplex's exact box-clamped arithmetic; it knows nothing about the
+    trajectory, backup, or dask. The orchestrator
+    (:class:`~pybnf.algorithms.optimizers.local_multistart.LocalMultiStartOptimizer`)
+    drives it::
+
+        psets = runner.start()                 # the initial n+1 simplex vertices
+        nxt = runner.got(pset, score)          # -> list[PSet] | DONE
+
+    where ``got`` consumes one completed evaluation (routed to its vertex by PSet name) and
+    returns the next batch of PSets to evaluate, or the :data:`DONE` sentinel when this
+    start has spent its iteration budget or its moves fell below ``simplex_stop_tol``. All
+    state is plain ``list`` / ``dict`` / ``int`` plus PSets, so the optimizer that owns the
+    list of runners pickles for backup/resume exactly like the single-start machine did
+    (ADR-0007).
+
+    Index convention (unchanged from the original single-simplex code): in the
+    per-iteration lists, index 0 corresponds to the process from the worst point on the
+    simplex, ``simplex[-1]``, index 1 to ``simplex[-2]``, etc.
     """
-    Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
-    Computational Economics
 
-    """
+    def __init__(self, variables, rng, start_point, start_steps, max_iterations,
+                 parallel_count, alpha, gamma, beta, tau, stop_tol):
+        self.variables = variables
+        self.rng = rng
+        self.start_point = start_point
+        self.start_steps = start_steps
+        self.max_iterations = max_iterations
+        self.parallel_count = parallel_count
+        self.alpha = alpha        # reflection
+        self.gamma = gamma        # expansion
+        self.beta = beta          # contraction
+        self.tau = tau            # shrink
+        self.stop_tol = stop_tol
 
-    _is_simplex = True
-
-    #: Internal config key the refiner start point is injected under, read by
-    #: __init__ below and written by pybnf._refine_best_fit (the registry-driven
-    #: refiner dispatch, #403/ADR-0015). Simplex predates StartPointOptimizer and
-    #: keeps its own byte-identical start-point parsing, so this is declared here.
-    START_POINT_KEY = 'simplex_start_point'
-
-    def __init__(self, config, refine=False):
-        super().__init__(config)
-        if 'simplex_start_point' not in self.config.config:
-            # We need to set up the initial point ourselfs
-            self._parse_start_point()
-        if 'simplex_max_iterations' in self.config.config:
-            self.max_iterations = self.config.config['simplex_max_iterations']
-        else:
-            self.max_iterations = self.config.config['max_iterations']
-        self.start_point = self.config.config['simplex_start_point']
-        # Set the start step for each variable to a variable-specific value, or else an algorithm-wide value
-        self.start_steps = dict()
-        for v in self.variables:
-            if v.type in ('var', 'logvar') and v.p2 is not None:
-                self.start_steps[v.name] = v.p2
-            elif 'simplex_log_step' in self.config.config and v.log_space:
-                self.start_steps[v.name] = self.config.config['simplex_log_step']
-            else:
-                self.start_steps[v.name] = self.config.config['simplex_step']
-
-        self.parallel_count = min(self.config.config['population_size'], max(len(self.variables) - 1, 1))
         self.iteration = 0
-        self.alpha = self.config.config['simplex_reflection']
-        self.gamma = self.config.config['simplex_expansion']
-        self.beta = self.config.config['simplex_contraction']
-        self.tau = self.config.config['simplex_shrink']
+        self.fval = None          # best simplex score (for progress reporting)
+        self.stop_reason = None
+        self.simplex = []         # (score, PSet) points making up the simplex. Sorted each iteration.
 
-        self.simplex = []  # (score, PSet) points making up the simplex. Sorted after each iteration.
+        # Per-iteration progress bookkeeping (see the index convention above).
+        self.stages = []          # -1 initialization; 1 running first point; 2 running second; 3 done
+        self.first_points = []    # (score, PSet) after the first run of the iteration completes
+        self.second_points = []   # (score, PSet) after the second run completes, if applicable
+        self.cases = []           # which case (1, 2, 3) triggered for the first point
+        self.centroids = []       # centroid of the other simplex points, per working point
+        self.pending = dict()     # PSet name (str) -> index of the point in the lists above
 
-        # Data structures to keep track of the progress of one iteration.
-        # In these, index 0 corresponds to the process from the worst point on the simplex, simplex[-1], index 1 to
-        # simplex[-2], etc.
-        self.stages = []  # Which stage of the iteration am I on? -1 initialization; 1 running first point; 2 running
-        # second point; 3 done
-        self.first_points = []  # Store (score, PSet) after the first run of the iteration completes
-        self.second_points = []  # Store (score, PSet) after the second run completes, if applicable
-        self.cases = []  # Which case number triggered after I got the score for the first point? (1, 2 or 3)
-        self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
-        # working with
-        self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
-        self.refine = refine
-
-    def reset(self, bootstrap=None):
-        super().reset(bootstrap)
-        self.iteration = 0
-        self.simplex = []
-
-        self.stages = []
-        self.first_points = []
-        self.second_points = []
-        self.cases = []
-        self.centroids = []
-        self.pending = dict()
-
-    def _parse_start_point(self):
-        """
-        Called when the start point is not passed in the config (which is when we're doing a pure simplex run,
-        as opposed to a refinement at the end of the run)
-        Parses the info out of the variable specs, and sets the appropriate PSet into the config.
-        """
-        start_vars = []
-        for v in self.variables:
-            # var/logvar/lnvar carry a single start value p1 in the parameter's sampling
-            # space; the scale maps it back to a stored value (10**p1 for log10, exp(p1)
-            # for ln, identity for linear).
-            start_vars.append(v.set_value(v.from_sampling_space(v.p1)))
-        start_pset = PSet(start_vars)
-        self.config.config['simplex_start_point'] = start_pset
-
-    def start_run(self):
-        print2('Running local optimization by the Simplex algorithm for %i iterations' % self.max_iterations)
-
-        # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
-        # specified step size
+    def start(self):
+        """The initial ``n+1`` simplex vertices: the start point, plus one per variable moved
+        by its step size."""
         self.start_point.name = 'simplex_init0'
         init_psets = [self.start_point]
         self.pending[self.start_point.name] = 0
@@ -162,13 +146,10 @@ class SimplexAlgorithm(Algorithm):
             i += 1
             init_psets.append(new_pset)
         self.simplex = []
-        self.stages = [-1]*len(init_psets)
+        self.stages = [-1] * len(init_psets)
         return init_psets
 
-    def got_result(self, res):
-
-        pset = res.pset
-        score = res.score
+    def got(self, pset, score):
         index = self.pending.pop(pset.name)
 
         if self.stages[index] == -1:
@@ -229,18 +210,14 @@ class SimplexAlgorithm(Algorithm):
                 self.stages[index] = 2
                 return [new_pset]
         else:
-            raise RuntimeError('Internal error in SimplexAlgorithm')
+            raise RuntimeError('Internal error in SimplexRunner')
 
         if min(self.stages) == 3:
-            # All points in current iteration completed
+            # All points in current iteration completed. Advance the iteration counter and
+            # record the best score; the orchestrator's _report handles the progress line
+            # and periodic output (the runner is headless -- no trajectory here).
             self.iteration += 1
-            if self.iteration % self.config.config['output_every'] == 0:
-                self.output_results()
-            if self.iteration % 10 == 0:
-                print1('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-            else:
-                print2('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-            print2(f'Current best score: {sorted(self.simplex, key=lambda x: x[0])[0][0]:f}')
+            self.fval = min(s[0] for s in self.simplex)
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
@@ -265,10 +242,11 @@ class SimplexAlgorithm(Algorithm):
                             self.simplex[si] = self.first_points[i]
                         # else don't edit the simplex, neither is an improvement
                     else:
-                        raise RuntimeError('Internal error in SimplexAlgorithm')
+                        raise RuntimeError('Internal error in SimplexRunner')
 
                 if self.iteration == self.max_iterations:
-                    return 'STOP'  # Quit after the final simplex update
+                    self.stop_reason = 'reached the %i-iteration budget' % self.max_iterations
+                    return DONE  # Quit after the final simplex update
 
                 if not productive:
                     # None of the points in the last iteration improved the simplex.
@@ -301,12 +279,13 @@ class SimplexAlgorithm(Algorithm):
             self.simplex = sorted(self.simplex, key=lambda x: x[0])
             self._check_degeneracy()
             if self.iteration == self.max_iterations:
-                return 'STOP' # Extra catch if finish on a rebuild the simplex iteration
+                self.stop_reason = 'reached the %i-iteration budget' % self.max_iterations
+                return DONE  # Extra catch if finish on a rebuild the simplex iteration
             # Find the reflection point for the n worst points
             reflections = []
             self.centroids = []
             # Sum of each param value, to help take the reflections
-            sums = self.get_sums() # Returns in log space for log variables
+            sums = self.get_sums()  # Returns in log space for log variables
             max_diff = 0.
             for ai in range(self.parallel_count):
                 a = self.simplex[-ai-1][1]
@@ -330,9 +309,12 @@ class SimplexAlgorithm(Algorithm):
                 reflections.append(new_pset)
                 self.pending[new_pset.name] = ai
             # Check for stop criterion due to moves being too small
-            if max_diff < self.config.config['simplex_stop_tol']:
-                logger.info(f'Stopping simplex because the maximum move attempted this iteration was {max_diff}')
-                return 'STOP'
+            if max_diff < self.stop_tol:
+                self.stop_reason = ('simplex moves fell below simplex_stop_tol (max move %g)'
+                                    % max_diff)
+                logger.info('Stopping simplex because the maximum move attempted this '
+                            'iteration was %s' % max_diff)
+                return DONE
 
             # Reset data structures to track this iteration
             self.stages = [1] * len(reflections)
@@ -444,3 +426,94 @@ class SimplexAlgorithm(Algorithm):
         result = v.from_sampling_space(
             a * v.to_sampling_space(b) + c * v.to_sampling_space(d))
         return max(v.lower_bound, min(v.upper_bound, result))
+
+
+@register_fit_type('sim', family='optimizer', display_name='Simplex',
+                   schema=SimplexConfig, refiner=True, start_from_box=True)
+class SimplexAlgorithm(LocalMultiStartOptimizer, StartPointOptimizer):
+    """The parallelized Nelder-Mead simplex (Lee and Wiswall 2007), as ``n_starts``
+    concurrent :class:`SimplexRunner`\\ s.
+
+    A standalone box fit (bounded priors) runs ``n_starts`` independent starts concurrently
+    -- start 0 from the box center, the rest from Latin-hypercube samples -- and keeps the
+    global best (:class:`LocalMultiStartOptimizer`). A point-start (``var`` / ``logvar``) or
+    refiner-injected fit is a single runner, byte-identical to the pre-multi-start behavior.
+    Sets ``_is_simplex`` so the inherited ``run()`` teardown clears the Simulations directory.
+    """
+
+    _is_simplex = True
+
+    #: Internal config key the refiner start point is injected under, resolved by the shared
+    #: ``StartPointOptimizer._resolve_start_pset`` (box center / point / injected) and written
+    #: by ``pybnf._refine_best_fit`` (the registry-driven refiner dispatch, #403/ADR-0015).
+    START_POINT_KEY = 'simplex_start_point'
+    _method_label = 'Simplex'
+
+    def __init__(self, config, refine=False):
+        super().__init__(config, refine=refine)
+        if 'simplex_max_iterations' in self.config.config:
+            self.max_iterations = self.config.config['simplex_max_iterations']
+        else:
+            self.max_iterations = self.config.config['max_iterations']
+        # Per-variable start step: a variable-specific p2 (var/logvar), else the log-space or
+        # algorithm-wide step. Shared by every start (only the start point differs).
+        self.start_steps = dict()
+        for v in self.variables:
+            if v.type in ('var', 'logvar') and v.p2 is not None:
+                self.start_steps[v.name] = v.p2
+            elif 'simplex_log_step' in self.config.config and v.log_space:
+                self.start_steps[v.name] = self.config.config['simplex_log_step']
+            else:
+                self.start_steps[v.name] = self.config.config['simplex_step']
+        self.parallel_count = min(self.config.config['population_size'],
+                                  max(len(self.variables) - 1, 1))
+        self.alpha = self.config.config['simplex_reflection']
+        self.gamma = self.config.config['simplex_expansion']
+        self.beta = self.config.config['simplex_contraction']
+        self.tau = self.config.config['simplex_shrink']
+        self.stop_tol = self.config.config['simplex_stop_tol']
+
+    # --- LocalMultiStartOptimizer leaf hooks -------------------------------- #
+    def _make_runner(self, start_pset, rng):
+        # Each start gets its own Generator (Simplex's degeneracy perturbation draws from it),
+        # so concurrent starts reproduce independently of dask's result order.
+        return SimplexRunner(self.variables, rng, start_pset, self.start_steps,
+                             self.max_iterations, self.parallel_count,
+                             self.alpha, self.gamma, self.beta, self.tau, self.stop_tol)
+
+    def _seed(self, idx, runner):
+        return [self._tag(idx, p) for p in runner.start()]
+
+    def _advance(self, idx, runner, res):
+        # Strip the start's prefix so the runner sees exactly the clean name it generated
+        # (Simplex routes results to vertices by PSet name, so the tag must be invisible to it).
+        res.pset.name = self._strip(idx, res.pset.name)
+        out = runner.got(res.pset, res.score)
+        if out is DONE:
+            return DONE
+        return [self._tag(idx, p) for p in out]
+
+    def _tag(self, idx, pset):
+        """Tag ``pset`` with the start's prefix (``s<k>_``; start 0 is untagged, so a
+        single-start run's names are byte-identical) so restarts get unique sim folders and
+        a unique routing key, then record it as owned by start ``idx``."""
+        if idx > 0:
+            pset.name = 's%d_%s' % (idx, pset.name)
+        return self._route(idx, pset)
+
+    def _strip(self, idx, name):
+        prefix = '' if idx == 0 else 's%d_' % idx
+        if prefix and name.startswith(prefix):
+            return name[len(prefix):]
+        return name
+
+    def _report(self, runner):
+        if runner.iteration % self.config.config['output_every'] == 0:
+            self.output_results()
+        (print1 if runner.iteration % 10 == 0 else print2)(
+            'Completed %i of %i Simplex iterations' % (runner.iteration, runner.max_iterations))
+        print2('Current best score: %f' % runner.fval)
+
+    def _start_banner(self):
+        return ('Running local optimization by the Simplex algorithm for %i iterations'
+                % self.max_iterations)

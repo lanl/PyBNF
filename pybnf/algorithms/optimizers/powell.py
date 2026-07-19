@@ -4,7 +4,9 @@ A native, derivative-free local optimizer (Numerical Recipes §10.7), implemente
 inside PyBNF's run-loop contract -- ``start_run`` / ``got_result`` only, no
 ``run()`` override (ADR-0007). It is the second user-selectable refiner alongside
 Simplex (``refine_method = powell``) and also runs standalone (``fit_type =
-powell``), started from a single ``var`` / ``logvar`` point exactly like Simplex.
+powell``), started from a single ``var`` / ``logvar`` point *or*, over a
+bounded-prior box, from the box center -- its global-start mode (``start_from_box``,
+#404/ADR-0017), which also unlocks concurrent multi-start (``n_starts``, #498).
 
 Why native (not ``scipy.optimize.minimize``): ``scipy`` is a *blocking driver*,
 which would force either a ``run()`` override or a bridging thread; reimplementing
@@ -25,10 +27,15 @@ confined to the *feasible* ``t``-interval -- the range of step lengths that keep
 every parameter inside its box -- so the bound reflection never folds the 1-D
 slice and Brent sees the true objective; a minimum that wants to lie past a bound
 lands on the boundary. Unlike the fixed-step parabola, this follows long curved
-(non-quadratic) valleys and adapts its step. It is **serial** -- one objective
-evaluation per reactor batch -- so Powell no longer evaluates probes concurrently
-(it was only ever two jobs on a single-point search); CMA-ES is the parallel
-derivative-free method.
+(non-quadratic) valleys and adapts its step.
+
+Concurrency (#498). One Powell search is strictly serial -- one line-search probe
+in flight at a time -- so a single run uses one worker. :class:`PowellRunner`
+factors that serial search into a headless, picklable per-start step machine so
+:class:`~pybnf.algorithms.optimizers.local_multistart.LocalMultiStartOptimizer`
+can run ``n_starts`` of them **concurrently** (one worker each), the diversity a
+purely local method otherwise lacks. A point-start / refine fit is a single runner,
+byte-identical to the pre-multi-start behavior.
 
 All state is plain ``numpy`` / ``float`` / ``list`` -- no generator, no thread,
 including the ``_BrentLineSearch`` sub-state-machine -- so ``Algorithm.backup``
@@ -36,6 +43,8 @@ can pickle the optimizer mid-run and ``run(resume=...)`` continues it.
 """
 
 from .local_base import StartPointOptimizer
+from .local_multistart import DONE, LocalMultiStartOptimizer
+from .multistart import MultiStartConfig
 from ...config_schema import PyBNFConfigModel
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -51,7 +60,7 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-class PowellConfig(PyBNFConfigModel):
+class PowellConfig(MultiStartConfig, PyBNFConfigModel):
     """Powell config fields, co-located with the method (ADR-0002, ADR-0006).
 
     ``powell_step`` is the initial bracketing step in sampling space ``u`` (a
@@ -63,7 +72,9 @@ class PowellConfig(PyBNFConfigModel):
     ``simplex_max_iterations``, ``powell_max_iterations`` (the cycle budget) is
     runtime-guarded -- it defaults to the global ``max_iterations`` when unset --
     so it is a valid key but not a schema field. ``powell_start_point`` is internal
-    (the refiner injects it), so it is not modeled here either.
+    (the refiner injects it), so it is not modeled here either. Inherits the shared
+    ``n_starts`` multi-start field (``MultiStartConfig``, #498): ``powell`` in box /
+    global-start mode runs ``n_starts`` concurrent starts, keeping the global best.
     """
 
     powell_step: float = 1.0
@@ -73,58 +84,54 @@ class PowellConfig(PyBNFConfigModel):
     RUNTIME_KEYS: ClassVar[frozenset] = frozenset({'powell_max_iterations'})
 
 
-@register_fit_type('powell', family='optimizer', display_name='Powell',
-                   schema=PowellConfig, refiner=True)
-class PowellAlgorithm(StartPointOptimizer):
-    """Powell's conjugate-direction method as a picklable reactor state machine."""
+class PowellRunner:
+    """Headless, picklable per-start Powell state machine in sampling space ``u`` (#498).
 
-    #: Refiner start-point key (see StartPointOptimizer / pybnf._refine_best_fit).
-    START_POINT_KEY = 'powell_start_point'
+    Powell's conjugate-direction search, factored out of the optimizer so a single fit
+    can run ``N`` of them **concurrently** -- local multi-start, the diversity a purely
+    local method otherwise lacks (it only ever descends into the one basin its start
+    lands in). A runner owns one start's entire mutable state -- the iterate, the search
+    directions, the ``_BrentLineSearch`` scratch, the reflecting box, the tunables -- and
+    is pure ``numpy`` / ``float`` / ``list``: it knows nothing about
+    :class:`~pybnf.pset.PSet`\\ s, the objective, backup, or dask. The orchestrator
+    (:class:`~pybnf.algorithms.optimizers.local_multistart.LocalMultiStartOptimizer`)
+    drives it one evaluation at a time (Powell is serial)::
+
+        (u, label), = runner.start()            # the first point to evaluate
+        nxt = runner.got(u_point, score)        # -> [(u, label), ...] or DONE
+
+    where each ``(u, label)`` is a next ``u``-point to evaluate (``label`` distinguishes
+    the ``init`` / ``line`` / ``extrap`` phase in the submitted pset name), ``u_point`` is
+    the realized (box-projected) ``u`` of the completed evaluation, and ``score`` its
+    objective. ``got`` returns the next point(s) to evaluate, or the :data:`DONE` sentinel
+    when this start has converged or spent its cycle budget. Because a runner holds only
+    plain ``float`` / ``ndarray`` / ``list``, the optimizer that owns the list of runners
+    pickles for backup/resume exactly like the single-start machine did (ADR-0007).
+    """
 
     # Safety cap on evaluations per 1-D line search (bracketing + Brent combined).
     # Brent converges superlinearly, so this is essentially never reached; on
     # exhaustion the line search returns the best point seen (ADR-0016).
     _MAX_LINE_EVALS = 100
 
-    def __init__(self, config, refine=False):
-        super().__init__(config)
-        self.refine = refine
-        self.n = len(self.variables)
-        self.step = config.config['powell_step']
-        self.line_tol = config.config['powell_line_tol']
-        self.stop_tol = config.config['powell_stop_tol']
-        if 'powell_max_iterations' in config.config:
-            self.max_cycles = config.config['powell_max_iterations']
-        else:
-            self.max_cycles = config.config['max_iterations']
-        # Box bounds in sampling space u (log10 for log parameters, identity
-        # otherwise), per variable -- finite only for bounded (uniform/loguniform)
-        # parameters; +-inf for the unbounded var/logvar of a standalone fit. The
-        # line search clamps to these so it never drives a point out of the box
-        # (where set_value would reflect and fold the 1-D slice).
-        lower, upper = [], []
-        for v in self.variables:
-            if v.bounded:
-                # Box bounds in sampling space u; the parameter applies log10 for a
-                # log variable, identity otherwise (#412).
-                lo = v.to_sampling_space(v.lower_bound)
-                hi = v.to_sampling_space(v.upper_bound)
-            else:
-                lo, hi = -np.inf, np.inf
-            lower.append(lo)
-            upper.append(hi)
-        self._u_lower = np.array(lower, dtype=float)
-        self._u_upper = np.array(upper, dtype=float)
-        self.start_pset = self._resolve_start_pset()
+    def __init__(self, u0, lower, upper, max_iterations, step, line_tol, stop_tol):
+        self.point = np.array(u0, dtype=float)   # current best point (u-space)
+        self._u_lower = lower                    # reflecting box (constant per fit)
+        self._u_upper = upper
+        self.n = len(self.point)
+        self.max_iterations = max_iterations     # cycle budget
+        self.step = step
+        self.line_tol = line_tol
+        self.stop_tol = stop_tol
+        self.fval = None            # objective at self.point
+        self.iteration = 0          # completed cycles (drives reporting / budget)
+        self.stop_reason = None     # set to a human string when got() returns DONE
         self._init_state()
 
     def _init_state(self):
-        """(Re)initialize the mutable search state. Directions start as the
-        coordinate axes; everything else is filled in by start_run."""
+        """Initialize the mutable search state. Directions start as the coordinate axes;
+        the rest is filled in as the search runs."""
         self.dirs = [np.eye(self.n)[i] for i in range(self.n)]
-        self.point = None          # current best point (u-space)
-        self.fval = None           # objective at self.point
-        self.cycle = 0
         self.dir_index = 0
         self.cycle_start_point = None
         self.cycle_start_fval = None
@@ -139,60 +146,27 @@ class PowellAlgorithm(StartPointOptimizer):
         self.ls_dir = None
         self.ls = None
         self.ls_pending_t = None
-        # Batch accumulation (mirrors DE's waiting_count): collect a round of
-        # probe jobs before advancing the state machine.
-        self.phase = None
-        self.batch = {}            # pset name -> (u_vector, score)
-        self.batch_remaining = 0
-        self.probe_counter = 0
+        self.phase = 'init'
 
-    def reset(self, bootstrap=None):
-        super().reset(bootstrap)
-        self._init_state()
+    # --- driver ------------------------------------------------------------ #
+    def start(self):
+        """The first point to evaluate (the start point, ``init`` phase)."""
+        return [(self.point, 'init')]
 
-    def add_iterations(self, n):
-        self.max_cycles += n
-
-    # --- batch plumbing ---------------------------------------------------- #
-    def _submit(self, labeled_points, phase):
-        """Queue a batch of probe jobs and return the PSets to run. ``phase`` is
-        the state to dispatch to once every job in the batch has returned."""
-        self.phase = phase
-        self.batch = {}
-        self.batch_remaining = len(labeled_points)
-        psets = []
-        for label, u in labeled_points:
-            self.probe_counter += 1
-            name = 'powell_%i_%s' % (self.probe_counter, label)
-            psets.append(self._pset_from_u(u, name=name))
-        return psets
-
-    def got_result(self, res):
-        # Record the actual (post-reflection) evaluated point and its score, so
-        # every internal vector is a genuinely evaluated, in-bounds point.
-        self.batch[res.pset.name] = (self._u_from_pset(res.pset), res.score)
-        self.batch_remaining -= 1
-        if self.batch_remaining > 0:
-            return []
-        return self._advance()
-
-    # --- state machine ----------------------------------------------------- #
-    def start_run(self):
-        print2('Running local optimization by Powell\'s method for up to %i cycles'
-               % self.max_cycles)
-        self.point = self._u_from_pset(self.start_pset)
-        return self._submit([('init', self.point)], 'init')
-
-    def _advance(self):
+    def got(self, u, score):
+        """Consume one completed evaluation and return the next point(s) or :data:`DONE`."""
         if self.phase == 'init':
-            (self.point, self.fval), = self.batch.values()
+            # The realized (post-reflection) evaluated point becomes the current point.
+            self.point = np.array(u, dtype=float)
+            self.fval = score
             return self._begin_cycle()
         if self.phase == 'line':
-            return self._after_line_point()
+            return self._after_line_point(score)
         if self.phase == 'extrap':
-            return self._after_extrap()
-        raise RuntimeError(f'Internal error in PowellAlgorithm: phase {self.phase!r}')
+            return self._after_extrap(score)
+        raise RuntimeError(f'Internal error in PowellRunner: phase {self.phase!r}')
 
+    # --- state machine ----------------------------------------------------- #
     def _begin_cycle(self):
         self.cycle_start_point = self.point.copy()
         self.cycle_start_fval = self.fval
@@ -203,9 +177,9 @@ class PowellAlgorithm(StartPointOptimizer):
         return self._begin_line_search(self.dirs[self.dir_index])
 
     def _begin_line_search(self, direction):
-        """Start a 1-D Brent line search from the current point along
-        ``direction`` (a unit vector in u-space), confined to the feasible
-        ``t``-interval so the search never drives a point out of the box."""
+        """Start a 1-D Brent line search from the current point along ``direction`` (a unit
+        vector in u-space), confined to the feasible ``t``-interval so the search never
+        drives a point out of the box."""
         self.ls_dir = direction
         self.ls_base = self.point.copy()
         self.ls_fbase = self.fval
@@ -218,11 +192,10 @@ class PowellAlgorithm(StartPointOptimizer):
         return self._submit_line_point(t)
 
     def _feasible_interval(self, base, direction):
-        """Range of step lengths ``t`` for which ``base + t*direction`` stays
-        inside every parameter's box in u-space. Unbounded coordinates impose no
-        limit, so a standalone var/logvar fit gets ``(-inf, +inf)`` and never
-        clamps; a bounded (refine) fit gets the finite segment that avoids the
-        bound reflection (ADR-0016)."""
+        """Range of step lengths ``t`` for which ``base + t*direction`` stays inside every
+        parameter's box in u-space. Unbounded coordinates impose no limit, so a standalone
+        var/logvar fit gets ``(-inf, +inf)`` and never clamps; a bounded (box / refine) fit
+        gets the finite segment that avoids the bound reflection (ADR-0016)."""
         t_lo, t_hi = -np.inf, np.inf
         for i in range(self.n):
             di = direction[i]
@@ -236,16 +209,15 @@ class PowellAlgorithm(StartPointOptimizer):
         return t_lo, t_hi
 
     def _submit_line_point(self, t):
-        """Queue the single objective evaluation at abscissa ``t`` along the
-        current line (a one-job batch); remember ``t`` for ``_after_line_point``."""
+        """Queue the single objective evaluation at abscissa ``t`` along the current line;
+        remember ``t`` for ``_after_line_point``."""
         self.ls_pending_t = t
-        u = self.ls_base + t * self.ls_dir
-        return self._submit([('line', u)], 'line')
+        self.phase = 'line'
+        return [(self.ls_base + t * self.ls_dir, 'line')]
 
-    def _after_line_point(self):
-        """Feed the just-evaluated ``(t, score)`` to the line minimizer and either
-        queue its next probe or finish the line search."""
-        _, score = self._lookup('line')
+    def _after_line_point(self, score):
+        """Feed the just-evaluated ``(t, score)`` to the line minimizer and either queue its
+        next probe or finish the line search."""
         action = self.ls.feed(self.ls_pending_t, score)
         if action[0] == 'eval':
             return self._submit_line_point(action[1])
@@ -271,29 +243,27 @@ class PowellAlgorithm(StartPointOptimizer):
     def _end_cycle(self):
         f0 = self.cycle_start_fval
         fn = self.fval
-        # Convergence: a whole cycle barely moved the objective -- but never before
-        # at least one direction-set update has run. Cycle 0 always extrapolates
-        # (the guard below), so a sweep that lands on a valley floor cannot stop
-        # Powell before it has a chance to build the along-valley conjugate
-        # direction (ADR-0016). The diagonal Gaussian is unaffected: it reaches the
-        # mode on sweep 0 and stops on the (cycle>=1) second sweep, as before.
-        if self.cycle >= 1 and \
+        # Convergence: a whole cycle barely moved the objective -- but never before at
+        # least one direction-set update has run. Cycle 0 always extrapolates (the guard
+        # below), so a sweep that lands on a valley floor cannot stop Powell before it has
+        # a chance to build the along-valley conjugate direction (ADR-0016).
+        if self.iteration >= 1 and \
                 2.0 * (f0 - fn) <= self.stop_tol * (abs(f0) + abs(fn)) + 1e-30:
-            logger.info('Powell converged after %i cycles (objective %.6g)'
-                        % (self.cycle + 1, fn))
-            return 'STOP'
+            self.stop_reason = ('converged after %i cycles (objective %.6g)'
+                                % (self.iteration + 1, fn))
+            logger.info('Powell %s' % self.stop_reason)
+            return DONE
         # Extrapolated point P_extrap = 2*P_n - P_0, evaluated for the NR criterion.
-        p_extrap = 2.0 * self.point - self.cycle_start_point
-        return self._submit([('extrap', p_extrap)], 'extrap')
+        self.phase = 'extrap'
+        return [(2.0 * self.point - self.cycle_start_point, 'extrap')]
 
-    def _after_extrap(self):
-        _, f_extrap = self._lookup('extrap')
+    def _after_extrap(self, f_extrap):
         f0 = self.cycle_start_fval
         fn = self.fval
         df = self.biggest_decrease
-        # Numerical Recipes test (Eq. 10.7.x): adopt the net direction only when
-        # the extrapolated point improves on the cycle start and the quadratic
-        # criterion is satisfied -- otherwise keep the current direction set.
+        # Numerical Recipes test (Eq. 10.7.x): adopt the net direction only when the
+        # extrapolated point improves on the cycle start and the quadratic criterion is
+        # satisfied -- otherwise keep the current direction set.
         if f_extrap < f0:
             t = (2.0 * (f0 - 2.0 * fn + f_extrap) * (f0 - fn - df) ** 2
                  - df * (f0 - f_extrap) ** 2)
@@ -309,25 +279,92 @@ class PowellAlgorithm(StartPointOptimizer):
         return self._next_cycle()
 
     def _next_cycle(self):
-        self.cycle += 1
-        if self.cycle % self.config.config['output_every'] == 0:
-            self.output_results()
-        if self.cycle % 10 == 0:
-            print1('Completed %i of %i Powell cycles' % (self.cycle, self.max_cycles))
-        else:
-            print2('Completed %i of %i Powell cycles' % (self.cycle, self.max_cycles))
-        print2(f'Current best objective: {self.fval:f}')
-        if self.cycle >= self.max_cycles:
-            return 'STOP'
+        self.iteration += 1
+        if self.iteration >= self.max_iterations:
+            self.stop_reason = (self.stop_reason
+                                or 'reached the %i-cycle budget' % self.max_iterations)
+            return DONE
         return self._begin_cycle()
 
-    def _lookup(self, label):
-        """Fetch the (u_vector, score) of the batch job whose name ends in
-        ``label`` (names are ``powell_<counter>_<label>``, unique per batch)."""
-        for name, value in self.batch.items():
-            if name.endswith('_' + label):
-                return value
-        raise RuntimeError(f'Powell: missing batch result {label!r}')
+
+@register_fit_type('powell', family='optimizer', display_name='Powell',
+                   schema=PowellConfig, refiner=True, start_from_box=True)
+class PowellAlgorithm(LocalMultiStartOptimizer, StartPointOptimizer):
+    """Powell's conjugate-direction method: ``n_starts`` concurrent :class:`PowellRunner`\\ s.
+
+    A standalone box fit (bounded priors) runs ``n_starts`` independent starts
+    concurrently -- start 0 from the box center, the rest from Latin-hypercube samples --
+    and keeps the global best (:class:`LocalMultiStartOptimizer`). A point-start
+    (``var`` / ``logvar``) or refiner-injected fit is a single runner, byte-identical to
+    the pre-multi-start behavior.
+    """
+
+    #: Refiner start-point key (see StartPointOptimizer / pybnf._refine_best_fit).
+    START_POINT_KEY = 'powell_start_point'
+    _method_label = 'Powell'
+
+    def __init__(self, config, refine=False):
+        super().__init__(config, refine=refine)
+        self.step = config.config['powell_step']
+        self.line_tol = config.config['powell_line_tol']
+        self.stop_tol = config.config['powell_stop_tol']
+        if 'powell_max_iterations' in config.config:
+            self.max_iterations = config.config['powell_max_iterations']
+        else:
+            self.max_iterations = config.config['max_iterations']
+        # Box bounds in sampling space u (log10 for log parameters, identity otherwise),
+        # per variable -- finite only for bounded (uniform/loguniform) parameters; +-inf
+        # for the unbounded var/logvar of a standalone point fit. Each runner confines its
+        # line search to these so it never drives a point out of the box (#412).
+        lower, upper = [], []
+        for v in self.variables:
+            if v.bounded:
+                lower.append(v.to_sampling_space(v.lower_bound))
+                upper.append(v.to_sampling_space(v.upper_bound))
+            else:
+                lower.append(-np.inf)
+                upper.append(np.inf)
+        self._u_lower = np.array(lower, dtype=float)
+        self._u_upper = np.array(upper, dtype=float)
+
+    # --- LocalMultiStartOptimizer leaf hooks -------------------------------- #
+    def _make_runner(self, start_pset, rng):
+        # Powell's search is deterministic (no rng), so its per-start rng is unused.
+        return PowellRunner(self._u_from_pset(start_pset), self._u_lower, self._u_upper,
+                            self.max_iterations, self.step, self.line_tol, self.stop_tol)
+
+    def _seed(self, idx, runner):
+        return [self._dispatch(idx, u, label) for (u, label) in runner.start()]
+
+    def _advance(self, idx, runner, res):
+        # The realized (post-reflection) evaluated point in u, so the runner's internal
+        # vectors are all genuinely evaluated, in-bounds points.
+        u = self._u_from_pset(res.pset)
+        out = runner.got(u, float(res.score))
+        if out is DONE:
+            return DONE
+        return [self._dispatch(idx, u2, label) for (u2, label) in out]
+
+    def _dispatch(self, idx, u, label):
+        """Wrap a runner's proposed ``u``-point as a uniquely named PSet bound to its owning
+        start. The name carries a single global counter -- ``powell_<k>_<label>`` -- so a
+        single-start fit reproduces the historical ``powell_1_init``, ``powell_2_line``, ...
+        sequence exactly while every name stays unique across concurrent starts (the routing
+        key)."""
+        self.probe_counter += 1
+        pset = self._pset_from_u(u, name='powell_%i_%s' % (self.probe_counter, label))
+        return self._route(idx, pset)
+
+    def _report(self, runner):
+        if runner.iteration % self.config.config['output_every'] == 0:
+            self.output_results()
+        msg = 'Completed %i of %i Powell cycles' % (runner.iteration, runner.max_iterations)
+        (print1 if runner.iteration % 10 == 0 else print2)(msg)
+        print2('Current best objective: %f' % runner.fval)
+
+    def _start_banner(self):
+        return ("Running local optimization by Powell's method for up to %i cycles"
+                % self.max_iterations)
 
 
 class _BrentLineSearch:

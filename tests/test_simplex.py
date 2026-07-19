@@ -81,7 +81,8 @@ class TestSimplex:
         res.score = 4.75
         iter_2 = sim.got_result(res)
         assert len(iter_2) == 2
-        assert sim.simplex == [(4.5, next_params[0]), (5., first[0]), (5.5, next_params[1]), (6., first[3])]
+        # The simplex vertices now live on the (single) per-start SimplexRunner (#498).
+        assert sim.runners[0].simplex == [(4.5, next_params[0]), (5., first[0]), (5.5, next_params[1]), (6., first[3])]
         # ((2 2/3, 2, 4 2/3), (2,3,4), (1, 3 2/3, 4 2/3), (2,3,5))
 
         # Next iteration. This time, we'll give non-improvements, forcing a simplex shrink.
@@ -168,7 +169,8 @@ class TestSimplex:
         res.score = 4.75
         iter_2 = sim.got_result(res)
         assert len(iter_2) == 2
-        assert sim.simplex == [(4.5, next_params[0]), (5., first[0]), (5.5, next_params[1]), (6., first[3])]
+        # The simplex vertices now live on the (single) per-start SimplexRunner (#498).
+        assert sim.runners[0].simplex == [(4.5, next_params[0]), (5., first[0]), (5.5, next_params[1]), (6., first[3])]
         # ((2 2/3, 2, 4 2/3), (2,3,4), (1, 3 2/3, 4 2/3), (2,3,5))
 
         # Next iteration. This time, we'll give non-improvements, forcing a simplex shrink.

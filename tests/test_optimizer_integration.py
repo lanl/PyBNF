@@ -170,9 +170,11 @@ def test_powell_exercises_conjugate_directions_on_rotated_gaussian(tmp_path):
     assert np.allclose(recovered, _ROT_MEAN, atol=1e-3), recovered
     assert alg.trajectory.best_score() < 1e-6
     # Converged via the conjugate-direction update (a few cycles), not by
-    # exhausting the 25-cycle budget the way coordinate-only descent would.
-    assert alg.cycle <= 4, \
-        'expected conjugate-direction convergence in a few cycles, took %i' % alg.cycle
+    # exhausting the 25-cycle budget the way coordinate-only descent would. The
+    # cycle count lives on the (single) per-start PowellRunner (#498).
+    cycles = alg.runners[0].iteration
+    assert cycles <= 4, \
+        'expected conjugate-direction convergence in a few cycles, took %i' % cycles
 
 
 def test_powell_follows_curved_nonquadratic_valley(tmp_path):
@@ -437,14 +439,17 @@ def test_refine_on_nonsim_fit_runs_end_to_end(tmp_path):
 
 @pytest.mark.parametrize('fit_type,cls', [
     ('powell', algorithms.PowellAlgorithm),
+    ('sim', algorithms.SimplexAlgorithm),
     ('cmaes', algorithms.CMAESAlgorithm),
 ])
 def test_start_point_optimizer_is_picklable(tmp_path, fit_type, cls):
     """``Algorithm.backup`` does ``pickle.dump((self, pending))``, and only IOError
-    is caught -- an unpicklable attribute would crash a backing-up run. Powell and
-    CMA-ES keep all search state as plain numpy/float/list (no generator, no
-    thread), precisely so backup/resume work like every other method (ADR-0015).
-    Guard that the optimizer pickle-round-trips both before and after a run."""
+    is caught -- an unpicklable attribute would crash a backing-up run. Powell, Simplex
+    and CMA-ES keep all search state as plain numpy/float/list plus (for the local
+    multi-start runners, #498) picklable Generators -- no thread, no generator function --
+    precisely so backup/resume work like every other method (ADR-0015). Guard that the
+    optimizer pickle-round-trips both before and after a run (the per-start runners the
+    local methods build in start_run ride the backup pickle)."""
     import pickle
     mean, var = [2.0, -1.0], [1.0, 1.0]
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
@@ -876,4 +881,125 @@ def test_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_type, k
     assert multi._start_index >= 1                     # at least one extra start ran
     assert multi.trajectory.best_score() < 0.5         # escaped toward the global mode (~0.36)
     assert np.allclose(H.best_params(multi, 2), [5.0, 5.0], atol=0.6)
+    assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent local multi-start (n_starts) for powell / sim (#498, ADR-0072)
+# --------------------------------------------------------------------------- #
+# A single Powell or Simplex run descends into whichever basin its start lands in. In
+# box / global-start mode that start is the box CENTER, so on the two-mode trap below
+# (shallow LOCAL mode AT the center, deep GLOBAL mode off-center) a single run is
+# *deterministically* trapped in the central mode. n_starts > 1 runs that many starts --
+# box center + Latin-hypercube samples -- CONCURRENTLY (the derivative-free analog of the
+# gradient methods' local multi-start, #386), so Powell uses n_starts workers instead of
+# one, and keeps the global best. Reuses the CMA-ES restart trap (_TRAP_MODES): a shallow
+# local mode at the box center [0,0] and a deeper, wider global mode at [6,6].
+
+_LOCAL_OPTIMIZERS = {'powell': algorithms.PowellAlgorithm, 'sim': algorithms.SimplexAlgorithm}
+
+
+def _local_config(tmp_path, fit_type, n_starts, var_type='uniform_var', start=None,
+                  modes=_TRAP_MODES, **overrides):
+    tgt, exp = H.write_target(tmp_path, H.multimodal_spec(modes))
+    base = dict(n_params=2, var_type=var_type, bounds=(-10.0, 10.0),
+                population_size=8, max_iterations=120, random_seed=1234, n_starts=n_starts)
+    if start is not None:
+        base['start'] = start
+    base.update(overrides)
+    return H.make_config(tmp_path, fit_type, tgt, exp, **base)
+
+
+@pytest.mark.parametrize('fit_type', list(_LOCAL_OPTIMIZERS))
+def test_local_box_center_start_then_lhs(tmp_path, fit_type):
+    """In box / global-start mode a local optimizer begins at the box center (start 0) and,
+    with n_starts > 1, seeds the remaining starts from Latin-hypercube samples -- the
+    box-gated box-center-then-LHS scheme it shares with the gradient methods (#386)."""
+    conf = _local_config(tmp_path, fit_type, n_starts=5)
+    alg = _LOCAL_OPTIMIZERS[fit_type](conf)
+    assert alg._is_box_start()                          # the box/global-start mode is engaged
+    assert alg.n_starts == 5 and len(alg.start_psets) == 5
+    # Start 0 is the box center: the midpoint of the symmetric [-10, 10] box is 0.
+    assert np.allclose([alg.start_psets[0]['p%d' % (i + 1)] for i in range(2)], [0.0, 0.0])
+
+
+@pytest.mark.parametrize('fit_type', list(_LOCAL_OPTIMIZERS))
+def test_local_point_start_ignores_n_starts(tmp_path, fit_type):
+    """A point-start (var/logvar) fit has no prior box to scatter across, so n_starts is
+    gated to a single start even when set > 1 (the refiner/point-start never re-scatters)."""
+    conf = _local_config(tmp_path, fit_type, n_starts=6, var_type='var', start=[1.0, 1.0])
+    alg = _LOCAL_OPTIMIZERS[fit_type](conf)
+    assert not alg._is_box_start()
+    assert alg.n_starts == 1 and len(alg.start_psets) == 1
+
+
+@pytest.mark.parametrize('fit_type', list(_LOCAL_OPTIMIZERS))
+def test_local_multistart_n_starts_one_is_a_single_run(tmp_path, fit_type):
+    """n_starts == 1 (the default) is a single box-center run: one runner, names untagged
+    (byte-identical folders), and it still recovers a mode."""
+    alg = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path, fit_type, n_starts=1))
+    H.drive(alg)
+    assert len(alg.runners) == 1 and alg.active == 0    # one start, ran to termination
+    assert np.isfinite(alg.trajectory.best_score())
+
+
+@pytest.mark.parametrize('fit_type', list(_LOCAL_OPTIMIZERS))
+def test_local_multistart_runs_every_start_and_never_worse(tmp_path, fit_type):
+    """All n_starts run, and multi-start's best is never worse than a single start's -- the
+    guarantee from running start 0 identically (box center, same spawned rng child) then
+    keeping the global best over the extra concurrent starts."""
+    (tmp_path / 's').mkdir()
+    single = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path / 's', fit_type, n_starts=1))
+    H.drive(single)
+
+    multi = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path, fit_type, n_starts=4))
+    H.drive(multi)
+    assert len(multi.runners) == 4 and multi.active == 0     # all 4 starts ran concurrently
+    assert multi.trajectory.best_score() <= single.trajectory.best_score() + 1e-9
+
+
+def test_local_multistart_name_boundary_is_unique_across_starts(tmp_path):
+    """Concurrent starts must submit uniquely named PSets (the routing key). Powell names by
+    a global counter (powell_<k>_<label>); Simplex tags each start's clean names with s<k>_
+    (start 0 untagged, so single-start folders are unchanged). Both stay unique across the
+    fan-out, so no two concurrent starts collide on a sim folder."""
+    for fit_type in ('powell', 'sim'):
+        (tmp_path / fit_type).mkdir()
+        alg = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path / fit_type, fit_type, n_starts=3))
+        first = alg.start_run()
+        names = [p.name for p in first]
+        assert len(names) == len(set(names)), (fit_type, names)   # all initial jobs uniquely named
+        # every emitted job is routed to an owning start, and to all n_starts of them
+        assert set(alg.pending.values()) == {0, 1, 2}
+        assert all(alg.pending[n] is not None for n in names)
+
+
+# Per-method budget at which each local method is trapped single-start but escapes
+# multi-start on the trap (Simplex fans out per generation, so it gets a larger budget).
+_LOCAL_ESCAPE = [
+    ('powell', dict(max_iterations=60, powell_stop_tol=1e-9, population_size=1), 8),
+    ('sim', dict(max_iterations=150, population_size=8), 8),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('fit_type,kwargs,n_starts', _LOCAL_ESCAPE,
+                         ids=[e[0] for e in _LOCAL_ESCAPE])
+def test_local_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_type, kwargs, n_starts):
+    """The case concurrent local multi-start exists for. A single box-center start descends
+    deterministically into the shallow central LOCAL mode; running n_starts concurrent starts
+    (box center + Latin hypercube) and keeping the global best escapes to the deep off-center
+    GLOBAL mode -- a strictly better fit a single run provably cannot reach from the center."""
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    single = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path / 'a', fit_type, n_starts=1, **kwargs))
+    H.drive(single)
+    assert single.trajectory.best_score() == pytest.approx(_TRAP_LOCAL_NLL, abs=0.1)   # trapped at center
+    assert np.allclose(H.best_params(single, 2), [0.0, 0.0], atol=0.3)
+
+    multi = _LOCAL_OPTIMIZERS[fit_type](_local_config(tmp_path / 'b', fit_type, n_starts=n_starts, **kwargs))
+    H.drive(multi)
+    assert len(multi.runners) == n_starts                                              # all starts ran
+    assert np.allclose(H.best_params(multi, 2), [6.0, 6.0], atol=0.3)                  # escaped off-center
+    assert multi.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
     assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5

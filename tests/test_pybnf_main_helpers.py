@@ -108,13 +108,15 @@ def test_refiners_are_the_start_point_optimizers():
 
 def test_box_start_optimizers_are_a_subset_of_refiners():
     """The ``start_from_box`` flag (#404/ADR-0017) marks the start-point optimizers
-    that may *also* run as a standalone search over a bounded-prior box: CMA-ES (the
-    global derivative-free search) and the bounded gradient methods (#386/#481) -- TRF,
-    L-BFGS-B, and GNTR, whose box IS the parameter bounds they project/reflect into. It is a
-    strict subset of the refiners: a box optimizer is a refiner that learned a second start mode."""
+    that may *also* run as a standalone search over a bounded-prior box: the derivative-free
+    local methods -- CMA-ES (the global covariance-adaptation search) plus Simplex and Powell,
+    which learned box/global-start mode + concurrent multi-start (#498/ADR-0072) -- and the
+    bounded gradient methods (#386/#481) -- TRF, L-BFGS-B, and GNTR, whose box IS the
+    parameter bounds they project/reflect into. It is a strict subset of the refiners: a box
+    optimizer is a refiner that learned a second start mode."""
     box = {c for c, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
     refiners = {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner}
-    assert box == {'cmaes', 'trf', 'lbfgs', 'gntr'}
+    assert box == {'cmaes', 'sim', 'powell', 'trf', 'lbfgs', 'gntr'}
     assert box <= refiners
 
 

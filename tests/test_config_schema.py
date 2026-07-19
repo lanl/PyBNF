@@ -225,15 +225,26 @@ class TestRegistrySchemaSeam:
         assert ScatterSearchConfig.owned_keys() == {'local_min_limit', 'n_starts'}
 
     def test_sim_owns_only_defaulted_simplex_keys(self):
-        # Simplex owns the six unconditionally-read simplex_* knobs;
-        # simplex_log_step / simplex_max_iterations are runtime-guarded and
-        # simplex_start_point is internal, so none of those are schema-owned.
+        # Simplex owns the six unconditionally-read simplex_* knobs plus the shared
+        # n_starts multi-start field (MultiStartConfig, #498/ADR-0072-- sim runs n_starts
+        # concurrent starts in box mode); simplex_log_step / simplex_max_iterations are
+        # runtime-guarded and simplex_start_point is internal, so none of those are owned.
         from pybnf.algorithms.optimizers.simplex import SimplexConfig
         from pybnf.registry import FIT_TYPE_REGISTRY
         assert FIT_TYPE_REGISTRY['sim'].schema is SimplexConfig
         assert SimplexConfig.owned_keys() == {
             'simplex_step', 'simplex_reflection', 'simplex_expansion',
-            'simplex_contraction', 'simplex_shrink', 'simplex_stop_tol'}
+            'simplex_contraction', 'simplex_shrink', 'simplex_stop_tol', 'n_starts'}
+
+    def test_powell_owns_n_starts_multistart_field(self):
+        # Powell owns its three defaulted powell_* knobs plus the shared n_starts field
+        # (MultiStartConfig, #498/ADR-0072): powell runs n_starts concurrent starts in box
+        # mode. powell_max_iterations is runtime-guarded; powell_start_point is internal.
+        from pybnf.algorithms.optimizers.powell import PowellConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['powell'].schema is PowellConfig
+        assert PowellConfig.owned_keys() == {
+            'powell_step', 'powell_line_tol', 'powell_stop_tol', 'n_starts'}
 
     def test_simplex_group_present_only_when_refine_pulls_it_in(self):
         # ADR-0013 narrowing: a non-sim fit no longer carries simplex_* by default

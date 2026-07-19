@@ -82,7 +82,8 @@ class TestDegeneracyDetection:
         shutil.rmtree(cls.tmpdir)
 
     def _make_simplex(self):
-        """Create a SimplexAlgorithm with 2D config."""
+        """Create a per-start SimplexRunner (which owns the simplex + degeneracy check,
+        #498) from a 2D SimplexAlgorithm config."""
         with _no_bng, _no_init:
             cfg = config.Configuration({
                 'population_size': 1, 'max_iterations': 10, 'fit_type': 'sim',
@@ -94,7 +95,7 @@ class TestDegeneracyDetection:
                 'tests/bngl_files/parabola_2d.bngl': ['tests/bngl_files/par1.exp'],
             })
             sim = algorithms.SimplexAlgorithm(cfg)
-        return sim
+        return sim._make_runner(sim.start_psets[0], sim.rng)
 
     def test_healthy_simplex_unchanged(self):
         """A non-degenerate simplex should not be perturbed."""

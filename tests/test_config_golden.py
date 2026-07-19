@@ -261,6 +261,35 @@ max_iterations = 10
 cmaes_sigma0 = 0.25
 wall_time_sim = 0
 """,
+    # sim + powell in box / global-start mode with concurrent multi-start (#498/ADR-0072):
+    # bounded uniform priors instead of a var/logvar start point, plus n_starts > 1. Like
+    # cmaes (#404), start_from_box lets these two derivative-free local methods accept a
+    # bounded box; n_starts rides their own schema (MultiStartConfig). Pins that the
+    # bounded-prior + n_starts fit builds and narrows to exactly the method's own schema.
+    'matrix/sim_box': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = sim
+uniform_var = p1 -10 10
+loguniform_var = p2 0.1 100
+population_size = 10
+max_iterations = 10
+n_starts = 4
+simplex_step = 0.3
+wall_time_sim = 0
+""",
+    'matrix/powell_box': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = powell
+uniform_var = p1 -10 10
+loguniform_var = p2 0.1 100
+population_size = 10
+max_iterations = 10
+n_starts = 4
+powell_step = 0.3
+wall_time_sim = 0
+""",
     # de + refine=1 + refine_method = powell | cmaes: the generalized refiner seam
     # (ADR-0015) pulls the *chosen* refiner's whole schema into a non-self fit as a
     # coherent group -- the analog of matrix/de_refine (which uses the default sim).
