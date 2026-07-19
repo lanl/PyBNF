@@ -1354,6 +1354,94 @@ class TestBoundaries:
 
 
 # ---------------------------------------------------------------------------
+# A re-injected observableTransformation routes to the native scaled family (issue #499)
+#
+# The bug: a v1 log10 observable, its transformation dropped by petab1to2, imported as a
+# linear gaussian (objective = chi_sq) and scored the WRONG objective (linear residual, no
+# Jacobian). With the column re-injected (convert.py) the importer selects the additive scale
+# from it -- log10 -> the native lognormal family (Gaussian(LOG10), the base the paper scores
+# on). Dependency-free: the demo is BNGL, bare-name observables.
+# ---------------------------------------------------------------------------
+
+class TestObservableTransformationImport:
+
+    @pytest.fixture
+    def demo_petab(self, tmp_path):
+        out = tmp_path / 'petab'
+        export_job(DEMO_CONF, out)
+        return out
+
+    def _import_with_transformation(self, demo_petab, tmp_path, transformation,
+                                    distribution=None, noise_formula=None):
+        # Append an observableTransformation column (optionally rewriting the distribution /
+        # noiseFormula) to the exported demo observables -- the shape the scale-preserving
+        # converter produces for a v1 log observable -- then import.
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        rows = _tsv_rows(prob / 'observables.tsv')
+        header = list(rows[0].keys()) + ['observableTransformation']
+        lines = ['\t'.join(header)]
+        for r in rows:
+            if distribution is not None:
+                r['noiseDistribution'] = distribution
+            if noise_formula is not None:
+                r['noiseFormula'] = noise_formula
+                r['noisePlaceholders'] = ''     # a constant sigma declares no placeholder
+            lines.append('\t'.join([r[c] for c in header[:-1]] + [transformation]))
+        (prob / 'observables.tsv').write_text('\n'.join(lines) + '\n')
+        return import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+    def test_log10_per_point_imports_as_lognormal(self, demo_petab, tmp_path):
+        out = self._import_with_transformation(demo_petab, tmp_path, 'log10')
+        conf = (out / 'imported.conf').read_text()
+        assert 'objective = lognormal' in conf       # Gaussian(LOG10), the paper's objective
+        assert 'objective = chi_sq' not in conf       # NOT the linear (wrong) import
+
+    def test_lin_still_imports_as_chi_sq(self, demo_petab, tmp_path):
+        # A lin transformation (the default) is a no-op: the demo still imports as chi_sq,
+        # so a linear problem is unchanged by the new column.
+        out = self._import_with_transformation(demo_petab, tmp_path, 'lin')
+        assert 'objective = chi_sq' in (out / 'imported.conf').read_text()
+
+    def test_log10_constant_sigma_imports_as_lognormal_noise_model_line(self, demo_petab,
+                                                                        tmp_path):
+        # A fixed non-unit sigma has no sugar token -> the whole-fit lognormal noise_model line
+        # (the log10 twin of the gaussian/laplace fix_at case).
+        out = self._import_with_transformation(demo_petab, tmp_path, 'log10', noise_formula='2.5')
+        conf = (out / 'imported.conf').read_text()
+        assert 'noise_model = lognormal, sigma = fix_at 2.5' in conf
+        assert 'objective =' not in conf
+
+    def test_imported_lognormal_conf_loads_as_a_configuration(self, demo_petab, tmp_path,
+                                                              monkeypatch):
+        # The emitted lognormal conf is not just a string match -- it builds a real objective
+        # whose noise is the Gaussian additive on the log10 scale (the #499 fix's whole point).
+        from pybnf import config as config_mod
+        from pybnf.noise import LOG10, Gaussian
+        out = self._import_with_transformation(demo_petab, tmp_path, 'log10')
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert isinstance(cfg.obj.noise, Gaussian) and cfg.obj.noise.additive_on is LOG10
+
+    def test_log_natural_is_refused(self, demo_petab, tmp_path):
+        # A natural-log (LN) Gaussian has no native token -> NotImplementedError, never a
+        # silent mis-recovery as log10 or linear.
+        with pytest.raises(NotImplementedError):
+            self._import_with_transformation(demo_petab, tmp_path, 'log')
+
+    def test_log10_laplace_is_refused(self, demo_petab, tmp_path):
+        # Only the log10 Gaussian (lognormal) has a native token; a log10 Laplace does not.
+        with pytest.raises(NotImplementedError):
+            self._import_with_transformation(demo_petab, tmp_path, 'log10',
+                                             distribution='laplace', noise_formula='2.5')
+
+    def test_unknown_transformation_is_refused(self, demo_petab, tmp_path):
+        with pytest.raises(PybnfError, match='observableTransformation'):
+            self._import_with_transformation(demo_petab, tmp_path, 'ln2')
+
+
+# ---------------------------------------------------------------------------
 # A REAL-WORLD v2 problem imported end to end (the Boehm tutorial; #407, ADR-0037)
 #
 # Boehm is the headline real-world milestone: the PEtab spec repo's only v2 example,

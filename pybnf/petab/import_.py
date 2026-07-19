@@ -584,16 +584,36 @@ def _column_mean_resolver(datas, observable_id_to_column):
     return column_mean_of
 
 
-# PEtab noiseDistribution -> (PyBNF noise_model family token, its scale-parameter field).
-# The reverse of export.py's _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION for the two families a
-# PyBNF objective can carry: the noise_model line names the family and its single noise
-# parameter (gaussian/sigma, laplace/scale; ADR-0031, the families' noise_params). The
-# four-token path is preferred where it applies (a tidier 'objective =' line that
-# round-trips); this is the fallback for the cases no token names.
-_PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
-    'normal':  ('gaussian', 'sigma'),
-    'laplace': ('laplace',  'scale'),
+# PEtab noiseDistribution -> (PyBNF base noise family, its additive scale). The v2
+# ``log-`` prefixes are natural log (LN); a re-injected observableTransformation (issue
+# #499) can override the scale below. Anything not here (e.g. neg_bin, removed from v2)
+# is refused in _resolve_noise.
+_PETAB_DISTRIBUTION = {
+    'normal':      ('gaussian', 'linear'),
+    'log-normal':  ('gaussian', 'ln'),
+    'laplace':     ('laplace',  'linear'),
+    'log-laplace': ('laplace',  'ln'),
 }
+
+# v1 observableTransformation -> the additive scale it names (issue #499). PEtab v2 has no
+# log10 noiseDistribution, so a log10 residual arrives only through this re-injected column;
+# ``lin`` leaves the noiseDistribution's own scale, ``log`` is natural (LN), ``log10`` is LOG10.
+_TRANSFORMATION_SCALE = {'lin': None, 'log': 'ln', 'log10': 'log10'}
+
+# (base family, additive scale) -> the native noise_model family token that names it. Only the
+# log10 Gaussian gains a token beyond the linear families: ``lognormal`` = Gaussian(LOG10)
+# (objective.py). The natural-log families and any log Laplace have no native token
+# (observables.py) -> NotImplementedError in _resolve_noise.
+_NATIVE_FAMILY_TOKEN = {
+    ('gaussian', 'linear'): 'gaussian',
+    ('gaussian', 'log10'):  'lognormal',
+    ('laplace',  'linear'): 'laplace',
+}
+
+# native noise_model family token -> its scale-parameter field name (for the emitted
+# ``noise_model = <family>, <param> = ...`` line). gaussian/lognormal share ``sigma`` (same
+# Gaussian kernel, different additive scale); laplace uses ``scale`` (ADR-0031, noise_params).
+_NOISE_MODEL_PARAM = {'gaussian': 'sigma', 'lognormal': 'sigma', 'laplace': 'scale'}
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
@@ -616,9 +636,12 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     ``noise_param_ids`` is the ``{observable_id: parameter_id}`` map from the measurements'
     constant-per-observable ``noiseParameters`` placeholder; an observable's declared noise
     placeholder (a ``noiseParameter*`` token or a named ``noisePlaceholders`` id) takes its
-    sigma source from this map. A ``log-normal`` / ``log-laplace`` distribution, an expression
-    ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` -- the
-    boundary is in code, not a silent mis-recovery.
+    sigma source from this map. A ``log10`` ``observableTransformation`` (issue #499) selects
+    the native ``lognormal`` family (``objective = lognormal`` / a ``lognormal`` noise_model
+    line). A natural-log family (``log-normal`` / ``log-laplace`` distribution, or an
+    ``observableTransformation = log``), a log Laplace, an expression ``noiseFormula``, and a
+    per-point laplace placeholder raise ``NotImplementedError`` -- the boundary is in code, not
+    a silent mis-recovery.
     """
     per_obs = [(row, *_resolve_noise(
                     row, noise_param_ids.get(row.observable_id),
@@ -632,11 +655,19 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
 
 
 def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
-    """One observables row -> ``(family_token, source)`` where ``source`` is one of
+    """One observables row -> ``(family_token, source)`` where ``family_token`` is the native
+    noise_model family (``gaussian`` / ``lognormal`` / ``laplace``) and ``source`` is one of
     ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
     ``('free', parameter_id)`` (an estimated sigma), ``('formula', expr)`` (an expression
     sigma -> ``FormulaSigma``, ADR-0044), or ``('per_measurement', expr)`` (a row-varying
     placeholder bound per data point -> ``PerMeasurementFormulaSigma``, ADR-0045).
+
+    The family token comes from ``noiseDistribution`` (the Gaussian/Laplace family) **and** a
+    re-injected ``observableTransformation`` (the additive scale; issue #499): ``log10`` +
+    ``normal`` selects the native ``lognormal`` token (``Gaussian(LOG10)``), the scale the
+    paper (and the v1 problem) score on. A family/scale with no native token -- the natural-log
+    families (``log-normal`` / ``log-laplace``, or ``observableTransformation = log``) and any
+    log Laplace -- raises ``NotImplementedError`` (:func:`_native_noise_family`).
 
     ``row_varying`` (ADR-0045): the observable's ``noiseParameters`` id **differs** across its
     measurement rows, so it cannot reduce to one substituted symbol -- the noiseFormula is
@@ -653,27 +684,20 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
     and the resulting noiseFormula classified: a number -> ``('constant', v)``, a bare id ->
     ``('free', id)``, an arithmetic expression -> ``('formula', expr)``. A placeholder that
     survives substitution (unresolved, and not row-varying) raises the deferred frontier."""
-    dist = (row.noise_distribution or 'normal').lower()
-    if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
-        raise NotImplementedError(
-            f"Observable '{row.observable_id}': noiseDistribution {dist!r} maps to a "
-            f"PyBNF noise family on the natural-log scale (log-normal / log-laplace; "
-            f"neg_bin was removed from PEtab v2), which has neither an objective token "
-            f"nor a native noise_model line yet (#407). This chunk recovers the linear "
-            f"normal / laplace families.")
+    family_token = _native_noise_family(row)
     formula = (row.noise_formula or '').strip()
     if not formula:
         raise PybnfError(f"Observable '{row.observable_id}' is missing a noiseFormula.")
     # ADR-0045: a row-varying noiseParameters id is bound per data point from the sidecar; keep
     # the placeholder in the noiseFormula verbatim (PerMeasurementFormulaSigma resolves it).
     if row_varying:
-        return dist, ('per_measurement', formula)
+        return family_token, ('per_measurement', formula)
     placeholders = {p.strip() for p in (row.noise_placeholders or '').split(';') if p.strip()}
     # ADR-0037 declared-placeholder path FIRST (preserved byte-for-byte: Boehm).
     if formula.startswith('noiseParameter') or formula in placeholders:
         if noise_param_id is not None:
-            return dist, ('free', noise_param_id)     # constant-per-observable estimated sigma
-        return dist, ('placeholder', None)            # per-point _SD (chi_sq)
+            return family_token, ('free', noise_param_id)  # const-per-observable estimated sigma
+        return family_token, ('placeholder', None)         # per-point _SD (chi_sq/lognormal)
     # ADR-0044: substitute a constant-per-observable placeholder, then classify. A bare number
     # / id with no placeholder passes through untouched (substitution stays dependency-free).
     if _PLACEHOLDER.search(formula):
@@ -681,15 +705,58 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
         formula = substitute_placeholders(formula, obs_subs)
         _require_no_placeholder(formula, row.observable_id)
     try:
-        return dist, ('constant', float(formula))     # a number -> ConstantSigma
+        return family_token, ('constant', float(formula))  # a number -> ConstantSigma
     except ValueError:
         pass
     if _IDENTIFIER.match(formula):
-        return dist, ('free', formula)                # a bare id -> FreeParameterSigma
+        return family_token, ('free', formula)             # a bare id -> FreeParameterSigma
     # An arithmetic expression -> FormulaSigma; validate it parses (+ the petab extra present).
     from .formula import formula_free_symbols
     formula_free_symbols(formula)
-    return dist, ('formula', formula)
+    return family_token, ('formula', formula)
+
+
+def _native_noise_family(row):
+    """The native noise_model family token (``gaussian`` / ``lognormal`` / ``laplace``) for one
+    observables row, from ``noiseDistribution`` + a re-injected ``observableTransformation``.
+
+    The distribution names the Gaussian/Laplace family (its ``log-`` prefix a natural-log
+    scale); an ``observableTransformation`` of ``log10`` / ``log`` overrides the scale, the
+    only channel for a log10 residual (issue #499, ADR-0073). Raises ``NotImplementedError`` for a
+    distribution v2 removed (``neg_bin``) or a family/scale with no native token -- the
+    natural-log families and any log Laplace (only linear ``gaussian`` / ``laplace`` and log10
+    ``gaussian`` -> ``lognormal`` are recovered)."""
+    dist = (row.noise_distribution or 'normal').lower()
+    base = _PETAB_DISTRIBUTION.get(dist)
+    if base is None:
+        raise NotImplementedError(
+            f"Observable '{row.observable_id}': noiseDistribution {dist!r} has no PyBNF "
+            f"noise model (neg_bin was removed from PEtab v2; expected normal / laplace / "
+            f"log-normal / log-laplace).")
+    base_family, scale = base
+    transformation = (row.observable_transformation or 'lin').strip().lower()
+    if transformation not in _TRANSFORMATION_SCALE:
+        raise PybnfError(
+            f"Observable '{row.observable_id}': unknown observableTransformation "
+            f"{transformation!r} (expected lin / log / log10).")
+    trans_scale = _TRANSFORMATION_SCALE[transformation]
+    if trans_scale is not None:
+        if scale != 'linear' and scale != trans_scale:
+            raise PybnfError(
+                f"Observable '{row.observable_id}': observableTransformation "
+                f"{transformation!r} contradicts the scale of noiseDistribution {dist!r}. "
+                f"Give the residual scale in one place -- a log observableTransformation over "
+                f"a linear noiseDistribution (normal / laplace).")
+        scale = trans_scale
+    token = _NATIVE_FAMILY_TOKEN.get((base_family, scale))
+    if token is None:
+        raise NotImplementedError(
+            f"Observable '{row.observable_id}': the {base_family} family on the {scale} scale "
+            f"(from noiseDistribution {dist!r}"
+            f"{f' / observableTransformation {transformation!r}' if trans_scale else ''}) has "
+            f"no native noise_model token yet (#407). Recovered: linear normal / laplace and "
+            f"log10 normal (lognormal).")
+    return token
 
 
 def _try_uniform_directive(per_obs, column_mean_of):
@@ -699,13 +766,13 @@ def _try_uniform_directive(per_obs, column_mean_of):
     a distinct ``fit``/``fix_at`` sigma per observable) -> :func:`_per_observable_directives`.
     The uniform cases are exactly the objective-family / whole-fit ``noise_model`` export
     inverse (preserved byte-for-byte)."""
-    families = {dist for _row, dist, _src in per_obs}
-    kinds = {src[0] for _row, _dist, src in per_obs}
+    families = {family for _row, family, _src in per_obs}
+    kinds = {src[0] for _row, _family, src in per_obs}
     if len(families) != 1 or len(kinds) != 1:
-        return None     # mixed family or source kind -> per-observable
-    family = families.pop()
+        return None     # mixed family (incl. a log10 vs linear scale) or source -> per-observable
+    family = families.pop()     # native token: gaussian / lognormal / laplace
     kind = kinds.pop()
-    petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[family]
+    param = _NOISE_MODEL_PARAM[family]
 
     if kind == 'per_measurement':
         # A row-varying placeholder sigma (ADR-0045) is inherently per-observable -- its
@@ -719,34 +786,41 @@ def _try_uniform_directive(per_obs, column_mean_of):
         # the inverse of the export's whole-fit formula sigma, so it round-trips byte-for-byte.
         # A non-uniform / per-observable formula falls to _per_observable_directives (not yet
         # re-exportable -- the deferred per-observable export boundary, ADR-0045).
-        exprs = {src[1] for _row, _dist, src in per_obs}
+        exprs = {src[1] for _row, _family, src in per_obs}
         if len(exprs) != 1:
             return None
-        return f'noise_model = {petab_family}, {param} = formula {exprs.pop()}'
+        return f'noise_model = {family}, {param} = formula {exprs.pop()}'
     if kind == 'placeholder':
-        if family != 'normal':
-            raise NotImplementedError(
-                f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective "
-                f"token (only the Gaussian per-point _SD case, chi_sq, is recovered; #407).")
-        return 'objective = chi_sq'
+        # Per-point _SD sigma: the Gaussian families have an objective token (chi_sq linear,
+        # lognormal log10); Laplace has no per-point token (#407).
+        if family == 'gaussian':
+            return 'objective = chi_sq'
+        if family == 'lognormal':
+            return 'objective = lognormal'
+        raise NotImplementedError(
+            f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective token "
+            f"(only the Gaussian per-point _SD cases -- chi_sq, lognormal -- are recovered; "
+            f"#407).")
     if kind == 'free':
-        ids = {src[1] for _row, _dist, src in per_obs}
+        ids = {src[1] for _row, _family, src in per_obs}
         if len(ids) != 1:
             return None     # distinct free sigma per observable -> per-observable
-        return f'noise_model = {petab_family}, {param} = fit {ids.pop()}'
-    # All-constant sigma: the sugar tokens (sos/sod unit, ave_norm_sos column-mean) or a
-    # uniform fix_at; a different fixed sigma per observable is per-observable.
-    constants = [src[1] for _row, _dist, src in per_obs]
-    if all(c == 1.0 for c in constants):
-        return 'objective = sos' if family == 'normal' else 'objective = sod'
-    if family == 'normal' and all(
+        return f'noise_model = {family}, {param} = fit {ids.pop()}'
+    # All-constant sigma: the sugar tokens (sos/sod unit, ave_norm_sos column-mean, all linear
+    # families) or a uniform fix_at; a different fixed sigma per observable is per-observable.
+    constants = [src[1] for _row, _family, src in per_obs]
+    if family == 'gaussian' and all(c == 1.0 for c in constants):
+        return 'objective = sos'
+    if family == 'laplace' and all(c == 1.0 for c in constants):
+        return 'objective = sod'
+    if family == 'gaussian' and all(
             _approx(c, column_mean_of(row.observable_id))
-            for (row, _dist, _src), c in zip(per_obs, constants)):
+            for (row, _family, _src), c in zip(per_obs, constants)):
         return 'objective = ave_norm_sos'
     uniq = set(constants)
     if len(uniq) != 1:
         return None     # distinct fixed sigma per observable -> per-observable
-    return f'noise_model = {petab_family}, {param} = fix_at {num(uniq.pop())}'
+    return f'noise_model = {family}, {param} = fix_at {num(uniq.pop())}'
 
 
 def _per_observable_directives(per_obs, observable_id_to_column):
@@ -762,26 +836,28 @@ def _per_observable_directives(per_obs, observable_id_to_column):
     its estimated parameter as a nuisance (ADR-0034), a ``fix_at`` a constant, a per-point
     placeholder reads the ``<col>_SD`` companion."""
     lines = ['objective = chi_sq']   # whole-fit default; every observable overridden below
-    for row, dist, src in per_obs:
-        petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[dist]
+    for row, family, src in per_obs:
+        param = _NOISE_MODEL_PARAM[family]
         column = observable_id_to_column[row.observable_id]
         kind = src[0]
         if kind == 'free':
-            lines.append(f'noise_model {column} = {petab_family}, {param} = fit {src[1]}')
+            lines.append(f'noise_model {column} = {family}, {param} = fit {src[1]}')
         elif kind in ('formula', 'per_measurement'):
             # Both emit a 'formula' source; for 'per_measurement' the expression keeps its
             # row-varying placeholder, which config.py routes to PerMeasurementFormulaSigma
             # (the placeholder's row token comes from the measurement_params sidecar; ADR-0045).
-            lines.append(f'noise_model {column} = {petab_family}, {param} = formula {src[1]}')
+            lines.append(f'noise_model {column} = {family}, {param} = formula {src[1]}')
         elif kind == 'constant':
             lines.append(
-                f'noise_model {column} = {petab_family}, {param} = fix_at {num(src[1])}')
+                f'noise_model {column} = {family}, {param} = fix_at {num(src[1])}')
         elif kind == 'placeholder':
-            if dist != 'normal':
+            # Per-point _SD sigma: the Gaussian families read it (gaussian linear, lognormal
+            # log10); Laplace has no per-point _SD source (#407).
+            if family == 'laplace':
                 raise NotImplementedError(
-                    f"Observable '{row.observable_id}': a per-point ({dist}) placeholder "
+                    f"Observable '{row.observable_id}': a per-point ({family}) placeholder "
                     f"noiseFormula has no native noise_model source yet (#407).")
-            lines.append(f'noise_model {column} = {petab_family}, {param} = read_exp_file _SD')
+            lines.append(f'noise_model {column} = {family}, {param} = read_exp_file _SD')
         else:  # defensive
             raise PybnfError(
                 f"Observable '{row.observable_id}': unexpected sigma source kind {kind!r}.")

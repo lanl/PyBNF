@@ -50,6 +50,16 @@ into ``noiseDistribution`` as the ``log-`` prefixes above; and v2's log is natur
 (base e), with no ``log10`` form. (An earlier draft of this adapter encoded the v1
 shape; this is the corrected v2 mapping.)
 
+**The re-injected log10 channel (issue #499, ADR-0073).** Because v2 has *no* log10 noiseDistribution,
+a v1 ``observableTransformation = log10`` observable has no faithful v2 home -- and
+``petab.v2.petab1to2`` silently drops it, importing the observable as a linear Gaussian and
+scoring the wrong objective. The scale-preserving converter (:mod:`pybnf.petab.convert`)
+re-injects ``observableTransformation`` as a preserved extra column, and this adapter reads
+it to *override* the additive scale (``log10`` -> LOG10, ``log`` -> LN, ``lin`` -> unchanged),
+selecting the family's scale from the transformation, not just the family from
+noiseDistribution. LOG10 matches PyBNF's native ``lognormal`` token; the natural-log families
+stay reachable via v2's ``log-normal`` / ``log-laplace`` too.
+
 **The two-adapter equivalence is exact for the linear families and ``laplace``,
 structural for the natural-log families.** ``laplace`` matches the native
 ``laplace`` token exactly (``Laplace(LINEAR, MEDIAN)``), and ``normal`` matches the
@@ -82,7 +92,7 @@ import csv
 import re
 from dataclasses import dataclass
 
-from ..noise import (LINEAR, LN, MEDIAN, ConstantSigma, FreeParameterSigma,
+from ..noise import (LINEAR, LN, LOG10, MEDIAN, ConstantSigma, FreeParameterSigma,
                      Gaussian, Laplace)
 from ..printing import PybnfError
 from ._tsv import num, write_tsv
@@ -113,6 +123,15 @@ _PETAB_NOISE_DISTRIBUTION = {
     'log-laplace': (Laplace,  LN),
 }
 
+# v1 ``observableTransformation`` -> the additive scale it selects (issue #499). PEtab v2
+# removed this column and has **no log10** noiseDistribution (its ``log-`` prefixes are
+# natural log only), so a ``log10`` residual arrives only via this column, re-injected by the
+# scale-preserving converter (:mod:`pybnf.petab.convert`). ``log`` (natural) and ``lin`` are
+# honored too, for a faithful round-trip of the v1 transformation axis. Unlike
+# noiseDistribution, the base matters -- the residual and its Jacobian live on this exact
+# scale -- so ``log10`` maps to LOG10, matching the native ``lognormal`` token (objective.py).
+_OBSERVABLE_TRANSFORMATION_SCALE = {'lin': LINEAR, 'log10': LOG10, 'log': LN}
+
 # A single bare identifier (a noise-parameter id) -- anything else with operators,
 # calls, or whitespace is an expression for the deferred sympy layer.
 _IDENTIFIER = re.compile(r'[A-Za-z_]\w*\Z')
@@ -131,12 +150,19 @@ class PetabObservableRow:
     mapping applies the PEtab v2 default (``normal``). ``observable_formula`` -- the
     model-output expression -- is recorded for the deferred ``observableFormula``
     chunk but is **not** consumed by the noise mapping (this is the noise half only).
+
+    ``observable_transformation`` (``lin`` / ``log`` / ``log10``, or ``None`` when absent)
+    is the v1 residual-scale column PEtab v2 removed, re-injected as a preserved extra column
+    by the scale-preserving converter (issue #499). The mapping reads it to pick the noise
+    family's additive scale -- the only channel for a ``log10`` residual, since v2's
+    ``log-normal`` is natural log.
     """
 
     observable_id: str
     observable_formula: str | None = None
     noise_formula: str | None = None
     noise_distribution: str | None = None
+    observable_transformation: str | None = None
     # The semicolon-delimited placeholder ids (PEtab v2 ``observablePlaceholders`` /
     # ``noisePlaceholders``). The importer does not yet consume them (the deferred
     # formula half, ADR-0023); the exporter sets ``noise_placeholders`` to declare the
@@ -153,16 +179,18 @@ def noise_model_from_row(row):
     """Map one PEtab v2 observables row's **noise half** to an
     ``(NoiseModel, SigmaSource)`` pair (ADR-0021, ADR-0023).
 
-    ``noiseDistribution`` selects the family and the additive scale together
-    (``normal`` -> ``Gaussian(LINEAR)``, ``log-normal`` -> ``Gaussian(LN)``,
-    ``laplace`` -> ``Laplace(LINEAR)``, ``log-laplace`` -> ``Laplace(LN)``); the
-    prediction is the median (PEtab default). ``noiseFormula`` becomes the
-    sigma-source: a number -> ``ConstantSigma``, a bare noise-parameter id ->
-    ``FreeParameterSigma``.
+    ``noiseDistribution`` selects the family and (with the natural-log ``log-`` prefixes)
+    its additive scale (``normal`` -> ``Gaussian(LINEAR)``, ``log-normal`` ->
+    ``Gaussian(LN)``, ``laplace`` -> ``Laplace(LINEAR)``, ``log-laplace`` ->
+    ``Laplace(LN)``); a re-injected ``observableTransformation`` (issue #499) overrides the
+    scale (``log10`` -> LOG10, ``log`` -> LN), the only channel for a log10 residual. The
+    prediction is the median (PEtab default). ``noiseFormula`` becomes the sigma-source: a
+    number -> ``ConstantSigma``, a bare noise-parameter id -> ``FreeParameterSigma``.
 
     Raises ``NotImplementedError`` for a non-trivial ``noiseFormula`` expression
     (the deferred sympy layer) and ``PybnfError`` for a malformed row (unknown
-    ``noiseDistribution`` spelling, missing ``noiseFormula``).
+    ``noiseDistribution`` / ``observableTransformation`` spelling, a transformation that
+    contradicts a log ``noiseDistribution``, missing ``noiseFormula``).
     """
     dist = row.noise_distribution or 'normal'
     if dist not in _PETAB_NOISE_DISTRIBUTION:
@@ -171,12 +199,42 @@ def noise_model_from_row(row):
             f"{dist!r} (expected one of {sorted(_PETAB_NOISE_DISTRIBUTION)}).")
 
     family_cls, scale = _PETAB_NOISE_DISTRIBUTION[dist]
+    scale = _scale_with_transformation(scale, row.observable_transformation, dist,
+                                       row.observable_id)
     noise = family_cls(additive_on=scale, location=MEDIAN)
     source = _sigma_source_from_noise_formula(row.noise_formula, row.observable_id)
     # The per-observable spec is (family, {param: source}) -- one entry under the
     # family's primary parameter name (ADR-0058). PEtab's two families are both
     # single-parameter (gaussian/sigma, laplace/scale).
     return noise, {noise.noise_params[0]: source}
+
+
+def _scale_with_transformation(dist_scale, transformation, dist, observable_id):
+    """Override a noiseDistribution's additive scale with a re-injected
+    ``observableTransformation`` (issue #499).
+
+    A ``log`` / ``log10`` transformation names the additive scale (LN / LOG10); ``lin`` or an
+    absent column leaves ``dist_scale`` (the noiseDistribution's own scale) untouched, so this
+    only ever *adds* a log scale to a linear ``normal`` / ``laplace``. A transformation that
+    contradicts a log ``noiseDistribution`` (e.g. ``log10`` over ``log-normal``'s LN) is an
+    ambiguous double-spelling of the scale and raises. An unknown spelling raises.
+    """
+    if transformation is None:
+        return dist_scale
+    key = transformation.strip().lower()
+    if key not in _OBSERVABLE_TRANSFORMATION_SCALE:
+        raise PybnfError(
+            f"Observable '{observable_id}': unknown observableTransformation "
+            f"{transformation!r} (expected one of {sorted(_OBSERVABLE_TRANSFORMATION_SCALE)}).")
+    if key == 'lin':
+        return dist_scale
+    trans_scale = _OBSERVABLE_TRANSFORMATION_SCALE[key]
+    if dist_scale is not LINEAR and dist_scale is not trans_scale:
+        raise PybnfError(
+            f"Observable '{observable_id}': observableTransformation {key!r} contradicts the "
+            f"scale of noiseDistribution {dist!r}. Give the residual scale in one place -- a "
+            f"log observableTransformation over a linear noiseDistribution (normal / laplace).")
+    return trans_scale
 
 
 def _sigma_source_from_noise_formula(formula, observable_id):
@@ -395,8 +453,10 @@ def read_observable_table(path):
 
     Dependency-free (stdlib ``csv``). ``noisePlaceholders`` is recorded (it marks a
     named noiseFormula placeholder whose value the measurements' ``noiseParameters``
-    column supplies -- a per-observable estimated sigma, ADR-0037). Other unknown extra
-    columns (e.g. ``observableName``, ``observablePlaceholders``) are tolerated and ignored.
+    column supplies -- a per-observable estimated sigma, ADR-0037). ``observableTransformation``
+    is recorded too -- the v1 residual-scale column the scale-preserving converter re-injects
+    (issue #499). Other unknown extra columns (e.g. ``observableName``,
+    ``observablePlaceholders``) are tolerated and ignored.
     """
     with open(path, newline='') as fh:
         reader = csv.DictReader(fh, delimiter='\t')
@@ -413,6 +473,7 @@ def _row_from_record(rec):
         noise_formula=_parse_str(rec.get('noiseFormula')),
         noise_distribution=_parse_str(rec.get('noiseDistribution')),
         noise_placeholders=_parse_str(rec.get('noisePlaceholders')),
+        observable_transformation=_parse_str(rec.get('observableTransformation')),
     )
 
 

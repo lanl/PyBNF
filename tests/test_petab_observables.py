@@ -7,8 +7,10 @@ and the equivalent native ``noise_model`` config line must produce the *same*
 
 PEtab v2's ``noiseDistribution`` carries both the family and the additive scale in
 one column: ``normal`` / ``log-normal`` / ``laplace`` / ``log-laplace`` (PEtab's
-log is natural -> ``LN``; there is no separate observableTransformation column and
-no log10 in v2). The prediction is the median for all.
+log is natural -> ``LN``; v2 has no log10 form). PEtab v2 removed the v1
+``observableTransformation`` column, but the scale-preserving converter re-injects it
+(issue #499), and this adapter reads it back to *override* the scale -- the only channel
+for a log10 residual. The prediction is the median for all.
 
 Layers tested:
 
@@ -19,7 +21,8 @@ Layers tested:
    to ``MEDIAN`` -- ADR-0031).
 2. **The full mapping** -- all four ``noiseDistribution`` values, structurally;
    the natural-log families (no native token) checked against the kernels' analytic
-   NLL; both sigma-source kinds.
+   NLL; both sigma-source kinds. **2b** -- the re-injected ``observableTransformation``
+   overriding the scale (``log10`` -> LOG10, the native ``lognormal`` base; #499).
 3. **The documented boundaries** -- ``NotImplementedError`` for a non-trivial
    ``noiseFormula`` expression (the deferred sympy layer); ``PybnfError`` for a
    malformed row.
@@ -44,10 +47,11 @@ from pybnf.petab.observables import (
 from pybnf.printing import PybnfError
 
 
-def _row(noise_formula='sigma_o', dist=None, formula=None, oid='o'):
+def _row(noise_formula='sigma_o', dist=None, formula=None, oid='o', transformation=None):
     return PetabObservableRow(
         observable_id=oid, observable_formula=formula,
-        noise_formula=noise_formula, noise_distribution=dist)
+        noise_formula=noise_formula, noise_distribution=dist,
+        observable_transformation=transformation)
 
 
 def _sole_source(spec):
@@ -162,6 +166,65 @@ class TestMapping:
 
 
 # ---------------------------------------------------------------------------
+# 2b. The re-injected observableTransformation overrides the additive scale (issue #499)
+#
+# PEtab v2 has no log10 noiseDistribution, so a v1 log10 residual arrives only via the
+# observableTransformation column the scale-preserving converter re-injects. The adapter
+# reads it to pick the family's additive scale -- log10 -> LOG10 (the native lognormal
+# scale, the base the paper scores on), log -> LN, lin/absent -> the noiseDistribution's own.
+# ---------------------------------------------------------------------------
+
+class TestObservableTransformation:
+    @pytest.mark.parametrize("dist,transformation,family_cls,scale", [
+        ('normal',  'log10', noise.Gaussian, noise.LOG10),   # the #499 case (Perelson et al.)
+        ('normal',  'log',   noise.Gaussian, noise.LN),
+        ('normal',  'lin',   noise.Gaussian, noise.LINEAR),
+        ('normal',  None,    noise.Gaussian, noise.LINEAR),  # absent column = linear default
+        ('laplace', 'log10', noise.Laplace,  noise.LOG10),
+        ('laplace', 'log',   noise.Laplace,  noise.LN),
+    ])
+    def test_transformation_selects_scale(self, dist, transformation, family_cls, scale):
+        fam, _ = noise_model_from_row(_row(dist=dist, transformation=transformation))
+        assert isinstance(fam, family_cls)
+        assert fam.additive_on is scale
+        assert fam.location is noise.MEDIAN
+
+    def test_log10_is_base10_not_natural(self):
+        # The whole point of #499: log10 must be base-10 (LOG10), matching the native
+        # ``lognormal`` token -- NOT PEtab's natural-log ``log-normal`` (LN).
+        fam, _ = noise_model_from_row(_row(dist='normal', transformation='log10'))
+        assert fam.additive_on is noise.LOG10 and fam.additive_on is not noise.LN
+
+    def test_log10_matches_native_lognormal_kernel(self):
+        # The recovered kernel is the log10-space squared residual with the Jacobian --
+        # exactly what the native ``objective = lognormal`` (Gaussian(LOG10, MEDIAN)) scores.
+        from pybnf.objective import LogNormalObjective
+        fam, _ = noise_model_from_row(_row(dist='normal', transformation='log10'))
+        native = LogNormalObjective.noise
+        pred, obs, sigma = 12.0, 8.0, 0.3
+        assert fam.data_fit(pred, obs, sigma) == pytest.approx(native.data_fit(pred, obs, sigma))
+
+    def test_lin_does_not_override_a_log_distribution(self):
+        # A lin (or absent) transformation leaves a log- noiseDistribution's own LN scale.
+        fam, _ = noise_model_from_row(_row(dist='log-normal', transformation='lin'))
+        assert fam.additive_on is noise.LN
+
+    def test_transformation_agreeing_with_log_distribution_is_accepted(self):
+        # log over log-normal both mean natural log -> no contradiction.
+        fam, _ = noise_model_from_row(_row(dist='log-normal', transformation='log'))
+        assert fam.additive_on is noise.LN
+
+    def test_transformation_contradicting_log_distribution_raises(self):
+        # log10 (LOG10) over log-normal (LN) is an ambiguous double-spelling of the scale.
+        with pytest.raises(PybnfError, match='contradicts'):
+            noise_model_from_row(_row(dist='log-normal', transformation='log10'))
+
+    def test_unknown_transformation_raises(self):
+        with pytest.raises(PybnfError, match='observableTransformation'):
+            noise_model_from_row(_row(dist='normal', transformation='ln2'))
+
+
+# ---------------------------------------------------------------------------
 # 3. Documented boundaries -> explicit errors
 # ---------------------------------------------------------------------------
 
@@ -221,22 +284,25 @@ class TestTableLevel:
         assert isinstance(_sole_source(default_spec), noise.DataColumnSigma)
 
     def test_read_observable_table_parses_columns(self, tmp_path):
-        # Note: no observableTransformation column (removed in v2); the extra
+        # The re-injected observableTransformation column (issue #499) is read; the extra
         # observablePlaceholders column is tolerated and ignored.
         tsv = tmp_path / 'observables.tsv'
         tsv.write_text(
             'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\t'
-            'observablePlaceholders\n'
-            'obs1\tscale * A\tsigma_obs1\tlog-normal\tscale\n'
-            'obs2\tB\t0.5\t\t\n'
+            'observablePlaceholders\tobservableTransformation\n'
+            'obs1\tscale * A\tsigma_obs1\tlog-normal\tscale\t\n'
+            'obs2\tB\t0.5\t\t\tlog10\n'
         )
         rows = read_observable_table(str(tsv))
         assert rows[0] == PetabObservableRow(
             observable_id='obs1', observable_formula='scale * A',
             noise_formula='sigma_obs1', noise_distribution='log-normal')
-        # blank optional noiseDistribution -> None (the mapping applies the default).
+        # blank optional columns -> None (the mapping applies the defaults).
         assert rows[1].noise_distribution is None
         assert rows[1].noise_formula == '0.5'
+        # the re-injected transformation is read onto the row.
+        assert rows[0].observable_transformation is None
+        assert rows[1].observable_transformation == 'log10'
 
     def test_read_then_map_end_to_end(self, tmp_path):
         tsv = tmp_path / 'observables.tsv'

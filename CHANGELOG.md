@@ -5,6 +5,32 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **PEtab import: `observableTransformation = log10` is no longer dropped in the v1→v2 conversion
+  (#499).** A PEtab **v1** observable with `observableTransformation = log10` (Perelson_Science1996,
+  Borghans_BiophysChem1997, Elowitz_Nature2000, and other multi-decade-signal benchmark problems)
+  imported as a **linear** `gaussian` noise model, so the fit optimized the *wrong* objective — a
+  linear residual with no change-of-variables Jacobian instead of the `log10` residual the problem
+  (and the paper) specify. The `log10` transformation was silently dropped by `petab.v2.petab1to2`
+  (PEtab v2 removed the `observableTransformation` column and has **no** `log10` `noiseDistribution`;
+  it downgrades `log10-normal` to a blank distribution), and `import_job` read only
+  `noiseDistribution`, so the observable resolved to `Gaussian(LINEAR)`. Directly parallel to the
+  `parameterScale` drop `petab1to2_preserve_scale` (#491) already fixes:
+  - **`pybnf.petab.petab1to2_preserve_scale` now also re-injects `observableTransformation`** as a
+    preserved extra column on the converted v2 observables table (v2 lint-clean; other tools ignore
+    it). Since v2 has no faithful `log10` `noiseDistribution`, this extra column is the only channel
+    for a `log10` residual — the observable twin of the `log-uniform` parameter-scale re-injection.
+  - **The importer selects the noise family's *additive scale* from `observableTransformation`, not
+    just the family from `noiseDistribution`.** `log10 + normal` → the native `lognormal` family
+    (`Gaussian(LOG10, MEDIAN)`, which already carries the correct log10-space residual **and** the
+    `Σ log(y·ln10)` Jacobian), emitted as `objective = lognormal` (or a `noise_model = lognormal, …`
+    line); `log + normal` maps to the natural-log `Gaussian(LN)` (v2's `log-normal`). The
+    `pybnf.petab.observables` adapter reads it the same way (`log10` → LOG10, `log` → LN, `lin` →
+    unchanged), with a guard against a transformation that contradicts a log `noiseDistribution`.
+    Families with no native token (natural-log, or any log `laplace`) still raise `NotImplementedError`
+    — the boundary stays in code, never a silent mis-recovery. A linear problem is byte-for-byte
+    unchanged.
+
 ### Added
 - **Scale-preserving PEtab v1→v2 conversion: `pybnf.petab.petab1to2_preserve_scale`.** The
   official `petab.v2.petab1to2` **drops** the v1 `parameterScale` column (PEtab v2 removed it) and
