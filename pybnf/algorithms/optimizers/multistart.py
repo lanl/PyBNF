@@ -88,6 +88,20 @@ class MultiStartOptimizer:
     ``got_result`` overrides win the MRO and delegate to the leaf's ``_search_*`` hooks.
     """
 
+    def __init__(self, *args, **kwargs):
+        # Cooperative: the leaf's __init__ calls super().__init__(config), which lands
+        # here first (mixin precedes the Algorithm base in the MRO); delegate onward to
+        # build self.config, then install the multi-start bookkeeping. Doing it here --
+        # not only in start_run -- means the attributes exist for the object's whole
+        # life, so a caller that drives got_result() directly without the run loop's
+        # start_run() (white-box unit tests do) still finds them. start_run()/reset()
+        # re-install the same per-run values, so a real run is byte-identical.
+        super().__init__(*args, **kwargs)
+        self._start_index = 0
+        self._inflight = set()
+        self._draining = False
+        self.n_starts = self._resolve_n_starts()
+
     def _resolve_n_starts(self):
         """The number of independent starts, from ``n_starts`` (floored at 1). Every
         start of a metaheuristic is a fresh random / Latin-hypercube population, so --
