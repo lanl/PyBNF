@@ -1168,6 +1168,16 @@ def _noise_source_for_column(verb, arg, col, datas):
     holders = [data for data in datas if col in data.cols]
     if verb == 'formula':
         return ('per_measurement', arg) if _PLACEHOLDER.search(arg) else ('formula', arg)
+    if verb == 'prediction_formula':
+        # A prediction-dependent sigma (PredictionFormulaSigma, ADR-0075): sigma scales with the
+        # simulated output, e.g. the combined error model ``sd_abs + sd_rel*y``. It maps back to
+        # a plain noiseFormula emitted VERBATIM -- the direct mirror of ``formula`` -- because the
+        # importer reclassifies it: the same substituted expression re-imports as
+        # ``prediction_formula`` iff it references a model entity (``y``), else ``formula``
+        # (_resolve_noise, import_.py). So the exporter carries no separate prediction arm: the
+        # coefficients (``sd_abs`` / ``sd_rel``) are admitted as nuisances, and the model-entity
+        # symbol stays a model reference in the noiseFormula (fit-preserving round trip, #502).
+        return ('formula', arg)
     if verb == 'read_exp_file':
         sd_col = col + arg
         if any(sd_col not in data.cols for data in holders):
@@ -1270,7 +1280,11 @@ def _referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise):
     for formula in _read_measurement_models(conf).values():
         referenced |= set(_FORMULA_SYMBOL.findall(formula))
     for _dist, verb, arg in [noise, *per_obs_noise.values()]:
-        if verb == 'formula':
+        if verb in ('formula', 'prediction_formula'):
+            # A FormulaSigma expression (ADR-0044) or a prediction-dependent sigma (ADR-0075,
+            # ``sd_abs + sd_rel*y``): its free-parameter coefficients are nuisances. Over-matches
+            # the model-entity symbol (``y``) harmlessly -- the caller intersects with declared
+            # free parameters, which a model entity is not, so only the coefficients are admitted.
             referenced |= set(_FORMULA_SYMBOL.findall(arg))
         elif verb == 'fit':
             referenced.add(arg)         # an estimated noise scale (FreeParameterSigma), #439

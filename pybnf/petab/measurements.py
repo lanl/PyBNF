@@ -138,10 +138,11 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
         ci = data.cols[col]
         suffix = sd_suffix.get(col) if isinstance(sd_suffix, dict) else sd_suffix
         sd_ci = None if suffix is None else data.cols.get(col + suffix)
-        # Row-varying per-measurement tokens (ADR-0045), keyed by the data column: the noise
-        # placeholder (one) and the observable placeholders (index order), each a {time: token}
-        # map read at the row's time. Matched by placeholder kind+index, not the observableId
-        # suffix, so a sidecar the importer keyed to the source PEtab observableId still resolves.
+        # Row-varying per-measurement tokens (ADR-0045/0075), keyed by the data column: the
+        # noise placeholders and the observable placeholders (each in index order), a {time:
+        # token} map read at the row's time. Matched by placeholder kind+index, not the
+        # observableId suffix, so a sidecar the importer keyed to the source PEtab observableId
+        # still resolves. A multi-token noiseFormula carries >1 noise series (ADR-0075).
         noise_by_time, obs_by_time = _column_placeholder_series(params.get(col, {}))
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
@@ -149,33 +150,41 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
                 continue
             t = float(data.data[i, iv])
             noise = None if sd_ci is None else float(data.data[i, sd_ci])
-            noise_id = _token_at_time(noise_by_time, t) if noise_by_time else None
+            noise_tokens = tuple(_token_at_time(d, t) for d in noise_by_time)
             obs_params = tuple(_token_at_time(d, t) for d in obs_by_time)
+            # A lone noise token keeps the dedicated ``noise_parameter_id`` field (byte-identical
+            # to the pre-#502 single-placeholder write); a multi-token cell (Fiedler / Raia,
+            # ADR-0075) rides ``noise_param_tokens``, joined ';' by the writer.
             rows.append(PetabMeasurementRow(
                 observable_id=observable_id, time=t,
                 measurement=float(value), experiment_id=experiment_id,
                 model_id=model_id, noise_parameters=noise,
-                noise_parameter_id=noise_id, observable_parameters=obs_params))
+                noise_parameter_id=(noise_tokens[0] if len(noise_tokens) == 1 else None),
+                noise_param_tokens=(noise_tokens if len(noise_tokens) > 1 else ()),
+                observable_parameters=obs_params))
     return rows
 
 
 def _column_placeholder_series(col_params):
-    """Split one sidecar column's ``{placeholder: {time: token}}`` into ``(noise_series,
-    [obs_series, ...])`` (ADR-0045): the single ``noiseParameter{n}`` ``{time: token}`` map (or
-    ``None``) and the ``observableParameter{n}`` maps in 1-based index order. Matched by the
-    placeholder's **kind + index**, never its observableId suffix, so a sidecar the importer
+    """Split one sidecar column's ``{placeholder: {time: token}}`` into
+    ``([noise_series, ...], [obs_series, ...])`` (ADR-0045/0075): the ``noiseParameter{n}`` and
+    ``observableParameter{n}`` ``{time: token}`` maps, EACH in 1-based index order. Matched by
+    the placeholder's **kind + index**, never its observableId suffix, so a sidecar the importer
     keyed to the source PEtab observableId resolves even after the exporter regenerates the
-    observableId with its own ``obs_``/``func_`` prefix."""
-    noise, obs = None, {}
+    observableId with its own ``obs_``/``func_`` prefix.
+
+    Both series are lists so a **multi-token** noiseFormula (Fiedler's ``noiseParameter1 *
+    noiseParameter2``, Raia's affine -- ADR-0075) round-trips its every ``noiseParameter${n}``:
+    the noise side is collected by index exactly like the observable side, then joined per row
+    into the ``noiseParameters`` cell (the single-token case is a length-1 list, so its written
+    cell is byte-identical to the pre-#502 scalar path)."""
+    noise, obs = {}, {}
     for placeholder, by_time in col_params.items():
         m = _PLACEHOLDER_KEY.match(placeholder)
         if m is None:
             continue
-        if m.group(1) == 'noise':
-            noise = by_time
-        else:
-            obs[int(m.group(2))] = by_time
-    return noise, [obs[i] for i in sorted(obs)]
+        (noise if m.group(1) == 'noise' else obs)[int(m.group(2))] = by_time
+    return [noise[i] for i in sorted(noise)], [obs[i] for i in sorted(obs)]
 
 
 def _token_at_time(by_time, t):
@@ -992,9 +1001,13 @@ def write_measurement_table(rows, path):
 
 
 def _noise_cell(row):
-    """The ``noiseParameters`` cell for one measurement row: a row-varying parameter-id token
-    (the sidecar source, ADR-0045) takes precedence over the numeric ``_SD`` value; blank when
-    neither is set."""
+    """The ``noiseParameters`` cell for one measurement row: a **multi-token** row-varying noise
+    (Fiedler / Raia, ADR-0075) joins its ``noiseParameter${n}`` tokens with ';' (the noise-side
+    peer of the ``observableParameters`` join); a single row-varying parameter-id token (the
+    sidecar source, ADR-0045) takes precedence over the numeric ``_SD`` value; blank when none
+    is set."""
+    if row.noise_param_tokens:
+        return ';'.join(row.noise_param_tokens)
     if row.noise_parameter_id is not None:
         return row.noise_parameter_id
     return num(row.noise_parameters)

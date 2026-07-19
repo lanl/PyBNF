@@ -67,6 +67,9 @@ FIXTURE_DIR = Path(__file__).resolve().parents[1] / 'tests' / 'petab_fixtures'
 SCALING_DIR = FIXTURE_DIR / 'scaling_v2'
 ROWSIGMA_DIR = FIXTURE_DIR / 'rowsigma_v2'
 OBSSCALE_DIR = FIXTURE_DIR / 'obsscale_v2'
+FIXEDSIGMA_DIR = FIXTURE_DIR / 'fixedsigma_v2'
+MULTISIGMA_DIR = FIXTURE_DIR / 'multisigma_v2'
+PREDSIGMA_DIR = FIXTURE_DIR / 'predsigma_v2'
 
 
 def _tsv_rows(path):
@@ -591,6 +594,117 @@ class TestExportRowVaryingRoundTrip:
         rows = [r for r in _tsv_rows(pet2 / 'measurements.tsv')
                 if r['observableId'] == 'obs_y']
         assert [r['observableParameters'] for r in rows] == ['s_lo', 's_hi', 's_lo']
+
+
+class TestExportNewNoiseShapesRoundTrip:
+    """The ADR-0075 noise shapes export back to PEtab and re-import to the same fit (#502) --
+    the follow-up half of the import completions the import tests (``test_petab_import.py``)
+    already gate. Three fixtures, each the export peer of an import oracle:
+
+    * ``fixedsigma_v2`` (Oliveira) -- a fixed noiseParameters id imported to ``fix_at 2``, which
+      exports as an inline constant noiseFormula (the pre-existing constant arm; a regression
+      guard that the completion did not disturb it);
+    * ``multisigma_v2`` (Fiedler) -- a **multi-token** row-varying noiseParameters product, whose
+      sidecar must re-emit BOTH ``noiseParameter${n}`` tokens per row (``s_lo;sig``) -- the
+      ``_column_placeholder_series`` single-series gap this closes;
+    * ``predsigma_v2`` (Raia) -- a **prediction-dependent** ``sigma = prediction_formula sd_abs +
+      sd_rel*y``, which exports verbatim as a noiseFormula that re-imports as prediction_formula
+      because ``y`` is a model entity (the new exporter arm).
+
+    The oracle is fit-preserving round trip: the re-imported conf scores the same fixed
+    trajectory against each fixture's hand-derived NLL (from ``test_petab_import.py``), so the
+    noise source survives export -> re-import unchanged, plus the re-exported problem passes
+    petab's own validator.
+    """
+
+    # case -> (fixture_dir, model, pset, sim (time, y) trajectory, expected NLL). sd differs by
+    # ROW for multisigma (per-gel scale) and predsigma (sigma scales with the prediction), so a
+    # dropped token / a sigma-at-the-measurement bug scores differently. Mirrors the import oracle.
+    _SIM = [[0., 44.], [1., 36.5], [2., 29.]]           # residuals (1, 2, 2) vs data (43, 34.5, 27)
+    _RES = np.array([1., 2., 2.])
+    CASES = {
+        'fixedsigma': (FIXEDSIGMA_DIR, 'fixedsigma_model',
+                       {'v1': .5, 'v2': 1., 'v3': 3.},
+                       float(np.sum(_RES ** 2 / (2 * 2. ** 2)))),          # fixed sigma=2, no normalizer
+        'multisigma': (MULTISIGMA_DIR, 'multisigma_model',
+                       {'v1': .5, 'v2': 1., 'v3': 3., 's_lo': .5, 's_hi': 1., 'sig': 2.},
+                       float(np.sum(_RES ** 2 / (2 * np.array([1., 2., 1.]) ** 2)
+                                    + np.log([1., 2., 1.])))),             # sigma_i = scale_i * sig
+        'predsigma': (PREDSIGMA_DIR, 'predsigma_model',
+                      {'v1': .5, 'v2': 1., 'v3': 3., 'sd_abs': .5, 'sd_rel': .1},
+                      float(np.sum(_RES ** 2 / (2 * (0.5 + 0.1 * np.array([44., 36.5, 29.])) ** 2)
+                                   + np.log(0.5 + 0.1 * np.array([44., 36.5, 29.]))))),  # sigma_i = f(y_sim_i)
+    }
+
+    def _round_trip(self, case, tmp_path):
+        """import fixture -> conf1 -> export -> petab2 -> re-import -> conf2; the artifacts."""
+        from pybnf.petab.import_ import import_job
+        fixture_dir = self.CASES[case][0]
+        imp1, pet2, imp2 = tmp_path / 'imp1', tmp_path / 'pet2', tmp_path / 'imp2'
+        import_job(fixture_dir / 'problem.yaml', imp1)
+        export_job(imp1 / 'imported.conf', pet2)
+        import_job(pet2 / 'problem.yaml', imp2)
+        return imp1, pet2, imp2
+
+    @pytest.mark.parametrize('case', list(CASES))
+    def test_source_fixture_is_petab_valid(self, case):
+        assert _petab_validation_errors(self.CASES[case][0] / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('case', list(CASES))
+    def test_reexport_is_petab_valid(self, case, tmp_path):
+        # The re-exported problem passes petab's full default_validation_tasks (the external
+        # oracle): the multi-token noiseParameters and the prediction-dependent noiseFormula are
+        # valid PEtab v2.
+        _imp1, pet2, _imp2 = self._round_trip(case, tmp_path)
+        assert _petab_validation_errors(pet2 / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('case', list(CASES))
+    def test_round_trip_preserves_the_fit(self, case, tmp_path, monkeypatch):
+        # The end-to-end oracle: the re-imported conf scores the fixed trajectory identically to
+        # the importer's hand-derived NLL, so the multi-token binding and the prediction-dependent
+        # sigma source survive export -> re-import unchanged.
+        import types
+
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        _fdir, model, psetd, expected = self.CASES[case]
+        _imp1, _pet2, imp2 = self._round_trip(case, tmp_path)
+        monkeypatch.chdir(imp2)
+        cfg = config_mod.Configuration(
+            ploop((imp2 / 'imported.conf').read_text().splitlines(keepends=True)))
+        (expname,) = cfg.exp_data[model]              # the experiment name was canonicalized
+        sim = Data.from_columns(np.array(self._SIM), ['time', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in psetd.items()]
+        score = cfg.obj.evaluate_multiple({model: {expname: sim}}, cfg.exp_data, pset)
+        assert score == pytest.approx(expected)
+
+    def test_multi_token_noise_emits_both_tokens_per_row(self, tmp_path):
+        # multisigma_v2: the row-varying multi-token noiseParameters product re-emits BOTH
+        # noiseParameter${n} tokens per row, semicolon-joined (the sidecar single-series gap #502
+        # closes). y is a model FUNCTION, so its observableId is func_y and both kept placeholders
+        # are retargeted to match it.
+        _imp1, pet2, _imp2 = self._round_trip('multisigma', tmp_path)
+        obs = {r['observableId']: r for r in _tsv_rows(pet2 / 'observables.tsv')}
+        assert obs['func_y']['noiseFormula'] == 'noiseParameter1_func_y * noiseParameter2_func_y'
+        assert obs['func_y']['noisePlaceholders'] == \
+            'noiseParameter1_func_y;noiseParameter2_func_y'
+        rows = [r for r in _tsv_rows(pet2 / 'measurements.tsv')
+                if r['observableId'] == 'func_y']
+        assert [r['noiseParameters'] for r in rows] == ['s_lo;sig', 's_hi;sig', 's_lo;sig']
+
+    def test_prediction_dependent_noise_exports_verbatim_formula(self, tmp_path):
+        # predsigma_v2: the prediction-dependent sigma exports as a plain noiseFormula (the direct
+        # mirror of a FormulaSigma) -- its coefficients declared estimated, the model entity y kept
+        # as a model reference, no per-row noiseParameters. Re-imports as prediction_formula.
+        _imp1, pet2, imp2 = self._round_trip('predsigma', tmp_path)
+        obs = {r['observableId']: r for r in _tsv_rows(pet2 / 'observables.tsv')}
+        assert obs['func_y']['noiseFormula'] == 'sd_abs + sd_rel*y'
+        assert obs['func_y']['noisePlaceholders'] == ''
+        rows = [r for r in _tsv_rows(pet2 / 'measurements.tsv')
+                if r['observableId'] == 'func_y']
+        assert [r['noiseParameters'] for r in rows] == ['', '', '']
+        assert 'sigma = prediction_formula sd_abs + sd_rel*y' in \
+            (imp2 / 'imported.conf').read_text()
 
 
 # ---------------------------------------------------------------------------
