@@ -832,3 +832,70 @@ class TestNewEraPreprocessingKeysRideThrough:
         # The experimental x column was floored in place (a 'floor' record proves it).
         floored = next(iter(c.exp_data.values()))['par1']
         assert floored.normalization['x'].method == 'floor'
+
+
+class TestRaggedReplicates:
+    """Stacking ragged replicate ``.exp`` grids (issue #494).
+
+    Replicates that measure *different* subsets of observables -- e.g. a PEtab
+    measurement table with ragged ``replicateId`` coverage, reconstructed to per-replicate
+    ``.exp`` files with different column sets (ADR-0039) -- stack onto the **union** of
+    every file's columns, ``NaN``-filling the cells a replicate does not measure. Prior to
+    the fix, :meth:`Configuration._load_experiment_data` rejected the mismatched columns.
+    """
+
+    @staticmethod
+    def _grid(headers, rows):
+        return data.Data.from_columns(np.array(rows, dtype=float), headers)
+
+    def test_homogeneous_replicates_stack_byte_identically(self):
+        # Same columns in the same order -> a plain vstack, byte-identical to the pre-#494
+        # path (the common homogeneous replicate set must not shift).
+        a = self._grid(['time', 'x', 'y'], [[0, 1, 2], [1, 3, 4]])
+        b = self._grid(['time', 'x', 'y'], [[0, 5, 6], [1, 7, 8]])
+        stacked = config.Configuration._stack_replicates([a, b])
+        assert list(stacked.cols) == ['time', 'x', 'y']
+        assert stacked.indvar == 'time'
+        assert np.array_equal(stacked.data, np.vstack([a.data, b.data]))
+
+    def test_reordered_columns_stack_by_name(self):
+        # Same column *set*, different order: values align by name, not position.
+        a = self._grid(['time', 'x', 'y'], [[0, 1, 2]])
+        b = self._grid(['time', 'y', 'x'], [[0, 20, 10]])
+        stacked = config.Configuration._stack_replicates([a, b])
+        assert list(stacked.cols) == ['time', 'x', 'y']
+        assert np.array_equal(stacked['x'], [1, 10])
+        assert np.array_equal(stacked['y'], [2, 20])
+
+    def test_ragged_replicate_pads_absent_column_with_nan(self):
+        # rep B measures only x; its y cells become NaN in the union grid.
+        a = self._grid(['time', 'x', 'y'], [[0, 1, 2], [1, 3, 4]])
+        b = self._grid(['time', 'x'], [[0, 5], [1, 7]])
+        stacked = config.Configuration._stack_replicates([a, b])
+        assert list(stacked.cols) == ['time', 'x', 'y']  # union in first-appearance order
+        assert np.array_equal(stacked['time'], [0, 1, 0, 1])
+        assert np.array_equal(stacked['x'], [1, 3, 5, 7])
+        assert np.array_equal(stacked['y'][:2], [2, 4])   # rep A intact
+        assert np.all(np.isnan(stacked['y'][2:]))         # rep B unmeasured -> NaN
+
+    def test_column_absent_from_first_grid_is_appended_after_indvar(self):
+        # A column that first appears in a later replicate joins the union (indvar stays
+        # column 0); each grid NaN-pads the column it did not measure.
+        a = self._grid(['time', 'x'], [[0, 1]])
+        b = self._grid(['time', 'y'], [[0, 9]])
+        stacked = config.Configuration._stack_replicates([a, b])
+        assert list(stacked.cols) == ['time', 'x', 'y']
+        assert stacked.indvar == 'time'
+        assert np.isnan(stacked['y'][0]) and np.isnan(stacked['x'][1])
+
+    def test_objective_scores_ragged_stack_as_sum_over_measured_points(self):
+        # Fit preservation (ADR-0039): a NaN-padded column scores over its measured points
+        # only, so summing residuals over the union grid equals summing each replicate's own
+        # residuals -- the fit is identical regardless of which file each point lived in.
+        sim = self._grid(['time', 'x', 'y'], [[0, 10, 20], [1, 30, 40]])
+        full = self._grid(['time', 'x', 'y'], [[0, 1, 2], [1, 3, 4]])
+        xonly = self._grid(['time', 'x'], [[0, 5], [1, 7]])
+        obj = objective.SumOfSquaresObjective()
+        stacked = config.Configuration._stack_replicates([full, xonly])
+        expected = obj.evaluate(sim, full) + obj.evaluate(sim, xonly)
+        assert obj.evaluate(sim, stacked) == pytest.approx(expected)

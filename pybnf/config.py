@@ -1786,11 +1786,13 @@ class Configuration:
 
         A single file is returned as-is. Multiple files are **replicates**: their rows are
         vertically concatenated into one ``Data`` (NOT averaged -- the objective sums over
-        all rows, so duplicate-indvar rows from replicates add measurement terms). All
-        replicates must share the same columns (so ``_SD`` noise columns ride through
-        intact, ADR-0021). ``data_files`` is the ``.exp`` subset (constraint ``.con``/
-        ``.prop`` files are split off by :meth:`_partition_experiment_data` and loaded
-        separately); a stray non-``.exp`` here is an internal-consistency error."""
+        all rows, so duplicate-indvar rows from replicates add measurement terms).
+        *Ragged* replicates -- replicate files that measure different subsets of observables
+        (issue #494) -- are stacked onto the **union** of their columns via
+        :meth:`_stack_replicates`, so ``_SD`` noise columns still ride through intact
+        (ADR-0021). ``data_files`` is the ``.exp`` subset (constraint ``.con``/``.prop``
+        files are split off by :meth:`_partition_experiment_data` and loaded separately); a
+        stray non-``.exp`` here is an internal-consistency error."""
         datas = []
         for ef in data_files:
             if not re.search(r'\.exp$', ef):
@@ -1805,18 +1807,43 @@ class Configuration:
                 raise PybnfError(f"Parsing data file {ef} for experiment '{name}'. {err.args[0]}")
         if len(datas) == 1:
             return datas[0]
-        base_cols = datas[0].cols
-        for d, ef in zip(datas[1:], data_files[1:]):
-            if d.cols != base_cols:
-                raise PybnfError(
-                    f"Replicate data files for experiment '{name}' have mismatched columns "
-                    f"({list(base_cols)} vs {list(d.cols)} in '{ef}'). All replicates of an "
-                    "experiment must share the same columns.")
+        return self._stack_replicates(datas)
+
+    @staticmethod
+    def _stack_replicates(datas):
+        """Vertically stack replicate ``.exp`` grids into one ``Data``, padding ragged
+        replicates (issue #494).
+
+        Replicates that measure **different** subsets of observables -- e.g. a PEtab
+        measurement table with ragged ``replicateId`` coverage, which reconstructs to
+        per-replicate ``.exp`` files with different column sets (ADR-0039) -- are stacked
+        onto the **union** of every file's columns, ``NaN``-filling the cells a replicate
+        does not measure. The objective skips ``NaN`` exp cells (#479), so a padded column
+        scores over its measured points only and the fit is unchanged (PyBNF sums residuals
+        over all rows regardless of which file each lived in). Columns follow first-appearance
+        order across the files, so the independent variable (column 0 of every ``.exp``)
+        stays first; a **homogeneous** replicate set (every file the same columns in the same
+        order) stacks byte-identically to a plain ``vstack``, matching by column *name* so a
+        reordered-but-equal-columns set stacks correctly too.
+        """
+        union = []
+        for d in datas:
+            for j in range(d.data.shape[1]):
+                header = d.headers[j]
+                if header not in union:
+                    union.append(header)
+        col_index = {header: i for i, header in enumerate(union)}
+        blocks = []
+        for d in datas:
+            block = np.full((d.data.shape[0], len(union)), np.nan)
+            for j in range(d.data.shape[1]):
+                block[:, col_index[d.headers[j]]] = d.data[:, j]
+            blocks.append(block)
         stacked = Data()
-        stacked.cols = dict(datas[0].cols)
-        stacked.headers = dict(datas[0].headers)
+        stacked.cols = dict(col_index)
+        stacked.headers = {i: header for header, i in col_index.items()}
         stacked.indvar = datas[0].indvar
-        stacked.data = np.vstack([d.data for d in datas])
+        stacked.data = np.vstack(blocks)
         return stacked
 
     def _attach_measurement_params(self, name, stacked, mp_file):

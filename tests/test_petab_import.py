@@ -689,6 +689,54 @@ class TestReplicateRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Ragged replicates (issue #494): a measurement table whose replicates cover DIFFERENT
+# observable subsets reconstructs to per-replicate .exp files with different column sets
+# (ADR-0039 deals the extra obs_x-only replicate into a second, x-only grid). Loading that
+# imported conf must not raise on the mismatched columns -- the replicates stack onto the
+# union of columns, NaN-filling the cells the x-only replicate does not measure.
+# ---------------------------------------------------------------------------
+
+class TestRaggedReplicateImport:
+
+    @pytest.fixture
+    def imported_ragged(self, tmp_path):
+        # Export the demo, then append a replicate that measures ONLY obs_x (a second
+        # occurrence of each obs_x cell, none for func_y) -- the ragged shape #494 hit in
+        # the PEtab benchmark collection (Armistead_CellDeathDis2024 et al.).
+        petab = tmp_path / 'petab'
+        export_job(DEMO_CONF, petab)
+        mfile = petab / 'measurements.tsv'
+        lines = mfile.read_text().splitlines()
+        obs_x_rows = [ln for ln in lines[1:] if ln.startswith('obs_x\t')]
+        assert obs_x_rows
+        mfile.write_text('\n'.join(lines + obs_x_rows) + '\n')
+        return import_job(petab / 'problem.yaml', tmp_path / 'out')
+
+    def test_reconstructs_a_ragged_second_replicate(self, imported_ragged):
+        # The full grid keeps the base name; the x-only replicate is the _rep2 sibling.
+        exps = {p.name: Data(file_name=str(p)) for p in imported_ragged.glob('*.exp')}
+        assert any(n.endswith('_rep2.exp') for n in exps)
+        rep2 = next(d for n, d in exps.items() if n.endswith('_rep2.exp'))
+        assert 'x' in rep2.cols and 'y' not in rep2.cols   # ragged: obs_x only
+
+    def test_imported_ragged_conf_loads_and_pads_to_the_union(self, imported_ragged,
+                                                              monkeypatch):
+        # The crash path #494 reports: loading the imported conf stacked the ragged .exp
+        # files and rejected their mismatched columns. It now union-pads instead.
+        from pybnf import config as config_mod
+        monkeypatch.chdir(imported_ragged)
+        cfg = config_mod.Configuration(
+            ploop((imported_ragged / 'imported.conf').read_text().splitlines(keepends=True)))
+        stacked = next(iter(cfg.exp_data.values()))['experiment1']
+        # Union columns; the x-only replicate's y / y_SD rows are NaN, x is measured throughout.
+        assert set(stacked.cols) == {'time', 'x', 'y', 'x_SD', 'y_SD'}
+        n = stacked.data.shape[0]
+        assert np.isfinite(stacked['x']).sum() == n           # x measured in every row
+        assert np.isfinite(stacked['y']).sum() == n // 2      # only the full replicate has y
+        assert np.isnan(stacked['y']).sum() == n // 2         # the x-only replicate pads y
+
+
+# ---------------------------------------------------------------------------
 # Multi-model round trip (ADR-0041, #430): a two-model BNGL job exports to a PEtab problem
 # with two model_files entries + a modelId column on measurements, imports back to a conf
 # declaring both models (each experiment naming its model), and re-exports byte-for-byte.

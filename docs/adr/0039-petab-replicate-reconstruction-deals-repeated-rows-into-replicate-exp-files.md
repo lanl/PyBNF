@@ -98,3 +98,29 @@ See ADR-0025 (the exporter's long↔wide measurement pivot this inverts), ADR-00
 read path), ADR-0028 (the new-era `experiment:`/`data:` surface whose list-of-files binding this
 reuses). Sibling #407 follow-ups: SBML export (#429), multi-model (#430), per-measurement
 placeholders (#428).
+
+## Addendum: ragged replicates stack onto the union of columns (issue #494)
+
+**Accepted and implemented 2026-07-19.** The dealing above already produces *ragged* replicate
+grids when a measurement table's replicates cover **different** observable subsets — e.g.
+`Armistead_CellDeathDis2024`, where `wild_type` has four replicates measuring all four
+observables and a fifth measuring only `S1P`. Bucket 0 (the full grid) sees every cell first,
+so it holds all four columns; the fifth-replicate spill (`<name>_rep5.exp`) holds only `S1P`.
+The load path in `config.py::_load_experiment_data` originally required every replicate `.exp`
+of an experiment to share **identical columns** and raised on the mismatch, so these otherwise
+importable problems crashed at config load.
+
+The load now stacks ragged replicates onto the **union** of every file's columns
+(`_stack_replicates`), `NaN`-filling the cells a replicate does not measure, matching columns by
+**name** (order-independent). A padded column scores over its measured points only — the
+objective already skips `NaN` exp cells as "unmeasured" (the NaN-aware reduction of #479) — so
+the **fit is identical** regardless of which `.exp` file a point lived in (the summing objective
+never saw the partition; this is the same fit-preservation guarantee the dealing already claims
+above). A **homogeneous** replicate set (every file the same columns in the same order) stacks
+byte-identically to a plain `vstack`, so the common round-trip stays byte-stable. This also lifts
+the constraint on any *hand-authored* job that binds ragged `.exp` files to one `experiment:`,
+not just PEtab imports. Also affected in the benchmark collection: `Blasi_CellSystems2016`,
+`Weber_BMC2015`. Oracles: `test_config_class.py::TestRaggedReplicates` (the union-pad + fit
+preservation on `_stack_replicates` directly) and
+`test_petab_import.py::TestRaggedReplicateImport` (a ragged measurement table imports and its
+conf loads end to end).
