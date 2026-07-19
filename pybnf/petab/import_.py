@@ -262,13 +262,15 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # post-sim observation layer, never a model-file edit (ADR-0036).
     model_texts = {}            # location -> verbatim text
     namespaces, entity_name_sets = [], []
+    assignment_rules = {}       # SBML assignmentRule target -> RHS infix (inlined below, #493)
     for m in models:
         loc, lang = m['location'], (m['language'] or 'bngl').lower()
         text = (base / loc).read_text(encoding='utf-8', errors='replace')
         model_texts[loc] = text
-        ns, ents = _model_namespace(text, lang)
+        ns, ents, rules = _model_namespace(text, lang)
         namespaces.append(ns)
         entity_name_sets.append(ents)
+        assignment_rules.update(rules)
     namespace = set().union(*namespaces)
     entity_names = set().union(*entity_name_sets)
 
@@ -277,7 +279,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
-        row_varying_obs_params)
+        row_varying_obs_params, assignment_rules)
 
     # Pre-equilibrated dose-response reconstruction (ADR-0062): pull out the two-period scan groups
     # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
@@ -440,28 +442,35 @@ def _free_parameter_conf_line(fp, model_param):
 # ---------------------------------------------------------------------------
 
 def _model_namespace(model_text, language):
-    """The model's expression namespace + the full entity name set, per language (ADR-0036).
+    """The model's expression namespace + entity name set + assignment rules, per language
+    (ADR-0036).
 
-    Returns ``(namespace_symbols, entity_names)``: ``namespace_symbols`` are the names an
-    ``observableFormula`` may reference (the BNGL ``ParamList`` -- parameters u observables u
-    functions; or SBML species u parameters u compartments -- ADR-0026/0036);
+    Returns ``(namespace_symbols, entity_names, assignment_rules)``: ``namespace_symbols`` are
+    the names an ``observableFormula`` may reference (the BNGL ``ParamList`` -- parameters u
+    observables u functions; or SBML species u parameters u compartments -- ADR-0026/0036);
     ``entity_names`` is the broader declared-name set used for the shadow check (a measurement
-    model's id must not collide with a model output column). Read from the model text directly
-    with the stdlib scanners (``_bngl`` / ``_sbml``), simulator-free.
+    model's id must not collide with a model output column); ``assignment_rules`` maps each SBML
+    ``assignmentRule`` target id to its rule's RHS as a PEtab-math infix string (``None`` if the
+    MathML was not translatable), the map the importer **inlines** so a formula naming a rule
+    variable resolves down to the species/parameters the rule is computed from (#493, the import
+    peer of the config-load inlining -- #465). It is ``{}`` for a BNGL model (no assignment
+    rules). Read from the model text directly with the stdlib scanners (``_bngl`` / ``_sbml``),
+    simulator-free.
     """
     if language == 'sbml':
         ent = parse_sbml_model(model_text)
-        return ent.namespace_symbols, set(ent.namespace_symbols)
+        return ent.namespace_symbols, set(ent.namespace_symbols), ent.assignment_rules
     ent = parse_bngl_model(model_text)
     namespace = (set(ent.parameters) | set(ent.observable_names)
                  | set(ent.function_names))
     entity_names = (namespace | set(ent.molecule_type_names)
                     | set(ent.compartment_names))
-    return namespace, entity_names
+    return namespace, entity_names, {}
 
 
 def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params,
-                             obs_params, free_names, row_varying_obs_params=()):
+                             obs_params, free_names, row_varying_obs_params=(),
+                             assignment_rules=None):
     """Map each ``observableId`` to the model column it measures, recording a measurement
     model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
@@ -492,7 +501,19 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     placeholder is admitted to the validator's allowed set so the non-placeholder symbols still
     validate against the model namespace. A *constant*-per-observable placeholder is substituted
     away as in Phase 1; an unresolved (neither constant nor row-varying) placeholder still raises.
+
+    ``assignment_rules`` (#493) is the SBML ``assignmentRule`` map (target id -> rule RHS as
+    PEtab-math infix). An assignment-rule variable is a *derived* model output -- declared as a
+    parameter/species but algebraically computed every step, so it is never a simulation-output
+    column and cannot be resolved *as a symbol* (that is exactly why it is absent from
+    ``namespace``). Each observableFormula is therefore **inlined** first: every referenced rule
+    variable is replaced by its rule's RHS (recursively) so the formula reduces to species /
+    parameters the layer can evaluate -- the SBML analogue of a BNGL global function in an
+    observableFormula, which PyBNF already accepts. A formula naming no rule variable is returned
+    verbatim (the bare-name common case stays dependency-free); this mirrors the config-load
+    inlining (#465).
     """
+    assignment_rules = assignment_rules or {}
     # Fixed PEtab parameters that are NOT model entities are inlined as literals; one that
     # IS a model entity stays a symbol (it resolves as a model constant at eval time).
     inline = {n: v for n, v in fixed_params.items() if n not in namespace}
@@ -506,6 +527,17 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     measurement_models = []
     for row in observable_rows:
         raw = (row.observable_formula or '').strip()
+        # Inline any SBML assignment-rule variable the formula names down to the species /
+        # parameters the rule is computed from (#493) BEFORE the bare/expression branch: a bare
+        # ``EGFRtot`` becomes its RHS expression (a measurement model), a rule reference inside a
+        # larger formula resolves in place. A formula naming no rule variable returns verbatim, so
+        # the bare-name common case never reaches the translator (dependency-free, byte-stable);
+        # the inlining leaves any observableParameters placeholder untouched (rules are model
+        # MathML, never placeholders), so the placeholder handling below is unchanged.
+        if assignment_rules:
+            from .formula import inline_assignment_rules
+            raw = inline_assignment_rules(
+                raw, assignment_rules, observable_id=row.observable_id)
         had_placeholder = bool(_PLACEHOLDER.search(raw))
         row_varying = row.observable_id in row_varying_obs_params
         if row_varying:

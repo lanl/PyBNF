@@ -6,6 +6,21 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **PEtab SBML import: an `observableFormula` referencing an SBML `assignmentRule` variable now
+  imports instead of being rejected as "not a model entity" (#493).** An `assignmentRule`-defined
+  variable (a `<parameter>`/`<species>` with `constant="false"` whose value is set by an
+  `<assignmentRule>`) is a *derived* model output — the backend recomputes it at every step — so it
+  is exactly the kind of quantity an observable is built from (the SBML analogue of a BNGL global
+  function, which PyBNF already accepts). `import_job`'s measurement-model importer recognized only
+  species / parameters / observables / functions, so six PEtab benchmark-collection problems
+  (`Giordano_Nature2020`, `Laske_PLOSComputBiol2019`, `Rahman_MBS2016`, `SalazarCavazos_MBoC2020`,
+  `Smith_BMCSystBiol2013`, `Zhao_QuantBiol2020`) could not be imported at all — a bare-name formula
+  raised *"has a bare observableFormula … which is not a model entity"* and an expression formula
+  raised *"references … which is not a known model entity"*. The importer now **inlines** any
+  referenced assignment-rule variable down to the species/parameters its rule is defined over
+  (recursively), exactly the resolution the config-load measurement layer already performs (#465,
+  ADR-0036); the model file is carried byte-verbatim and a formula naming no rule variable is
+  returned unchanged (the bare-name common case stays dependency-free).
 - **PEtab import: `observableTransformation = log10` is no longer dropped in the v1→v2 conversion
   (#499).** A PEtab **v1** observable with `observableTransformation = log10` (Perelson_Science1996,
   Borghans_BiophysChem1997, Elowitz_Nature2000, and other multi-decade-signal benchmark problems)

@@ -167,6 +167,85 @@ class TestSbmlImport:
 
 
 # ---------------------------------------------------------------------------
+# 1a. Importer: an observableFormula referencing an SBML assignmentRule variable (#493)
+# ---------------------------------------------------------------------------
+
+def _write_ruled_sbml_petab_problem(prob, formula):
+    """Write a crafted SBML PEtab v2 problem whose model carries an ``assignmentRule``
+    ``total := A + B`` and whose observable's formula is ``formula`` (which references the rule
+    variable ``total``). The measurements are placeholders -- these tests exercise import, not a
+    fit. Returns the problem.yaml path."""
+    prob.mkdir(parents=True, exist_ok=True)
+    (prob / 'model.xml').write_text(RULE_SBML)
+    (prob / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\n'
+        'k1\ttrue\t0.01\t10\n')
+    (prob / 'observables.tsv').write_text(
+        'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+        f'obs_total\t{formula}\t1\tnormal\n')
+    (prob / 'measurements.tsv').write_text(
+        'observableId\texperimentId\ttime\tmeasurement\n'
+        'obs_total\texp1\t0\t10\nobs_total\texp1\t1\t8\n')
+    (prob / 'conditions.tsv').write_text('conditionId\n')
+    (prob / 'experiments.tsv').write_text('experimentId\ttime\tconditionId\n')
+    (prob / 'problem.yaml').write_text(textwrap.dedent("""\
+        format_version: 2.0.0
+        parameter_files:
+          - parameters.tsv
+        observable_files:
+          - observables.tsv
+        measurement_files:
+          - measurements.tsv
+        condition_files:
+          - conditions.tsv
+        experiment_files:
+          - experiments.tsv
+        model_files:
+          model:
+            location: model.xml
+            language: sbml
+        """))
+    return prob / 'problem.yaml'
+
+
+class TestSbmlImportAssignmentRule:
+    """The issue's exact reproduction on the import path (#493): an ``observableFormula`` that
+    references an SBML ``assignmentRule`` variable -- a *derived*, algebraically-computed output,
+    not a simulation-output column -- used to be rejected as "not a model entity" by ``import_job``.
+    It now imports, the rule inlined to the species it is computed from (the import peer of the
+    config-load inlining, #465). The two error shapes in the issue are the bare-name and the
+    expression observableFormula."""
+
+    def _import_meas(self, tmp_path, formula):
+        pytest.importorskip('petab')
+        from pybnf.parse import ploop
+        from pybnf.petab import import_job
+        yaml = _write_ruled_sbml_petab_problem(tmp_path / 'prob', formula)
+        out = import_job(yaml, tmp_path / 'out')
+        # The .xml carrying the assignmentRule is carried byte-verbatim (never edited, ADR-0036).
+        assert (out / 'model.xml').read_text() == RULE_SBML
+        conf = ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+        return {k[1]: v for k, v in conf.items()
+                if isinstance(k, tuple) and k[0] == 'measurement'}
+
+    def test_bare_name_rule_variable_inlines_to_species(self, tmp_path):
+        # Bare ``total`` (the "bare observableFormula ... not a model entity" shape): the rule
+        # ``total := A + B`` is inlined, so the observable becomes a measurement model over A + B.
+        assert self._import_meas(tmp_path, 'total') == {'obs_total': 'A + B'}
+
+    def test_rule_variable_inside_an_expression_inlines_in_place(self, tmp_path):
+        # ``scale * total`` (the "references ... not a known model entity" shape): the rule
+        # variable is inlined in place, the surrounding arithmetic preserved.
+        meas = self._import_meas(tmp_path, 'scale * total')
+        assert set(meas) == {'obs_total'}
+        # The emitted formula scores scale*(A + B): the rule variable is gone, resolved to species.
+        assert 'total' not in meas['obs_total']
+        from pybnf.petab.formula import compile_petab_formula
+        _func, names = compile_petab_formula(meas['obs_total'], {'A', 'B', 'scale', 'cell', 'k1'})
+        assert set(names) == {'A', 'B', 'scale'}
+
+
+# ---------------------------------------------------------------------------
 # 1b. Exporter: a native SBML PyBNF job -> a valid SBML PEtab v2 problem (#429, ADR-0040)
 # ---------------------------------------------------------------------------
 
