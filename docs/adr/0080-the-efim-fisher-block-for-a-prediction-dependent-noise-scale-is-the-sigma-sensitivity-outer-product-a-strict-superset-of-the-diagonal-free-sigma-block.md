@@ -86,7 +86,10 @@ Fisher sibling of ADR-0079's `lbfgs` recovery, recovering k/S0 on the decay net.
   offset coupling and is handled.
 - The **PSet-only** composite estimated scales (`FormulaSigma` / `PerMeasurementFormulaSigma`) — a
   different chain rule (no sim coupling / a per-row binding); still refused by
-  `_require_gradient_supported` on both paths (unchanged ADR-0044/0045 boundaries).
+  `_require_gradient_supported` on both paths (unchanged ADR-0044/0045 boundaries). The last
+  estimated-scale gradient/EFIM deferral, tracked as follow-up **#505** (`FormulaSigma` is a subset
+  of this ADR's chain rule; `PerMeasurementFormulaSigma` additionally needs `exp_data`/`exp_row`
+  threaded through the `sigma_sensitivity` seam for its per-row binding).
 
 ## Boundaries (in code, each pointing here)
 
