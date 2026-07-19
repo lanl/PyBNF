@@ -309,6 +309,82 @@ class TestImportParamRefConditionRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# #503 (follow-up left by #496): two PEtab observables that map to ONE model column with
+# per-observable noise (Bertozzi_PNAS2020's y_I_NY / y_I_CA both measure I_, each with its
+# own estimated sigma). The importer currently keys each per-observable noise_model override
+# by the shared model COLUMN (import_.py::_per_observable_directives), so it emits two
+# colliding `noise_model <column>` lines that parse.ploop rejects. XFAIL until #503 lands;
+# a runnable repro + the real problem live in dev/petab-503-repro/. Recommended fix:
+# materialize a per-observableId column (an identity measurement model) for a shared-column
+# observable, so each dataset keeps its own column + noise line. See the #503 kickoff.
+# ---------------------------------------------------------------------------
+
+_SHARED_COL_MODEL = """\
+begin model
+  begin parameters
+    kdeg 0.5
+  end parameters
+  begin molecule types
+    Z()
+  end molecule types
+  begin seed species
+    Z() 100
+  end seed species
+  begin observables
+    Molecules z Z()
+  end observables
+  begin reaction rules
+    Z() -> 0 kdeg
+  end reaction rules
+end model
+"""
+
+
+@pytest.mark.xfail(strict=True, reason="#503: two observables on one model column emit "
+                                       "colliding noise_model lines (import_.py "
+                                       "_per_observable_directives keys noise by column)")
+def test_shared_column_observables_with_per_observable_noise_import_and_parse(tmp_path):
+    """Two observables measuring the same model output `z` in different experiments, each with
+    its own estimated sigma, must import into a *parseable* conf with two distinct noise
+    sources. Simulator-free (import reads the BNGL text with stdlib scanners; the failure is at
+    parse.ploop, so no model load / BNG is needed). Mirrors dev/petab-503-repro/make_and_repro.py."""
+    (tmp_path / 'm.bngl').write_text(_SHARED_COL_MODEL)
+    (tmp_path / 'observables.tsv').write_text(
+        'observableId\tobservableFormula\tnoiseFormula\tnoisePlaceholders\n'
+        'obs_a\tz\tsd_a\t\n'
+        'obs_b\tz\tsd_b\t\n')
+    (tmp_path / 'parameters.tsv').write_text(
+        'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n'
+        'kdeg\t0.01\t10\t0.5\ttrue\n'
+        'sd_a\t0.1\t100\t1.0\ttrue\n'
+        'sd_b\t0.1\t100\t2.0\ttrue\n')
+    (tmp_path / 'measurements.tsv').write_text(
+        'experimentId\tobservableId\tmeasurement\ttime\n'
+        'ea\tobs_a\t90\t0\n'
+        'ea\tobs_a\t55\t1\n'
+        'eb\tobs_b\t88\t0\n'
+        'eb\tobs_b\t50\t1\n')
+    (tmp_path / 'experiments.tsv').write_text(
+        'experimentId\ttime\tconditionId\n'
+        'ea\t0\t\n'
+        'eb\t0\t\n')
+    (tmp_path / 'problem.yaml').write_text(
+        'format_version: 2.0.0\n'
+        'parameter_files:\n- parameters.tsv\n'
+        'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'
+        'observable_files:\n- observables.tsv\n'
+        'measurement_files:\n- measurements.tsv\n'
+        'experiment_files:\n- experiments.tsv\n'
+        'condition_files: []\nmapping_files: []\n')
+
+    out = tmp_path / 'imported'
+    import_job(tmp_path / 'problem.yaml', out, job_type='de')
+    conf = (out / 'imported.conf').read_text()
+    ploop(conf.splitlines(keepends=True))          # currently raises: noise_model 'z' twice
+    assert 'sd_a' in conf and 'sd_b' in conf       # both per-observable sigmas survive, distinct
+
+
+# ---------------------------------------------------------------------------
 # Dose-response (parameter_scan) round trip (ADR-0046): N steady-state Conditions +
 # Experiments measured at time=inf <-> a single swept-axis .exp + a parameter_scan
 # experiment. The inverse of the exporter's dose-response emission.
