@@ -71,6 +71,7 @@ Results land in `output/` inside the lesson folder.
 | 45 | [`45_model_selection`](45_model_selection) | **which growth law?** — fit competing models, rank by **AIC** | multi-model comparison (`de` + AIC) *(recovery tier)* |
 | 46 | [`46_model_checking`](46_model_checking) | **does the model satisfy the spec?** — check a model against qualitative properties, no fitting | `job_type = check`, BPSL `.prop` (`at`/`once`/`always`/`between`) *(recovery tier)* |
 | 47 | [`47_condition_perturbations`](47_condition_perturbations) | **one model, many conditions** — fit a wildtype AND a knockout with one model file | `condition: … perturbations:` + per-experiment `condition:` *(recovery tier)* |
+| 48 | [`48_state_dependent_noise`](48_state_dependent_noise) | a **noise scale that depends on the prediction** — a combined additive+proportional error model | `noise_model = gaussian, sigma = prediction_formula sd_abs + sd_rel*<obs>` *(recovery tier)* |
 
 ## The edition-2 config surface, in one place
 

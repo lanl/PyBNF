@@ -47,6 +47,17 @@ class Dataset:
                               # confs set sigma with `fix_at`): data spanning orders of magnitude
                               # with constant RELATIVE scatter -- the lognormal lesson (42).
     noise_lognormal_seed: int = 0
+    noise_combined_abs: float = None  # COMBINED additive+proportional gaussian noise: each point
+                              # += N(0, sigma) with a per-point sigma = noise_combined_abs +
+                              # noise_combined_rel * y_true (an additive floor PLUS a term that
+                              # scales with the model prediction), seeded by `noise_combined_seed`.
+                              # No _SD column -- the two coefficients are ESTIMATED jointly with the
+                              # rate via a `sigma = prediction_formula sd_abs + sd_rel*<obs>` fit:
+                              # sigma is a function of the PREDICTED state, so it cannot be a fixed
+                              # data column (the state-dependent noise lesson, 48). Both fields
+                              # (abs + rel) must be set together.
+    noise_combined_rel: float = None
+    noise_combined_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
     sd_by_obs: tuple = ()     # ((obs_name, sd_value), ...): a DIFFERENT constant _SD per
@@ -1104,6 +1115,30 @@ EXAMPLES = (
             # off-diagonal cross-product is pruned (#484). de + refine.
             ConfCheck('condition_perturbations.conf', recover={'kf': 0.7, 'kr': 0.2}, tol=0.05),
         ),
+    ),
+    Example(
+        folder='48_state_dependent_noise',
+        model='decay.bngl',
+        # A decay measured with COMBINED additive+proportional error: sigma = sd_abs + sd_rel*y,
+        # an additive floor plus a term that scales with the predicted state. The fit estimates
+        # both coefficients jointly with the rate via `sigma = prediction_formula sd_abs +
+        # sd_rel*Obs_A` -- the first lesson whose sigma is a function of the PREDICTION, not the
+        # data (35 scales with the data, 36 estimates a CONSTANT sigma, 42 is lognormal). ADR-0075.
+        truth={'k': 0.4},
+        build_free={'k': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # sigma_i = 5.0 + 0.1*Obs_A(t_i): over A0=1000 -> ~0 the proportional term (sd_rel*A)
+            # dominates the early points (at A=1000, sigma~=105) and the additive floor 5.0 the late
+            # ones (crossover A=50) -- so the many high-A points constrain sd_rel and the long low-A
+            # tail constrains sd_abs. No _SD column (sigma is a fit of the prediction, not data).
+            Dataset('decay.exp', obs=('Obs_A',), t_end=20, n_points=41,
+                    noise_combined_abs=5.0, noise_combined_rel=0.1, noise_combined_seed=11),
+        ),
+        # k recovers tightly; (sd_abs, sd_rel) recover loosely (a combined error model's two
+        # coefficients are weakly identified) -- a k-tight / coefficient-loose split a single
+        # ConfCheck tolerance cannot express, so tests/test_tutorial_state_dependent_noise.py
+        # asserts recovery instead of a manifest ConfCheck (mirroring lesson 36).
+        confs=(),
     ),
 )
 

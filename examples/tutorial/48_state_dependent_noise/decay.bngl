@@ -1,0 +1,46 @@
+# =============================================================================
+#  Decay with STATE-DEPENDENT measurement noise    A --k--> (gone)
+# =============================================================================
+#  A single first-order decay, A(t) = A0 exp(-k t), from A0 = 1000, measured with
+#  a COMBINED additive+proportional error: the standard deviation of each point is
+#
+#        sigma(t) = sd_abs + sd_rel * A(t)
+#
+#  an additive floor `sd_abs` PLUS a term proportional to the predicted signal
+#  `sd_rel * A`. This is the honest heteroscedastic error model an assay with both a
+#  constant baseline noise AND a signal-proportional component actually has -- large
+#  absolute scatter where the signal is big, a fixed noise floor where it decays away.
+#
+#  Only k is a model parameter. sd_abs and sd_rel are NUISANCE parameters (named free
+#  variables the noise-model line binds its sigma expression to), not part of the
+#  model -- the fit estimates all three jointly. Because sigma is a function of the
+#  PREDICTED state A, it cannot be supplied as a fixed _SD data column: the fit reads
+#  it from the simulation via `sigma = prediction_formula sd_abs + sd_rel*Obs_A`
+#  (lesson 48). This is the noise-side peer of a measurement model (ADR-0075).
+# =============================================================================
+
+begin model
+
+begin parameters
+  k   0.4    # decay rate [1/day]  <- FITTED
+  A0  1000   # initial amount [AU] (fixed/known) -- a wide dynamic range so the signal-
+             # proportional noise term dominates the early points and the floor the late ones
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  A0
+end seed species
+
+begin observables
+  Molecules  Obs_A  A()
+end observables
+
+begin reaction rules
+  A_decay: A() -> 0  k
+end reaction rules
+
+end model
