@@ -107,8 +107,32 @@ class GradientRunner:
         return self.point
 
     def got(self, u_point, score, grad):
-        """Consume one completed evaluation and return the next ``u`` or :data:`DONE`."""
+        """Consume one completed evaluation and return the next ``u`` or :data:`DONE`.
+
+        The orchestrator passes ``grad = None`` with a non-finite ``score`` for a **failed
+        simulation** (a non-integrable candidate point). A leaf's ``got`` must tolerate that:
+        mid-search its ``isfinite(score)`` guard already rejects the trial without
+        dereferencing the gradient (the fit backs off); at the start point (``phase ==
+        'init'``, ``grad is None``) it must terminate via :meth:`_failed_start`. See
+        :meth:`GradientOptimizer._advance` (#492)."""
         raise NotImplementedError
+
+    def _failed_start(self):
+        """Terminate this start: its start point did not simulate (a non-integrable point --
+        a bngsim CVODE failure, a NaN/Inf), so there is no finite objective or gradient to
+        model the local surface from and descend. A gradient method needs a viable start;
+        with none, this start ends. Concurrent multi-start keeps every *other* start's
+        progress and the global best, so only this start stops (a single-start fit ends here,
+        the failed point left in the trajectory at the ``inf`` penalty). Fed by the
+        orchestrator as ``grad is None`` at ``phase == 'init'``; see
+        :meth:`GradientOptimizer._advance` (#492). ``fval`` is set to the ``inf`` penalty so a
+        consumer that reads the terminated runner's objective (e.g. the profile-likelihood
+        grid point in :meth:`ProfileLikelihoodAlgorithm._profile_got`) sees a non-finite value
+        rather than the ``None`` a never-evaluated runner starts with."""
+        self.fval = float('inf')
+        self.stop_reason = ('start point failed to simulate (a non-integrable point); '
+                            'no objective/gradient to descend from')
+        return DONE
 
     def progress_detail(self):
         """A short method-specific status suffix for the per-iteration report."""
@@ -222,10 +246,27 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         """Assemble the gradient at the completed ``res``, feed ``(u, score, grad)`` to
         start ``idx``'s runner, and return its next PSet -- or :data:`DONE` once it
         terminates. The realized (box-projected) ``u`` of the evaluated point is read back
-        off the PSet so the runner's internal iterate is a genuinely evaluated point."""
+        off the PSet so the runner's internal iterate is a genuinely evaluated point.
+
+        A **failed simulation** (a non-integrable candidate point: a bngsim CVODE failure, a
+        NaN/Inf, ...) returns with ``res.simdata is None`` and ``res.score`` already the
+        ``inf`` penalty (set in ``add_to_trajectory``); there is no trajectory data to
+        assemble a gradient from. Feed the runner that non-finite evaluation with **no
+        gradient** (``grad = None``): mid-search the runner's own ``isfinite(score)`` guard
+        rejects the step / shrinks its trust region and proposes a shorter one -- it never
+        dereferences the gradient on a rejected trial -- so the fit *backs off* rather than
+        aborting; at the start point there is no basin to descend from, so the runner
+        terminates that start (:meth:`GradientRunner._failed_start`), leaving every other
+        concurrent start and the trajectory's global best untouched. Mirrors the scalar
+        path's ``inf`` penalty for a failed simulation and the ``res.simdata is None`` guard
+        added for the sampler / constraint-tracking path in #480 -- this is the gradient
+        path's analogous unguarded case (#492)."""
         u_point = self._u_from_pset(res.pset)
-        grad = self.gradient_at(res)
-        nxt = runner.got(u_point, float(res.score), grad)
+        if res.simdata is None:
+            grad, score = None, float('inf')
+        else:
+            grad, score = self.gradient_at(res), float(res.score)
+        nxt = runner.got(u_point, score, grad)
         if nxt is DONE:
             return DONE
         return [self._dispatch(idx, nxt)]

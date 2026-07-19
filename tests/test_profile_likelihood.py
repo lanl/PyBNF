@@ -495,6 +495,10 @@ class _UPoint:
         self.name = name
         self.u = np.asarray(u, dtype=float)
         self.score = None
+        # A real Result carries per-experiment simdata; a failed simulation returns it as
+        # None (the #492 sentinel the gradient path now guards). Non-None here = a successful
+        # evaluation; a failed-simulation test sets it to None.
+        self.simdata = {}
 
     @property
     def pset(self):
@@ -580,6 +584,12 @@ class _OfflineProfileAlg(ProfileLikelihoodAlgorithm):
         self.trajectory = _LinTrajectory(self._theta_star, self._f_min, self._names)
 
     def gradient_at(self, res):
+        # Mirror the real gradient_at's very first act -- iterating res.simdata -- so a
+        # failed-simulation Result (simdata is None) crashes *here* exactly as the production
+        # path does (the #492 AttributeError), if a caller ever assembles a gradient for one
+        # instead of guarding it. For a successful eval the analytic gradient is built from
+        # res.u; simdata is just the presence marker the real assembly reads.
+        res.simdata.items()
         r = self.A @ res.u - self.y
         return GradientResult(residual=r, jacobian=self.A, gradient=self.A.T @ r,
                               param_names=[v.name for v in self.variables],
@@ -1030,3 +1040,114 @@ def test_profile_likelihood_agrees_with_becker_d2d_on_the_fast_2p_subset(tmp_pat
     res = Path(conf.config['output_dir']) / 'Results'
     assert (res / 'profile_kon.txt').is_file() and (res / 'profile_koff.txt').is_file()
     assert (res / 'profile_likelihood_summary.txt').is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Failed-simulation robustness (#492). The profile-likelihood path shares the gradient
+# path's `gradient_at`, so a non-integrable candidate point (a bngsim CVODE failure ->
+# res.simdata is None) has the same crash exposure -- and profiling deliberately pushes the
+# fixed parameter to extremes, so it is *more* likely to walk into one. Driven offline
+# through the analytic linear-Gaussian harness (no backend), so the guards are exercised
+# deterministically.
+# --------------------------------------------------------------------------- #
+def _pump_failing_at(alg, work, fail_at):
+    """Like :func:`_pump`, but the ``fail_at``-th evaluation (0-indexed) arrives as a failed
+    simulation (``simdata=None``, ``score=inf``) -- how the gradient path forwards a
+    non-integrable point. Returns ``(finished, evaluated)``; the run must survive and reach
+    ``'STOP'``."""
+    done = 0
+    while work:
+        p = work.pop(0)
+        if done == fail_at:
+            p.simdata, p.score = None, float('inf')
+        else:
+            p.score = _score(alg, p)
+        decision = alg._profile_got(p)
+        done += 1
+        if decision == 'STOP':
+            return True, done
+        work.extend(decision)
+    return True, done
+
+
+def test_profile_got_absorbs_a_failed_grid_point_simulation_without_crashing(tmp_path):
+    """A failed simulation at a track's very first probe (``res.simdata is None``) must not
+    crash ``_profile_got`` dereferencing the absent simdata (the #492 gradient-path bug,
+    shared here). It is fed to the track's inner runner as a non-finite, gradient-less
+    evaluation; the inner runner terminates that grid point at the ``inf`` penalty and the run
+    continues with the other tracks (or STOPs) -- never raises."""
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names, str(tmp_path))
+    work = list(alg._begin_profiling(theta_star))
+    first = work[0]
+    first.simdata, first.score = None, float('inf')     # a non-integrable first probe
+    decision = alg._profile_got(first)                  # no AttributeError
+    assert decision == 'STOP' or isinstance(decision, list)
+
+
+def test_a_failed_simulation_mid_profile_does_not_abort_the_run(tmp_path):
+    """A single failed simulation partway through profiling is absorbed (the track backs off,
+    or ends that grid point at the ``inf`` penalty), the run completes, and a full profile
+    summary is still produced for every parameter -- rather than aborting the whole fit with
+    the #492 AttributeError."""
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names, str(tmp_path))
+    finished, evaluated = _pump_failing_at(alg, list(alg._begin_profiling(theta_star)),
+                                           fail_at=3)
+    assert finished and evaluated > 3
+    assert alg.profile_summary is not None
+    assert {s['name'] for s in alg.profile_summary} == set(names)
+
+
+def test_select_runner_kind_refuses_a_reference_point_that_failed_to_simulate(tmp_path):
+    """The reference point (box center for a polish, or the supplied theta*) is the anchor
+    the whole profile is built around. If it does not simulate (``res.simdata is None``),
+    ``_select_runner_kind`` must refuse fast with an actionable :class:`PybnfError` -- naming
+    the non-integrable reference point -- instead of dereferencing the absent simdata (#492)."""
+    from pybnf.printing import PybnfError
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names, str(tmp_path))
+    alg.phase = 'center'
+    failed = _UPoint('pl_center', theta_star)
+    failed.simdata = None
+    with pytest.raises(PybnfError, match='(?i)reference point'):
+        alg._select_runner_kind(failed)
+
+
+def test_track_stops_cleanly_at_a_non_integrable_slice():
+    """When the outward walk reaches a fixed-parameter value the model cannot integrate at (a
+    failed simulation -> cost inf, no gradient), the track stops that direction *at* the
+    non-integrable boundary instead of marching further into the region. The boundary point is
+    recorded unsuccessful (inf cost, ``success=False``), and the finite filter in CI extraction
+    drops it -- so the side reads as not cleanly crossed rather than crashing or looping to
+    ``max_points`` (#492)."""
+    A = np.array([[1.0, 0.2], [0.1, 1.0], [0.4, 0.3], [0.0, 0.7]])
+    y = np.array([1.0, 2.0, 0.5, 1.5])
+    theta_star, f_min, _ = _linear_gaussian(A, y)
+    names = ['p0', 'p1']
+    fail_beyond = float(theta_star[0]) + 0.5     # model integrates only within 0.5 of theta*
+    track = _ProfileTrack(
+        0, 1, theta_star, theta_star - 10.0, theta_star + 10.0,
+        np.array([theta_star[1]]), f_min, step=0.05, min_step=1e-3, max_step=0.5,
+        dchi2_target=0.4, threshold=1e9,          # a threshold the finite profile never crosses
+        max_points=400, reopt_max_iterations=100, grad_tol=1e-10, step_tol=1e-12)
+    u = track.start()
+    guard = 0
+    while u is not None:
+        guard += 1
+        assert guard < 10000, 'profile track did not terminate'
+        if u[track.param_idx] > fail_beyond:                       # a non-integrable slice
+            u = track.got(u[track.free_idx], float('inf'), None)   # failed sim: inf, no grad
+        else:
+            r = A @ u - y
+            full = GradientResult(residual=r, jacobian=A, gradient=A.T @ r,
+                                  param_names=names, least_squares_exact=True)
+            reduced = ProfileLikelihoodAlgorithm._reduce_gradient(full, track.free_idx)
+            u = track.got(u[track.free_idx], 0.5 * float(r @ r), reduced)
+    assert track.stop_reason == 'reached a non-integrable point (simulation failed)'
+    assert not np.isfinite(track.points[-1][1])   # the boundary point's cost is inf
+    assert track.points[-1][4] is False           # ... and it is marked unsuccessful
+    assert len(track.points) < 400                # stopped at the wall, not at max_points
+    # Every point strictly before the wall was a normal, successful, finite re-optimization.
+    for _fu, cost, _theta, _nfev, success in track.points[:-1]:
+        assert np.isfinite(cost) and success is True

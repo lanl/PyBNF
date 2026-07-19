@@ -485,6 +485,11 @@ class _TRFRunner(GradientRunner):
     def _after_init(self, u_point, score, grad):
         """Seed the state from the start-point evaluation: residual/Jacobian model and
         the initial trust radius ``Δ₀`` (derived from the scaled start point)."""
+        if grad is None:
+            # The start point did not simulate (a non-integrable point): no residual model
+            # to seed the trust region from, so this start is not viable (#492). Shared by
+            # the inheriting ``gntr`` runner.
+            return self._failed_start()
         gr = self._require_exact(grad)
         self.point = np.array(u_point, dtype=float)
         self.fval = score

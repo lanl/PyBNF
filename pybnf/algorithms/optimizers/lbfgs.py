@@ -196,6 +196,10 @@ class _LBFGSRunner(GradientRunner):
     def _after_init(self, u_point, score, grad):
         """Seed the state from the start-point evaluation: objective + scalar gradient,
         empty curvature history (so the first step is steepest descent)."""
+        if grad is None:
+            # The start point did not simulate (a non-integrable point): no gradient to
+            # seed steepest descent from, so this start is not viable (#492).
+            return self._failed_start()
         self.point = np.array(u_point, dtype=float)
         self.fval = score
         self.grad = grad.gradient

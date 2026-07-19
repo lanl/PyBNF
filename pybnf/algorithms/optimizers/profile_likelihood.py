@@ -527,14 +527,26 @@ class _ProfileTrack:
         stop = getattr(self.inner, 'stop_reason', None)
         # A grid point "succeeded" when its inner re-optimization converged on a real
         # stopping test rather than exhausting its iteration budget -- the flag the outputs
-        # (and the plots) use to drop unconverged points from the CI/curve.
-        success = bool(stop is not None and 'max_iterations' not in stop)
+        # (and the plots) use to drop unconverged points from the CI/curve. A non-integrable
+        # slice (no finite objective anywhere at this fixed value: a failed simulation, #492)
+        # is likewise not a success, whatever inner stop_reason it terminated on.
+        success = bool(stop is not None and 'max_iterations' not in stop
+                       and np.isfinite(cost))
         self.points.append((self._pending_fixed, float(cost), theta_free, nfev, success))
         self.warm = theta_free
         self.fixed_u = self._pending_fixed
         self._adapt(increment)
         self.prev_dchi2 = dchi2
-        if np.isfinite(dchi2) and dchi2 >= self.threshold:
+        if not np.isfinite(dchi2):
+            # No integrable point at this fixed value: the slice is non-integrable (a failed
+            # simulation, #492) -- the outward boundary of the explorable region in this
+            # direction. Stop here rather than marching further into the non-integrable region;
+            # the inf-cost point is dropped by the finite filter in CI extraction, so this side
+            # reports as not cleanly crossed (open / practically non-identifiable), the honest
+            # reading when the model stops integrating before a threshold crossing.
+            self.stop_reason = 'reached a non-integrable point (simulation failed)'
+            return None
+        if dchi2 >= self.threshold:
             self.stop_reason = 'crossed Delta chi2 threshold'
             return None
         if self._at_bound:
@@ -754,6 +766,21 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         ``_LBFGSRunner`` instead, the same objectives ``job_type = lbfgs`` handles. The flag
         is structural (independent of the point), so this one read governs both the polish
         and every per-grid-point re-optimization."""
+        if res.simdata is None:
+            # The reference point (box center for a polish, or the supplied theta*) did not
+            # simulate -- a non-integrable point (a bngsim CVODE failure). There is no
+            # objective/gradient to profile around, so refuse fast with an actionable message
+            # rather than dereferencing the absent simdata (the #492 crash in the gradient
+            # path; here the whole profile has no anchor).
+            raise PybnfError(
+                "Profile likelihood (fit_type = %s) could not simulate its reference point "
+                "(the %s), so there is no optimum to profile around." % (
+                    self._fit_type_label(),
+                    'supplied initial_value theta*' if self.phase == 'center'
+                    else 'box center'),
+                "The point is non-integrable at these parameters. Supply an initial_value "
+                "optimum that simulates, or tighten the parameter bounds so the reference "
+                "point integrates.")
         exact = self.gradient_at(res).least_squares_exact
         self._runner_kind = 'trf' if exact else 'lbfgs'
         if exact:
@@ -849,9 +876,21 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         and refill the freed slot from the queue. ``'STOP'`` fires only once every track has
         finished and the queue is empty."""
         idx, track = self._active_tracks.pop(res.name)
-        grad_reduced = self._reduce_gradient(self.gradient_at(res), track.free_idx)
         u_full = self._u_from_pset(res.pset)
-        nxt = track.got(u_full[track.free_idx], float(res.score), grad_reduced)
+        if res.simdata is None:
+            # A failed simulation during this grid point's inner re-optimization (a
+            # non-integrable point the outward profile walked into -- profiling deliberately
+            # pushes the fixed parameter to extremes, so this is expected at the tail). Feed
+            # the track's inner runner a non-finite, gradient-less evaluation, exactly as the
+            # gradient fit does (:meth:`GradientOptimizer._advance`, #492): mid-search it backs
+            # off; if the grid point's very first probe failed, the inner runner terminates at
+            # the ``inf`` penalty, which ``_grid_point_converged`` reads as a non-integrable
+            # slice and stops the direction at that boundary (the natural end of the profile).
+            grad_reduced, score = None, float('inf')
+        else:
+            grad_reduced = self._reduce_gradient(self.gradient_at(res), track.free_idx)
+            score = float(res.score)
+        nxt = track.got(u_full[track.free_idx], score, grad_reduced)
         if nxt is not None:
             name, pset = self._pl_dispatch(nxt)
             self._active_tracks[name] = (idx, track)

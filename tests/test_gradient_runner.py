@@ -17,18 +17,24 @@ driven directly from an analytic objective, which is what this module does:
   gradient method only ever descends into the basin its start lands in), proven here without
   a simulation backend; the bngsim end-to-end version is in ``test_gradient_optimizer.py``;
 * **picklability** -- a runner round-trips through pickle mid-search (the backup/resume
-  contract every start must honor).
+  contract every start must honor);
+* **failed-simulation robustness** (#492) -- a non-integrable candidate point (a bngsim
+  CVODE failure) arrives at the runner as ``grad=None`` with a non-finite score. Mid-search
+  the runner backs off (shrinks the step / trust region) and still converges; at the start
+  point it terminates *that* start cleanly. Driven both directly and through the real
+  ``GradientOptimizer._advance``, which must not dereference a failed result's ``simdata``.
 
 These run in the default suite (no ``BNG2.pl`` / bngsim needed), unlike the end-to-end
 recovery tier in ``test_gradient_optimizer.py``.
 """
 import pickle
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from scipy.optimize import least_squares, minimize
 
-from pybnf.algorithms.optimizers.gradient_base import DONE
+from pybnf.algorithms.optimizers.gradient_base import DONE, GradientOptimizer
 from pybnf.algorithms.optimizers.gntr import _GNTRRunner
 from pybnf.algorithms.optimizers.lbfgs import _LBFGSRunner
 from pybnf.algorithms.optimizers.trf import _TRFRunner
@@ -391,3 +397,141 @@ def test_runner_pickles_midway_through_a_search():
         score, grad = f_and_grad(u)
         u = revived.got(u, score, _Grad(grad))
     assert np.allclose(revived.point, ustar, atol=1e-4)
+
+
+# --------------------------------------------------------------------------- #
+# Failed-simulation robustness (#492). A non-integrable candidate point (a bngsim CVODE
+# integration failure, a NaN/Inf) returns from the gradient path with res.simdata is None
+# and res.score = inf; GradientOptimizer._advance then feeds the runner grad=None with a
+# non-finite score. The runner must treat that as a failed evaluation -- back off mid-search
+# (never dereferencing the absent gradient), terminate the start when the start point itself
+# fails -- rather than aborting the fit with the AttributeError of the issue.
+# --------------------------------------------------------------------------- #
+def _runner_factories():
+    """One factory per gradient leaf, each seeded at the box center _U0."""
+    return {
+        'lbfgs': lambda u0: _LBFGSRunner(u0, _LOWER, _UPPER, 200, grad_tol=1e-9,
+                                         step_tol=1e-14, history=10, c1=1e-4, backtrack=0.5),
+        'trf': lambda u0: _TRFRunner(u0, _LOWER, _UPPER, 200, grad_tol=1e-10, step_tol=1e-12),
+        'gntr': lambda u0: _GNTRRunner(u0, _LOWER, _UPPER, 200, grad_tol=1e-10,
+                                       step_tol=1e-12, ridge=1e-10),
+    }
+
+
+@pytest.mark.parametrize('leaf', ['lbfgs', 'trf', 'gntr'])
+def test_runner_terminates_the_start_when_the_start_point_fails_to_simulate(leaf):
+    """A failed simulation at the START point (a non-integrable box center) arrives as
+    ``grad=None`` with a non-finite score. With no gradient to model the local surface, the
+    runner cannot descend, so it terminates *this* start cleanly with a clear stop_reason --
+    instead of dereferencing the absent gradient (the #492 crash). Concurrent multi-start
+    keeps every other start and the global best; a single-start fit ends here reporting no
+    viable fit."""
+    runner = _runner_factories()[leaf](_U0)
+    u0 = runner.start()
+    nxt = runner.got(u0, float('inf'), None)
+    assert nxt is DONE
+    assert 'start point failed to simulate' in runner.stop_reason
+
+
+def _drive_failing_first_trial(runner, evaluate, max_evals=4000):
+    """Drive a runner where the FIRST proposed trial after the start point is a failed
+    simulation (``grad=None``, ``score=inf`` -- exactly how ``_advance`` forwards it), then
+    every later point evaluates normally via ``evaluate(u) -> (score, _Grad)``. Returns the
+    converged runner; asserts it did not abort at the failed trial."""
+    u = runner.start()
+    for i in range(max_evals):
+        if i == 1:                                  # the first trial after the start point
+            nxt = runner.got(u, float('inf'), None)
+        else:
+            score, grad = evaluate(u)
+            nxt = runner.got(u, score, grad)
+        if nxt is DONE:
+            assert i > 1, 'the runner aborted at the failed trial instead of backing off'
+            return runner
+        u = nxt
+    raise AssertionError('runner did not terminate within %d evaluations' % max_evals)
+
+
+def test_lbfgs_backs_off_a_failed_trial_and_still_converges():
+    """A failed line-search trial (a non-integrable point met early in the search) makes the
+    L-BFGS-B backtracking line search shrink the step -- its ``isfinite(score)`` guard rejects
+    the trial without touching the (absent) gradient -- and the search still reaches the same
+    interior minimum. The gradient method backs off, it does not abort (#492)."""
+    ustar = np.array([1.0, -0.5, 2.0])
+    _, f_and_grad = _ls_problem(ustar)
+    runner = _drive_failing_first_trial(
+        _runner_factories()['lbfgs'](_U0),
+        lambda u: (f_and_grad(u)[0], _Grad(f_and_grad(u)[1])))
+    assert np.allclose(runner.point, ustar, atol=1e-4)
+
+
+def test_trf_shrinks_the_trust_region_on_a_failed_trial_and_still_converges():
+    """A failed trust-region trial gives TRF its shrink-and-re-solve signal (the
+    ``not isfinite(f_new)`` branch: ``Delta = 0.25*step_h_norm``, reject) without
+    dereferencing the absent Jacobian, and the search still reaches the same interior
+    minimum. Covers the inheriting ``gntr`` runner's reject path too (#492)."""
+    ustar = np.array([1.0, -0.5, 2.0])
+    r_and_jac, _ = _ls_problem(ustar)
+
+    def evaluate(u):
+        r, jac = r_and_jac(u)
+        return 0.5 * float(r @ r), _Grad(jac.T @ r, residual=r, jacobian=jac,
+                                         least_squares_exact=True)
+
+    runner = _drive_failing_first_trial(_runner_factories()['trf'](_U0), evaluate)
+    assert np.allclose(runner.point, ustar, atol=1e-5)
+
+
+class _AdvanceHarness:
+    """Drives the *real* :meth:`GradientOptimizer._advance` without a backend: supplies only
+    the seams it touches -- the ``u``<->PSet identity and a ``_dispatch`` that echoes the
+    routed point -- so a failed-simulation Result (``simdata=None``) exercises the real guard.
+    ``gradient_at`` asserts if reached: a failed sim must never trigger gradient assembly."""
+
+    fit_type = 'lbfgs'
+    _advance = GradientOptimizer._advance
+
+    def __init__(self):
+        self.dispatched = []
+
+    def _u_from_pset(self, pset):
+        return np.asarray(pset, float)
+
+    def _dispatch(self, idx, u):
+        self.dispatched.append((idx, np.asarray(u, float)))
+        return ('routed', idx)
+
+    def gradient_at(self, res):
+        raise AssertionError('gradient_at must not be called when res.simdata is None')
+
+
+def test_advance_terminates_a_start_whose_start_point_failed_without_dereferencing_simdata():
+    """Regression for #492: a failed simulation returns ``res.simdata=None`` (score inf). The
+    real ``GradientOptimizer._advance`` must skip gradient assembly and feed the runner a
+    non-finite, gradient-less evaluation -- terminating the start at the start point -- rather
+    than dereferencing ``res.simdata.items()`` (the reported AttributeError)."""
+    harness = _AdvanceHarness()
+    runner = _runner_factories()['lbfgs'](_U0)
+    runner.start()
+    res = SimpleNamespace(pset=_U0, simdata=None, score=float('inf'))
+    out = harness._advance(0, runner, res)
+    assert out is DONE
+    assert 'start point failed to simulate' in runner.stop_reason
+    assert harness.dispatched == []            # the start terminated; nothing dispatched
+
+
+def test_advance_backs_off_a_failed_mid_search_trial_and_dispatches_a_retry():
+    """Mid-search, ``_advance`` forwards the failed evaluation to a runner already past its
+    start; the runner backs off and proposes a shorter trial, which ``_advance`` dispatches --
+    the fit continues rather than aborting (#492)."""
+    harness = _AdvanceHarness()
+    runner = _runner_factories()['lbfgs'](_U0)
+    _, f_and_grad = _ls_problem(np.array([1.0, -0.5, 2.0]))
+    u0 = runner.start()
+    s0, g0 = f_and_grad(u0)
+    trial = runner.got(u0, s0, _Grad(g0))      # advance past 'init' -> phase 'line'
+    assert trial is not DONE
+    res = SimpleNamespace(pset=np.asarray(trial), simdata=None, score=float('inf'))
+    out = harness._advance(0, runner, res)
+    assert isinstance(out, list) and len(out) == 1   # a (shorter) retry was dispatched
+    assert len(harness.dispatched) == 1
