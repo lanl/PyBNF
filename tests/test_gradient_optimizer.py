@@ -607,6 +607,42 @@ def test_gntr_fits_estimated_noise_scale_that_trf_refuses(tmp_path, monkeypatch)
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
+def test_gntr_fits_prediction_dependent_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """The prediction-dependent σ end-to-end on the **EFIM trust-region** path (ADR-0080, the
+    Fisher sibling of ``test_lbfgs_fits_prediction_dependent_noise_scale_that_trf_refuses``). The
+    scale ``sigma = sd_abs + sd_rel*Stot`` couples to the location, so ``gntr`` builds the coupled
+    noise block ``(2/σ²)outer(g_i, g_i)`` (``g_i`` carrying model-parameter columns through the
+    prediction) that ADR-0079 deferred and refused. With the block assembled, ``gntr`` fits the same
+    objective ``lbfgs`` does but with a *trust-region* EFIM step, recovering ``k`` / ``S0``. With
+    zero-noise data the σ coefficients pin at their lower bounds (where the σ-through-prediction pull
+    vanishes) and the residual drives ``k`` / ``S0`` to truth."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    # No _SD column: sigma is a prediction-dependent formula over free coefficients, not data.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sd_abs': ('uniform_var', 0.1, 50.0), 'sd_rel': ('uniform_var', 1e-3, 2.0)},
+        'decay', 'gntr', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=300,
+        noise_models={'Stot': 'gaussian, sigma = prediction_formula sd_abs + sd_rel*Stot'})
+
+    alg = H.build(conf, 'gntr')
+    H.drive(alg)   # must NOT raise -- the EFIM path ADR-0079 refused, ADR-0080 assembles
+
+    assert np.isfinite(alg.trajectory.best_score())
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.05, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
 def test_gntr_is_picklable_across_a_run(tmp_path, monkeypatch):
     """``Algorithm.backup`` pickles the optimizer mid-run, so the GNTR state machine must
     round-trip both before and after a run -- all state is plain numpy/float (inherited from

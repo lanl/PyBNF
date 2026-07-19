@@ -354,16 +354,21 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     (``fit_type = gntr``, #481) consumes alongside the scalar gradient
     :func:`assemble_gaussian_gradient` already produces.
 
-    ``H = sum_i w_i [ kappa_i * outer(s_i, s_i) ]  +  sum_estimated-noise w_i * I_scale *
-    outer(e_p, e_p)`` where ``s_i = d(prediction_i)/d(theta)`` is the same forward
-    sensitivity the gradient uses (through the objective's ``prediction_sensitivity``
-    seam), ``kappa_i`` the per-point location Fisher (``objective.location_fisher_point``:
-    ``(d rho/d pred)**2`` for a residual-bearing Gaussian/Student-t column, the family's
-    ``location_fisher`` for Laplace/count), and ``I_scale`` each estimated noise parameter's
-    Fisher (``objective.noise_fisher_point``). Every rank-1 term is PSD (``kappa >= 0``,
-    ``I_scale >= 0``), so ``H`` is PSD by construction. The location and noise blocks are
-    disjoint (a noise parameter never enters ``s_i``, which is 0 in its column), so the
-    Gaussian estimated-sigma Hessian is block-diagonal, exactly the Fisher predicts.
+    ``H = sum_i w_i [ kappa_i * outer(s_i, s_i)  +  sum_p I_scale_p * outer(g_i^p, g_i^p) ]``
+    where ``s_i = d(prediction_i)/d(theta)`` is the same forward sensitivity the gradient uses
+    (through the objective's ``prediction_sensitivity`` seam), ``kappa_i`` the per-point location
+    Fisher (``objective.location_fisher_point``: ``(d rho/d pred)**2`` for a residual-bearing
+    Gaussian/Student-t column, the family's ``location_fisher`` for Laplace/count), ``I_scale_p``
+    each estimated noise parameter's expected Fisher, and ``g_i^p = d(noise_param_p)/d(theta)`` its
+    scale sensitivity -- the whole ``sum_p I_scale_p * outer(g_i^p, g_i^p)`` noise block returned by
+    ``objective.noise_fisher_point`` (ADR-0080). Every rank-1 term is PSD (``kappa >= 0``,
+    ``I_scale >= 0``), so ``H`` is PSD by construction. For a bare **free** sigma ``g_i^p`` is the
+    unit vector ``e_p`` (the noise parameter is model-unbound, 0 in ``s_i``), so its block is the
+    historical diagonal entry ``I_scale * outer(e_p, e_p)`` and the estimated-sigma Hessian is
+    block-diagonal, exactly the Fisher predicts. For a **prediction-dependent** sigma
+    (``sigma = sigma_abs + sigma_rel*y``, ADR-0075/0079) ``g_i^p`` also carries model-parameter
+    columns (the scale rides the prediction), so ``outer(g_i^p, g_i^p)`` produces the genuine
+    location↔scale coupling off the diagonal -- a strict superset of the diagonal cut.
 
     ``experiments`` is the same ``(sim_data, exp_data, routing)`` iterable
     :func:`assemble_gaussian_gradient` consumes, ``free_params`` the same ordered free-
@@ -401,8 +406,8 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
     curvature twin of :func:`_accumulate_experiment`). Same independent variable, same
     comparable-column intersection, same NaN skip, same ``_sim_row_for`` row match, same
     sorted-column walk -- so the Hessian is assembled over precisely the points the gradient
-    is. The location block reads ``kappa_i`` (``location_fisher_point``) and the noise block
-    each estimated parameter's ``I_scale`` (``noise_fisher_point``)."""
+    is. The location block reads ``kappa_i`` (``location_fisher_point``) and the noise block the
+    per-point matrix ``sum_p I_scale_p * outer(g_i^p, g_i^p)`` (``noise_fisher_point``, ADR-0080)."""
     sens = sim_data.output_sensitivities
     if sens is None:
         raise GradientNotSupported(
@@ -432,16 +437,17 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
             kappa = objective.location_fisher_point(sim_data, exp_data, sim_row, rownum, col_name)
             if kappa:
                 hessian += (weight * kappa) * np.outer(dpred_dtheta, dpred_dtheta)
-            # Noise block: each estimated noise parameter's Fisher on its own coordinate.
-            for pname, i_scale in objective.noise_fisher_point(
-                    sim_data, exp_data, sim_row, rownum, col_name).items():
-                if pname not in index:
-                    raise GradientNotSupported(
-                        "Observable '%s' estimates its noise scale as free parameter '%s', "
-                        "but '%s' is not among the gradient's free parameters (%s)."
-                        % (col_name, pname, pname, ', '.join(index) or '(none)'))
-                j = index[pname]
-                hessian[j, j] += weight * i_scale
+            # Noise block: the full ``Σ_p I_scale_p * outer(g_i^p, g_i^p)`` matrix (ADR-0080), with
+            # g_i^p = ∂p/∂θ the same scale sensitivity the noise *gradient* rides. A single free
+            # sigma's g_i^p is the unit vector e_p, so its block is the historical diagonal entry
+            # (byte-identical); a prediction-dependent sigma's g_i^p carries model-parameter columns
+            # too, producing the genuine off-diagonal location↔scale coupling. ``None`` for a
+            # fixed-noise point (no estimated parameter). Threads raw_sens/index exactly as the
+            # gradient's noise_grad_point does.
+            noise_block = objective.noise_fisher_point(
+                sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
+            if noise_block is not None:
+                hessian += weight * noise_block
 
 
 def _sensitivity(sens, selector, route, sim_row):

@@ -9,7 +9,9 @@ gradient-free optimizer/sampler worked (the score path was complete) but an L-BF
 fit refused. This ADR lifts that deferral for the **scalar gradient** (the L-BFGS consumer, #386),
 the peer of the `FormulaSigma` / `PerMeasurementFormulaSigma` gradient deferrals. The **EFIM
 Fisher** block (`fit_type = gntr`) stays deferred and refuses cleanly — a prediction-dependent σ
-couples the scale to the location, so the noise block is no longer diagonal.
+couples the scale to the location, so the noise block is no longer diagonal. **(That EFIM Fisher
+block has since landed — ADR-0080, issue #504: it is the σ-sensitivity outer product `(2/σ²)outer(g_i,
+g_i)`, a strict superset of the diagonal free-σ block.)**
 
 ADR-0011 made the `NoiseModel` a per-point kernel with the normalizer retained iff the scale is
 estimated; #385 (layers A–J) assembled the gradient/Fisher for the Gaussian and its siblings;
@@ -88,7 +90,10 @@ run (`tests/test_gradient_optimizer.py`) — the path TRF refuses — recovering
   σ — the scale couples to the location (`mu = pred`), so the noise block is no longer diagonal and
   independent of the location block the way an ordinary free sigma's is. The Fisher seams
   (`location_fisher_point` / `noise_fisher_point`) refuse it via `_require_efim_noise_supported`, so
-  a `gntr` fit falls back to `lbfgs` (whose scalar gradient does differentiate it). A later sub-layer.
+  a `gntr` fit falls back to `lbfgs` (whose scalar gradient does differentiate it). **Since landed
+  (ADR-0080, #504):** `noise_fisher_point` returns the coupled block `Σ_p I_scale_p·outer(g_i^p,
+  g_i^p)` and the EFIM-specific refusal is removed (the MEAN-on-log corner stays refused by the
+  family) — the block-diagonal `(μ, σ)` Fisher mapped to θ by the same `sigma_sensitivity` `g_i`.
 - A prediction-dependent σ on a **log scale** or centering a **MEAN** — start linear/MEDIAN (the
   tutorial/Raia case); the log/MEAN moment-offset coupling is a follow-up (as it was for the
   location-scale families, #385).
@@ -102,7 +107,7 @@ run (`tests/test_gradient_optimizer.py`) — the path TRF refuses — recovering
   the `SigmaSource.sigma_sensitivity` base refusal.
 - `pybnf/objective.py` — `_require_gradient_supported` admits `PredictionFormulaSigma`;
   `noise_grad_point` returns the full `∂(loss)/∂θ` noise vector; `_require_efim_noise_supported`
-  refuses it on the Fisher path.
+  refuses it on the Fisher path (removed in ADR-0080, which builds that block).
 - `pybnf/gradient/assembly.py` — `_accumulate_experiment` adds the noise vector (a single free
   sigma is byte-identical) and clears `least_squares_exact`.
 

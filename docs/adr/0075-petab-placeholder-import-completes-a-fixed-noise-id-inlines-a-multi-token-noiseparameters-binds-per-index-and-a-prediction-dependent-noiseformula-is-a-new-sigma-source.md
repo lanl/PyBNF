@@ -100,7 +100,9 @@ column has since landed (ADR-0079):** `sigma_sensitivity` supplies `∂σ/∂θ`
 rule) and the #385 assembly threads it into the scalar (L-BFGS) gradient, so `fit_type = lbfgs`
 differentiates it (the fit is not `least_squares_exact`, so `trf` refuses and points at `lbfgs`).
 The **EFIM Fisher** block (`fit_type = gntr`) stays deferred — a prediction-dependent σ couples the
-scale to the location, so the noise block is no longer diagonal — and refuses cleanly.
+scale to the location, so the noise block is no longer diagonal — and refuses cleanly. **(That block
+has since landed too — ADR-0080, #504: the σ-sensitivity outer product, so `fit_type = gntr` fits it
+with a trust-region EFIM step.)**
 
 ## Scope
 
@@ -119,8 +121,8 @@ prediction fixture's σ differs by row *because the prediction does*, so a σ-at
 
 - The **gradient/EFIM** column for a `PredictionFormulaSigma` — deferred here under the existing
   composite-estimated-source gate; the **scalar-gradient** half has since landed (ADR-0079, the
-  σ-formula chain rule on the L-BFGS path), the **EFIM Fisher** half remaining deferred (the
-  Fisher seams refuse it → `fit_type = lbfgs`).
+  σ-formula chain rule on the L-BFGS path), and the **EFIM Fisher** half too (ADR-0080, the
+  σ-sensitivity outer product → `fit_type = gntr` fits it).
 - **Export** of the new shapes back to a PEtab `noiseParameters` / `noiseFormula` — the export
   round trip for a multi-token / prediction-dependent noise (the `measurement_rows_from_data`
   sidecar path emits one noise placeholder per column; a prediction σ has no exporter arm yet). The
@@ -157,8 +159,9 @@ prediction fixture's σ differs by row *because the prediction does*, so a σ-at
 - The per-measurement placeholder frontier (ADR-0033/0035/0036/0037/0044/0045) is **fully cleared
   on the noise side**: fixed, estimated, multi-parameter (affine / product), row-varying, and
   prediction-dependent noise all import and fit. The two deferrals named here have since been
-  cleared: the *export* round trip for the two new shapes (ADR-0078) and the *scalar gradient* for a
-  prediction σ (ADR-0079); only the prediction σ's **EFIM Fisher** block remains deferred.
+  cleared: the *export* round trip for the two new shapes (ADR-0078), the *scalar gradient* for a
+  prediction σ (ADR-0079), and its *EFIM Fisher* block (ADR-0080) — the prediction-σ gradient/EFIM
+  frontier is now fully cleared for the linear/MEDIAN case.
 - `PredictionFormulaSigma` is a **permanent native capability**, not a PEtab-import artifact: any
   new-era job can declare a combined additive+proportional error model with `noise_model <obs> =
   gaussian, sigma = prediction_formula <σ_abs> + <σ_rel> * <observable>` — the honest

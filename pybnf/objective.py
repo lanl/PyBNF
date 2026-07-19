@@ -374,12 +374,13 @@ class ObjectiveFunction:
             "Objective %s has no Fisher-information location curvature on the EFIM trust-region "
             "path (fit_type = gntr, #481)." % type(self).__name__)
 
-    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        """The per-point expected **Fisher information of each estimated free noise parameter** --
-        ``{free_param: I_scale}`` (the diagonal noise block of the EFIM Hessian, #481). The twin
-        of :meth:`noise_grad_point` on the curvature side. Empty on the base (a non-likelihood
+    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name, raw_sens, index):
+        """The per-point expected **Fisher noise block** of the EFIM Hessian -- the full
+        ``(len(index), len(index))`` matrix ``Σ_p I_scale_p · outer(∂p/∂θ, ∂p/∂θ)`` over the
+        estimated noise parameters, or ``None`` for a fixed-noise point (#481; ADR-0080). The twin
+        of :meth:`noise_grad_point` on the curvature side. ``None`` on the base (a non-likelihood
         objective estimates no noise parameter); only :class:`LikelihoodObjective` overrides it."""
-        return {}
+        return None
 
 
 class SummationObjective(ObjectiveFunction):
@@ -1321,13 +1322,18 @@ class LikelihoodObjective(SummationObjective):
 
         A **residual-bearing** family (Gaussian, Student-t) has ``kappa == (d rho/d pred)**2``
         identically -- the assembly's residual-Jacobian already carries it -- so this returns that
-        square directly (no new family math). A **non-residual** family (Laplace, count) delegates
-        to the family's :meth:`~pybnf.noise.base.NoiseModel.location_fisher`. Any configuration the
-        family refuses (a MEDIAN-centered count, ...) raises :class:`GradientNotSupported`, so the
-        fit falls back to the scalar-gradient (L-BFGS-B) path."""
+        square directly (no new family math). This is the correct location Fisher for a
+        prediction-dependent σ too (ADR-0080): the location block ``(1/σ²)outer(s_i, s_i)`` uses the
+        partial ``∂ρ/∂pred = 1/σ`` holding σ fixed, exactly as here -- the scale's own θ-dependence
+        rides the *noise* block (:meth:`noise_fisher_point`), not this one. A **non-residual**
+        family (Laplace, count) delegates to the family's
+        :meth:`~pybnf.noise.base.NoiseModel.location_fisher`. Any configuration the family refuses
+        (a MEDIAN-centered count, ...) raises :class:`GradientNotSupported`, so the fit falls back
+        to the scalar-gradient (L-BFGS-B) path (a MEAN-on-log estimated scale, whose location↔scale
+        coupling this block does not model, is refused by :meth:`noise_fisher_point` -- reached in
+        the same assembly point loop -- before the Hessian is returned)."""
         family, sources = self._spec_for(col_name)
         self._require_gradient_supported(col_name, family, sources)
-        self._require_efim_noise_supported(col_name, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
@@ -1336,48 +1342,64 @@ class LikelihoodObjective(SummationObjective):
             return drho * drho
         return family.location_fisher(prediction, observation, primary, extra)
 
-    def _require_efim_noise_supported(self, col_name, sources):
-        """Refuse the EFIM / expected-Fisher path for a **prediction-dependent** estimated σ
-        (:class:`~pybnf.noise.PredictionFormulaSigma`, ADR-0075/0079) -- the one estimated source
-        the *scalar* gradient (ADR-0079) supports but the Fisher assembly does not yet. When σ
-        scales with the prediction the scale couples to the location (``mu = pred``), so the noise
-        block is no longer diagonal and independent of the location block the way an ordinary free
-        sigma's is (``noise_param_fisher`` assumes an independent scalar scale); the block this cut
-        would build is wrong. Raise cleanly so an EFIM fit (``fit_type = gntr``) falls back to the
-        scalar-gradient path (``fit_type = lbfgs``), which *does* differentiate it. Called only by
-        the Fisher seams (:meth:`location_fisher_point` / :meth:`noise_fisher_point`), never by the
-        scalar-gradient seams -- so the scalar path is unaffected."""
-        for src in sources.values():
-            if isinstance(src, PredictionFormulaSigma):
-                from .gradient.errors import GradientNotSupported
-                raise GradientNotSupported(
-                    "The EFIM trust-region path (fit_type = gntr) does not assemble the Fisher "
-                    "block for a prediction-dependent noise scale (observable '%s', "
-                    "sigma = sigma_abs + sigma_rel*prediction, ADR-0075/0079): the scale couples "
-                    "to the location, so the noise block is not diagonal. Use fit_type = lbfgs -- "
-                    "the scalar gradient supports it." % col_name)
+    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name, raw_sens, index):
+        """The per-point expected **Fisher noise block** of the EFIM Hessian (#481; ADR-0080) -- the
+        full ``(len(index), len(index))`` matrix ``Σ_p I_scale_p · outer(g_i^p, g_i^p)`` over the
+        *estimated* noise parameters ``p``, or ``None`` for a fixed-noise point. The curvature twin
+        of :meth:`noise_grad_point` (which returns the noise *gradient* vector the same way): each
+        estimated parameter's expected Fisher ``I_scale_p``
+        (:meth:`~pybnf.noise.base.NoiseModel.noise_param_fisher`) weights the outer product of its
+        scale sensitivity ``g_i^p = ∂p/∂θ`` (:meth:`~pybnf.noise.SigmaSource.sigma_sensitivity`) --
+        the same ``∂σ/∂θ`` vector :meth:`noise_grad_point` chains ``∂L/∂p`` through.
 
-    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        """The per-point expected **Fisher information of each estimated free noise parameter** --
-        ``{free_param_name: I_scale}`` (the diagonal noise block of the EFIM Hessian, #481). The
-        curvature twin of :meth:`noise_grad_point`: empty for a fixed-noise point, else each
-        estimated noise parameter's :meth:`~pybnf.noise.base.NoiseModel.noise_param_fisher` entry,
-        keyed by the source's free-parameter name (the free parameter *is* the noise parameter, so
-        the curvature lands on that parameter's own coordinate). A coupled corner the family refuses
-        (a MEAN-on-log estimated scale, the count family's free dispersion) or a prediction-dependent
-        σ whose Fisher block is deferred (:meth:`_require_efim_noise_supported`, ADR-0079) raises
-        :class:`GradientNotSupported` -> the L-BFGS-B fallback."""
+        For a :class:`~pybnf.noise.FreeParameterSigma` (a bare free scale) ``g_i^p`` is the unit
+        vector ``e_p`` (the free parameter *is* the noise parameter, model-unbound), so ``I_scale_p
+        · outer(e_p, e_p)`` places ``I_scale_p`` on that parameter's own coordinate -- **byte-
+        identical** to the historical diagonal noise block (#481). For a
+        :class:`~pybnf.noise.PredictionFormulaSigma` (``sigma = sigma_abs + sigma_rel*y``, ADR-0075)
+        ``g_i^p`` also carries entries on the model-parameter columns (its ``∂σ/∂prediction`` chains
+        the same forward sensitivity the residual rides), so ``outer(g_i^p, g_i^p)`` produces the
+        genuine location↔scale coupling off the diagonal -- the block ADR-0079 deferred and ADR-0080
+        assembles. Both terms are PSD (``I_scale >= 0``), so the block is PSD by construction.
+
+        Empty (``None``) for a fixed-noise point (no estimated parameter, no normalizer, no scale
+        column). A coupled corner the family refuses -- a MEAN-on-log estimated scale (a nonzero
+        location↔scale cross-Fisher the moment offset introduces), the count family's free
+        dispersion, the Student-t 2-parameter block -- raises :class:`GradientNotSupported` from
+        :meth:`~pybnf.noise.base.NoiseModel.noise_param_fisher`, so the fit falls back to the
+        scalar-gradient (L-BFGS-B) path. ``raw_sens``/``index`` are the assembly's forward-
+        sensitivity accessor and free-parameter column map, threaded to ``sigma_sensitivity``
+        exactly as :meth:`noise_grad_point` threads them (unused by a bare free scale)."""
         family, sources = self._spec_for(col_name)
         estimated = {name: src for name, src in sources.items() if src.estimated}
         if not estimated:
-            return {}
+            return None
         self._require_gradient_supported(col_name, family, sources)
-        self._require_efim_noise_supported(col_name, sources)
+        # Each estimated source's declared free parameter(s) must be gradient free parameters --
+        # mirrors the noise_grad_point guard (its sigma_sensitivity indexes them), so a missing
+        # nuisance surfaces the same pointed error on the Fisher path as on the scalar path.
+        for name, src in estimated.items():
+            for pname in src.required_free_params():
+                if pname not in index:
+                    from .gradient.errors import GradientNotSupported
+                    raise GradientNotSupported(
+                        "Observable '%s' estimates its noise scale as free parameter '%s', but "
+                        "'%s' is not among the gradient's free parameters (%s). An estimated "
+                        "noise scale must be a declared free parameter."
+                        % (col_name, pname, pname, ', '.join(index) or '(none)'))
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, exp_row, col_name)
+        # The family owns each estimated parameter's expected Fisher; a coupled corner it does not
+        # assemble (a MEAN-on-log estimated scale, a free count dispersion) raises here. Each source
+        # supplies ∂p/∂θ (sigma_sensitivity): a unit vector for a free scale (recovering the
+        # historical diagonal entry), the σ-formula chain rule for a prediction-dependent one.
         per_param = family.noise_param_fisher(prediction, observation, primary, extra)
-        return {src.required_free_param(): per_param[name] for name, src in estimated.items()}
+        block = np.zeros((len(index), len(index)))
+        for name, src in estimated.items():
+            g = src.sigma_sensitivity(self, sim_data, sim_row, col_name, raw_sens, index)
+            block = block + per_param[name] * np.outer(g, g)
+        return block
 
     def has_least_squares_residual(self, col_name):
         """Whether this observable contributes an **exact** least-squares residual/Jacobian
@@ -1447,8 +1469,9 @@ class LikelihoodObjective(SummationObjective):
             # same forward sensitivity as the residual (#385). The remaining composite estimated
             # sources -- an expression over several free parameters alone (FormulaSigma) or a
             # row-varying per-measurement sigma (PerMeasurementFormulaSigma) -- are later
-            # sub-layers. (The EFIM Fisher for a prediction-dependent sigma is deferred separately;
-            # the Fisher seams refuse it -- see location_fisher_point / noise_fisher_point.)
+            # sub-layers. (The EFIM Fisher for a prediction-dependent sigma is now assembled too --
+            # its σ-sensitivity's outer product is the coupled noise block, ADR-0080 -- so the same
+            # gate serves the scalar and Fisher paths; see noise_fisher_point.)
             if source.estimated and not isinstance(
                     source, (FreeParameterSigma, PredictionFormulaSigma)):
                 raise GradientNotSupported(

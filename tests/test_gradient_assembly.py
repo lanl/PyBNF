@@ -819,14 +819,43 @@ def test_prediction_sigma_referencing_other_species_chains_that_sensitivity():
     np.testing.assert_allclose(res.gradient[2], np.sum(dL_dsigma * aux))  # sd_rel column: ∂σ/∂sd_rel=Aux
 
 
-def test_prediction_sigma_efim_fisher_is_refused():
-    """The EFIM / expected-Fisher path (``fit_type = gntr``) is a separate, deferred sub-layer for a
-    prediction-dependent σ: the scale couples to the location, so the noise block is no longer
-    diagonal. ``assemble_fisher_hessian`` raises ``GradientNotSupported`` (the fit falls back to
-    ``lbfgs``, whose scalar gradient the test above verifies)."""
-    obj, sim, exp, routing, free, _ = _prediction_sigma_setup()
-    with pytest.raises(GradientNotSupported):
-        assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+def test_prediction_sigma_efim_fisher_closed_form():
+    """The EFIM / expected-Fisher block for a prediction-dependent σ (``fit_type = gntr``, ADR-0080,
+    lifting the ADR-0079 deferral). In the natural ``(μ, σ)`` coordinates the Gaussian Fisher is
+    block-diagonal (``1/σ²``, ``2/σ²``, cross term 0), so mapping to θ through ``s_i = ∂μ/∂θ`` and
+    ``g_i = ∂σ/∂θ`` gives ``H = Σ_i [(1/σ_i²)outer(s_i,s_i) + (2/σ_i²)outer(g_i,g_i)]``.
+
+    For ``σ = sd_abs + sd_rel*Stot`` (free order ``[k, sd_abs, sd_rel]``, only ``k`` routed to the
+    model): ``s_i = [dk_i, 0, 0]`` and ``g_i = [sd_rel*dk_i, 1, pred_i]`` -- the σ-formula chain rule
+    puts ``∂σ/∂sd_abs = 1`` and ``∂σ/∂sd_rel = pred`` on the coefficient columns *and*
+    ``∂σ/∂Stot·∂Stot/∂k = sd_rel*dk_i`` on the model column. This is the arbiter for the whole
+    change: a diagonal-only cut (the pre-ADR-0080 refusal) could not represent the ``k``-``sd_abs`` /
+    ``k``-``sd_rel`` coupling this ``g_i`` produces off the diagonal. The result is symmetric and
+    PSD (both rank-1 terms are)."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _prediction_sigma_setup()
+    sd_abs, sd_rel = 5.0, 0.1
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    # Hand-built closed form: per point, the location outer product s_i s_i^T scaled by 1/σ² plus
+    # the noise outer product g_i g_i^T scaled by 2/σ² (the EFIM the assembly must reproduce).
+    expected = np.zeros((3, 3))
+    for i in range(len(pred)):
+        sigma = sd_abs + sd_rel * pred[i]
+        s = np.array([dk[i], 0.0, 0.0])                  # ∂pred/∂θ (only k moves the model)
+        g = np.array([sd_rel * dk[i], 1.0, pred[i]])     # ∂σ/∂θ: chain (C) + coeffs (B)
+        expected += np.outer(s, s) / sigma ** 2 + 2.0 * np.outer(g, g) / sigma ** 2
+    np.testing.assert_allclose(H, expected)
+
+    np.testing.assert_allclose(H, H.T)                   # symmetric
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-9)        # PSD
+
+    # The genuinely new content: the scale↔location coupling lands OFF the diagonal (the k-sd_abs /
+    # k-sd_rel entries), which the deferred diagonal-only noise block could not carry. Both come
+    # entirely from the noise block (the location block is 0 outside the k column).
+    coupling_k_sdabs = np.sum(2.0 * (sd_rel * dk) * 1.0 / (sd_abs + sd_rel * pred) ** 2)
+    np.testing.assert_allclose(H[0, 1], coupling_k_sdabs)
+    assert abs(H[0, 1]) > 0.0 and abs(H[0, 2]) > 0.0
 
 
 def test_normalization_peak_closed_form():

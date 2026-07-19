@@ -369,10 +369,19 @@ class PredictionFormulaSigma(SigmaSource):
     sensitivity as the residual. :meth:`sigma_sensitivity` supplies ``∂σ/∂θ`` (the σ formula's
     chain rule) and the #385 assembly threads it into the **scalar** gradient column, so an
     L-BFGS / trust-region fit differentiates the combined error model (the fit is not
-    ``least_squares_exact`` -- the σ-through-prediction term is not a square). The **EFIM Fisher**
-    block (``fit_type = gntr``) is still deferred -- a prediction-dependent σ couples the scale to
-    the location, so the noise block is no longer diagonal -- and refuses cleanly (a ``gntr`` fit
-    falls back to ``lbfgs``; the score path is unaffected either way)."""
+    ``least_squares_exact`` -- the σ-through-prediction term is not a square).
+
+    **EFIM Fisher (ADR-0080, lifting the ADR-0079 deferral).** The expected-Fisher block
+    (``fit_type = gntr``) is now assembled too. In the natural ``(μ, σ)`` coordinates the Gaussian
+    Fisher is block-diagonal (``E[∂²L/∂μ²] = 1/σ²``, ``E[∂²L/∂σ²] = 2/σ²``, cross term 0), so
+    mapping to θ through the Jacobian rows ``∂μ/∂θ = s_i`` and ``∂σ/∂θ = g_i`` gives the per-point
+    ``H_i = (1/σ²)outer(s_i, s_i) + (2/σ²)outer(g_i, g_i)``. The same :meth:`sigma_sensitivity`
+    ``g_i`` the scalar gradient rides feeds the noise block's outer product (``noise_fisher_point``);
+    since ``g_i`` couples the scale to the model parameters through the prediction, that outer
+    product is the genuine off-diagonal location↔scale block -- a strict superset of a bare free
+    σ's diagonal entry (whose ``g_i = e_p`` recovers it byte-for-byte). Only the **MEAN-on-log**
+    corner (the moment offset's own σ-dependence, a further location↔scale coupling) stays refused,
+    by :meth:`~pybnf.noise.gaussian.Gaussian.noise_param_fisher`."""
 
     estimated = True
 
