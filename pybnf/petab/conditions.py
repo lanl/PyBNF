@@ -159,7 +159,21 @@ def mutation_target_value(op, val, *, nominal=None, surrogate=None):
       relative op *precomputed* to a bare number. A relative op with ``nominal is None``
       (an expression-RHS / unknown nominal) raises ``NotImplementedError`` -- evaluating
       a BNGL expression tree is simulation-grade work, out of scope (ADR-0026 precedent).
+
+    A **parameter-reference value** (``val`` a *string* free-parameter id, not a number -- a
+    per-condition estimated initial condition, ADR-0076) emits that id verbatim as the
+    ``targetValue`` for an absolute set: it is PEtab-legal (the referenced id is a
+    parameter-table entry, and the fixed target is not, so no id is in both tables -- the
+    surrogate split is not needed). A relative op on a parameter reference is a multi-symbol
+    expression, deferred (``NotImplementedError``).
     """
+    if isinstance(val, str):
+        if op == '=':
+            return val
+        raise NotImplementedError(
+            f"A relative mutation ('{op}' {val}) whose value is a parameter reference is a "
+            f"multi-symbol condition expression, out of scope for the exporter (ADR-0076); a "
+            f"parameter-valued condition targetValue is supported only as an absolute set.")
     if op == '=':
         return num(val)
     if op not in ('*', '/', '+', '-'):
@@ -510,7 +524,8 @@ def condition_name_from_id(condition_id):
     return condition_id
 
 
-def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None):
+def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
+                         free_names=frozenset(), fixed_params=None):
     """Invert :func:`build_experiment_conditions`' condition rows to new-era
     perturbations ``{condition_name: [(var, op, val), ...]}``.
 
@@ -523,20 +538,33 @@ def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None):
 
     ``species_by_id`` (``{petab_id: pattern}``, ADR-0062) inverts the mapping table: a target
     that is a mapping species id recovers its BNGL pattern and a verbatim ``=`` value (a species
-    ``setConcentration`` wash/bolus)."""
+    ``setConcentration`` wash/bolus).
+
+    ``free_names`` (the estimated parameter-table ids) and ``fixed_params`` (``{id: value}`` for
+    the fixed ones) resolve a **parameter-valued** ``targetValue`` -- a per-condition estimated
+    initial condition (ADR-0076): a target set to a free-parameter id becomes a parameter
+    reference (``val`` a *string* naming that free parameter), a target set to a fixed one inlines
+    its numeric value."""
     species_by_id = species_by_id or {}
     conditions = {}
     for row in condition_rows:
         name = condition_name_from_id(row.condition_id)
         if name is None:
             continue
-        pert = _perturbation_from_row(row, surrogate_params, species_by_id)
+        pert = _perturbation_from_row(row, surrogate_params, species_by_id,
+                                      free_names, fixed_params or {})
         if pert is not None:
             conditions.setdefault(name, []).append(pert)
     return conditions
 
 
-def _perturbation_from_row(row, surrogate_params, species_by_id=None):
+#: A bare PEtab identifier (a parameter-valued ``targetValue`` names exactly one parameter;
+#: anything with operators/whitespace is a multi-symbol expression for the deferred sympy layer).
+_BARE_IDENTIFIER = re.compile(r'[A-Za-z_]\w*\Z')
+
+
+def _perturbation_from_row(row, surrogate_params, species_by_id=None,
+                           free_names=frozenset(), fixed_params=None):
     """One condition row -> a ``(var, op, val)`` perturbation, or ``None`` for a base pin.
 
     * ``target_id`` a mapping species id -> a species ``setConcentration`` (recover the BNGL
@@ -549,9 +577,14 @@ def _perturbation_from_row(row, surrogate_params, species_by_id=None):
     * a bare number -> an absolute set ``var = <num>`` (a relative op on a *fixed* target
       is lossily precomputed to a number on export, with no PEtab home for the original
       op, so it round-trips as an absolute set -- the same PEtab value either way).
-    * anything else -> a ``targetValue`` expression for the deferred sympy layer.
+    * a bare parameter id -> a **parameter reference** ``var = <free param>`` (a per-condition
+      estimated initial condition, ADR-0076): when the id is an estimated parameter (``free_names``)
+      the ``val`` stays a *string* naming it (resolved from the PSet at apply time); when it is a
+      fixed parameter (``fixed_params``) its numeric value is inlined (an absolute set).
+    * anything else -> a multi-symbol ``targetValue`` expression for the deferred sympy layer.
     """
     species_by_id = species_by_id or {}
+    fixed_params = fixed_params or {}
     var = row.target_id
     value = row.target_value.strip()
     if var in species_by_id:
@@ -566,11 +599,20 @@ def _perturbation_from_row(row, surrogate_params, species_by_id=None):
     try:
         return (var, '=', float(value))   # absolute set (fit or fixed target)
     except ValueError:
-        raise NotImplementedError(
-            f"Condition targetValue {row.target_value!r} for '{var}' is an expression, "
-            f"not a base pin, a surrogate relative op, or a number. Evaluating PEtab "
-            f"condition formulae needs the sympy layer (the deferred observableFormula "
-            f"chunk, #407), which adopts the petab library.")
+        pass
+    # A non-numeric targetValue that names exactly one parameter is a per-condition estimated
+    # initial condition (ADR-0076): bind the target to that parameter. A free parameter stays a
+    # symbolic reference (val a string); a fixed one inlines its nominal value.
+    if _BARE_IDENTIFIER.match(value):
+        if value in free_names:
+            return (var, '=', value)              # a free-parameter reference (val stays a STRING)
+        if value in fixed_params:
+            return (var, '=', fixed_params[value])  # a fixed parameter -> its numeric value inlined
+    raise NotImplementedError(
+        f"Condition targetValue {row.target_value!r} for '{var}' is an expression, not a base "
+        f"pin, a surrogate relative op, a number, or a single parameter reference (ADR-0076). "
+        f"A multi-symbol condition formula needs the sympy layer (the deferred observableFormula "
+        f"chunk, #407), which adopts the petab library.")
 
 
 # ---------------------------------------------------------------------------

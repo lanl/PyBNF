@@ -746,7 +746,13 @@ def _read_conditions(conf, models, registry):
                     f"Condition '{name}' perturbs '{var}', which is not a parameter or "
                     f"compartment of any model in the job (a PEtab condition target must "
                     f"be a model entity).")
-            muts.append((var, op, float(val)))
+            try:
+                muts.append((var, op, float(val)))
+            except (TypeError, ValueError):
+                # A parameter-valued perturbation (a per-condition estimated initial condition,
+                # ADR-0076): the value names a free parameter, passed through as a string; the
+                # builder emits it verbatim as the PEtab targetValue (mutation_target_value).
+                muts.append((var, op, val))
         conditions[name] = muts
     return conditions
 
@@ -1278,6 +1284,16 @@ def _referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise):
         for by_placeholder in table.values():
             for by_time in by_placeholder.values():
                 referenced |= {tok for tok in by_time.values() if not _is_numeric_token(tok)}
+    # A free parameter a condition perturbation references by value (a per-condition estimated
+    # initial condition, ADR-0076): it binds no model entity of its own, so -- like a noise /
+    # measurement-model nuisance -- it must be admitted as a model-unbound estimated parameter.
+    for key, value in conf.items():
+        if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'condition'):
+            continue
+        _model_ref, perts = value
+        for var, _op, val in perts:
+            if '(' not in var and isinstance(val, str) and not _is_numeric_token(val):
+                referenced.add(val)
     return referenced
 
 

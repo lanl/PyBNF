@@ -461,7 +461,16 @@ class BngsimSbmlModelNoTimeout(Model):
         for name in self.param_set.keys():
             self._set_model_value_if_present(sbml_model, name, self.param_set[name])
 
+    def _param_set_values(self):
+        """The ``{param_id: value}`` snapshot of the current PSet, for resolving a
+        parameter-reference condition perturbation (a per-condition estimated initial
+        condition, ADR-0076). Empty when no PSet is applied."""
+        if self.param_set is None:
+            return {}
+        return {name: self.param_set[name] for name in self.param_set.keys()}
+
     def _apply_mutant(self, mut, sbml_model):
+        param_values = self._param_set_values()
         for mi in mut:
             current = self._get_model_value_if_present(sbml_model, mi.name)
             if current is None:
@@ -469,7 +478,7 @@ class BngsimSbmlModelNoTimeout(Model):
             self._set_model_value_if_present(
                 sbml_model,
                 mi.name,
-                _mutate_scalar(current, mi.operation, mi.value),
+                _mutate_scalar(current, mi.operation, mi.amount(param_values)),
             )
 
     def _build_sbml_doc(self, mut=None, scan_override=None):
@@ -535,11 +544,12 @@ class BngsimSbmlModelNoTimeout(Model):
 
     def _apply_mutant_engine(self, mut, engine_model):
         touched_species = False
+        param_values = self._param_set_values()
         for mi in mut:
             current = self._get_engine_value_if_present(engine_model, mi.name)
             if current is None:
                 continue
-            new_value = _mutate_scalar(current, mi.operation, mi.value)
+            new_value = _mutate_scalar(current, mi.operation, mi.amount(param_values))
             if self._set_engine_value_if_present(engine_model, mi.name, new_value):
                 touched_species = True
         return touched_species

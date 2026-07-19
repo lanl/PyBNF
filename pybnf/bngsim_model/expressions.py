@@ -81,7 +81,12 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
     initial concentration). Without this a non-free condition target raised
     ``KeyError`` -- an edition-2 regression versus the legacy per-variant model files.
     """
-    params = {p.name: p.value for p in param_set}
+    # The original fit-vector snapshot, distinct from ``params`` (which accumulates the
+    # mutations + any seeded non-free target below): a parameter-reference perturbation
+    # (a per-condition estimated initial condition, ADR-0076) resolves against the fit
+    # vector, not an intermediate mutated value, so it reads this snapshot.
+    param_values = {p.name: p.value for p in param_set}
+    params = dict(param_values)
     for mi in mut:
         if mi.name in params:
             base = params[mi.name]
@@ -89,7 +94,7 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
             base = None  # mutate() raises the species-inline-only error (ADR-0052)
         else:
             base = _nominal_param_value(engine_model, mi.name)
-        params[mi.name] = mi.mutate(base)
+        params[mi.name] = mi.mutate(base, param_values)
     mut_param_list = [
         FreeParameter(
             pname,

@@ -564,6 +564,31 @@ def test_bngsim_sbml_mutant_matches_existing_expectations(tmp_path):
 
 
 @pytest.mark.bngsim_sbml
+def test_bngsim_sbml_param_ref_condition_resolves_from_pset(tmp_path):
+    """A parameter-reference condition value (a per-condition estimated initial condition,
+    ADR-0076) sets the target to the current PSet value of the referenced free parameter, which
+    binds no model entity of its own: ``K3 = k3_ref`` with ``k3_ref=8000`` reproduces the K3=8000
+    mutant expectations exactly (the same numeric oracle as the ``K3 *= 4`` literal mutant)."""
+    xml_path = _raf_xml_path()
+    mut = pset.Mutation('K3', '=', 'k3_ref', is_param_ref=True)
+    mutset = pset.MutationSet((mut,), suffix='k3ref')
+    ps = pset.PSet([
+        pset.FreeParameter('K3', 'uniform_var', 2000., 10000., 2000.),
+        pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+        # k3_ref is NOT a model entity -- it only feeds the condition (the Bertozzi shape).
+        pset.FreeParameter('k3_ref', 'uniform_var', 2000., 10000., 8000.),
+    ])
+    action = pset.TimeCourse({'time': '1000', 'step': '10'})
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,))
+    model.add_mutant(mutset)
+
+    dat = model.execute(str(tmp_path), 'raf_param_ref', 1000)['time_coursek3ref']
+    assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
+    assert abs(dat['R'][-1] - 0.358949) < 0.01
+
+
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_ode_matches_roadrunner_on_raf(tmp_path):
     """Numerical parity for SBML ODE (cvode) on the existing raf.xml.
 

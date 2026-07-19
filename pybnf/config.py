@@ -1254,6 +1254,11 @@ class Configuration:
         required (the multi-model end-to-end path is exercised once the multi-model
         exporter lands -- ADR-0027/0028).
         """
+        # Free parameters a condition perturbation *references by value* (a per-condition
+        # estimated initial condition, ADR-0076): they bind no model entity of their own, so
+        # the new-era typo check (_check_variable_correspondence_modern) treats them as
+        # nuisances -- legitimate, condition-wired free parameters, not typos.
+        self._condition_free_params = set()
         conditions = [(k[1], v) for k, v in self.config.items()
                       if isinstance(k, tuple) and k[0] == 'condition']
         if not conditions:
@@ -1276,6 +1281,8 @@ class Configuration:
                     f"say which model it perturbs.")
             mut_objects = [self._build_condition_mutation(name, var, op, val)
                            for var, op, val in perts]
+            self._condition_free_params.update(
+                m.value for m in mut_objects if getattr(m, 'is_param_ref', False))
             self.models[base].add_mutant(MutationSet(mut_objects, name))
             logger.debug(f"Condition '{name}' applied to model '{base}' "
                          f"({len(mut_objects)} perturbation(s))")
@@ -1289,7 +1296,11 @@ class Configuration:
         A species perturbation keeps its value UNEVALUATED (a number or a param-expression
         string like ``IGF1_cold_conc*(NA*Vecf)``) for inline emission; only ``=`` (an absolute
         setConcentration) is meaningful for a species amount. A parameter perturbation is the
-        pre-#474 behaviour: ``op`` in ``= * / + -`` with a float value."""
+        pre-#474 behaviour: ``op`` in ``= * / + -`` with a float value -- OR, when the value is
+        a bare identifier rather than a number, a **parameter reference**: the condition sets
+        ``var`` to the current fit value of the named free parameter (a per-condition estimated
+        initial condition, PEtab's parameter-valued condition ``targetValue``, ADR-0076),
+        resolved from the PSet at apply time (:meth:`~pybnf.pset.Mutation.amount`)."""
         if '(' in var:
             if op != '=':
                 raise PybnfError(
@@ -1297,7 +1308,10 @@ class Configuration:
                     f"relative operator '{op}', but a species amount (setConcentration) supports "
                     "only '=' (an absolute set -- a wash to 0, or a bolus/amount). Use '='.")
             return Mutation(var, op, val, is_species=True)
-        return Mutation(var, op, float(val))
+        try:
+            return Mutation(var, op, float(val))
+        except (TypeError, ValueError):
+            return Mutation(var, op, val, is_param_ref=True)
 
     def _load_experiments(self):
         """Map new-era ``experiment:`` lines to synthesized actions + exp_data (ADR-0028).
@@ -1500,6 +1514,13 @@ class Configuration:
                 f"condition with that name is defined. Define it with a 'condition:' line.")
         perts = []
         for mut in mut_set.mutations:
+            if getattr(mut, 'is_param_ref', False):
+                raise PybnfError(
+                    f"Experiment '{exp_name}': pre-equilibration condition '{condition_name}' "
+                    f"sets '{mut.name}' to the value of free parameter '{mut.value}'. A "
+                    f"parameter-valued condition perturbation (a per-condition estimated initial "
+                    f"condition, ADR-0076) is not yet supported inline in a pre-equilibration "
+                    f"phase; use it in the measurement 'condition:' of an ordinary experiment.")
             if mut.operation != '=':
                 raise PybnfError(
                     f"Experiment '{exp_name}': pre-equilibration condition '{condition_name}' "
@@ -2955,6 +2976,10 @@ class Configuration:
         # A parameter id used only as a row-varying per-measurement noise token (the ADR-0045
         # binding table) is a legitimate nuisance, bound to no model id.
         nuisance |= getattr(self, '_per_measurement_free_params', set())
+        # A free parameter a condition perturbation references by value (a per-condition
+        # estimated initial condition, ADR-0076) binds no model entity of its own -- it feeds
+        # the condition, not the model directly -- so it is a legitimate nuisance too.
+        nuisance |= getattr(self, '_condition_free_params', set())
         # An estimated qualitative-constraint scale (qualitative_scale = fit) is a
         # nuisance too -- it feeds the constraint penalty, not the model.
         qscale = self._qualitative_scale_param()

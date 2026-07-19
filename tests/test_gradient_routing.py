@@ -148,6 +148,17 @@ def test_route_experiment_preserves_declaration_order_and_dedups():
     assert r.sensitivity_params == ['k2', 'k1']
 
 
+def test_route_experiment_parameter_reference_condition_raises():
+    """A per-condition estimated initial condition (ADR-0076) -- a condition that sets a model
+    entity to the value of a free parameter -- refuses on the gradient path rather than
+    silently emitting a zero sensitivity column: the referenced parameter reaches the
+    trajectory through a *different* id, which bind-by-id routing does not model."""
+    from pybnf.gradient import GradientNotSupported
+    cond = MutationSet([Mutation('S0', '=', 'S0_A', is_param_ref=True)], 'c')
+    with pytest.raises(GradientNotSupported, match='S0_A'):
+        route_experiment(['k', 'S0_A'], DECAY_PARAMS, DECAY_SPECIES, cond)
+
+
 # ------------------------------------------------- model adapter (bngsim) ----
 
 @pytest.fixture

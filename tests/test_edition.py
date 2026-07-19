@@ -399,6 +399,32 @@ wall_time_sim = 0
     assert 'c1' in suffixes
 
 
+def test_modern_condition_parameter_reference_builds_param_ref_mutation():
+    """A per-condition estimated initial condition (ADR-0076): a condition value that names a
+    free parameter (`kBC = kbc_A`) builds a parameter-reference Mutation, and the referenced
+    free parameter -- bound to no model entity -- is admitted as a nuisance so the config loads
+    (the bind-by-id typo check does not flag it)."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+condition: c1, perturbations: kBC = kbc_A
+job_type = de
+objective = score
+loguniform_var = kAB 0.001 1
+uniform_var = kbc_A 0 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    cfg = Configuration(ploop(conf.splitlines(keepends=True)))
+    muts = [(m.suffix, [(x.name, x.operation, x.value, x.is_param_ref) for x in m.mutations])
+            for m in cfg.models['abc'].mutants]
+    assert ('c1', [('kBC', '=', 'kbc_A', True)]) in muts
+    # The referenced free parameter is recorded as a condition nuisance (why the load did not
+    # raise on kbc_A, which binds no model entity).
+    assert 'kbc_A' in cfg._condition_free_params
+
+
 # --- the edition-gated experiment: syntax (ADR-0028, Chunk 3) --------------------
 #
 # _load_experiments reads self.config (edition + the ('experiment', name) tuple keys)

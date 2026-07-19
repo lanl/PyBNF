@@ -899,6 +899,61 @@ class TestExportNewEraConditions:
 
 
 # ---------------------------------------------------------------------------
+# ADR-0076: a parameter-valued condition targetValue -- a per-condition estimated initial
+# condition. A condition that sets a fixed model entity to the value of a FREE parameter
+# (``s = s_A``) exports as ``targetValue = s_A`` (PEtab-legal: the referenced id is a
+# parameter-table entry, the target is not, so the surrogate split is not needed).
+# ---------------------------------------------------------------------------
+
+def _write_param_ref_condition_fixture(d):
+    """A new-era job whose condition sets the fixed model parameter ``s`` to the value of a
+    free parameter ``s_A`` (bound to no model entity -- the Bertozzi/Bruno per-condition
+    estimated-IC shape), plus a wildtype and a conditioned experiment."""
+    (d / 'parabola2.bngl').write_text(_PARABOLA2_BNGL)
+    (d / 'wt.exp').write_text(
+        '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n')
+    (d / 'ca.exp').write_text(
+        '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n')
+    conf = d / 'job.conf'
+    conf.write_text(
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        'model: parabola2.bngl\n'
+        'condition: cA, perturbations: s = s_A\n'
+        'experiment: wt, data: wt.exp\n'
+        'experiment: ea, condition: cA, data: ca.exp\n'
+        'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+        'uniform_var = v3 0 10\nuniform_var = s_A 0 10\n')
+    return conf
+
+
+class TestExportParamRefCondition:
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = tmp_path_factory.mktemp('param_ref_cond')
+        conf = _write_param_ref_condition_fixture(src)
+        out = src / 'petab'
+        export_job(conf, out)
+        return out
+
+    def test_condition_cell_is_the_referenced_parameter(self, exported):
+        rows = _tsv_rows(exported / 'conditions.tsv')
+        cells = {(r['conditionId'], r['targetId']): r['targetValue'] for r in rows}
+        # The fixed target `s` is set to the free-parameter id verbatim (no surrogate split:
+        # `s` is not in the parameter table, `s_A` is not a condition target).
+        assert cells[('cond_cA', 's')] == 's_A'
+
+    def test_referenced_param_is_an_estimated_parameter(self, exported):
+        ids = {r['parameterId'] for r in _tsv_rows(exported / 'parameters.tsv')}
+        # s_A binds no model entity, yet is admitted as an estimated parameter (a nuisance the
+        # condition references), and s (the fixed target) never enters the parameter table.
+        assert 's_A' in ids and 's' not in ids
+
+    def test_full_petab_validation_is_clean(self, exported):
+        _assert_petab_clean(exported)
+
+
+# ---------------------------------------------------------------------------
 # ADR-0052 (#441, Phase 2): a new-era pre-equilibration experiment (preequilibrate:) ->
 # a PEtab v2 TWO-PERIOD Experiment: a leading time=-inf steady-state period under the
 # pre-equilibration condition + a time=0 measurement period under the measurement condition,

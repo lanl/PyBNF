@@ -57,6 +57,7 @@ first FD-oracle case needs.
 from dataclasses import dataclass
 
 from ..printing import PybnfError
+from .errors import GradientNotSupported
 
 
 # Routing targets. ``PARAM`` -> sensitivity_params (kinetic/global), ``IC`` -> sensitivity_ic
@@ -172,7 +173,22 @@ def route_experiment(free_params, param_ids, species_initializers, condition=Non
     ``param_ids`` the model's ``begin parameters`` namespace; ``species_initializers`` the
     ``(species, initial-expr)`` pairs; ``condition`` the experiment's
     :class:`pybnf.pset.MutationSet` (``None`` for the wildtype experiment).
+
+    A parameter-reference perturbation (a per-condition estimated initial condition,
+    ADR-0076) raises :class:`GradientNotSupported`: the referenced free parameter reaches the
+    trajectory *through* the model entity the condition sets (a different id), a coupling this
+    bind-by-id routing does not model, so its sensitivity column would be silently zero. The
+    gate keeps a gradient/EFIM fit honest; a gradient-free optimizer/sampler is unaffected.
     """
+    if condition is not None:
+        for mut in condition:
+            if getattr(mut, 'is_param_ref', False):
+                raise GradientNotSupported(
+                    f"Condition sets '{mut.name}' to the value of free parameter '{mut.value}' "
+                    f"(a per-condition estimated initial condition, ADR-0076). The gradient path "
+                    f"cannot yet route a free parameter that reaches the model through a "
+                    f"condition target of a different id; use a gradient-free optimizer or "
+                    f"sampler for this fit.")
     param_ids = set(param_ids)
     routes = {}
     for name in free_params:

@@ -1001,7 +1001,12 @@ class BNGLModel(Model):
         param is refused here (this text-emitting path does not resolve the nominal -- use an
         absolute value or declare the parameter free; the bngsim execute path resolves it).
         """
-        params = {p.name: p.value for p in self.param_set}
+        # The original PSet fit-vector snapshot, kept distinct from ``params`` (which
+        # accumulates the mutations + any fixed-target seed below): a parameter-reference
+        # perturbation (ADR-0076) resolves against the fit vector, not an intermediate
+        # mutated model value, so it reads this snapshot, not ``params``.
+        param_values = {p.name: p.value for p in self.param_set}
+        params = dict(param_values)
         for mi in mut:
             if mi.name in params:
                 base = params[mi.name]
@@ -1014,7 +1019,7 @@ class BNGLModel(Model):
                     f"Condition perturbs fixed parameter '{mi.name}' with relative operator "
                     f"'{mi.operation}'; the BNGL-emit path cannot resolve its nominal. Use an "
                     f"absolute '=' value, or declare '{mi.name}' as a free parameter.")
-            params[mi.name] = mi.mutate(base)
+            params[mi.name] = mi.mutate(base, param_values)
         mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
                           for pname in params]
         mut_pset = PSet(mut_param_list)
@@ -1504,11 +1509,13 @@ class SbmlModelNoTimeout(Model):
 
     def _apply_mutant(self, mut, runner):
         """Modify the parameters in this runner instance according to the MutationSet mut"""
+        param_values = {p: self.param_set[p] for p in self.param_set.keys()}
         for mi in mut:
             if mi.name in self.species_names:
-                runner.model[f'init([{mi.name}])'] = mi.mutate(runner.model[f'init([{mi.name}])'])
+                runner.model[f'init([{mi.name}])'] = mi.mutate(
+                    runner.model[f'init([{mi.name}])'], param_values)
             elif mi.name in self.param_names:
-                setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+                setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name), param_values))
 
     def _undo_mutant(self, mut, runner):
         """ Undo the application of the MutationSet mut. Should only be called after previously calling
@@ -1952,7 +1959,7 @@ class ParamScan(Action):
 
 class Mutation:
 
-    def __init__(self, name, operation, value, is_species=False):
+    def __init__(self, name, operation, value, is_species=False, is_param_ref=False):
         """
         Create a mutation
         :param name: Name of the variable to mutate (a parameter id, or -- when
@@ -1964,7 +1971,9 @@ class Mutation:
         :param value: The value to add/subtract/etc (depending on the operation). For a
             parameter perturbation a float; for a species perturbation (``is_species``) the
             setConcentration value -- a number OR a param-expression string
-            (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated for inline emission (#474).
+            (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated for inline emission (#474); for a
+            parameter-reference perturbation (``is_param_ref``) a **free-parameter id** string
+            whose current fit value supplies the amount (ADR-0076).
         :type value: float | str
         :param is_species: True when ``name`` is a BNGL species pattern targeted by a
             ``setConcentration`` (a wash / bolus), rather than a parameter (setParameter).
@@ -1972,20 +1981,49 @@ class Mutation:
             (ADR-0052); it has no meaning as a mutant parameter-block change, so
             :meth:`mutate` refuses it.
         :type is_species: bool
+        :param is_param_ref: True when ``value`` is a free-parameter *id* (not a number): the
+            condition sets ``name`` to that parameter's current fit value -- a per-condition
+            estimated initial condition (PEtab's parameter-valued condition ``targetValue``,
+            ADR-0076). The amount is resolved from the PSet at apply time (:meth:`amount`); the
+            reference is to the fit vector, not a model quantity, so it is backend-agnostic.
+        :type is_param_ref: bool
         """
         self.name = name
         self.operation = operation
         self.value = value
         self.is_species = is_species
+        self.is_param_ref = is_param_ref
         if operation not in ('+', '-', '*', '/', '='):
             raise RuntimeError(f'Invalid mutation operation {operation}')
         self.old = None
         logger.debug(f'Created mutation {self.name} {self.operation} {self.value}')
 
-    def mutate(self, num):
+    def amount(self, param_values=None):
+        """The numeric right-hand-side amount this mutation applies to its target.
+
+        A plain numeric perturbation passes its ``value`` through. A parameter-reference
+        perturbation (``is_param_ref`` -- a per-condition estimated initial condition,
+        ADR-0076) resolves ``value`` (a free-parameter id) against ``param_values``, a
+        ``{param_id: value}`` snapshot of the model's current PSet; the reference is to the
+        fit vector, so the same lookup serves every backend. Raises :class:`PybnfError` when
+        the referenced id is not a free parameter of the fit (a clearer message than a
+        downstream ``KeyError``)."""
+        if not self.is_param_ref:
+            return self.value
+        if param_values is None or self.value not in param_values:
+            raise PybnfError(
+                f"Condition perturbation '{self.name} {self.operation} {self.value}' sets "
+                f"'{self.name}' to the value of parameter '{self.value}', but '{self.value}' is "
+                f"not a free parameter of this fit. A parameter-valued condition targetValue "
+                f"must reference a declared free parameter (ADR-0076).")
+        return float(param_values[self.value])
+
+    def mutate(self, num, param_values=None):
         """
         Applies this mutation
         :param num:
+        :param param_values: the ``{param_id: value}`` PSet snapshot used to resolve a
+            parameter-reference (``is_param_ref``) value; unused for a numeric perturbation.
         :return: float
         """
         if self.is_species:
@@ -1996,16 +2034,17 @@ class Mutation:
                 "parameter-block change. Use it in a condition consumed by an experiment's "
                 "'preequilibrate:' or measurement 'condition:'.")
         self.old = num
+        amount = self.amount(param_values)
         if self.operation == '=':
-            return self.value
+            return amount
         elif self.operation == '+':
-            return num + self.value
+            return num + amount
         elif self.operation == '-':
-            return num - self.value
+            return num - amount
         elif self.operation == '*':
-            return num * self.value
+            return num * amount
         elif self.operation == '/':
-            return num / self.value
+            return num / amount
 
     def undo(self):
         """

@@ -41,6 +41,7 @@ from pybnf.petab import (
 from pybnf.petab._bngl import parse_model
 from pybnf.petab.import_ import _condition_and_preequilibrate
 from pybnf.petab.conditions import (
+    PetabConditionRow,
     PetabExperimentRow,
     build_experiment_conditions,
     conditions_from_rows,
@@ -234,6 +235,77 @@ class TestImportDemoRoundTrip:
                   if (i := t.run(problem)) is not None
                   and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Parameter-valued condition targetValue round trip (ADR-0076): a condition that sets a fixed
+# model entity to the value of a FREE parameter -- a per-condition estimated initial condition
+# (the Bertozzi/Bruno shape) -- exports as ``targetValue = <param>`` and re-imports byte-for-byte.
+# ---------------------------------------------------------------------------
+
+_PARAM_REF_MODEL = """\
+begin model
+  begin parameters
+    v1 0.5
+    v2 1
+    v3 3
+    s 2
+  end parameters
+  begin molecule types
+    counter()
+  end molecule types
+  begin seed species
+    counter() -10
+  end seed species
+  begin observables
+    Molecules x counter()
+  end observables
+  begin functions
+    y()=s*((v1*(x^2))+(v2*x)+v3)
+  end functions
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+end model
+"""
+
+
+class TestImportParamRefConditionRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        conf = (
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: pref.bngl\n'
+            'condition: cA, perturbations: s = s_A\n'
+            'experiment: wt, data: wt.exp\n'
+            'experiment: ea, condition: cA, data: ca.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\nuniform_var = s_A 0 10\n')
+        extra = {
+            'pref.bngl': _PARAM_REF_MODEL,
+            'wt.exp': '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n',
+            'ca.exp': '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n',
+        }
+        return _roundtrip(tmp_path_factory.mktemp('paramref'), conf, extra_files=extra,
+                          model_name='pref.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_condition_targetvalue_is_the_referenced_param(self, imported):
+        petab1, _, _, _ = imported
+        rows = _tsv_rows(petab1 / 'conditions.tsv')
+        cells = {(r['conditionId'], r['targetId']): r['targetValue'] for r in rows}
+        assert cells[('cond_cA', 's')] == 's_A'
+
+    def test_imported_conf_emits_the_param_reference_verbatim(self, imported):
+        _, _, _, conf = imported
+        d = ploop(conf.read_text().splitlines(keepends=True))
+        # The recovered condition carries the parameter-reference value as a string (not a float).
+        assert d[('condition', 'cA')] == (None, [('s', '=', 's_A')])
+        assert 'uniform_var = s_A 0 10' in conf.read_text()   # s_A recovered as a free parameter
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1317,28 @@ class TestReverseAssets:
         # The fit op recovers exactly; the fixed relative op recovers as its precomputed
         # absolute value (s*5 with nominal 2 -> s = 10); base pins are dropped.
         assert recovered == {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '=', 10.0)]}
+
+    def test_conditions_from_rows_recovers_parameter_reference(self):
+        # A per-condition estimated initial condition (ADR-0076): a targetValue that names a
+        # free parameter recovers a parameter-reference perturbation (val a STRING naming it);
+        # a fixed-parameter targetValue inlines its nominal value; a number is an absolute set.
+        rows = [
+            PetabConditionRow('cond_uCA', 'I0_', 'I0_CA'),     # free -> reference (string val)
+            PetabConditionRow('cond_uCA', 'N_', '39560000'),   # a plain number
+            PetabConditionRow('cond_uCA', 'g_', 'g_fixed'),    # fixed -> inlined nominal value
+        ]
+        recovered = conditions_from_rows(
+            rows, surrogate_params=set(), free_names={'I0_CA'},
+            fixed_params={'g_fixed': 0.25})
+        assert recovered == {'uCA': [('I0_', '=', 'I0_CA'), ('N_', '=', 39560000.0),
+                                     ('g_', '=', 0.25)]}
+
+    def test_conditions_from_rows_multisymbol_expression_still_raises(self):
+        # A multi-symbol condition formula is still the deferred sympy-layer boundary; only a
+        # single parameter reference (or number) is recovered (ADR-0076).
+        rows = [PetabConditionRow('cond_c', 'x', 'a * b + c')]
+        with pytest.raises(NotImplementedError, match='expression'):
+            conditions_from_rows(rows, surrogate_params=set(), free_names={'a', 'b', 'c'})
 
 
 # ---------------------------------------------------------------------------

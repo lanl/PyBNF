@@ -397,8 +397,16 @@ def parse(s):
     cond_name = pp.Word(pp.alphas, pp.alphanums + '_')
     cond_model_key = pp.Suppress(pp.CaselessLiteral('model'))
     perturbations_key = pp.Suppress(pp.CaselessLiteral('perturbations'))
-    # A parameter perturbation: bare identifier <op> number (op in = * / + -).
-    cond_param_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
+    # A parameter perturbation: bare identifier <op> value (op in = * / + -). The value is a
+    # NUMBER or -- a per-condition estimated initial condition (PEtab's parameter-valued
+    # condition ``targetValue``, ADR-0076) -- a bare identifier naming a FREE PARAMETER whose
+    # fit value supplies the amount (``I0_ = I0_CA``). The identifier alternative is tried first
+    # so an alpha-leading value is a parameter reference and a digit/sign/``inf``-leading value
+    # is a number (the two token shapes never overlap, so the order is unambiguous); config.py
+    # routes a non-numeric value to a param-reference Mutation resolved from the PSet.
+    cond_param_ident = pp.Word(pp.alphas+'_', pp.alphanums+'_')
+    cond_param_val = cond_param_ident.copy() | num
+    cond_param_op = pp.Group(cond_param_ident.copy() - _one_of('+ - * / =') - cond_param_val)
     # A SPECIES perturbation (#474): a QUOTED BNGL species pattern = value -- emitted as a
     # ``setConcentration("<pattern>", <value>)`` (a wash / bolus / removal of a species pool),
     # vs. a parameter perturbation's ``setParameter``. The pattern is quoted because it carries

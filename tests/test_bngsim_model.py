@@ -208,3 +208,22 @@ def test_execute_resyncs_ic_only_free_parameter():
     assert not np.allclose(low, high)
     # Pure linear decay from a bare IC seed: doubling S0 doubles every point.
     assert high == pytest.approx(2.0 * low)
+
+
+def test_build_mutant_param_set_resolves_parameter_reference():
+    """The shared bngsim net/NF mutant builder resolves a parameter-reference condition value
+    (a per-condition estimated initial condition, ADR-0076) from the fit vector: ``S0 = S0_A``
+    seeds S0 with the current value of the free parameter S0_A (which binds no model entity of
+    its own), not a fixed number. Simulator-free -- it exercises the value-resolution seam only
+    (the target is a fit-vector parameter, so no engine model is needed to seed the base)."""
+    from pybnf.bngsim_model.expressions import _build_mutant_param_set
+    from pybnf.pset import FreeParameter, Mutation, MutationSet, PSet
+
+    ps = PSet([
+        FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=100.0),
+        FreeParameter('S0_A', 'uniform_var', 0.0, 1000.0, value=250.0),  # not a model entity
+    ])
+    mut = MutationSet([Mutation('S0', '=', 'S0_A', is_param_ref=True)], 'cA')
+    out = {p.name: p.value for p in _build_mutant_param_set(ps, mut, engine_model=None)}
+    assert out['S0'] == 250.0      # S0 set to the current fit value of S0_A
+    assert out['S0_A'] == 250.0    # the fit vector itself is unchanged

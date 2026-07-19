@@ -1,6 +1,37 @@
+import pytest
+
 from .context import pset
 from .context import printing
 from .context import raises
+
+
+class TestMutationParamRef:
+    """A parameter-reference condition perturbation (a per-condition estimated initial
+    condition, ADR-0076): the value is a free-parameter id resolved from the PSet at apply
+    time, not a fixed number."""
+
+    def test_amount_resolves_free_parameter_reference(self):
+        m = pset.Mutation('I0_', '=', 'I0_CA', is_param_ref=True)
+        assert m.amount({'I0_CA': 232.9}) == 232.9
+
+    def test_amount_missing_reference_raises(self):
+        m = pset.Mutation('I0_', '=', 'I0_CA', is_param_ref=True)
+        with pytest.raises(printing.PybnfError, match='I0_CA'):
+            m.amount({'other': 1.0})
+
+    def test_mutate_absolute_returns_referenced_value(self):
+        m = pset.Mutation('I0_', '=', 'I0_CA', is_param_ref=True)
+        assert m.mutate(999.0, {'I0_CA': 232.9}) == 232.9
+
+    def test_mutate_relative_uses_referenced_value(self):
+        # A relative op composes with the referenced value (k *= scale), not a fixed number.
+        m = pset.Mutation('k', '*', 'scale', is_param_ref=True)
+        assert m.mutate(4.0, {'scale': 2.5}) == 10.0
+
+    def test_numeric_mutation_ignores_param_values(self):
+        m = pset.Mutation('k', '=', 5.0)
+        assert m.amount() == 5.0
+        assert m.mutate(1.0) == 5.0
 
 
 class TestPSet:

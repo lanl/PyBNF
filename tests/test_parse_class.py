@@ -228,6 +228,16 @@ class TestParse:
             'condition: w, perturbations: hot_conc = 7e-12, "IGF1(ds,hs,label~cold)" = c*(NA*V)') == \
             ['condition', 'w', [['hot_conc', '=', '7E-12'], ['IGF1(ds,hs,label~cold)', '=', 'c*(NA*V)']]]
 
+    def test_condition_parameter_reference_value_grammar(self):
+        # A per-condition estimated initial condition (ADR-0076): the perturbation value is a
+        # bare identifier naming a free parameter (`I0_ = I0_CA`), not a number. The identifier
+        # alternative parses as the third token of the (var, op, val) group, and a number and a
+        # parameter reference coexist in one condition (config.py routes each by value type).
+        assert parse.parse('condition: uCA, perturbations: I0_ = I0_CA') == \
+            ['condition', 'uCA', [['I0_', '=', 'I0_CA']]]
+        assert parse.parse('condition: c, perturbations: N_ = 39560000, I0_ = I0_CA') == \
+            ['condition', 'c', [['N_', '=', '39560000'], ['I0_', '=', 'I0_CA']]]
+
     def test_condition_ploop_tuple_key(self):
         d = parse.ploop(['condition: c1, perturbations: kf = 1e-3, kr - 2',
                          'condition: c2, model: m.bngl, perturbations: a / 10'])

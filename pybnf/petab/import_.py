@@ -218,8 +218,10 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``parameter_scan`` experiment (the species patterns recovered from the mapping). Raises
     ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (a model language other than
     ``bngl``/``sbml``; the five unsupported prior families; a log-normal/log-laplace noise
-    distribution; a condition expression; a **row-varying** per-measurement
-    ``observableParameters``/``noiseParameters`` placeholder; replicate rows) and ``PybnfError``
+    distribution; a **multi-symbol** condition expression -- a single parameter-valued
+    ``targetValue`` is a per-condition estimated initial condition and imports, ADR-0076; a
+    **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder;
+    replicate rows) and ``PybnfError``
     for a malformed problem (an ``observableFormula`` symbol that is not a model entity, or an
     ambiguous dose-response group).
     """
@@ -363,7 +365,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     absorbed_condition_ids = dr_condition_ids | pdr_condition_ids
     tc_condition_rows = [r for r in condition_rows
                          if r.condition_id not in absorbed_condition_ids]
-    conditions = conditions_from_rows(tc_condition_rows, surrogate_params, species_by_id)
+    # ``free_names`` / ``fixed_params`` resolve a parameter-valued targetValue -- a per-condition
+    # estimated initial condition (ADR-0076): a target set to an estimated parameter id becomes a
+    # parameter-reference perturbation (bound from the PSet at apply time), a fixed one inlines.
+    conditions = conditions_from_rows(tc_condition_rows, surrogate_params, species_by_id,
+                                      free_names=free_names, fixed_params=fixed_params)
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
     # a single-model job carries modelId '' and emits no per-experiment model: field. A group
     # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045). The
@@ -1240,11 +1246,14 @@ def _render_perturbation(var, op, val):
     A **species** ``setConcentration`` target (a BNGL pattern, ADR-0062) is emitted with its
     pattern quoted (it carries commas) and its verbatim value (a number or a param-expression),
     the value itself quoted only when it carries a comma (the grammar's ``cond_species_val``
-    convention). A **parameter** target renders as ``<var> <op> <num(val)>`` (``val`` is a
-    float)."""
+    convention). A **parameter reference** value (a per-condition estimated initial condition,
+    ADR-0076) is a *string* naming a free parameter, emitted verbatim (``I0_ = I0_CA``). A plain
+    **parameter** target renders as ``<var> <op> <num(val)>`` (``val`` is a float)."""
     if is_species_target(var):
         value = f'"{val}"' if ',' in str(val) else str(val)
         return f'"{var}" {op} {value}'
+    if isinstance(val, str):
+        return f'{var} {op} {val}'   # a free-parameter reference (ADR-0076)
     return f'{var} {op} {num(val)}'
 
 
