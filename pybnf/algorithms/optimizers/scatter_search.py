@@ -6,7 +6,7 @@ loop + execution seam; it makes no core.* call of its own.
 
 
 from ..base import Algorithm
-from ...config_schema import PyBNFConfigModel
+from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -20,14 +20,15 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-class ScatterSearchConfig(PyBNFConfigModel):
+class ScatterSearchConfig(MultiStartConfig):
     """Scatter-search config fields, co-located with the method (ADR-0002,
     ADR-0006). ``local_min_limit`` is the only defaulted scatter key (it was the
     lone ``# --- scatter search ---`` entry in ``GlobalConfig``); ``init_size``
     and ``reserve_size`` are NOT here -- like PSO's ``particle_weight_final`` they
     are runtime-defaulted in ``__init__`` (``init_size`` → ``10*len(variables)``,
     ``reserve_size`` → ``max_iterations`` when absent), so they stay pass-through
-    extras. Value byte-identical to the old global default.
+    extras. Value byte-identical to the old global default. Inherits the shared
+    ``n_starts`` multi-start field (``MultiStartConfig``, #498).
     """
 
     local_min_limit: int = 5
@@ -39,7 +40,7 @@ class ScatterSearchConfig(PyBNFConfigModel):
 
 @register_fit_type('ss', family='optimizer', display_name='Scatter Search',
                    schema=ScatterSearchConfig)
-class ScatterSearch(Algorithm):
+class ScatterSearch(MultiStartOptimizer, Algorithm):
     """
     Implements ScatterSearch as described in the introduction of Penas et al 2017 (but not the fancy parallelized
     version from that paper).
@@ -88,6 +89,15 @@ class ScatterSearch(Algorithm):
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
+        self._reset_search_state()
+
+    def _reset_search_state(self):
+        """Clear all search-specific state (reference set, pending/received maps,
+        stuck-counters, iteration count, local-minimum archive, reserve) WITHOUT
+        touching the trajectory -- so multi-start's :meth:`_search_start_run` begins a
+        fresh, independent scatter search each start while the trajectory keeps the
+        global best across starts (#498). Shared by ``reset`` (which also clears the
+        trajectory via ``super().reset``) and by each multi-start."""
         self.pending = dict()
         self.received = dict()
         self.refs = []
@@ -96,7 +106,11 @@ class ScatterSearch(Algorithm):
         self.local_mins = []
         self.reserve = []
 
-    def start_run(self):
+    def _search_start_run(self):
+        # Reset every search counter first (iteration / refs / archive that start_run
+        # itself does not touch), so a multi-start restart begins a genuinely fresh
+        # scatter search rather than resuming at the previous start's iteration.
+        self._reset_search_state()
         print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
                (self.popsize, self.popsize * (self.popsize - 1), self.max_iterations))
         # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
@@ -135,7 +149,7 @@ class ScatterSearch(Algorithm):
             self.refs.append(start_psets[i])
         self.stuckcounter = {r[0]: 0 for r in self.refs}
 
-    def got_result(self, res):
+    def _search_got_result(self, res):
         """
         Called when a simulation run finishes
 

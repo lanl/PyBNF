@@ -54,7 +54,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'n_try',
                # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the maximum number
                # of IPOP / BIPOP restarts (0 = a single run).
-               'cmaes_restarts']
+               'cmaes_restarts',
+               # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
+               # ADR-0071): the number of independent starts, keeping the global best
+               # (1 = a single run).
+               'n_starts']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',

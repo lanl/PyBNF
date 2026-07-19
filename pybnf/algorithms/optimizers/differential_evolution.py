@@ -8,6 +8,7 @@ execution seam are inherited from Algorithm.
 
 
 from ..base import Algorithm
+from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2, PybnfError
@@ -38,10 +39,13 @@ class DEFamilyConfig(PyBNFConfigModel):
     de_strategy: str = 'rand1'
 
 
-class DifferentialEvolutionConfig(DEFamilyConfig):
+class DifferentialEvolutionConfig(MultiStartConfig, DEFamilyConfig):
     """``de``-specific config: the island/migration fields only synchronous DE
-    reads (``ade`` is async and ignores them). Demonstrates the shared-base
-    pattern the MCMC family reuses (ADR-0006)."""
+    reads (``ade`` is async and ignores them), plus the shared ``n_starts``
+    multi-start field (``MultiStartConfig``, #498) -- ``de`` opts into multi-start,
+    ``ade`` does not (yet), so the key rides ``de``'s own schema, not the shared
+    ``DEFamilyConfig`` base. Demonstrates the shared-base pattern the MCMC family
+    reuses (ADR-0006)."""
 
     islands: int = 1
     migrate_every: int = 20
@@ -117,7 +121,7 @@ class DifferentialEvolutionBase(Algorithm):
 
 @register_fit_type('de', family='optimizer', display_name='Differential Evolution',
                    schema=DifferentialEvolutionConfig)
-class DifferentialEvolution(DifferentialEvolutionBase):
+class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
     """
     Implements the parallelized, island-based differential evolution algorithm
     described in Penas et al 2015.
@@ -192,6 +196,15 @@ class DifferentialEvolution(DifferentialEvolutionBase):
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
+        self._reset_search_state()
+
+    def _reset_search_state(self):
+        """Clear all search-specific state (populations, per-island iteration and
+        migration counters) WITHOUT touching the trajectory -- so multi-start's
+        :meth:`_search_start_run` can begin a fresh, independent DE run each start while
+        the trajectory keeps accumulating the global best across starts (#498). Shared by
+        ``reset`` (which also resets the trajectory via ``super().reset``) and by each
+        multi-start."""
         self.island_map = dict()
         self.iter_num = [0] * self.num_islands
         self.waiting_count = []
@@ -205,7 +218,11 @@ class DifferentialEvolution(DifferentialEvolutionBase):
         self.migration_indices = dict()
         self.migration_perms = dict()
 
-    def start_run(self):
+    def _search_start_run(self):
+        # Reset every search counter first (the per-island iteration and migration
+        # state start_run itself does not touch), so a multi-start restart begins a
+        # genuinely fresh DE run rather than resuming at the previous start's iteration.
+        self._reset_search_state()
         if self.num_islands == 1:
             print2('Running Differential Evolution with population size %i for up to %i iterations' %
                    (self.num_per_island, self.max_iterations))
@@ -250,7 +267,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
 
         return [ind for island in self.proposed_individuals for ind in island]
 
-    def got_result(self, res):
+    def _search_got_result(self, res):
         """
         Called when a simulation run finishes
 

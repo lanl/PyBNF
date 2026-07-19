@@ -209,14 +209,20 @@ class TestRegistrySchemaSeam:
         assert 'mutation_rate' in DEFamilyConfig.owned_keys()
         assert 'islands' in DifferentialEvolutionConfig.owned_keys()
         assert 'islands' not in DEFamilyConfig.owned_keys()
+        # Multi-start (#498/ADR-0071): de opts in (n_starts rides its own schema), ade
+        # does not (the shared family base carries no n_starts), so an ade fit narrows
+        # n_starts away exactly as it does islands.
+        assert 'n_starts' in DifferentialEvolutionConfig.owned_keys()
+        assert 'n_starts' not in DEFamilyConfig.owned_keys()
 
-    def test_ss_owns_only_local_min_limit(self):
-        # ss's only defaulted key is local_min_limit; init_size/reserve_size are
-        # runtime-defaulted, so they are NOT owned by the schema (stay extras).
+    def test_ss_owns_local_min_limit_and_n_starts(self):
+        # ss's defaulted keys are local_min_limit and the shared n_starts multi-start
+        # field (#498/ADR-0071); init_size/reserve_size are runtime-defaulted, so they
+        # are NOT owned by the schema (stay extras).
         from pybnf.algorithms.optimizers.scatter_search import ScatterSearchConfig
         from pybnf.registry import FIT_TYPE_REGISTRY
         assert FIT_TYPE_REGISTRY['ss'].schema is ScatterSearchConfig
-        assert ScatterSearchConfig.owned_keys() == {'local_min_limit'}
+        assert ScatterSearchConfig.owned_keys() == {'local_min_limit', 'n_starts'}
 
     def test_sim_owns_only_defaulted_simplex_keys(self):
         # Simplex owns the six unconditionally-read simplex_* knobs;

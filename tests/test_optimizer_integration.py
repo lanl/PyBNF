@@ -753,3 +753,127 @@ def test_scatter_search_reserve_is_not_seeded(tmp_path, monkeypatch):
     alg = algorithms.ScatterSearch(conf)
     alg.start_run()
     assert not any(ps['p1'] == 3.0 and ps['p2'] == -4.0 for ps in alg.reserve)
+
+
+# --------------------------------------------------------------------------- #
+# General multi-start (n_starts) for the metaheuristics (#498, ADR-0071)
+# --------------------------------------------------------------------------- #
+# A single metaheuristic run collapses its population into one basin, so on a
+# multimodal objective it returns only a local minimum. n_starts > 1 runs that
+# many independent searches (each a fresh random / Latin-hypercube population),
+# sequentially, keeping the global best -- the fit-type-agnostic generalization of
+# the gradient methods' multi-start (#386). A start-0-identical prefix guarantees a
+# strong invariant: multi-start's best is never worse than a single start's.
+
+_MS_OPTIMIZERS = {
+    'de': algorithms.DifferentialEvolution,
+    'ss': algorithms.ScatterSearch,
+    'pso': algorithms.ParticleSwarm,
+}
+
+# Two-mode mixture trap: a wide, shallow LOCAL mode at [-4, -4] (weight 0.3, NLL peak
+# ~1.20) and a deep, narrow GLOBAL mode off-center at [5, 5] (weight 0.7, NLL peak
+# ~0.36). A single population usually collapses into the wide local basin; multi-start
+# gives independent populations more chances to land in the narrow global well.
+_MS_TRAP_MODES = [(0.3, [-4.0, -4.0], [12.0, 12.0]), (0.7, [5.0, 5.0], [0.3, 0.3])]
+_MS_LOCAL_NLL = 1.204      # -log(0.3)
+_MS_GLOBAL_NLL = 0.357     # -log(0.7)
+
+# Per-method small budgets for the (fast) invariant/mechanics checks -- ss runs
+# population*(population-1) sims per iteration, so it gets a smaller population.
+_MS_FAST = {'de': dict(population_size=8, max_iterations=25, stop_tolerance=1e-6),
+            'ss': dict(population_size=5, max_iterations=10),
+            'pso': dict(population_size=8, max_iterations=25)}
+
+
+def _ms_config(tmp_path, fit_type, n_starts, modes=_MS_TRAP_MODES, **overrides):
+    tgt, exp = H.write_target(tmp_path, H.multimodal_spec(modes))
+    base = dict(n_params=2, var_type='uniform_var', bounds=(-10.0, 10.0),
+                random_seed=1234, n_starts=n_starts)
+    base.update(_MS_FAST[fit_type])
+    base.update(overrides)
+    return H.make_config(tmp_path, fit_type, tgt, exp, **base)
+
+
+@pytest.mark.parametrize('fit_type', list(_MS_OPTIMIZERS))
+def test_multistart_n_starts_one_is_a_single_run(tmp_path, fit_type):
+    """n_starts == 1 (the default) is a single run: exactly one start, names untagged
+    (byte-identical sim folders), and it still recovers a mode."""
+    conf = _ms_config(tmp_path, fit_type, n_starts=1)
+    alg = _MS_OPTIMIZERS[fit_type](conf)
+    H.drive(alg)
+    assert alg._start_index == 0                       # never advanced past start 0
+    assert np.isfinite(alg.trajectory.best_score())
+
+
+@pytest.mark.parametrize('fit_type', list(_MS_OPTIMIZERS))
+def test_multistart_runs_every_start_and_never_worse(tmp_path, fit_type):
+    """n_starts independent starts all run, and multi-start's best is never worse than
+    a single start's -- the guarantee from running start 0 identically then keeping the
+    global best over the extra starts."""
+    (tmp_path / 's').mkdir()
+    single = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path / 's', fit_type, n_starts=1))
+    H.drive(single)
+
+    multi = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path, fit_type, n_starts=4))
+    H.drive(multi)
+    assert multi._start_index == 3                     # all 4 starts ran (0..3)
+    assert multi.trajectory.best_score() <= single.trajectory.best_score() + 1e-9
+
+
+def test_multistart_name_boundary(tmp_path):
+    """The mixin is the sole name translator at the run-loop boundary: start 0 is
+    untagged (single-start folders unchanged), later starts are tagged ``s<k>_`` (unique
+    folders), and the tag is stripped back off before the inner search sees the result --
+    so the inner method only ever handles the clean names it generated."""
+    from pybnf.pset import PSet
+    conf = _ms_config(tmp_path, 'de', n_starts=3)
+    alg = algorithms.DifferentialEvolution(conf)
+    alg._inflight = set()
+
+    alg._start_index = 0
+    p0 = PSet([v.set_value(0.0) for v in alg.variables]); p0.name = 'gen0ind0'
+    (tagged0,) = alg._emit([p0])
+    assert tagged0.name == 'gen0ind0' and 'gen0ind0' in alg._inflight   # start 0 untagged
+
+    alg._start_index = 2; alg._inflight = set()
+    p1 = PSet([v.set_value(0.0) for v in alg.variables]); p1.name = 'gen0ind0'
+    (tagged1,) = alg._emit([p1])
+    assert tagged1.name == 's2_gen0ind0' and 's2_gen0ind0' in alg._inflight
+    res = algorithms.Result(tagged1, {}, tagged1.name)
+    alg._strip_prefix(res)
+    assert res.pset.name == 'gen0ind0'                 # stripped for the inner search
+
+
+# The (config, n_starts) at which each method is trapped single-start but escapes
+# multi-start on the two-mode trap -- a per-method budget (ss is the expensive one, and
+# gets a wider global basin so its small-population search can find it within budget).
+_MS_TRAP_MODES_WIDE = [(0.3, [-4.0, -4.0], [12.0, 12.0]), (0.7, [5.0, 5.0], [0.6, 0.6])]
+_MS_ESCAPE = [
+    ('de',  dict(population_size=12, max_iterations=60, stop_tolerance=1e-5,
+                 random_seed=42), 8),
+    ('ss',  dict(population_size=5, max_iterations=15, random_seed=5,
+                 modes=_MS_TRAP_MODES_WIDE), 6),
+    ('pso', dict(population_size=12, max_iterations=40, random_seed=3), 6),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('fit_type,kwargs,n_starts', _MS_ESCAPE,
+                         ids=[e[0] for e in _MS_ESCAPE])
+def test_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_type, kwargs, n_starts):
+    """The case multi-start exists for. A single run collapses into the wide, shallow
+    LOCAL mode; running n_starts independent searches and keeping the global best escapes
+    to the deep, narrow GLOBAL mode -- a strictly better fit a single run does not reach."""
+    (tmp_path / 'a').mkdir(); (tmp_path / 'b').mkdir()
+    single = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path / 'a', fit_type, n_starts=1, **kwargs))
+    H.drive(single)
+    assert single.trajectory.best_score() > 0.8        # trapped near the local mode (~1.20)
+    assert np.allclose(H.best_params(single, 2), [-4.0, -4.0], atol=0.6)
+
+    multi = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path / 'b', fit_type, n_starts=n_starts, **kwargs))
+    H.drive(multi)
+    assert multi._start_index >= 1                     # at least one extra start ran
+    assert multi.trajectory.best_score() < 0.5         # escaped toward the global mode (~0.36)
+    assert np.allclose(H.best_params(multi, 2), [5.0, 5.0], atol=0.6)
+    assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5

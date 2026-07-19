@@ -6,7 +6,7 @@ inherits its run loop + execution seam; it makes no core.* call of its own.
 
 
 from ..base import Algorithm
-from ...config_schema import PyBNFConfigModel
+from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -21,9 +21,10 @@ import re
 logger = logging.getLogger('pybnf.algorithms')
 
 
-class PSOConfig(PyBNFConfigModel):
+class PSOConfig(MultiStartConfig):
     """Particle-swarm config fields, co-located with the method (ADR-0002,
-    ADR-0006). These defaults previously lived in ``config_schema.GlobalConfig``;
+    ADR-0006), plus the shared ``n_starts`` multi-start field (``MultiStartConfig``,
+    #498). These defaults previously lived in ``config_schema.GlobalConfig``;
     moving them here makes ``pso``'s config knowledge travel with its algorithm
     class. The values are byte-identical to the old global defaults -- the
     int-literal ``adaptive_n_max = 30`` stays an int (pydantic does not validate
@@ -50,7 +51,7 @@ class PSOConfig(PyBNFConfigModel):
 
 @register_fit_type('pso', family='optimizer', display_name='Particle Swarm Optimization',
                    schema=PSOConfig)
-class ParticleSwarm(Algorithm):
+class ParticleSwarm(MultiStartOptimizer, Algorithm):
     """
     Implements particle swarm optimization.
 
@@ -136,6 +137,17 @@ class ParticleSwarm(Algorithm):
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
+        self._reset_search_state()
+
+    def _reset_search_state(self):
+        """Clear all search-specific state (swarm, particle map, per-particle and global
+        bests, the unproductive-iteration counter, the evaluation counter) WITHOUT
+        touching the trajectory -- so multi-start's :meth:`_search_start_run` begins a
+        fresh, independent swarm each start while the trajectory keeps the global best
+        across starts (#498). Shared by ``reset`` (which also clears the trajectory via
+        ``super().reset``) and by each multi-start. The method's own ``global_best`` is a
+        per-start best (it steers the velocity update); the cross-start best lives in the
+        trajectory."""
         self.nv = 0
         self.num_evals = 0
         self.swarm = []
@@ -144,11 +156,15 @@ class ParticleSwarm(Algorithm):
         self.global_best = [None, np.inf]
         self.last_best = np.inf
 
-    def start_run(self):
+    def _search_start_run(self):
         """
         Start the run by initializing n particles at random positions and velocities
         :return:
         """
+        # Reset every search counter first (num_evals / nv / bests / swarm), so a
+        # multi-start restart begins a genuinely fresh swarm rather than resuming at the
+        # previous start's evaluation count.
+        self._reset_search_state()
         print2('Running Particle Swarm Optimization with %i particles for %i total simulations' %
                (self.num_particles, self.max_evals))
 
@@ -173,7 +189,7 @@ class ParticleSwarm(Algorithm):
 
         return [particle[0] for particle in self.swarm]
 
-    def got_result(self, res):
+    def _search_got_result(self, res):
         """
         Updates particle velocity and position after a simulation completes.
 

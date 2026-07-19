@@ -129,9 +129,20 @@ In the island-based version of the algorithm [Penas2015]_, the population is div
 
 Applications
 ^^^^^^^^^^^^
-In our experience, differential evolution tends to be a good general-purpose algorithm. 
+In our experience, differential evolution tends to be a good general-purpose algorithm.
 
-The asynchronous version has similar advantages to `Particle Swarm`_. 
+The asynchronous version has similar advantages to `Particle Swarm`_.
+
+Multi-start for multimodal search
+"""""""""""""""""""""""""""""""""
+A single run collapses its population into one basin, so on a multimodal objective it
+returns only a local minimum. Setting ``n_starts > 1`` runs that many independent
+searches -- each a fresh random / Latin-hypercube population, each to convergence or
+``max_iterations`` -- one after another, and keeps the best fit over all of them. It is
+the general-purpose analog of the gradient optimizers' multi-start, and applies the same
+way to `Scatter Search`_ and `Particle Swarm`_ (``n_starts`` is honored by ``de``,
+``ss``, and ``pso``). ``n_starts = 1`` (the default) is a single run. For ``cmaes`` the
+equivalent knob is its own ``cmaes_restarts`` (IPOP/BIPOP restart).
 
 .. _alg-ss:
 
