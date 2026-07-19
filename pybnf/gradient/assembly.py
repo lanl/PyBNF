@@ -55,6 +55,16 @@ estimated-sigma fit. The free sigma routes to ``NONE`` in #448 (no model column)
 its gradient comes entirely from this normalizer + the sigma-dependence of the data
 fit, never from the sensitivity tensor.
 
+The estimated-scale column generalizes past a single free parameter: ``noise_grad_point`` returns
+the full ``sum_p (dL/dp)*(dp/dtheta)`` vector, where each source supplies ``dp/dtheta``
+(``sigma_sensitivity``). A **prediction-dependent** sigma (``sigma = sigma_abs + sigma_rel*y``, a
+``PredictionFormulaSigma``, ADR-0075/0079) is the one estimated scale whose ``dsigma/dtheta`` is not
+a bare unit vector: the sigma formula's chain rule puts ``dsigma/dcoeff`` on each coefficient's
+column **and** chains ``dsigma/dprediction`` through the SAME ``raw_sens`` forward sensitivity the
+residual rides -- so, unlike a free sigma, it also perturbs the model-parameter columns (still on the
+scalar path -- the retained normalizer is not a square). A single free sigma has ``dsigma/dname = 1``
+and no sim coupling, so its column is byte-identical to the historical scalar one.
+
 Trajectory transforms + normalization (layer F, #453)
 -----------------------------------------------------
 ``_prediction`` may form the scored value from the raw observable through a per-observable
@@ -303,19 +313,19 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
             # estimated noise parameter's own column is handled below on the scalar path.
             dpred_dtheta = objective.prediction_sensitivity(
                 sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
-            # Layer D/G (#451/#454): each estimated free noise parameter contributes
-            # d(loss)/d(param) straight to the scalar gradient (its normalizer is not a square,
-            # so it stays off the residual-Jacobian). Weighted by the full per-point weight,
-            # exactly as ``evaluate`` weights the per-point loss.
-            for pname, dloss_dparam in objective.noise_grad_point(
-                    sim_data, exp_data, sim_row, rownum, col_name).items():
-                if pname not in index:
-                    raise GradientNotSupported(
-                        "Observable '%s' estimates its noise scale as free parameter "
-                        "'%s', but '%s' is not among the gradient's free parameters "
-                        "(%s). An estimated noise scale must be a declared free "
-                        "parameter." % (col_name, pname, pname, ', '.join(index) or '(none)'))
-                noise_gradient[index[pname]] += weight * dloss_dparam
+            # Layer D/G (#451/#454), ADR-0079: the estimated noise scale contributes
+            # d(loss)/d(theta) straight to the scalar gradient (its normalizer is not a square,
+            # so it stays off the residual-Jacobian) as the full n_param vector
+            # ``sum_p (dL/dp) * (dp/dtheta)``. For a single free sigma dp/dtheta is a unit vector,
+            # so this is the historical scalar column on that parameter's coordinate; for a
+            # prediction-dependent sigma (dp/dtheta = the sigma formula's chain rule, ADR-0075)
+            # it also perturbs the model columns through the same forward sensitivity as the
+            # residual. Weighted by the full per-point weight, exactly as ``evaluate`` weights the
+            # per-point loss. ``None`` for a fixed-noise point (no column, path inert).
+            noise_vec = objective.noise_grad_point(
+                sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
+            if noise_vec is not None:
+                noise_gradient += weight * noise_vec
                 inexact = True
             if objective.has_least_squares_residual(col_name):
                 # A family whose data fit is a smooth half-square -- a Gaussian (data_fit =

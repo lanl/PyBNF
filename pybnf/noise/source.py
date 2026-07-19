@@ -74,6 +74,22 @@ class SigmaSource(ABC):
         unused-column error."""
         return None
 
+    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+        """The native-space ``∂σ/∂θ`` (a ``(len(index),)`` vector) of this source's noise
+        parameter at one scored point -- what the objective's noise-gradient seam weights by
+        ``∂(loss)/∂σ`` to build the estimated-scale gradient column (ADR-0079). Only the two
+        gradient-supported *estimated* sources override it: :class:`FreeParameterSigma` (a unit
+        vector) and :class:`PredictionFormulaSigma` (the σ formula's chain rule, coupling the
+        scale to the prediction). Every other source is either fixed (its scale contributes no
+        gradient column) or gated off the gradient path (:class:`FormulaSigma` /
+        :class:`PerMeasurementFormulaSigma`), so the base default refuses -- unreachable once the
+        capability gate (``_require_gradient_supported``) has run, but a pointed guard if it is
+        ever bypassed."""
+        from ..gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "Noise source %s has no differentiable scale sensitivity on the gradient path "
+            "(#385)." % type(self).__name__)
+
 
 class DataColumnSigma(SigmaSource):
     """The noise parameter read per point from an experimental-data column named
@@ -122,6 +138,16 @@ class FreeParameterSigma(SigmaSource):
         # ``owner._pset_values`` is the {name: value} map the objective's
         # evaluate_multiple builds once per evaluation from the pset (ADR-0021).
         return owner._pset_values[self.name]
+
+    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+        """``∂σ/∂θ`` for a free-parameter scale (ADR-0079): the unit vector on this
+        parameter's own column -- σ **is** the parameter (factor 1), with no prediction
+        coupling. Weighted by ``∂(loss)/∂σ`` in the objective's noise-gradient seam, this
+        reproduces the historical scalar noise column byte-for-byte (the column stays a single
+        NONE-routed nuisance)."""
+        grad = np.zeros(len(index))
+        grad[index[self.name]] = 1.0   # the seam has checked ``self.name`` is a gradient free param
+        return grad
 
 
 class ConstantSigma(SigmaSource):
@@ -337,11 +363,16 @@ class PredictionFormulaSigma(SigmaSource):
     check runs after classification). Lazy-compiled and not pickled (the same
     compile-once-per-worker pattern as :class:`FormulaSigma`).
 
-    **Gradient boundary (ADR-0075).** A prediction-dependent σ makes the per-point loss
-    depend on the prediction through the scale as well as the residual, which the #385
-    residual/Fisher assembly does not model; a fit that reaches the gradient path with such a
-    source raises :class:`~pybnf.gradient.errors.GradientNotSupported` (the score path is
-    unaffected -- every optimizer/sampler that evaluates the objective directly works)."""
+    **Gradient (ADR-0079, lifting the ADR-0075 deferral).** A prediction-dependent σ makes the
+    per-point loss depend on the prediction through the scale *as well as* the residual, so
+    ``∂(loss)/∂θ`` gains a ``∂(loss)/∂σ · ∂σ/∂θ`` term riding the same ``∂prediction/∂θ`` forward
+    sensitivity as the residual. :meth:`sigma_sensitivity` supplies ``∂σ/∂θ`` (the σ formula's
+    chain rule) and the #385 assembly threads it into the **scalar** gradient column, so an
+    L-BFGS / trust-region fit differentiates the combined error model (the fit is not
+    ``least_squares_exact`` -- the σ-through-prediction term is not a square). The **EFIM Fisher**
+    block (``fit_type = gntr``) is still deferred -- a prediction-dependent σ couples the scale to
+    the location, so the noise block is no longer diagonal -- and refuses cleanly (a ``gntr`` fit
+    falls back to ``lbfgs``; the score path is unaffected either way)."""
 
     estimated = True
 
@@ -356,10 +387,12 @@ class PredictionFormulaSigma(SigmaSource):
         #: simulated-trajectory columns. ``None`` until classified.
         self.param_names = set(param_names) if param_names is not None else None
         self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+        self._dfunc = None  # {symbol: ∂formula/∂symbol} lambdify callables; not pickled (#385/ADR-0079)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_func'] = None
+        state['_dfunc'] = None  # the partials are lambdify callables too; recompile worker-side
         return state
 
     def set_param_names(self, param_names):
@@ -380,6 +413,17 @@ class PredictionFormulaSigma(SigmaSource):
             self._func, self.names = func, names
         return self._func, self.names
 
+    def _derivative_callables(self):
+        """The partials ``{symbol: ∂σ/∂symbol}`` sharing :meth:`_callable`'s argument order, for
+        the gradient path (#385/ADR-0079). Lazy + not pickled, the same compile-once-per-worker
+        pattern as the value callable (the noise-side peer of
+        :meth:`~pybnf.measurement.base.MeasurementModel._compile_derivatives`)."""
+        if self._dfunc is None:
+            from ..petab.formula import compile_petab_formula_derivatives
+            derivs, names = compile_petab_formula_derivatives(self.formula, self._ensure_names())
+            self._dfunc, self.names = derivs, names
+        return self._dfunc, self.names
+
     def required_free_params(self):
         # Only the model-namespace classification (set_param_names) knows which symbols are
         # free parameters vs simulated columns; before it runs this is empty, so the load-time
@@ -392,6 +436,50 @@ class PredictionFormulaSigma(SigmaSource):
                 else self._sim_value(sim_data, sim_row, n, col_name)
                 for n in names]
         return float(func(*args))
+
+    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+        """``∂σ/∂θ`` for a prediction-dependent σ (ADR-0079) -- a ``(len(index),)`` native-space
+        vector, the noise-side peer of
+        :meth:`~pybnf.measurement.base.MeasurementModel.prediction_sensitivity` (ADR-0036). By the
+        chain rule ``∂σ/∂θ = Σ_symbol (∂σ/∂symbol)·(∂symbol/∂θ)``, resolving each symbol exactly as
+        :meth:`value` does (a symbol in ``owner._pset_values`` is a coefficient, else a simulated
+        column):
+
+        * a **coefficient** (a declared free parameter -- the ``σ_abs`` / ``σ_rel`` the σ is affine
+          in): ``∂σ/∂coeff`` lands straight on that parameter's own column -- the term the existing
+          free-scale noise column generalizes (``∂σ/∂coeff = 1`` for a bare free sigma);
+        * a **simulated-column** symbol (a model entity the σ scales with -- the predicted
+          trajectory): ``∂σ/∂col`` chains through that column's forward sensitivity
+          ``raw_sens(col, sim_row)`` -- the **same** ``∂prediction/∂θ`` the residual rides, so the
+          σ-through-prediction coupling perturbs the model-parameter columns (and forces the fit off
+          ``least_squares_exact``).
+
+        The objective's noise-gradient seam weights this vector by ``∂(loss)/∂σ``
+        (``family.d_nll_d_noise_params['sigma'] = (1-rho²)/σ``); the per-point weight is applied by
+        the assembly, mirroring :meth:`~pybnf.objective.LikelihoodObjective.residual_point`. A σ that
+        scales only with the scored observable collapses the column term to
+        ``(∂σ/∂obs)·raw_sens(obs)``, but the general ``raw_sens`` form differentiates a σ scaling
+        with any emitted trajectory (a species/observable/function with a forward-sensitivity
+        column)."""
+        derivs, names = self._derivative_callables()
+        args, contribs = [], []   # contribs[k] = (kind, payload) parallel to names[k]
+        for name in names:
+            if name in owner._pset_values:
+                args.append(float(owner._pset_values[name]))
+                contribs.append(('param', name))
+            else:
+                args.append(self._sim_value(sim_data, sim_row, name, col_name))
+                contribs.append(('column', name))
+        grad = np.zeros(len(index))
+        for name, (kind, payload) in zip(names, contribs):
+            partial = float(derivs[name](*args))
+            if partial == 0.0:
+                continue
+            if kind == 'column':
+                grad = grad + partial * raw_sens(payload, sim_row)
+            elif payload in index:
+                grad[index[payload]] += partial
+        return grad
 
     @staticmethod
     def _sim_value(sim_data, sim_row, name, col_name):

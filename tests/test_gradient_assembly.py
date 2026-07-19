@@ -35,7 +35,7 @@ from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
 from pybnf.noise import (
     ConstantSigma, DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, Laplace,
-    LN, LOG10, MEAN, MEDIAN, NegBinomial, StudentT,
+    LN, LOG10, MEAN, MEDIAN, NegBinomial, PredictionFormulaSigma, StudentT,
 )
 from scipy.special import digamma
 from pybnf.measurement.base import MeasurementLayer, MeasurementModel, PerMeasurementModel
@@ -671,6 +671,162 @@ def test_capability_gate_now_accepts_measurement_layer():
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
     assert np.all(np.isfinite(res.gradient))
+
+
+# ============ prediction-dependent noise scale (ADR-0075 gradient, ADR-0079) ===
+# sigma = sigma_abs + sigma_rel*prediction (the combined additive+proportional error model): the
+# scale depends on the prediction, so d(loss)/d(theta) gains a d(loss)/d(sigma)*d(sigma)/d(theta)
+# term riding the SAME forward sensitivity as the residual (term C) plus the coefficient columns
+# (term B). The FD-over-the-full-loss test is the arbiter; the closed-form test pins each term.
+
+def _prediction_sigma_objective(formula='sd_abs + sd_rel*Stot', param_names=('sd_abs', 'sd_rel')):
+    """An edition-2 likelihood whose Gaussian noise scale is a **prediction-dependent** formula
+    (ADR-0075, the ``sigma = prediction_formula <expr>`` surface) -- σ = σ_abs + σ_rel·Stot, the
+    classic combined additive+proportional error model where the proportional term is the
+    observable's *simulated* value. The coefficients (``sd_abs`` / ``sd_rel``) are declared free
+    parameters; ``Stot`` is the simulated column the σ scales with."""
+    return LikelihoodObjective(
+        noise=Gaussian(),
+        sigma_sources={'sigma': PredictionFormulaSigma(formula, param_names=set(param_names))})
+
+
+def _prediction_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1,
+                            pred=(100., 74., 55., 41.), obs=(100., 70., 60., 40.),
+                            dk=(0., -74., -110., -123.)):
+    """Shared fixture for the prediction-σ tests: the objective, one experiment (sim carrying the
+    hand-built ``d Stot/d k`` tensor + exp with no ``_SD`` column, an estimated scale), the routing
+    (``k`` -> the parameter axis, ``sd_abs``/``sd_rel`` -> NONE nuisances), and the free list."""
+    pred, obs, dk = np.array(pred), np.array(obs), np.array(dk)
+    obj = _prediction_sigma_objective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, k),
+                 ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
+                 ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel))
+    return obj, sim, exp, routing, free, (pred, obs, dk)
+
+
+def test_prediction_sigma_gate_now_accepts():
+    """The gradient gate, once refusing every composite estimated scale, now admits a
+    prediction-dependent σ (ADR-0079): the assembly returns a finite gradient (no
+    ``GradientNotSupported``), and -- because the σ-through-prediction term is not a square -- the
+    fit is not ``least_squares_exact`` (so #386 consumes the scalar gradient, L-BFGS)."""
+    obj, sim, exp, routing, free, _ = _prediction_sigma_setup()
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert np.all(np.isfinite(res.gradient))
+    assert res.least_squares_exact is False
+
+
+def test_prediction_sigma_closed_form_terms():
+    """The assembled gradient of ``sigma = sd_abs + sd_rel*Stot`` equals the hand-derived
+    three-term split (ADR-0079). Per point ``sigma_i = sd_abs + sd_rel*pred_i``,
+    ``rho_i = (pred_i-obs_i)/sigma_i``, ``dL/dsigma_i = (1-rho_i^2)/sigma_i``:
+
+    * (A) residual-through-prediction: ``J^T rho`` with ``J_k = dk/sigma`` -- the residual column;
+    * (B) scale-through-coefficients: ``sd_abs`` column ``sum dL/dsigma`` (∂σ/∂sd_abs=1),
+      ``sd_rel`` column ``sum dL/dsigma * pred`` (∂σ/∂sd_rel=pred);
+    * (C) scale-through-prediction: the ``k`` column gains ``sum dL/dsigma * sd_rel * dk``
+      **beyond** term (A), riding the same ``dk`` as the residual.
+
+    The residual-Jacobian carries only term (A) (the σ columns are scalar-path only), and the
+    non-negligible term (C) is what a dropped-(C) bug (σ treated prediction-independent) would
+    miss on the ``k`` column while still matching a σ-only check."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _prediction_sigma_setup()
+    sd_abs, sd_rel = 5.0, 0.1
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    sigma = sd_abs + sd_rel * pred
+    rho = (pred - obs) / sigma
+    dL_dsigma = (1.0 - rho ** 2) / sigma
+    # Residual + Jacobian carry term (A) only; the σ columns of the Jacobian are zero.
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian[:, 0], dk / sigma)
+    np.testing.assert_allclose(res.jacobian[:, 1], 0.0)
+    np.testing.assert_allclose(res.jacobian[:, 2], 0.0)
+    # Scalar gradient: k = (A) J^T rho + (C); sd_abs / sd_rel = (B).
+    term_A_k = np.sum((dk / sigma) * rho)
+    term_C_k = np.sum(dL_dsigma * sd_rel * dk)
+    np.testing.assert_allclose(res.gradient[0], term_A_k + term_C_k)
+    np.testing.assert_allclose(res.gradient[1], np.sum(dL_dsigma * 1.0))
+    np.testing.assert_allclose(res.gradient[2], np.sum(dL_dsigma * pred))
+    assert res.least_squares_exact is False
+    # Guard: term (C) is non-negligible, so dropping it would fail the FD on the k column.
+    assert abs(term_C_k) > 0.1 * abs(term_A_k)
+
+
+def test_prediction_sigma_matches_finite_difference():
+    """The arbiter: central-difference PyBNF's OWN loss (σ recomputed each perturbation from the
+    source) vs the assembled ``gradient`` for every free parameter (``k`` / ``sd_abs`` / ``sd_rel``),
+    on a LINEAR forward model ``pred(k) = pred0 + dk*(k-k0)`` so the hand tensor is exact
+    (ADR-0079). ``uniform_var`` for every parameter -> the native->sampling factor is 1. The FD over
+    the FULL loss is what catches a dropped-(C) bug: term (C) rides ``dk``, so treating σ as
+    prediction-independent would mismatch the ``k`` column."""
+    obj, sim, exp, routing, free, (pred0, obs, dk) = _prediction_sigma_setup()
+    names = [p.name for p in free]
+    k0 = free[0].value
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        pred = pred0 + dk * (theta['k'] - k0)              # exact linear forward model
+        sim_t = _sim_with_sensitivities(pred, d_param=dk)
+        obj._pset_values = theta                            # σ reads its coefficients here
+        return obj.evaluate(sim_t, exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
+
+
+def test_prediction_sigma_referencing_other_species_chains_that_sensitivity():
+    """The general case: a σ scaling with a model column **other** than the scored observable rides
+    *that* column's forward sensitivity, not the residual's (ADR-0079). Here σ = sd_abs + sd_rel*Aux
+    scales the scored observable ``Stot`` by a second emitted species ``Aux``; the σ-through-
+    prediction term (C) chains ``sd_rel * d(Aux)/d k``, while the residual term (A) still rides
+    ``d(Stot)/d k`` -- distinct sensitivities on the same ``k`` column."""
+    times = np.array([0., 1., 2., 3.])
+    stot = np.array([100., 74., 55., 41.]); dstot = np.array([0., -74., -110., -123.])
+    aux = np.array([10., 22., 31., 38.]); daux = np.array([0., 12., 9., 7.])
+    obs = np.array([100., 70., 60., 40.])
+    sd_abs, sd_rel = 5.0, 0.2
+
+    obj = _prediction_sigma_objective('sd_abs + sd_rel*Aux', ('sd_abs', 'sd_rel'))
+    sim = Data.from_columns(np.column_stack([times, stot, aux]), ['time', 'Stot', 'Aux'])
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:Stot', 'observable:Aux'], param_names=['k'], ic_species=[],
+        d_param=np.stack([dstot, daux], axis=1).reshape(4, 2, 1), d_ic=None)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
+                 ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    sigma = sd_abs + sd_rel * aux
+    rho = (stot - obs) / sigma
+    dL_dsigma = (1.0 - rho ** 2) / sigma
+    term_A_k = np.sum((dstot / sigma) * rho)          # residual rides d(Stot)/dk
+    term_C_k = np.sum(dL_dsigma * sd_rel * daux)      # scale rides d(Aux)/dk
+    np.testing.assert_allclose(res.gradient[0], term_A_k + term_C_k)
+    np.testing.assert_allclose(res.gradient[2], np.sum(dL_dsigma * aux))  # sd_rel column: ∂σ/∂sd_rel=Aux
+
+
+def test_prediction_sigma_efim_fisher_is_refused():
+    """The EFIM / expected-Fisher path (``fit_type = gntr``) is a separate, deferred sub-layer for a
+    prediction-dependent σ: the scale couples to the location, so the noise block is no longer
+    diagonal. ``assemble_fisher_hessian`` raises ``GradientNotSupported`` (the fit falls back to
+    ``lbfgs``, whose scalar gradient the test above verifies)."""
+    obj, sim, exp, routing, free, _ = _prediction_sigma_setup()
+    with pytest.raises(GradientNotSupported):
+        assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
 
 
 def test_normalization_peak_closed_form():
@@ -1806,6 +1962,50 @@ def test_fd_acceptance_gate_per_measurement():
         obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
 
     assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_prediction_sigma():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay net
+    with a **prediction-dependent** noise scale ``sigma = sd_abs + sd_rel*Stot`` (ADR-0075 gradient,
+    ADR-0079) -- the real-simulator acceptance gate for the combined additive+proportional error
+    model. Four free params: ``k`` (parameter axis) + ``S0`` (initial-condition axis) drive ``Stot``,
+    and ``sd_abs`` / ``sd_rel`` are the estimated NONE-routed noise coefficients. The σ-through-
+    prediction term (C) rides the SAME ``d Stot/d k`` **and** ``d Stot/d S0`` the residual does, so
+    the FD -- which recomputes σ from the source at every perturbation -- must agree on the model
+    axes too, not just the coefficient columns. Not ``least_squares_exact`` (an estimated composite
+    scale), so the scalar gradient is what matches."""
+    obj = _prediction_sigma_objective()
+    sd_abs, sd_rel = 6.0, 0.08
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('sd_abs', 'uniform_var', 0.01, 100.0, value=sd_abs),
+            FreeParameter('sd_rel', 'uniform_var', 0.001, 2.0, value=sd_rel)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the prediction σ reads its coefficients here (ADR-0075)
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
 
 

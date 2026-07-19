@@ -160,7 +160,7 @@ def strip_actions_block(model_bngl, dest):
 
 def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_name,
                        fit_type, *, objective='sos', condition=None, preequilibrate=None,
-                       observables=None, **overrides):
+                       observables=None, noise_models=None, **overrides):
     """Build a real bngsim ``Configuration`` for a recovery fit on the NEW-ERA
     ``experiment:`` / ``data:`` surface (ADR-0028, ``edition >= 2``).
 
@@ -181,6 +181,10 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
         formula: <expr>`` measurement-model lines (ADR-0036), the post-simulation
         observation layer an SBML/Antimony model needs to score a derived column (a
         ``observableFormula`` over species; needs the ``petab`` math extra).
+    :param noise_models: optional ``{obs_id: spec}`` -- emits ``noise_model <obs_id> =
+        <spec>`` per-observable noise directives (ADR-0021/0075), e.g.
+        ``{'Stot': 'gaussian, sigma = prediction_formula sd_abs + sd_rel*Stot'}`` for a
+        prediction-dependent (combined additive+proportional) scale.
     """
     scalars = {
         'edition': 2, 'job_type': fit_type, 'objective': objective,
@@ -194,6 +198,8 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
     lines += [f'{vt} = {name} {lo} {hi}' for name, (vt, lo, hi) in free_specs.items()]
     for obs_id, formula in (observables or {}).items():
         lines.append(f'observable: {obs_id}, formula: {formula}')
+    for obs_id, spec in (noise_models or {}).items():
+        lines.append(f'noise_model {obs_id} = {spec}')
     if condition is not None:
         lines.append(f'condition: {condition[0]}, perturbations: {condition[1]}')
     if preequilibrate is not None:

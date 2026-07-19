@@ -50,8 +50,10 @@ Three optimizers consume the gradient, all opt-in via ``fit_type``:
 
 * ``fit_type = lbfgs`` — a bounded limited-memory quasi-Newton optimizer (**L-BFGS-B**,
   Byrd–Lu–Nocedal–Zhu). It consumes the **scalar** gradient, so it handles precisely the objectives
-  ``trf`` refuses: an estimated noise scale, the Laplace / count families, and active constraint
-  penalties.
+  ``trf`` refuses: an estimated noise scale — including a **prediction-dependent** scale
+  (``sigma = prediction_formula …``, the combined additive+proportional error model, whose scale
+  rides the same forward sensitivity as the residual) — the Laplace / count families, and active
+  constraint penalties.
 
 * ``fit_type = gntr`` — a **general-objective Fisher/Gauss-Newton trust-region** optimizer. It gives
   ``trf``'s trust-region step quality — the well-conditioned :math:`J^{\mathsf T}J`-style curvature —
@@ -66,8 +68,9 @@ Three optimizers consume the gradient, all opt-in via ``fit_type``:
   This cut supports an estimated-σ Gaussian (``chi_sq_dynamic``), a fixed-scale Laplace, a
   fixed-dispersion negative-binomial (mean-centered), and a Gaussian fit with static-hinge
   constraints; a coupled corner it cannot yet build the Fisher Hessian for (a mean-on-log-scale
-  estimated scale, a free-dispersion / median count family, an estimated Student-t df, or an
-  estimated constraint scale) is refused with a pointer to ``lbfgs``, which fits it.
+  estimated scale, a **prediction-dependent** scale — whose scale couples to the location, so the
+  noise block is not diagonal — a free-dispersion / median count family, an estimated Student-t df,
+  or an estimated constraint scale) is refused with a pointer to ``lbfgs``, which fits it.
 
 All three run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
 scheduler job) rather than through a blocking ``scipy`` driver, so backup/resume work exactly as for

@@ -411,6 +411,43 @@ def test_lbfgs_fits_estimated_noise_scale_that_trf_refuses(tmp_path, monkeypatch
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_fits_prediction_dependent_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """The combined additive+proportional error model end-to-end (ADR-0075 gradient, ADR-0079).
+    The noise scale ``sigma = sd_abs + sd_rel*Stot`` **depends on the prediction**, so d(loss)/dθ
+    gains a d(loss)/dσ·dσ/dθ term riding the same forward sensitivity as the residual. Like an
+    estimated free sigma, the retained ``+log σ`` normalizer is not a square, so
+    ``least_squares_exact`` is ``False`` and TRF refuses -- but L-BFGS consumes the scalar gradient
+    the #385 assembly now threads the σ-formula chain rule into, so the fit runs (the path TRF
+    refuses) and recovers ``k`` / ``S0``. With zero-noise data the σ coefficients pin at their lower
+    bounds (where the σ-through-prediction pull vanishes) and the residual drives ``k`` / ``S0`` to
+    truth."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    # No _SD column: sigma is a prediction-dependent formula over free coefficients, not data.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sd_abs': ('uniform_var', 0.1, 50.0), 'sd_rel': ('uniform_var', 1e-3, 2.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=300,
+        noise_models={'Stot': 'gaussian, sigma = prediction_formula sd_abs + sd_rel*Stot'})
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)   # must NOT raise -- a prediction-dependent estimated scale, which TRF refuses
+
+    assert np.isfinite(alg.trajectory.best_score())
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.05, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
 def test_lbfgs_is_picklable_across_a_run(tmp_path, monkeypatch):
     """``Algorithm.backup`` pickles the optimizer mid-run, so the L-BFGS state machine
     must round-trip both before and after a run -- all state is plain numpy/float/list

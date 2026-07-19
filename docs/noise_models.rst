@@ -186,10 +186,16 @@ data (a fixed quantity), and from ``formula``, whose expression sees only the fr
 parameters. ``prediction_formula`` is the only source that reads the simulation, and
 it is what PEtab's affine ``noiseFormula`` (e.g. Raia_CancerResearch2011) imports as.
 
-The families that read a prediction-dependent scale on the **gradient** path are a
-later addition; today such a source is scored (every optimizer and sampler that
-evaluates the objective directly works) but a gradient/EFIM fit raises rather than
-silently dropping the scale's dependence on the prediction.
+A prediction-dependent scale is differentiable on the **scalar gradient** path: an
+L-BFGS fit (``job_type = lbfgs``) threads the scale formula's chain rule — the scale's
+dependence on the prediction rides the same forward sensitivity as the residual —
+through the gradient, so it optimizes the combined additive+proportional error model
+directly. Because the retained ``+log σ`` normalizer is not a sum of squares, the fit
+is not least-squares-exact, so the trust-region path (``job_type = trf``) refuses and
+points at ``lbfgs``, and the **EFIM Fisher** path (``job_type = gntr``) likewise refuses
+(the scale couples to the location, so the noise block is not diagonal) — a later
+addition. Every gradient-free optimizer and sampler that evaluates the objective
+directly is unaffected.
 
 The cumulative prediction transform
 ------------------------------------

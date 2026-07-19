@@ -93,10 +93,14 @@ new-era job may author `sigma = prediction_formula <expr>` directly.
 
 **Gradient boundary (the one deferral).** A prediction-dependent σ makes the per-point loss depend
 on the prediction through the scale as well as the residual, which the #385 residual/Fisher
-assembly does not model. It falls under the existing gradient gate (`estimated and not
-FreeParameterSigma → GradientNotSupported`), so a gradient/EFIM fit raises cleanly and a
-gradient-free optimizer/sampler is unaffected — the score path is complete. The full chain-rule
-column is a later sub-layer, exactly as `FormulaSigma` / `PerMeasurementFormulaSigma`'s are.
+assembly did not model. It fell under the existing gradient gate (`estimated and not
+FreeParameterSigma → GradientNotSupported`), so at this ADR a gradient/EFIM fit raised cleanly and a
+gradient-free optimizer/sampler was unaffected — the score path is complete. **The scalar-gradient
+column has since landed (ADR-0079):** `sigma_sensitivity` supplies `∂σ/∂θ` (the σ-formula chain
+rule) and the #385 assembly threads it into the scalar (L-BFGS) gradient, so `fit_type = lbfgs`
+differentiates it (the fit is not `least_squares_exact`, so `trf` refuses and points at `lbfgs`).
+The **EFIM Fisher** block (`fit_type = gntr`) stays deferred — a prediction-dependent σ couples the
+scale to the location, so the noise block is no longer diagonal — and refuses cleanly.
 
 ## Scope
 
@@ -113,8 +117,10 @@ prediction fixture's σ differs by row *because the prediction does*, so a σ-at
 
 **Out (boundary raised in code / deferred, each pointing here):**
 
-- The **gradient/EFIM** column for a `PredictionFormulaSigma` (`GradientNotSupported`, the existing
-  composite-estimated-source gate) — a later #385 sub-layer.
+- The **gradient/EFIM** column for a `PredictionFormulaSigma` — deferred here under the existing
+  composite-estimated-source gate; the **scalar-gradient** half has since landed (ADR-0079, the
+  σ-formula chain rule on the L-BFGS path), the **EFIM Fisher** half remaining deferred (the
+  Fisher seams refuse it → `fit_type = lbfgs`).
 - **Export** of the new shapes back to a PEtab `noiseParameters` / `noiseFormula` — the export
   round trip for a multi-token / prediction-dependent noise (the `measurement_rows_from_data`
   sidecar path emits one noise placeholder per column; a prediction σ has no exporter arm yet). The
@@ -132,7 +138,8 @@ prediction fixture's σ differs by row *because the prediction does*, so a σ-at
   PSet-coefficient-or-sim-column symbol resolution); the `value(owner, sim_data, sim_row,
   exp_data, exp_row, col_name)` signature on `SigmaSource` and every source.
 - `pybnf/objective.py` — `_noise_values` threads `(sim_data, sim_row)`; `_build_sigma_source`'s
-  `prediction_formula` verb → `PredictionFormulaSigma`; the gradient gate already covers it.
+  `prediction_formula` verb → `PredictionFormulaSigma`; the gradient gate deferred it here (now
+  differentiated on the scalar path, ADR-0079).
 - `pybnf/parse.py` — the `noise_model … = prediction_formula <expr>` grammar (`nm_prediction_formula_field`).
 - `pybnf/config.py` — `_load_prediction_noise` classifies each source's symbols against the model
   namespace, sets its free-parameter subset, and validates it (a no-op when none declared).
@@ -149,8 +156,9 @@ prediction fixture's σ differs by row *because the prediction does*, so a σ-at
 
 - The per-measurement placeholder frontier (ADR-0033/0035/0036/0037/0044/0045) is **fully cleared
   on the noise side**: fixed, estimated, multi-parameter (affine / product), row-varying, and
-  prediction-dependent noise all import and fit; the only remaining deferral is the *export* round
-  trip for the two new shapes and the gradient column for a prediction σ.
+  prediction-dependent noise all import and fit. The two deferrals named here have since been
+  cleared: the *export* round trip for the two new shapes (ADR-0078) and the *scalar gradient* for a
+  prediction σ (ADR-0079); only the prediction σ's **EFIM Fisher** block remains deferred.
 - `PredictionFormulaSigma` is a **permanent native capability**, not a PEtab-import artifact: any
   new-era job can declare a combined additive+proportional error model with `noise_model <obs> =
   gaussian, sigma = prediction_formula <σ_abs> + <σ_rel> * <observable>` — the honest

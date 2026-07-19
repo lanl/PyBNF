@@ -73,8 +73,9 @@ formulas classify by substitution regardless). New-era only (PEtab interop is ne
 
 **Out (unchanged boundaries, each pointing here or at ADR-0075):**
 
-- The **gradient/EFIM** column for a `PredictionFormulaSigma` (`GradientNotSupported`) — a later
-  #385 sub-layer, still deferred (issue #502 item 2). Export is orthogonal to the gradient path.
+- The **gradient/EFIM** column for a `PredictionFormulaSigma` (issue #502 item 2) — the *scalar
+  gradient* half has since landed (ADR-0079, the σ-formula chain rule on the L-BFGS path), the
+  *EFIM Fisher* half remaining deferred. Export is orthogonal to the gradient path either way.
 - A **`relative`** sigma export (a noiseFormula expression over the measurement) — the unchanged
   ADR-0023/0031 boundary.
 - A **`lognormal`** / natural-log family, a `mean`-centered location, `neg_bin` — unchanged
