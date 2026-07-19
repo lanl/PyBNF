@@ -74,7 +74,7 @@ placeholders. (One-sided truncation now maps to a half-bounded box -- ADR-0047, 
 
 import math
 import re
-from collections import namedtuple
+from collections import Counter, namedtuple
 from pathlib import Path
 
 import numpy as np
@@ -507,6 +507,33 @@ def _model_namespace(model_text, language):
     return namespace, entity_names, {}
 
 
+def _shared_bare_entities(observable_rows, namespace, assignment_rules, row_varying_obs_params):
+    """Model entities named as a bare ``observableFormula`` by more than one observable (#503).
+
+    A bare-name observable (no observableParameters placeholder, formula an identifier in the
+    model namespace) otherwise maps its ``observableId`` straight to that model column
+    (:func:`_observable_id_to_column`); two such observables measuring one entity in different
+    experiments would then emit colliding ``noise_model <column>`` overrides that ``parse.ploop``
+    rejects. Returns the set of entity names shared by >1 bare-name observable; each such
+    observable is materialized to its own ``observableId`` column via an identity measurement
+    model instead (ADR-0077), so the data columns and per-observable noise key by the distinct
+    ``observableId``. The assignment-rule inlining mirrors the main pass (#493) so a rule-variable
+    formula (an expression, never bare) is correctly excluded, and a placeholder-bearing or
+    row-varying formula (also never bare) is skipped."""
+    counts = Counter()
+    for row in observable_rows:
+        raw = (row.observable_formula or '').strip()
+        if assignment_rules:
+            from .formula import inline_assignment_rules
+            raw = inline_assignment_rules(
+                raw, assignment_rules, observable_id=row.observable_id)
+        if _PLACEHOLDER.search(raw) or row.observable_id in row_varying_obs_params:
+            continue
+        if _IDENTIFIER.match(raw) and raw in namespace:
+            counts[raw] += 1
+    return {entity for entity, n in counts.items() if n > 1}
+
+
 def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params,
                              obs_params, free_names, row_varying_obs_params=(),
                              assignment_rules=None):
@@ -519,7 +546,12 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     * A **bare model-entity name** ``observableFormula`` (the common case, ADR-0025) maps its
       ``observableId`` to that name -- PyBNF matches the ``.exp`` column to the model
       observable/function/species by name and the backend already produces it, so no
-      translator runs and the path stays dependency-free.
+      translator runs and the path stays dependency-free. **Exception (ADR-0077):** when >1
+      bare-name observable names the *same* model entity (Bertozzi's ``y_I_NY``/``y_I_CA`` both
+      on ``I_``), each is instead **materialized** to its own ``observableId`` column via an
+      identity measurement model ``(observableId, entity)`` -- otherwise their per-observable
+      ``noise_model`` overrides would both key by the one shared column and collide (#503). The
+      uniquely-targeted case is unchanged (byte-identical bare-name path).
     * An **expression** ``observableFormula`` becomes a *measurement model* ``(id, formula)``
       -- a PEtab math expression evaluated post-simulation by the observation layer (ADR-0036).
       A fixed PEtab parameter the formula references but the model file lacks (Boehm's
@@ -564,6 +596,11 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     taken = set(entity_names)
     mapping = {}
     measurement_models = []
+    # A model entity named by >1 bare-name observable is materialized to per-observableId
+    # columns below so their per-observable noise_model overrides key by distinct ids, not the
+    # one shared column (#503, ADR-0077). A uniquely-targeted entity keeps the bare-name path.
+    shared_entities = _shared_bare_entities(
+        observable_rows, namespace, assignment_rules, row_varying_obs_params)
     for row in observable_rows:
         raw = (row.observable_formula or '').strip()
         # Inline any SBML assignment-rule variable the formula names down to the species /
@@ -609,8 +646,14 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
                     f"must name a model observable/function/species the backend outputs; an "
                     f"unknown name is an error (ADR-0036).",
                     f"Model namespace: {sorted(namespace)}.")
-            mapping[row.observable_id] = formula          # bare-name path (no translator)
-            continue
+            if formula not in shared_entities:
+                mapping[row.observable_id] = formula      # unique bare-name path (no translator)
+                continue
+            # A model entity shared by >1 bare-name observable (#503, ADR-0077): fall through to
+            # materialize an identity measurement model (observableId -> the entity) so this
+            # observable owns its own obsId column and its per-observable noise keys by obsId,
+            # not the shared entity. `formula` is the bare entity name, which validates trivially
+            # against the namespace and inlines to itself in the measurement-model branch below.
         # Expression (or substituted) -> a measurement model. Inline any fixed parameter-table
         # constant the model file lacks, then validate the remaining symbols against the
         # namespace u free parameters now (fail fast; requires the petab extra). The conf carries

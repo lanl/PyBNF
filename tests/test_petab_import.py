@@ -340,14 +340,15 @@ end model
 """
 
 
-@pytest.mark.xfail(strict=True, reason="#503: two observables on one model column emit "
-                                       "colliding noise_model lines (import_.py "
-                                       "_per_observable_directives keys noise by column)")
 def test_shared_column_observables_with_per_observable_noise_import_and_parse(tmp_path):
     """Two observables measuring the same model output `z` in different experiments, each with
     its own estimated sigma, must import into a *parseable* conf with two distinct noise
-    sources. Simulator-free (import reads the BNGL text with stdlib scanners; the failure is at
-    parse.ploop, so no model load / BNG is needed). Mirrors dev/petab-503-repro/make_and_repro.py."""
+    sources. Regression for #503 (ADR-0077): each shared-column observable is materialized to
+    its own observableId column via an identity measurement model, so the per-observable
+    `noise_model` overrides key by the distinct observableId instead of colliding on the one
+    shared model column. Simulator-free (import reads the BNGL text with stdlib scanners; the
+    failure was at parse.ploop, so no model load / BNG is needed).
+    Mirrors dev/petab-503-repro/make_and_repro.py."""
     (tmp_path / 'm.bngl').write_text(_SHARED_COL_MODEL)
     (tmp_path / 'observables.tsv').write_text(
         'observableId\tobservableFormula\tnoiseFormula\tnoisePlaceholders\n'
@@ -380,8 +381,72 @@ def test_shared_column_observables_with_per_observable_noise_import_and_parse(tm
     out = tmp_path / 'imported'
     import_job(tmp_path / 'problem.yaml', out, job_type='de')
     conf = (out / 'imported.conf').read_text()
-    ploop(conf.splitlines(keepends=True))          # currently raises: noise_model 'z' twice
+    ploop(conf.splitlines(keepends=True))          # no longer raises: noise keys by obsId
     assert 'sd_a' in conf and 'sd_b' in conf       # both per-observable sigmas survive, distinct
+    lines = conf.splitlines()
+    # Each shared-column observable is materialized to its own obsId column via an identity
+    # measurement model, so the noise overrides key by obsId (obs_a/obs_b), never the shared `z`.
+    assert 'observable: obs_a, formula: z' in lines
+    assert 'observable: obs_b, formula: z' in lines
+    assert 'noise_model obs_a = gaussian, sigma = fit sd_a' in lines
+    assert 'noise_model obs_b = gaussian, sigma = fit sd_b' in lines
+    assert not any(line.startswith('noise_model z ') for line in lines)
+
+
+class TestImportSharedColumnObservablesRoundTrip:
+    """The materialized shared-column form (#503, ADR-0077) survives a byte round trip.
+
+    A PyBNF job with two observables measuring one model output ``z`` -- each its own identity
+    measurement model with its own estimated sigma -- exports to two ``observables.tsv`` rows
+    (both ``observableFormula = z``), and ``export -> import -> re-export`` reproduces the PEtab
+    problem byte-for-byte: the importer re-detects the shared entity and re-materializes the two
+    per-observableId columns, closing the loop the sibling standalone test opens (import + parse)."""
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        conf = (
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: shared.bngl\n'
+            'observable: obs_a, formula: z\n'
+            'observable: obs_b, formula: z\n'
+            'noise_model obs_a = gaussian, sigma = fit sd_a\n'
+            'noise_model obs_b = gaussian, sigma = fit sd_b\n'
+            'experiment: ea, data: ea.exp\n'
+            'experiment: eb, data: eb.exp\n'
+            'uniform_var = kdeg 0.01 10\n'
+            'uniform_var = sd_a 0.1 100\n'
+            'uniform_var = sd_b 0.1 100\n')
+        extra = {
+            'shared.bngl': _SHARED_COL_MODEL,
+            'ea.exp': '# time obs_a\n0\t90\n1\t55\n',
+            'eb.exp': '# time obs_b\n0\t88\n1\t50\n',
+        }
+        return _roundtrip(tmp_path_factory.mktemp('sharedcol'), conf, extra_files=extra,
+                          model_name='shared.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_two_observables_share_the_model_column(self, imported):
+        # The source PEtab really is two observables on the ONE model entity z (the shape
+        # that collided before #503), each carrying its own estimated sigma.
+        petab1, _, _, _ = imported
+        rows = _tsv_rows(petab1 / 'observables.tsv')
+        assert {r['observableId'] for r in rows} == {'obs_a', 'obs_b'}
+        assert {r['observableFormula'] for r in rows} == {'z'}
+        assert {r['noiseFormula'] for r in rows} == {'sd_a', 'sd_b'}
+
+    def test_reimport_materializes_distinct_columns_and_noise(self, imported):
+        # The re-imported conf keeps each observable on its own obsId column with its own
+        # per-observable noise -- never a single colliding `noise_model z`.
+        _, _, _, conf = imported
+        lines = conf.read_text().splitlines()
+        assert 'observable: obs_a, formula: z' in lines
+        assert 'observable: obs_b, formula: z' in lines
+        assert 'noise_model obs_a = gaussian, sigma = fit sd_a' in lines
+        assert 'noise_model obs_b = gaussian, sigma = fit sd_b' in lines
+        assert not any(l.startswith('noise_model z ') for l in lines)
 
 
 # ---------------------------------------------------------------------------
