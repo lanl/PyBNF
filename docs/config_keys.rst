@@ -449,6 +449,10 @@ Required Keys
     * ``noise_model cases = neg_bin, dispersion = fit r__FREE, cumulative``
     * ``noise_model obs6 = student_t, sigma = fit s__FREE`` (robust; ``df`` defaults to 4)
     * ``noise_model obs7 = student_t, sigma = fit s__FREE, df = fit nu__FREE`` (estimate both)
+    * ``noise_model obs8 = gaussian, sigma = formula 0.1 + 0.05 * cv__FREE`` (sigma an
+      expression over free parameters)
+    * ``noise_model obs9 = gaussian, sigma = prediction_formula sd_abs__FREE + sd_rel__FREE * obs9``
+      (combined additive+proportional error: sigma scales with the *predicted* value of ``obs9``)
 
 
 .. _edition:

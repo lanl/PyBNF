@@ -152,6 +152,45 @@ parameters, :math:`\sigma` and :math:`\nu`, are sourced independently, so a fit
 may estimate zero, one, or both). See :doc:`gradient_fitting` for its
 differentiable square-root-loss residual.
 
+A noise scale that depends on the prediction
+--------------------------------------------
+
+Most sources above give a :math:`\sigma` that is a constant, a data column, or an
+expression over free parameters — a value that does **not** depend on the model's
+output. Real measurements often violate that: instrument noise frequently has a
+*combined* additive-plus-proportional form, a small floor plus a term that grows
+with the signal,
+
+.. math::
+
+   \sigma_i \;=\; \sigma_\text{abs} \;+\; \sigma_\text{rel}\cdot y_i,
+
+where :math:`y_i` is the observable's **predicted** value at point :math:`i`. This is
+a likelihood parameter that is a *function of the system state*: as the fit moves and
+the trajectory changes, every point's noise scale changes with it. The
+``prediction_formula`` source expresses exactly this. Its expression may name
+
+- **free parameters** — the estimated coefficients (:math:`\sigma_\text{abs}`,
+  :math:`\sigma_\text{rel}`), resolved from the current parameter set; and
+- **model entities** — any species, observable, or function the backend outputs,
+  read from the *current simulation* at the scored point.
+
+So ``noise_model y = gaussian, sigma = prediction_formula sd_abs__FREE + sd_rel__FREE
+* y`` fits a Gaussian whose standard deviation scales with the predicted ``y``. It is
+an *estimated* source (it references estimated coefficients), so the family's
+normalizer is retained — the term that couples the residual and the scale is what lets
+the data inform :math:`\sigma_\text{abs}` and :math:`\sigma_\text{rel}` jointly.
+
+This differs from ``relative`` and ``column_mean``, which scale with the *measured*
+data (a fixed quantity), and from ``formula``, whose expression sees only the free
+parameters. ``prediction_formula`` is the only source that reads the simulation, and
+it is what PEtab's affine ``noiseFormula`` (e.g. Raia_CancerResearch2011) imports as.
+
+The families that read a prediction-dependent scale on the **gradient** path are a
+later addition; today such a source is scored (every optimizer and sampler that
+evaluates the objective directly works) but a gradient/EFIM fit raises rather than
+silently dropping the scale's dependence on the prediction.
+
 The cumulative prediction transform
 ------------------------------------
 
