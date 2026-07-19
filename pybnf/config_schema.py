@@ -258,7 +258,7 @@ class GlobalConfig(PyBNFConfigModel):
     random_seed: Optional[int] = None
 
     # --- differential evolution ---
-    # Migrated to DEFamilyConfig / DifferentialEvolutionConfig in
+    # Migrated to DEFamilyConfig / DifferentialEvolutionConfig / AsyncDEConfig in
     # algorithms/optimizers/differential_evolution.py (Stage b); under narrowing
     # (ADR-0013) present only in a de/ade fit's effective config.
 

@@ -774,6 +774,7 @@ _MS_OPTIMIZERS = {
     'de': algorithms.DifferentialEvolution,
     'ss': algorithms.ScatterSearch,
     'pso': algorithms.ParticleSwarm,
+    'ade': algorithms.AsynchronousDifferentialEvolution,
 }
 
 # Two-mode mixture trap: a wide, shallow LOCAL mode at [-4, -4] (weight 0.3, NLL peak
@@ -786,9 +787,12 @@ _MS_GLOBAL_NLL = 0.357     # -log(0.7)
 
 # Per-method small budgets for the (fast) invariant/mechanics checks -- ss runs
 # population*(population-1) sims per iteration, so it gets a smaller population.
+# ade is async (one-in-one-out), so it exercises the mixin's DRAINING path: at each
+# inner STOP a full population is still in flight and must drain before the next start.
 _MS_FAST = {'de': dict(population_size=8, max_iterations=25, stop_tolerance=1e-6),
             'ss': dict(population_size=5, max_iterations=10),
-            'pso': dict(population_size=8, max_iterations=25)}
+            'pso': dict(population_size=8, max_iterations=25),
+            'ade': dict(population_size=8, max_iterations=25, stop_tolerance=1e-6)}
 
 
 def _ms_config(tmp_path, fit_type, n_starts, modes=_MS_TRAP_MODES, **overrides):
@@ -857,6 +861,12 @@ _MS_TRAP_MODES_WIDE = [(0.3, [-4.0, -4.0], [12.0, 12.0]), (0.7, [5.0, 5.0], [0.6
 _MS_ESCAPE = [
     ('de',  dict(population_size=12, max_iterations=60, stop_tolerance=1e-5,
                  random_seed=42), 8),
+    # ade is the async one-in-one-out variant: this case drives the mixin's DRAINING
+    # path end to end -- at each start's inner STOP a full population is still in flight
+    # and must drain (its stragglers already scored into the trajectory) before the next
+    # start seeds (#501).
+    ('ade', dict(population_size=12, max_iterations=60, stop_tolerance=1e-5,
+                 random_seed=29), 6),
     ('ss',  dict(population_size=5, max_iterations=15, random_seed=5,
                  modes=_MS_TRAP_MODES_WIDE), 6),
     ('pso', dict(population_size=12, max_iterations=40, random_seed=3), 6),

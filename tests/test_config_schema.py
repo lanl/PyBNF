@@ -176,15 +176,18 @@ class TestConfigurationBuildConfig:
 
     def test_de_island_keys_validated_for_de_pass_through_for_ade(self):
         # The DE shared-base split: de owns the island/migration fields (validated
-        # by DifferentialEvolutionConfig); ade uses only the family base, which does
-        # not own them. Under narrowing (ADR-0013) an ade fit carries islands only
-        # when the user sets it (then as an unchanged extra), not as a union default.
+        # by DifferentialEvolutionConfig); ade's own AsyncDEConfig does not own them.
+        # Under narrowing (ADR-0013) an ade fit carries islands only when the user sets
+        # it (then as an unchanged extra), not as a union default.
         de_eff = config.Configuration._build_config({'fit_type': 'de', 'islands': '4'})
         assert de_eff['islands'] == 4 and type(de_eff['islands']) is int  # schema-coerced
         assert config.Configuration._build_config({'fit_type': 'de'})['islands'] == 1  # de default
         ade_set = config.Configuration._build_config({'fit_type': 'ade', 'islands': 4})
         assert ade_set['islands'] == 4  # user-set extra rides through unchanged
-        assert 'islands' not in config.Configuration._build_config({'fit_type': 'ade'})  # narrowed away
+        # ade opts into n_starts (its own AsyncDEConfig, #501) but not islands, so an ade
+        # fit carries n_starts as a schema default while islands stays narrowed away.
+        ade_default = config.Configuration._build_config({'fit_type': 'ade'})
+        assert ade_default['n_starts'] == 1 and 'islands' not in ade_default
 
 
 class TestRegistrySchemaSeam:
@@ -198,22 +201,28 @@ class TestRegistrySchemaSeam:
         assert FIT_TYPE_REGISTRY['pso'].schema is PSOConfig
 
     def test_de_family_shares_a_base_schema(self):
-        # Shared-base pattern (ADR-0006): ade registers against the family base
-        # directly (adds no keys); de extends it with the island/migration fields.
+        # Shared-base pattern (ADR-0006): both de and ade extend the key-minimal family
+        # base with their own subclass -- de adds the island/migration fields, ade adds
+        # nothing but the shared n_starts field. The base itself stays key-minimal.
         from pybnf.algorithms.optimizers.differential_evolution import (
-            DEFamilyConfig, DifferentialEvolutionConfig)
+            AsyncDEConfig, DEFamilyConfig, DifferentialEvolutionConfig)
         from pybnf.registry import FIT_TYPE_REGISTRY
-        assert FIT_TYPE_REGISTRY['ade'].schema is DEFamilyConfig
+        assert FIT_TYPE_REGISTRY['ade'].schema is AsyncDEConfig
         assert FIT_TYPE_REGISTRY['de'].schema is DifferentialEvolutionConfig
         assert issubclass(DifferentialEvolutionConfig, DEFamilyConfig)
+        assert issubclass(AsyncDEConfig, DEFamilyConfig)
         assert 'mutation_rate' in DEFamilyConfig.owned_keys()
         assert 'islands' in DifferentialEvolutionConfig.owned_keys()
         assert 'islands' not in DEFamilyConfig.owned_keys()
-        # Multi-start (#498/ADR-0071): de opts in (n_starts rides its own schema), ade
-        # does not (the shared family base carries no n_starts), so an ade fit narrows
-        # n_starts away exactly as it does islands.
+        assert 'islands' not in AsyncDEConfig.owned_keys()    # async DE has no islands
+        # Multi-start (#498): the n_starts field rides each method's own subclass, not the
+        # shared base -- so the ADR-0006 "ade adds no keys to the family base" seam stays
+        # intact while both de (ADR-0071) and ade (#501) opt in.
         assert 'n_starts' in DifferentialEvolutionConfig.owned_keys()
+        assert 'n_starts' in AsyncDEConfig.owned_keys()
         assert 'n_starts' not in DEFamilyConfig.owned_keys()
+        # ade adds exactly n_starts beyond the shared family base (nothing else).
+        assert AsyncDEConfig.owned_keys() - DEFamilyConfig.owned_keys() == {'n_starts'}
 
     def test_ss_owns_local_min_limit_and_n_starts(self):
         # ss's defaulted keys are local_min_limit and the shared n_starts multi-start

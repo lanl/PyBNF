@@ -496,7 +496,7 @@ Required Keys
     * ``max_iterations = 200``
 
 **n_starts**
-  Number of independent multi-start runs for the metaheuristic optimizers (``de``, ``ss``, ``pso``). A single run collapses its population into one basin, so on a multimodal objective it returns only a local minimum. With ``n_starts > 1``, that many independent searches are run one after another -- each a fresh random / Latin-hypercube population, each up to ``max_iterations`` iterations or until it converges -- and the best fit over all of them is kept. ``1`` (the default) is a single run, identical to the historical behavior. (``cmaes`` has its own multimodal restart, ``cmaes_restarts``; the gradient optimizers use ``population_size`` as their start count.)
+  Number of independent multi-start runs for the metaheuristic optimizers (``de``, ``ade``, ``ss``, ``pso``). A single run collapses its population into one basin, so on a multimodal objective it returns only a local minimum. With ``n_starts > 1``, that many independent searches are run one after another -- each a fresh random / Latin-hypercube population, each up to ``max_iterations`` iterations or until it converges -- and the best fit over all of them is kept. ``1`` (the default) is a single run, identical to the historical behavior. (``cmaes`` has its own multimodal restart, ``cmaes_restarts``; the gradient optimizers use ``population_size`` as their start count.)
 
   Example:
 

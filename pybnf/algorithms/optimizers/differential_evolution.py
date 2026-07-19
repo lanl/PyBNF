@@ -28,9 +28,13 @@ logger = logging.getLogger('pybnf.algorithms')
 class DEFamilyConfig(PyBNFConfigModel):
     """Config fields shared by the whole DE family, co-located with
     ``DifferentialEvolutionBase`` (ADR-0002, ADR-0006) -- exactly the keys that
-    base ``__init__`` reads. ``ade`` registers against this base directly (it adds
-    no config keys); ``de`` extends it (:class:`DifferentialEvolutionConfig`).
-    Values are byte-identical to the old ``GlobalConfig`` defaults.
+    base ``__init__`` reads, and nothing more. Neither ``de`` nor ``ade`` registers
+    against this base directly: each extends it with its own subclass carrying the
+    shared ``n_starts`` multi-start field (``MultiStartConfig``) -- ``de`` also adds
+    the island/migration fields (:class:`DifferentialEvolutionConfig`), ``ade`` adds
+    nothing else (:class:`AsyncDEConfig`). Keeping the shared base itself key-minimal
+    preserves the ADR-0006 "``ade`` adds no keys to the family base" seam. Values are
+    byte-identical to the old ``GlobalConfig`` defaults.
     """
 
     mutation_rate: float = 0.5
@@ -42,14 +46,26 @@ class DEFamilyConfig(PyBNFConfigModel):
 class DifferentialEvolutionConfig(MultiStartConfig, DEFamilyConfig):
     """``de``-specific config: the island/migration fields only synchronous DE
     reads (``ade`` is async and ignores them), plus the shared ``n_starts``
-    multi-start field (``MultiStartConfig``, #498) -- ``de`` opts into multi-start,
-    ``ade`` does not (yet), so the key rides ``de``'s own schema, not the shared
-    ``DEFamilyConfig`` base. Demonstrates the shared-base pattern the MCMC family
-    reuses (ADR-0006)."""
+    multi-start field (``MultiStartConfig``, #498). The ``n_starts`` key rides each
+    method's own subclass, not the shared ``DEFamilyConfig`` base, so the ADR-0006
+    "``ade`` adds no keys to the family base" seam stays intact -- ``ade`` gets
+    ``n_starts`` through its own :class:`AsyncDEConfig` (#501). Demonstrates the
+    shared-base pattern the MCMC family reuses (ADR-0006)."""
 
     islands: int = 1
     migrate_every: int = 20
     num_to_migrate: int = 3
+
+
+class AsyncDEConfig(MultiStartConfig, DEFamilyConfig):
+    """``ade``-specific config: the shared DE family fields plus the ``n_starts``
+    multi-start field (``MultiStartConfig``, #498/ADR-0071), and nothing else. ``ade``
+    opts into multi-start through its own subclass -- mirroring how ``de`` extends the
+    shared ``DEFamilyConfig`` base (:class:`DifferentialEvolutionConfig`) -- so the
+    ADR-0006 "``ade`` adds no keys to the family base" seam stays intact: ``n_starts``
+    rides this subclass, not the base ``de`` and ``ade`` share. Unlike ``de``, ``ade``
+    has no islands or migrations, so this adds no fields of its own -- it is exactly
+    ``DEFamilyConfig`` + ``n_starts`` (#501)."""
 
 
 class DifferentialEvolutionBase(Algorithm):
@@ -396,14 +412,22 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
 
 
 @register_fit_type('ade', family='optimizer', display_name='Asynchronous Differential Evolution',
-                   schema=DEFamilyConfig)
-class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
+                   schema=AsyncDEConfig)
+class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
     """
     Implements a simple asynchronous differential evolution algorithm.
 
     Contains no islands or migrations. Instead, each time a PSet finishes, proposes a new PSet at the same index using
     the standard DE formula and whatever the current population happens to be at the time.
 
+    Opts into ``n_starts`` sequential-restart multi-start (#498/#501): the
+    :class:`~pybnf.algorithms.optimizers.multistart.MultiStartOptimizer` mixin (before
+    the family base in the MRO) runs ``n_starts`` independent searches and keeps the
+    global best. ``ade`` is the async one-in-one-out case the mixin's *draining* path
+    was built for -- a full population stays in flight at each inner ``STOP``, so the
+    mixin drains those stragglers (already scored into the trajectory) before seeding
+    the next start. ``n_starts == 1`` (the default) is byte-identical to the single-run
+    behavior.
     """
 
     def __init__(self, config):
@@ -427,11 +451,24 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
+        self._reset_search_state()
+
+    def _reset_search_state(self):
+        """Clear the search-specific state (the population, its fitnesses, and the
+        completed-sim counter) WITHOUT touching the trajectory -- so multi-start's
+        :meth:`_search_start_run` can begin a fresh, independent ADE run each start
+        while the trajectory keeps accumulating the global best across starts (#498).
+        Shared by ``reset`` (which also resets the trajectory via ``super().reset``) and
+        by each multi-start."""
         self.sims_completed = 0
         self.individuals = []
         self.fitnesses = []
 
-    def start_run(self):
+    def _search_start_run(self):
+        # Reset the search counter/population first (a no-op on the first start), so a
+        # multi-start restart begins a genuinely fresh ADE run rather than resuming at
+        # the previous start's population and sims_completed count.
+        self._reset_search_state()
         print2('Running Asyncrhonous Differential Evolution with population size %i for up to %i iterations' %
                (self.population_size, self.max_iterations))
 
@@ -454,7 +491,7 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
 
         return copy.deepcopy(self.individuals)
 
-    def got_result(self, res):
+    def _search_got_result(self, res):
         """
         Called when a simulation run finishes
 
