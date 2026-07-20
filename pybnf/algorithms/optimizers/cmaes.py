@@ -42,11 +42,16 @@ Restart for multimodal search (``cmaes_restarts``, IPOP / BIPOP; #498, ADR-0070)
 A single CMA-ES run descends into the one basin its start lands in, so on a
 multimodal objective it reaches only a local minimum. Opting into
 ``cmaes_restarts > 0`` turns on the canonical multimodal-CMA-ES restart: whenever a
-run *converges* (its search distribution shrinks below ``cmaes_stop_tol``, or its
-step size degenerates) -- as distinct from exhausting the global generation budget
+run *finishes* -- it converges (Hansen's stopping battery: the search distribution
+shrinks below ``cmaes_stop_tol``, the best objective stagnates, every coordinate step
+falls below tolerance, the covariance goes ill-conditioned, or the step size
+degenerates) -- as distinct from exhausting the global generation budget
 ``max_iterations`` -- CMA-ES reinitializes from a fresh random point in the box with
 a rescaled population and keeps searching, until ``cmaes_restarts`` restarts have run
-or the global budget is spent. The global best is kept for free: every evaluated
+or the global budget is spent. (The stagnation / ill-conditioning triggers are the
+#506 fix: a single principal-step test never fires on an ill-conditioned landscape,
+where ``max(d)`` grows as ``sigma`` shrinks, so IPOP/BIPOP would otherwise degenerate
+to one trapped run.) The global best is kept for free: every evaluated
 ``PSet`` across every restart lands in the trajectory, so ``trajectory.best_fit()``
 is the best over all runs. Two schedules (``cmaes_restart_strategy``): **IPOP** grows
 the population geometrically each restart (``population_size * cmaes_ipop_factor**k``,
@@ -88,7 +93,10 @@ class CMAESConfig(PyBNFConfigModel):
     deviation is ``cmaes_sigma0 * (box width)`` -- one knob, one default (0.3),
     interpreted relative to the start the fit actually uses. ``cmaes_stop_tol``
     ends the run when the largest principal standard deviation of the search
-    distribution shrinks below it. The population size ``lambda`` is the global
+    distribution shrinks below it; in restart mode (``cmaes_restarts > 0``) it is also
+    the tolerance for the restart battery (#506) -- the relative TolFun (best-objective)
+    stagnation threshold and the absolute TolX coordinate-step threshold. The population
+    size ``lambda`` is the global
     ``population_size`` (consistent with de/pso/sa), and the generation budget is
     the global ``max_iterations``, so neither is duplicated here.
     ``cmaes_start_point`` is internal (the refiner injects it), so it is not a
@@ -116,6 +124,12 @@ class CMAESAlgorithm(StartPointOptimizer):
 
     #: Refiner start-point key (see StartPointOptimizer / pybnf._refine_best_fit).
     START_POINT_KEY = 'cmaes_start_point'
+
+    #: ConditionCov threshold (#506): a covariance condition number above this is a
+    #: numerical breakdown -- the search has degenerated to a near-line and can make no
+    #: isotropic progress -- so in restart mode it triggers a restart. Hansen's standard
+    #: default; not a user knob (it is a float64-conditioning limit, not a tuning tol).
+    _COND_COV_MAX = 1e14
 
     def __init__(self, config, refine=False):
         super().__init__(config)
@@ -221,6 +235,7 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.pc = np.zeros(self.n)
         self.ps = np.zeros(self.n)
         self.run_generation = 0    # generations since this run's start (CSA normalization)
+        self._run_best_history = []  # best objective per generation THIS run (TolFun window, #506)
         # Pending generation (filled by start_run / _sample_generation).
         self.pending = {}          # pset name -> individual index
         self.gen_x = [None] * self.lam   # sampled point (u-space) per index
@@ -283,6 +298,7 @@ class CMAESAlgorithm(StartPointOptimizer):
     # --- distribution update ---------------------------------------------- #
     def _update_distribution(self):
         order = sorted(range(self.lam), key=lambda i: self.gen_score[i])
+        self._run_best_history.append(float(self.gen_score[order[0]]))  # TolFun window (#506)
         x_sorted = np.array([self.gen_x[i] for i in order[:self.mu]])  # (mu, n)
 
         m_old = self.mean
@@ -348,7 +364,18 @@ class CMAESAlgorithm(StartPointOptimizer):
         hard stop): these are the reasons a *single* CMA-ES run has finished -- its
         search distribution converged below ``cmaes_stop_tol``, its step size
         degenerated, or (a BIPOP small run) it reached its per-run generation cap. On
-        any of them a restart may fire; only the global budget ends the whole fit."""
+        any of them a restart may fire; only the global budget ends the whole fit.
+
+        With ``cmaes_restarts > 0`` a fuller **restart battery** (``_battery_stop_reason``,
+        #506) is also consulted: the single principal-step test above is a geometric
+        property of the distribution, and on an ill-conditioned landscape ``C`` elongates
+        along the flat directions so ``max(d)`` grows while ``sigma`` shrinks and the
+        product ``sigma*max(d)`` plateaus *above* ``cmaes_stop_tol`` -- the run then
+        polishes a local basin forever and never yields to a restart (the IPOP/BIPOP
+        machinery silently degenerates to one trapped run). The battery adds Hansen's
+        canonical stagnation / degeneracy triggers, which fire on exactly those problems.
+        It is gated on restart mode so that a single run (``cmaes_restarts == 0``, the
+        default) stays byte-identical to the pre-restart behavior (ADR-0070)."""
         if not np.isfinite(self.sigma) or self.sigma <= 0.0:
             return 'step size sigma is no longer finite/positive'
         # Largest principal standard deviation of the search distribution.
@@ -357,7 +384,58 @@ class CMAESAlgorithm(StartPointOptimizer):
             return (f'search distribution converged (principal step {principal:.3g} < {self.stop_tol:g})')
         if self.run_generation >= self.run_maxgen:
             return 'reached the per-run generation cap (%i generations)' % self.run_maxgen
+        # The restart battery (#506) is a restart-only feature -- disabled for a single
+        # run so cmaes_restarts == 0 stays byte-identical (ADR-0070). On the final run of
+        # a restart fit (no restarts remaining) a battery trigger simply ends the fit.
+        if self.max_restarts > 0:
+            return self._battery_stop_reason()
         return None
+
+    def _battery_stop_reason(self):
+        """Hansen's canonical restart triggers beyond the single principal-step test
+        (#506), each a per-run termination string or None:
+
+        * **TolFun** -- the best objective has stagnated: its range over the last
+          ``_tolfun_window`` generations of *this* run is within ``cmaes_stop_tol``
+          (relative, with an absolute floor). This is start-point- and
+          conditioning-independent -- it fires when the run stops improving even though
+          the (ill-conditioned) principal step has plateaued above ``cmaes_stop_tol`` --
+          and is the trigger the reproduction problems need.
+        * **TolX** -- every coordinate standard deviation and evolution-path component is
+          below ``cmaes_stop_tol``: the whole distribution has collapsed (the classic
+          "converged" signal, complementary to the largest-principal-axis test).
+        * **ConditionCov** -- the covariance condition number exceeds ``_COND_COV_MAX``:
+          the search has degenerated to a near-line and can make no isotropic progress.
+
+        ``self.d`` is the (pre-update) principal-standard-deviation cache from the
+        generation just evaluated; ``self.C`` is the post-update covariance. A
+        one-generation lag between them is immaterial to a stopping decision."""
+        hist = self._run_best_history
+        window = self._tolfun_window()
+        if len(hist) >= window:
+            recent = hist[-window:]
+            frange = max(recent) - min(recent)
+            if frange <= self.stop_tol * max(1.0, abs(recent[-1])):
+                return ('best objective stagnated (range %.3g over the last %i '
+                        'generations)' % (frange, window))
+        coord_std = self.sigma * np.sqrt(np.maximum(np.diag(self.C), 0.0))
+        if (np.all(coord_std < self.stop_tol)
+                and np.all(self.sigma * np.abs(self.pc) < self.stop_tol)):
+            return ('all coordinate steps below tolerance (max %.3g < %g)'
+                    % (float(np.max(coord_std)), self.stop_tol))
+        dmax, dmin = float(np.max(self.d)), float(np.min(self.d))
+        cond = (dmax / dmin) ** 2 if dmin > 0.0 else np.inf
+        if cond > self._COND_COV_MAX:
+            return ('covariance ill-conditioned (condition number %.3g > %g)'
+                    % (cond, self._COND_COV_MAX))
+        return None
+
+    def _tolfun_window(self):
+        """The TolFun stagnation window in generations: Hansen's
+        ``10 + ceil(30 N / lambda)``. It scales with the population, so a larger restart
+        population needs proportionally fewer generations of flat history to declare
+        stagnation."""
+        return 10 + int(np.ceil(30.0 * self.n / self.lam))
 
     # --- restart (IPOP / BIPOP, #498 / ADR-0070) --------------------------- #
     def _restart(self, reason):

@@ -368,6 +368,154 @@ def test_cmaes_bipop_restart_exercises_both_regimes_and_escapes(tmp_path):
     assert alg.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
 
 
+# --------------------------------------------------------------------------- #
+# CMA-ES restart battery on ill-conditioned basins (#506)
+# --------------------------------------------------------------------------- #
+# The IPOP/BIPOP restart above can only fire via _run_stop_reason. Before #506 the
+# only practical restart trigger was the principal-step test sigma*max(d) <
+# cmaes_stop_tol. On an ill-conditioned basin C elongates along the flat directions,
+# so max(d) GROWS while sigma shrinks and the product plateaus ABOVE any reasonable
+# cmaes_stop_tol -- the run polishes a local basin forever and no restart ever fires,
+# so IPOP silently degenerates to one trapped run (the whole reason to set
+# cmaes_restarts > 0 is unreachable). #506 adds Hansen's canonical stopping battery
+# (TolFun stagnation, TolX, ConditionCov) as restart triggers, gated on restart mode
+# so a single run stays byte-identical (ADR-0070). These unit tests hand-build the
+# stagnant / degenerate distribution states and assert each trigger fires (and that the
+# gate is off for a single run); the slow test drives an ill-conditioned trap end to
+# end.
+
+
+def _battery_alg(tmp_path, **overrides):
+    """A constructed CMA-ES (n=2, lambda=8) whose distribution state the caller then
+    overwrites by hand to probe _run_stop_reason / _battery_stop_reason directly. The
+    two-mode trap target is irrelevant here -- these tests never simulate."""
+    return algorithms.CMAESAlgorithm(_trap_config(tmp_path, **overrides))
+
+
+def test_cmaes_restart_battery_tolfun_fires_where_the_principal_step_plateaus(tmp_path):
+    """The #506 gap, at the decision point. An ill-conditioned run polishing a local
+    basin has a small sigma but a hugely elongated C, so the principal step
+    sigma*max(d) sits far ABOVE cmaes_stop_tol and the pre-existing convergence test
+    stays silent -- yet the best objective has been flat for a full TolFun window. The
+    restart battery catches that stagnation and returns a restart trigger."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+    alg.sigma = 1e-3
+    alg.d = np.array([1e4, 1e-2])          # principal = 1e-3 * 1e4 = 10 >> stop_tol
+    alg.C = np.diag(alg.d ** 2)            # cond (1e4/1e-2)^2 = 1e12 < 1e14 (isolate TolFun)
+    alg.pc = np.zeros(alg.n)
+    alg.run_generation = 50
+    alg.run_maxgen = np.inf
+    alg._run_best_history = [368.0] * alg._tolfun_window()   # dead flat
+
+    assert alg.sigma * float(np.max(alg.d)) > alg.stop_tol   # principal step would NOT fire
+    reason = alg._run_stop_reason()
+    assert reason is not None and 'stagnated' in reason
+
+
+def test_cmaes_restart_battery_is_off_for_a_single_run(tmp_path):
+    """Byte-identity gate (ADR-0070): with cmaes_restarts == 0 the battery is disabled,
+    so the exact stagnant ill-conditioned state that trips a restart above returns None
+    -- a single run's termination is unchanged."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=0, cmaes_stop_tol=1e-11)
+    alg.sigma = 1e-3
+    alg.d = np.array([1e4, 1e-2])
+    alg.C = np.diag(alg.d ** 2)
+    alg.pc = np.zeros(alg.n)
+    alg.run_generation = 50
+    alg.run_maxgen = np.inf
+    alg._run_best_history = [368.0] * (alg._tolfun_window() + 5)
+
+    assert alg.max_restarts == 0
+    assert alg._run_stop_reason() is None
+
+
+def test_cmaes_restart_battery_tolx_fires_on_full_collapse(tmp_path):
+    """TolX: when every coordinate step (and evolution-path component) is below
+    cmaes_stop_tol the whole distribution has collapsed -- a restart trigger even when
+    the objective history is still descending (so TolFun does not pre-empt it)."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-9)
+    alg.sigma = 1e-11
+    alg.d = np.array([1.0, 1.0])
+    alg.C = np.eye(alg.n)                  # coord std = 1e-11 < 1e-9
+    alg.pc = np.zeros(alg.n)
+    alg._run_best_history = list(np.linspace(400.0, 300.0, alg._tolfun_window()))
+
+    reason = alg._battery_stop_reason()
+    assert reason is not None and 'coordinate steps' in reason
+
+
+def test_cmaes_restart_battery_conditioncov_fires_on_ill_conditioning(tmp_path):
+    """ConditionCov: a covariance condition number past the float64-breakdown limit is a
+    degenerate near-line search -- a restart trigger while sigma and the objective are
+    both still far from any convergence tolerance."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-9)
+    alg.sigma = 1e-2
+    alg.d = np.array([1e8, 1e-1])          # cond (1e8/1e-1)^2 = 1e18 > 1e14
+    alg.C = np.diag(alg.d ** 2)
+    alg.pc = np.zeros(alg.n)
+    alg._run_best_history = list(np.linspace(400.0, 300.0, alg._tolfun_window()))
+
+    reason = alg._battery_stop_reason()
+    assert reason is not None and 'ill-conditioned' in reason
+
+
+# A shallow, strongly ANISOTROPIC local mode at the box center: steep along p1
+# (variance 0.01), and along p2 an enormous variance (1e5) so that within the box the
+# objective is essentially FLAT along p2 -- the run cannot converge that direction, its
+# covariance elongates, and it stagnates on the ridge rather than reaching a crisp
+# principal-step minimum. This is the ill-conditioning #506 is about, in miniature (a
+# bounded 2-D box cannot hold the true unbounded plateau of the 16-D reproduction, so
+# the exact "principal step can never fire" claim is pinned deterministically by the
+# unit tests above; here the battery's stagnation triggers do the work of restarting).
+# The deep, round, WIDE global mode sits off-center for a reliable escape target.
+_ILL_MODES = [(0.35, [0.0, 0.0], [0.01, 1e5]), (0.65, [6.0, 6.0], [9.0, 9.0])]
+
+
+class _RecordingCMAES(algorithms.CMAESAlgorithm):
+    """CMA-ES that records each restart's reason string, so a test can assert WHICH
+    stopping triggers fired end to end. A module-level subclass (not a monkeypatched
+    closure) so the algorithm's periodic backup pickle still succeeds; the list is a
+    plain picklable attribute."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.restart_reasons = []
+
+    def _restart(self, reason):
+        self.restart_reasons.append(reason)
+        return super()._restart(reason)
+
+
+@pytest.mark.slow
+def test_cmaes_ipop_restart_battery_fires_and_escapes_an_ill_conditioned_trap(tmp_path):
+    """The #506 fix, end to end. On this anisotropic trap the search stagnates on the
+    ill-conditioned central ridge (its principal step plateauing well above the tiny
+    convergence step a well-conditioned basin would reach), so before the fix -- with the
+    single principal-step trigger -- IPOP could not reliably yield to a restart there. The
+    added restart battery (TolFun stagnation / TolX / ConditionCov) fires on the ridge, so
+    IPOP restarts and the search escapes to the deep off-center global mode. Asserts a
+    battery trigger actually fired during the run (the new path is exercised), and that the
+    global best is the global mode -- strictly better than the trapped central ridge."""
+    tgt, exp = H.write_target(tmp_path, H.multimodal_spec(_ILL_MODES))
+    conf = H.make_config(tmp_path, 'cmaes', tgt, exp, n_params=2,
+                         var_type='uniform_var', bounds=(-10.0, 10.0),
+                         population_size=8, max_iterations=150, cmaes_sigma0=0.06,
+                         cmaes_stop_tol=1e-2, random_seed=1234,
+                         cmaes_restarts=5, cmaes_restart_strategy='ipop')
+    alg = _RecordingCMAES(conf)
+    H.drive(alg)
+
+    assert alg.restart_count >= 1
+    # At least one restart came from the #506 battery (stagnation / ill-conditioning /
+    # coordinate collapse), not only the pre-existing principal-step test -- so the new
+    # trigger is what let IPOP keep moving on the ill-conditioned ridge.
+    battery = [r for r in alg.restart_reasons
+               if ('stagnated' in r) or ('ill-conditioned' in r) or ('coordinate steps' in r)]
+    assert battery, alg.restart_reasons
+    assert np.allclose(H.best_params(alg, 2), [6.0, 6.0], atol=0.4)      # escaped
+    assert alg.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
+
+
 def test_sa_finds_gaussian_mode(tmp_path):
     """Simulated annealing recovers the Gaussian mode on an all-uniform-prior fit.
 
