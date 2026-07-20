@@ -57,13 +57,15 @@ fit, never from the sensitivity tensor.
 
 The estimated-scale column generalizes past a single free parameter: ``noise_grad_point`` returns
 the full ``sum_p (dL/dp)*(dp/dtheta)`` vector, where each source supplies ``dp/dtheta``
-(``sigma_sensitivity``). A **prediction-dependent** sigma (``sigma = sigma_abs + sigma_rel*y``, a
-``PredictionFormulaSigma``, ADR-0075/0079) is the one estimated scale whose ``dsigma/dtheta`` is not
-a bare unit vector: the sigma formula's chain rule puts ``dsigma/dcoeff`` on each coefficient's
-column **and** chains ``dsigma/dprediction`` through the SAME ``raw_sens`` forward sensitivity the
-residual rides -- so, unlike a free sigma, it also perturbs the model-parameter columns (still on the
-scalar path -- the retained normalizer is not a square). A single free sigma has ``dsigma/dname = 1``
-and no sim coupling, so its column is byte-identical to the historical scalar one.
+(``sigma_sensitivity``). A single free sigma has ``dsigma/dname = 1`` and no sim coupling, so its
+column is byte-identical to the historical scalar one. A **composite** sigma is the general chain
+rule ``dsigma/dtheta = sum_symbol (dsigma/dsymbol)*(dsymbol/dtheta)``: a **PSet-only** formula
+(``FormulaSigma`` / ``PerMeasurementFormulaSigma``, ADR-0044/0045/#505) puts ``dsigma/dcoeff`` on each
+coefficient's column (the per-measurement variant binding a row token from ``exp_data``/``exp_row``);
+a **prediction-dependent** sigma (``sigma = sigma_abs + sigma_rel*y``, a ``PredictionFormulaSigma``,
+ADR-0075/0079) additionally chains ``dsigma/dprediction`` through the SAME ``raw_sens`` forward
+sensitivity the residual rides -- so, unlike the others, it also perturbs the model-parameter columns.
+Every estimated scale stays on the scalar path (the retained normalizer is not a square).
 
 Trajectory transforms + normalization (layer F, #453)
 -----------------------------------------------------

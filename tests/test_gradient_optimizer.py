@@ -448,6 +448,79 @@ def test_lbfgs_fits_prediction_dependent_noise_scale_that_trf_refuses(tmp_path, 
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_fits_composite_formula_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """A PSet-only **composite** noise scale end-to-end (ADR-0044 gradient, #505). The scale
+    ``sigma = formula sd_a + 0.5*sd_b`` is an expression over free coefficients alone (no prediction
+    column) -- the easy half of the estimated-scale gradient frontier: its column is the σ-formula
+    chain rule minus the prediction coupling, ``∂σ/∂sd_a = 1`` / ``∂σ/∂sd_b = 0.5`` on the coefficient
+    columns. Like every estimated scale the retained ``+log σ`` normalizer is not a square, so TRF
+    refuses; L-BFGS consumes the scalar gradient the assembly now threads the composite chain rule
+    into, recovering ``k`` / ``S0`` (zero-noise data pins the coefficients)."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sd_a': ('uniform_var', 0.1, 50.0), 'sd_b': ('uniform_var', 0.1, 50.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=300,
+        noise_models={'Stot': 'gaussian, sigma = formula sd_a + 0.5*sd_b'})
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)   # must NOT raise -- a composite estimated scale, which TRF refuses
+
+    assert np.isfinite(alg.trajectory.best_score())
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.05, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_fits_row_varying_per_measurement_noise_scale(tmp_path, monkeypatch):
+    """The **row-varying** per-measurement composite σ end-to-end (ADR-0045 gradient, #505). The
+    scale ``sigma = formula noiseParameter1_Stot`` binds its placeholder per data row from the
+    ``measurement_params:`` sidecar: the early-time rows bind the free id ``sd_lo``, the late-time
+    rows ``sd_hi`` -- a two-region estimated σ. Each row's ``∂σ/∂θ`` lands on *whichever* id that row
+    binds (the wrinkle #505 threads ``exp_data``/``exp_row`` for), so the gradient is well-formed even
+    though the coefficient set differs across rows. TRF refuses (retained ``+log σ`` normalizer);
+    L-BFGS recovers ``k`` / ``S0`` (zero-noise data pins both σ regions)."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    # Row-varying token: early times -> sd_lo, late times -> sd_hi (matched to the .exp time grid).
+    times = np.linspace(0.0, 10.0, 21)
+    mp = {'Stot': {'noiseParameter1_Stot':
+                   {float(t): ('sd_lo' if t < 5.0 else 'sd_hi') for t in times}}}
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sd_lo': ('uniform_var', 0.1, 50.0), 'sd_hi': ('uniform_var', 0.1, 50.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=300,
+        noise_models={'Stot': 'gaussian, sigma = formula noiseParameter1_Stot'},
+        measurement_params=mp)
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)   # must NOT raise -- a row-varying composite estimated scale, which TRF refuses
+
+    assert np.isfinite(alg.trajectory.best_score())
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.05, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
 def test_lbfgs_is_picklable_across_a_run(tmp_path, monkeypatch):
     """``Algorithm.backup`` pickles the optimizer mid-run, so the L-BFGS state machine
     must round-trip both before and after a run -- all state is plain numpy/float/list
@@ -631,6 +704,39 @@ def test_gntr_fits_prediction_dependent_noise_scale_that_trf_refuses(tmp_path, m
 
     alg = H.build(conf, 'gntr')
     H.drive(alg)   # must NOT raise -- the EFIM path ADR-0079 refused, ADR-0080 assembles
+
+    assert np.isfinite(alg.trajectory.best_score())
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.05, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_gntr_fits_composite_formula_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """The composite formula σ end-to-end on the **EFIM trust-region** path (#505, the Fisher sibling
+    of ``test_lbfgs_fits_composite_formula_noise_scale_that_trf_refuses``). ``sigma = sd_a + 0.5*sd_b``
+    has no prediction coupling, so ``gntr`` builds the diagonal-plus-coefficient-coupling noise block
+    ``(2/σ²)outer(g_i, g_i)`` with ``g_i`` on the coefficient columns only (no location↔scale entry).
+    ``gntr`` fits the same objective ``lbfgs`` does but with a trust-region EFIM step, recovering
+    ``k`` / ``S0``."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sd_a': ('uniform_var', 0.1, 50.0), 'sd_b': ('uniform_var', 0.1, 50.0)},
+        'decay', 'gntr', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=300,
+        noise_models={'Stot': 'gaussian, sigma = formula sd_a + 0.5*sd_b'})
+
+    alg = H.build(conf, 'gntr')
+    H.drive(alg)   # must NOT raise -- a composite estimated scale, which TRF refuses
 
     assert np.isfinite(alg.trajectory.best_score())
     rec = H.best_params(alg, ('k', 'S0'))

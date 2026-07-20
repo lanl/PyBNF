@@ -1244,7 +1244,11 @@ class LikelihoodObjective(SummationObjective):
         ADR-0075) instead returns the σ formula's chain rule: ``∂σ/∂coeff`` on each coefficient's
         column **plus** ``∂σ/∂prediction`` chained through the **same** ``raw_sens`` forward
         sensitivity the residual rides -- so a prediction-dependent scale perturbs the
-        model-parameter columns too (and the fit is not ``least_squares_exact``).
+        model-parameter columns too (and the fit is not ``least_squares_exact``). A PSet-only
+        composite scale (:class:`~pybnf.noise.FormulaSigma` / :class:`~pybnf.noise.PerMeasurementFormulaSigma`,
+        #505) returns the coefficient-only chain rule (no prediction term), the per-measurement variant
+        also binding a row-varying token from ``exp_data``/``exp_row`` (a numeric token contributes
+        nothing, a parameter id lands ``∂σ/∂token`` on that parameter's column).
 
         Read through the same ``_prediction`` / ``_noise_values`` seams ``eval_point`` and
         ``residual_point`` use, so the noise gradient differentiates exactly the loss PyBNF
@@ -1253,8 +1257,10 @@ class LikelihoodObjective(SummationObjective):
         it. The assembly adds this straight to the scalar gradient (and flags the residual form's
         least-squares model inexact); the per-point bootstrap weight is applied there, not here --
         mirroring ``residual_point``. ``raw_sens``/``index`` are the assembly's forward-sensitivity
-        accessor and free-parameter column map (unused by a free-parameter scale, threaded through
-        for a prediction-dependent one)."""
+        accessor and free-parameter column map, and ``exp_data``/``exp_row`` locate the scored point
+        on the experimental data -- all threaded to ``sigma_sensitivity`` (a free-parameter scale
+        reads none of them; a prediction σ reads ``raw_sens``; a per-measurement composite σ reads
+        ``exp_data``/``exp_row``)."""
         family, sources = self._spec_for(col_name)
         estimated = {name: src for name, src in sources.items() if src.estimated}
         if not estimated:
@@ -1286,7 +1292,7 @@ class LikelihoodObjective(SummationObjective):
         grad = np.zeros(len(index))
         for name, src in estimated.items():
             grad = grad + per_param[name] * src.sigma_sensitivity(
-                self, sim_data, sim_row, col_name, raw_sens, index)
+                self, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index)
         return grad
 
     def data_fit_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -1368,8 +1374,10 @@ class LikelihoodObjective(SummationObjective):
         dispersion, the Student-t 2-parameter block -- raises :class:`GradientNotSupported` from
         :meth:`~pybnf.noise.base.NoiseModel.noise_param_fisher`, so the fit falls back to the
         scalar-gradient (L-BFGS-B) path. ``raw_sens``/``index`` are the assembly's forward-
-        sensitivity accessor and free-parameter column map, threaded to ``sigma_sensitivity``
-        exactly as :meth:`noise_grad_point` threads them (unused by a bare free scale)."""
+        sensitivity accessor and free-parameter column map, and ``exp_data``/``exp_row`` locate the
+        scored experimental point (read only by a per-measurement composite σ, #505) -- all threaded
+        to ``sigma_sensitivity`` exactly as :meth:`noise_grad_point` threads them (unused by a bare
+        free scale)."""
         family, sources = self._spec_for(col_name)
         estimated = {name: src for name, src in sources.items() if src.estimated}
         if not estimated:
@@ -1397,7 +1405,7 @@ class LikelihoodObjective(SummationObjective):
         per_param = family.noise_param_fisher(prediction, observation, primary, extra)
         block = np.zeros((len(index), len(index)))
         for name, src in estimated.items():
-            g = src.sigma_sensitivity(self, sim_data, sim_row, col_name, raw_sens, index)
+            g = src.sigma_sensitivity(self, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index)
             block = block + per_param[name] * np.outer(g, g)
         return block
 
@@ -1428,9 +1436,12 @@ class LikelihoodObjective(SummationObjective):
         inversion implicit derivative (#458) -- **or** a *prediction-dependent* estimated scale
         (``sigma = sigma_abs + sigma_rel*y``, a :class:`~pybnf.noise.PredictionFormulaSigma`, ADR-0079),
         whose column threads the σ formula's chain rule (:meth:`~pybnf.noise.PredictionFormulaSigma.sigma_sensitivity`)
-        through the same forward sensitivity as the residual. The remaining gate is on a *PSet-only*
-        composite estimated scale (a :class:`~pybnf.noise.FormulaSigma` / per-measurement source), a
-        later sub-layer.
+        through the same forward sensitivity as the residual, **or** a *PSet-only* composite estimated
+        scale (a :class:`~pybnf.noise.FormulaSigma` / :class:`~pybnf.noise.PerMeasurementFormulaSigma`,
+        #505), whose column is that same chain rule without the prediction coupling (the per-measurement
+        variant binding a row-varying token from ``exp_data``/``exp_row``). Every estimated noise scale
+        is now differentiable; a future estimated source lacking a ``sigma_sensitivity`` override is
+        refused by the base seam.
 
         The gate is per observable (each column may carry its own ``noise_model``
         override, ADR-0058). A per-observable **trajectory transform** -- a per-measurement
@@ -1460,26 +1471,29 @@ class LikelihoodObjective(SummationObjective):
                 "noise families so far (observable '%s' uses %s); later layers add the others."
                 % (col_name, type(family).__name__))
         for param_name, source in sources.items():
-            # An estimated noise scale is supported (layer D, #451) as a *single free
-            # parameter* -- a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a
-            # per-observable __FREE scale) IS sigma, its gradient the closed-form d loss/d sigma
-            # -- and (ADR-0079) as a *prediction-dependent* sigma -- a PredictionFormulaSigma
-            # (sigma = sigma_abs + sigma_rel*y), whose scale also depends on the prediction, so
-            # its column threads the sigma formula's chain rule (sigma_sensitivity) through the
-            # same forward sensitivity as the residual (#385). The remaining composite estimated
-            # sources -- an expression over several free parameters alone (FormulaSigma) or a
-            # row-varying per-measurement sigma (PerMeasurementFormulaSigma) -- are later
-            # sub-layers. (The EFIM Fisher for a prediction-dependent sigma is now assembled too --
-            # its σ-sensitivity's outer product is the coupled noise block, ADR-0080 -- so the same
-            # gate serves the scalar and Fisher paths; see noise_fisher_point.)
+            # Every *estimated* noise scale is now differentiable, each supplying its own
+            # ∂σ/∂θ (sigma_sensitivity), so the gradient/EFIM assembly weights it uniformly:
+            #  * a single free parameter -- a FreeParameterSigma (chi_sq_dynamic's sigma__FREE,
+            #    or a per-observable __FREE scale) IS sigma, its column the closed-form d loss/d
+            #    sigma (layer D, #451);
+            #  * a prediction-dependent sigma -- a PredictionFormulaSigma (sigma = sigma_abs +
+            #    sigma_rel*y), whose scale also depends on the prediction, so its column threads
+            #    the sigma formula's chain rule through the same forward sensitivity as the
+            #    residual (ADR-0079 scalar / ADR-0080 EFIM, #385);
+            #  * a PSet-only composite sigma -- an expression over several free parameters alone
+            #    (FormulaSigma) or a row-varying per-measurement sigma (PerMeasurementFormulaSigma),
+            #    whose column is that same chain rule minus the prediction coupling, the
+            #    per-measurement variant binding a row token from exp_data/exp_row (#505).
+            # The same gate serves the scalar and Fisher paths (see noise_fisher_point); a future
+            # estimated source without a sigma_sensitivity override is still refused by the base.
             if source.estimated and not isinstance(
-                    source, (FreeParameterSigma, PredictionFormulaSigma)):
+                    source, (FreeParameterSigma, PredictionFormulaSigma,
+                             FormulaSigma, PerMeasurementFormulaSigma)):
                 raise GradientNotSupported(
-                    "Gradient path supports an estimated noise scale as a single free "
-                    "parameter or a prediction-dependent formula so far (observable '%s' "
-                    "sources its scale '%s' from an expression over free parameters -- a "
-                    "formula / per-measurement sigma's gradient is a later sub-layer of "
-                    "#385)." % (col_name, param_name))
+                    "Gradient path supports an estimated noise scale as a free parameter, a "
+                    "prediction-dependent formula, or a PSet-only composite formula (observable "
+                    "'%s' sources its scale '%s' from an unsupported estimated source %s -- a "
+                    "later sub-layer of #385)." % (col_name, param_name, type(source).__name__))
 
     def required_free_noise_params(self):
         """The free-parameter names this objective's noise sources estimate (default

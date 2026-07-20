@@ -35,7 +35,8 @@ from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
 from pybnf.noise import (
     ConstantSigma, DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, Laplace,
-    LN, LOG10, MEAN, MEDIAN, NegBinomial, PredictionFormulaSigma, StudentT,
+    LN, LOG10, MEAN, MEDIAN, NegBinomial, PerMeasurementFormulaSigma, PredictionFormulaSigma,
+    StudentT,
 )
 from scipy.special import digamma
 from pybnf.measurement.base import MeasurementLayer, MeasurementModel, PerMeasurementModel
@@ -992,21 +993,252 @@ def test_capability_gate_now_accepts_log_scale_gaussian():
         assert np.all(np.isfinite(res.gradient))
 
 
-def test_capability_gate_refuses_composite_estimated_sigma():
-    """An estimated scale that is an *expression* over free parameters (FormulaSigma), not a
-    single free parameter, is still gated -- the formula chain rule is a later sub-layer."""
-    obj = LikelihoodObjective(noise=Gaussian(),
-                              sigma_sources={'sigma': FormulaSigma('0.1 + 0.05*scaling')})
-    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
-    exp = _exp_dyn([100, 70, 60, 40])
+# ============================ PSet-only composite estimated scales (#505) ===
+#
+# FormulaSigma (ADR-0044) and PerMeasurementFormulaSigma (ADR-0045) are the last estimated-scale
+# gradient/EFIM deferrals. Their chain rule is PredictionFormulaSigma's MINUS the prediction
+# coupling (no term C): every symbol is a free-parameter coefficient, so ``∂σ/∂θ`` lands purely on
+# coefficient columns. The per-measurement variant additionally binds a row-varying token from
+# ``exp_data``/``exp_row`` (a numeric token → no column, a parameter id → its column).
+
+
+def _formula_sigma_objective(formula='sd_abs + sd_rel*scaling'):
+    """An edition-2 likelihood whose Gaussian noise scale is a **PSet-only composite** formula
+    (ADR-0044, the ``sigma = formula <expr>`` surface, #505) -- an expression over free parameters
+    alone (``sd_abs`` / ``sd_rel`` / ``scaling`` are all declared nuisances, none a prediction
+    column), so its σ-sensitivity is the coefficient-only chain rule (no sim coupling)."""
+    return LikelihoodObjective(noise=Gaussian(), sigma_sources={'sigma': FormulaSigma(formula)})
+
+
+def _formula_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1, scaling=2.0,
+                         pred=(100., 74., 55., 41.), obs=(100., 70., 60., 40.),
+                         dk=(0., -74., -110., -123.)):
+    """Shared fixture for the composite-formula-σ tests: σ = sd_abs + sd_rel*scaling (a scalar over
+    three free nuisances), one experiment (sim carrying ``d Stot/d k``, exp with no ``_SD`` column),
+    routing (``k`` -> the parameter axis, the three coefficients -> NONE nuisances), and the free list."""
+    pred, obs, dk = np.array(pred), np.array(obs), np.array(dk)
+    obj = _formula_sigma_objective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
         'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'scaling': ParamRoute('scaling', NONE, None, 1.0),
-    })
+        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0),
+        'scaling': ParamRoute('scaling', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, k),
+                 ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
+                 ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel),
+                 ('scaling', 'uniform_var', 0.01, 100.0, scaling))
+    return obj, sim, exp, routing, free, (pred, obs, dk)
+
+
+def test_formula_sigma_gate_now_accepts():
+    """The gradient gate, having admitted a prediction-dependent σ (ADR-0079), now also admits the
+    PSet-only composite scales (#505): the assembly returns a finite gradient (no
+    ``GradientNotSupported``), and -- because the retained ``+log σ`` normalizer is not a square --
+    the fit is not ``least_squares_exact`` (so #386 consumes the scalar gradient, L-BFGS)."""
+    obj, sim, exp, routing, free, _ = _formula_sigma_setup()
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert np.all(np.isfinite(res.gradient))
+    assert res.least_squares_exact is False
+
+
+def test_formula_sigma_closed_form_terms():
+    """The assembled gradient of the composite σ = sd_abs + sd_rel*scaling equals the hand-derived
+    split (#505) -- :func:`test_prediction_sigma_closed_form_terms` with **term C absent**. Per point
+    σ is the same scalar; ``dL/dσ_i = (1-rho_i^2)/σ``:
+
+    * (A) residual-through-prediction: the ``k`` column is ``J^T rho`` with ``J_k = dk/σ`` and
+      **nothing more** -- there is no sim column in the σ formula, so no (C) term rides ``dk``;
+    * (B) scale-through-coefficients: ``sd_abs`` column ``sum dL/dσ`` (∂σ/∂sd_abs=1), ``sd_rel``
+      column ``sum dL/dσ * scaling`` (∂σ/∂sd_rel=scaling), ``scaling`` column ``sum dL/dσ * sd_rel``
+      (∂σ/∂scaling=sd_rel) -- the coefficients couple to one another (sd_rel↔scaling), the composite
+      generalization of a bare free sigma.
+
+    The ``k`` column carrying term (A) *alone* is the discriminator that FormulaSigma has no
+    prediction coupling (a mistaken (C) term would perturb it)."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _formula_sigma_setup()
+    sd_abs, sd_rel, scaling = 5.0, 0.1, 2.0
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    sigma = sd_abs + sd_rel * scaling                 # a scalar (no prediction dependence)
+    rho = (pred - obs) / sigma
+    dL_dsigma = (1.0 - rho ** 2) / sigma
+    # Residual-Jacobian carries term (A) on the k column; every σ column of the Jacobian is zero.
+    np.testing.assert_allclose(res.jacobian[:, 0], dk / sigma)
+    np.testing.assert_allclose(res.jacobian[:, 1], 0.0)
+    np.testing.assert_allclose(res.jacobian[:, 2], 0.0)
+    np.testing.assert_allclose(res.jacobian[:, 3], 0.0)
+    # k = term (A) ONLY (no term C); sd_abs / sd_rel / scaling = (B).
+    np.testing.assert_allclose(res.gradient[0], np.sum((dk / sigma) * rho))
+    np.testing.assert_allclose(res.gradient[1], np.sum(dL_dsigma * 1.0))
+    np.testing.assert_allclose(res.gradient[2], np.sum(dL_dsigma * scaling))
+    np.testing.assert_allclose(res.gradient[3], np.sum(dL_dsigma * sd_rel))
+    assert res.least_squares_exact is False
+
+
+def test_formula_sigma_matches_finite_difference():
+    """The arbiter for the composite chain rule: central-difference PyBNF's OWN loss (σ recomputed
+    each perturbation from the source) vs the assembled ``gradient`` for every free parameter
+    (``k`` / ``sd_abs`` / ``sd_rel`` / ``scaling``), on a LINEAR forward model so the hand tensor is
+    exact. ``uniform_var`` everywhere -> the native->sampling factor is 1 (#505)."""
+    obj, sim, exp, routing, free, (pred0, obs, dk) = _formula_sigma_setup()
+    names = [p.name for p in free]
+    k0 = free[0].value
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        pred = pred0 + dk * (theta['k'] - k0)              # exact linear forward model
+        sim_t = _sim_with_sensitivities(pred, d_param=dk)
+        obj._pset_values = theta                            # σ reads its coefficients here
+        return obj.evaluate(sim_t, exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
+
+
+def test_formula_sigma_single_symbol_matches_free_parameter_sigma():
+    """A single-symbol composite formula reduces to a :class:`FreeParameterSigma` **byte-for-byte**
+    (#505): σ = ``sig`` is the bare free scale, ``∂σ/∂sig = 1`` -- the same unit-vector column. Guards
+    the strict-superset claim (the general coefficient chain rule does not perturb the historical
+    single-free-parameter case)."""
+    pred = np.array([100., 74., 55., 41.]); obs = np.array([100., 70., 60., 40.])
+    dk = np.array([0., -74., -110., -123.])
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'sig': ParamRoute('sig', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
-                 ('scaling', 'uniform_var', 0.01, 100.0, 1.0))
-    with pytest.raises(GradientNotSupported):
-        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+                 ('sig', 'uniform_var', 0.01, 100.0, 5.0))
+    obj_formula = LikelihoodObjective(noise=Gaussian(), sigma_sources={'sigma': FormulaSigma('sig')})
+    obj_free = LikelihoodObjective(noise=Gaussian(), sigma_sources={'sigma': FreeParameterSigma('sig')})
+
+    r_formula = assemble_gaussian_gradient(obj_formula, [(sim, exp, routing)], free)
+    r_free = assemble_gaussian_gradient(obj_free, [(sim, exp, routing)], free)
+    np.testing.assert_array_equal(r_formula.gradient, r_free.gradient)
+    np.testing.assert_array_equal(r_formula.jacobian, r_free.jacobian)
+
+
+def test_formula_sigma_efim_fisher_closed_form():
+    """The EFIM / expected-Fisher block for the composite σ (``fit_type = gntr``, #505) -- the
+    ADR-0080 outer-product block with ``g_i`` carrying **no** model-parameter entry (no prediction
+    coupling). For σ = sd_abs + sd_rel*scaling (free order [k, sd_abs, sd_rel, scaling], only ``k``
+    routed): ``s_i = [dk_i, 0, 0, 0]`` and ``g_i = [0, 1, scaling, sd_rel]``. So the location↔scale
+    coupling ``H[k, ·]`` is **zero** (unlike a prediction σ) -- the composite couples only its own
+    coefficients (sd_rel↔scaling), which the diagonal-only cut could not carry. Symmetric and PSD."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _formula_sigma_setup()
+    sd_abs, sd_rel, scaling = 5.0, 0.1, 2.0
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    sigma = sd_abs + sd_rel * scaling
+    expected = np.zeros((4, 4))
+    for i in range(len(pred)):
+        s = np.array([dk[i], 0.0, 0.0, 0.0])              # ∂pred/∂θ (only k moves the model)
+        g = np.array([0.0, 1.0, scaling, sd_rel])         # ∂σ/∂θ: coefficients only (no term C)
+        expected += np.outer(s, s) / sigma ** 2 + 2.0 * np.outer(g, g) / sigma ** 2
+    np.testing.assert_allclose(H, expected)
+    np.testing.assert_allclose(H, H.T)                    # symmetric
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-9)         # PSD
+
+    # No prediction coupling -> the k row/column has NO scale coupling (the discriminator vs a
+    # prediction σ, whose k-coefficient entries are nonzero). The coefficients couple among
+    # themselves: sd_rel↔scaling is the genuine off-diagonal the composite formula produces.
+    np.testing.assert_allclose(H[0, 1], 0.0)
+    np.testing.assert_allclose(H[0, 2], 0.0)
+    np.testing.assert_allclose(H[0, 3], 0.0)
+    assert abs(H[2, 3]) > 0.0
+
+
+def _per_measurement_sigma_setup(sd_base=4.0, s_hi=3.0,
+                                 tokens=('0.5', 's_hi', 's_hi', '1.0'),
+                                 pred=(100., 74., 55., 41.), obs=(100., 70., 60., 40.),
+                                 dk=(0., -74., -110., -123.)):
+    """Shared fixture for the row-varying composite-σ tests (ADR-0045, #505): σ = sd_base +
+    2*noiseParameter1_Stot, whose placeholder binds a per-row token -- a **number** (rows 0/3, ∂/∂θ=0)
+    or the free **parameter id** ``s_hi`` (rows 1/2, ∂σ/∂s_hi=2). The binding table is attached to the
+    exp Data exactly as ``config.py`` attaches the ``measurement_params:`` sidecar."""
+    pred, obs, dk = np.array(pred), np.array(obs), np.array(dk)
+    obj = LikelihoodObjective(
+        noise=Gaussian(),
+        sigma_sources={'sigma': PerMeasurementFormulaSigma('sd_base + 2*noiseParameter1_Stot')})
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    exp.measurement_params = {'Stot': {'noiseParameter1_Stot': list(tokens)}}
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'sd_base': ParamRoute('sd_base', NONE, None, 1.0),
+        's_hi': ParamRoute('s_hi', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('sd_base', 'uniform_var', 0.01, 100.0, sd_base),
+                 ('s_hi', 'uniform_var', 0.01, 100.0, s_hi))
+    return obj, sim, exp, routing, free, (pred, obs, dk)
+
+
+def test_per_measurement_sigma_gradient_binds_per_row():
+    """The per-measurement wrinkle (#505): the placeholder's ``∂σ/∂θ`` depends on what the **row**
+    binds. For σ = sd_base + 2*noiseParameter1_Stot with tokens ``[0.5, s_hi, s_hi, 1.0]``, the
+    ``sd_base`` column collects ∂σ/∂sd_base=1 from **every** row, but the ``s_hi`` column collects
+    ∂σ/∂noiseParameter1_Stot=2 **only** from the two rows binding ``s_hi`` (the numeric rows perturb
+    nothing). The ``k`` column is term (A) alone (no prediction coupling)."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _per_measurement_sigma_setup()
+    sd_base, s_hi = 4.0, 3.0
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    sigma = np.array([sd_base + 2 * 0.5, sd_base + 2 * s_hi, sd_base + 2 * s_hi, sd_base + 2 * 1.0])
+    rho = (pred - obs) / sigma
+    dL_dsigma = (1.0 - rho ** 2) / sigma
+    np.testing.assert_allclose(res.gradient[0], np.sum((dk / sigma) * rho))       # k: term (A) only
+    np.testing.assert_allclose(res.gradient[1], np.sum(dL_dsigma * 1.0))          # sd_base: every row
+    np.testing.assert_allclose(res.gradient[2], (dL_dsigma[1] + dL_dsigma[2]) * 2.0)  # s_hi: rows 1,2 only
+    assert res.least_squares_exact is False
+
+
+def test_per_measurement_sigma_matches_finite_difference():
+    """The arbiter for the row-varying binding (#505): FD of PyBNF's own loss (σ recomputed per
+    perturbation, each row rebinding its token) vs the assembled gradient. A numeric-token row's σ is
+    θ-independent; an ``s_hi`` row's σ moves with ``s_hi`` -- the FD confirms the column lands only
+    where a row actually binds a free id."""
+    obj, sim, exp, routing, free, (pred0, obs, dk) = _per_measurement_sigma_setup()
+    names = [p.name for p in free]
+    k0 = free[0].value
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        pred = pred0 + dk * (theta['k'] - k0)
+        sim_t = _sim_with_sensitivities(pred, d_param=dk)
+        obj._pset_values = theta
+        return obj.evaluate(sim_t, exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
+
+
+def test_per_measurement_sigma_efim_fisher_binds_per_row():
+    """The EFIM block for the row-varying composite σ (#505): ``g_i`` carries ∂σ/∂s_hi=2 **only** on
+    the rows binding ``s_hi``, so the ``sd_base``↔``s_hi`` coupling comes from those rows alone and the
+    ``k`` row stays uncoupled (no prediction term). Symmetric, PSD, closed-form matched."""
+    obj, sim, exp, routing, free, (pred, obs, dk) = _per_measurement_sigma_setup()
+    sd_base, s_hi = 4.0, 3.0
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    sigma = np.array([sd_base + 2 * 0.5, sd_base + 2 * s_hi, sd_base + 2 * s_hi, sd_base + 2 * 1.0])
+    binds = [0.0, 2.0, 2.0, 0.0]                           # ∂σ/∂s_hi per row (0 for a numeric token)
+    expected = np.zeros((3, 3))
+    for i in range(len(pred)):
+        s = np.array([dk[i], 0.0, 0.0])
+        g = np.array([0.0, 1.0, binds[i]])
+        expected += np.outer(s, s) / sigma[i] ** 2 + 2.0 * np.outer(g, g) / sigma[i] ** 2
+    np.testing.assert_allclose(H, expected)
+    np.testing.assert_allclose(H, H.T)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-9)
+    np.testing.assert_allclose(H[0, 2], 0.0)               # k↔s_hi: no coupling (no term C)
+    assert abs(H[1, 2]) > 0.0                              # sd_base↔s_hi: from rows 1,2
 
 
 # =================================== asymmetric / non-Gaussian families (layer G, #454) ===

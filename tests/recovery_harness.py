@@ -160,7 +160,7 @@ def strip_actions_block(model_bngl, dest):
 
 def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_name,
                        fit_type, *, objective='sos', condition=None, preequilibrate=None,
-                       observables=None, noise_models=None, **overrides):
+                       observables=None, noise_models=None, measurement_params=None, **overrides):
     """Build a real bngsim ``Configuration`` for a recovery fit on the NEW-ERA
     ``experiment:`` / ``data:`` surface (ADR-0028, ``edition >= 2``).
 
@@ -185,6 +185,11 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
         <spec>`` per-observable noise directives (ADR-0021/0075), e.g.
         ``{'Stot': 'gaussian, sigma = prediction_formula sd_abs + sd_rel*Stot'}`` for a
         prediction-dependent (combined additive+proportional) scale.
+    :param measurement_params: optional per-measurement binding table
+        ``{column: {placeholder: {time: token}}}`` -- written to a sidecar TSV and referenced
+        by ``measurement_params: <file>`` on the experiment line, so a row-varying
+        ``noiseFormula`` (a :class:`~pybnf.noise.PerMeasurementFormulaSigma`) can bind its
+        placeholder token per data row (ADR-0045).
     """
     scalars = {
         'edition': 2, 'job_type': fit_type, 'objective': objective,
@@ -209,6 +214,11 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
         exp_line += f', condition: {condition[0]}'
     if preequilibrate is not None:
         exp_line += f', preequilibrate: {preequilibrate[0]}'
+    if measurement_params is not None:
+        from pybnf.petab._measurement_params import write_measurement_params
+        mp_path = Path(tmp_path) / 'measurement_params.tsv'
+        write_measurement_params(measurement_params, mp_path)
+        exp_line += f', measurement_params: {mp_path}'
     exp_line += f', data: {exp_path}'
     lines.append(exp_line)
     conf_text = '\n'.join(lines) + '\n'

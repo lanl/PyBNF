@@ -74,17 +74,25 @@ class SigmaSource(ABC):
         unused-column error."""
         return None
 
-    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+    def sigma_sensitivity(self, owner, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index):
         """The native-space ``∂σ/∂θ`` (a ``(len(index),)`` vector) of this source's noise
         parameter at one scored point -- what the objective's noise-gradient seam weights by
-        ``∂(loss)/∂σ`` to build the estimated-scale gradient column (ADR-0079). Only the two
-        gradient-supported *estimated* sources override it: :class:`FreeParameterSigma` (a unit
-        vector) and :class:`PredictionFormulaSigma` (the σ formula's chain rule, coupling the
-        scale to the prediction). Every other source is either fixed (its scale contributes no
-        gradient column) or gated off the gradient path (:class:`FormulaSigma` /
-        :class:`PerMeasurementFormulaSigma`), so the base default refuses -- unreachable once the
-        capability gate (``_require_gradient_supported``) has run, but a pointed guard if it is
-        ever bypassed."""
+        ``∂(loss)/∂σ`` to build the estimated-scale gradient column (ADR-0079/0080/#505). Every
+        *estimated* source overrides it: :class:`FreeParameterSigma` (a unit vector),
+        :class:`PredictionFormulaSigma` (the σ-formula chain rule, coupling the scale to the
+        prediction), and the PSet-only composite scales :class:`FormulaSigma` (the coefficient-only
+        chain rule) / :class:`PerMeasurementFormulaSigma` (that chain rule plus a per-row placeholder
+        binding). Every *fixed* source contributes no gradient column, so the base default refuses --
+        unreachable once the capability gate (``_require_gradient_supported``) has run, but a pointed
+        guard if it is ever bypassed.
+
+        The argument list mirrors :meth:`value` (``owner``, the ``(sim_data, sim_row)`` point on the
+        simulated trajectory, the ``(exp_data, exp_row, col_name)`` point on the experimental data)
+        plus the gradient seam's ``raw_sens`` forward-sensitivity accessor and ``index`` free-parameter
+        column map. ``exp_data``/``exp_row`` are read only by :class:`PerMeasurementFormulaSigma`, whose
+        per-row placeholder token binds from the experiment's table (ADR-0045); every other source
+        ignores them, exactly as they ignore ``sim_data``/``sim_row`` unless the σ scales with the
+        prediction."""
         from ..gradient.errors import GradientNotSupported
         raise GradientNotSupported(
             "Noise source %s has no differentiable scale sensitivity on the gradient path "
@@ -139,7 +147,7 @@ class FreeParameterSigma(SigmaSource):
         # evaluate_multiple builds once per evaluation from the pset (ADR-0021).
         return owner._pset_values[self.name]
 
-    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+    def sigma_sensitivity(self, owner, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index):
         """``∂σ/∂θ`` for a free-parameter scale (ADR-0079): the unit vector on this
         parameter's own column -- σ **is** the parameter (factor 1), with no prediction
         coupling. Weighted by ``∂(loss)/∂σ`` in the objective's noise-gradient seam, this
@@ -203,7 +211,16 @@ class FormulaSigma(SigmaSource):
     It is *estimated* (it reads estimated parameters), so the caller keeps the family's
     likelihood normalizer (ADR-0011). Its free symbols are the nuisance free parameters the
     fit must declare (:meth:`required_free_params`); they resolve from ``owner._pset_values``
-    exactly as :class:`FreeParameterSigma`'s single name does."""
+    exactly as :class:`FreeParameterSigma`'s single name does.
+
+    **Gradient (#505).** As a PSet-only composite scale it is the easy half of the estimated-scale
+    gradient frontier: every symbol resolves from ``owner._pset_values`` (a coefficient, never a
+    prediction column), so :meth:`sigma_sensitivity` is :class:`PredictionFormulaSigma`'s σ-formula
+    chain rule **minus** the prediction-coupling term -- ``∂σ/∂θ = Σ_coeff (∂σ/∂coeff)·e_coeff``, purely
+    on the coefficient columns. It strictly generalizes :class:`FreeParameterSigma` (a single symbol,
+    ``∂σ/∂name = 1``) to several coefficients that may couple off-diagonal in the noise block, and its
+    unit-vector column feeds both the scalar (L-BFGS) gradient and the EFIM Fisher block unchanged
+    (ADR-0079/0080)."""
 
     estimated = True
 
@@ -214,10 +231,12 @@ class FormulaSigma(SigmaSource):
         #: resolved (a parse), then the compiler's canonical sorted order. Picklable.
         self.names = list(names) if names is not None else None
         self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+        self._dfunc = None  # {symbol: ∂σ/∂symbol} lambdify callables; not pickled (#385/#505)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_func'] = None
+        state['_dfunc'] = None  # the partials are lambdify callables too; recompile worker-side
         return state
 
     def _ensure_names(self):
@@ -236,12 +255,43 @@ class FormulaSigma(SigmaSource):
             self._func, self.names = func, names
         return self._func, self.names
 
+    def _derivative_callables(self):
+        """The partials ``{coeff: ∂σ/∂coeff}`` sharing :meth:`_callable`'s argument order, for the
+        gradient path (#505). Lazy + not pickled, the same compile-once-per-worker pattern as the
+        value callable (the PSet-only peer of :meth:`PredictionFormulaSigma._derivative_callables`)."""
+        if self._dfunc is None:
+            from ..petab.formula import compile_petab_formula_derivatives
+            derivs, names = compile_petab_formula_derivatives(self.formula, self._ensure_names())
+            self._dfunc, self.names = derivs, names
+        return self._dfunc, self.names
+
     def required_free_params(self):
         return set(self._ensure_names())
 
     def value(self, owner, sim_data, sim_row, exp_data, exp_row, col_name):
         func, names = self._callable()
         return float(func(*[owner._pset_values[n] for n in names]))
+
+    def sigma_sensitivity(self, owner, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index):
+        """``∂σ/∂θ`` for a PSet-only composite scale (#505) -- a ``(len(index),)`` native-space vector,
+        :class:`PredictionFormulaSigma.sigma_sensitivity` **minus** the prediction-coupling branch. Every
+        symbol of the formula resolves from ``owner._pset_values`` (a coefficient -- there is no sim
+        column and hence no term C), so the chain rule ``∂σ/∂θ = Σ_coeff (∂σ/∂coeff)·(∂coeff/∂θ)`` lands
+        each partial straight on that coefficient's own column (``∂coeff/∂θ = e_coeff``). Reduces to
+        :class:`FreeParameterSigma`'s unit vector for a single-symbol formula (``∂σ/∂name = 1``); several
+        coefficients simply populate several columns, coupling off-diagonal in the outer-product noise
+        block (still PSD). ``sim_data``/``sim_row``/``exp_data``/``exp_row``/``raw_sens`` are unused (the
+        σ reads only the PSet)."""
+        derivs, names = self._derivative_callables()
+        args = [float(owner._pset_values[n]) for n in names]
+        grad = np.zeros(len(index))
+        for name in names:
+            partial = float(derivs[name](*args))
+            if partial == 0.0:
+                continue
+            if name in index:                       # the seam checked each coefficient is a gradient free param
+                grad[index[name]] += partial
+        return grad
 
 
 class PerMeasurementFormulaSigma(SigmaSource):
@@ -264,7 +314,15 @@ class PerMeasurementFormulaSigma(SigmaSource):
     pickled (the same compile-once-per-worker pattern as :class:`FormulaSigma`). The binding
     table lives on the experimental :class:`~pybnf.data.Data` (carried there by ``config.py``
     from the importer's sidecar), not on the source, so the source survives dask scatter
-    independently of the data."""
+    independently of the data.
+
+    **Gradient (#505).** The per-measurement half of the PSet-only composite-scale gradient. Its
+    chain rule is :class:`FormulaSigma`'s (no prediction coupling), with one wrinkle: a placeholder's
+    ``∂σ/∂θ`` depends on what the **row** binds. So :meth:`sigma_sensitivity` reads the same
+    ``exp_data``/``exp_row`` binding :meth:`value` does -- a **numeric** token perturbs nothing
+    (``∂/∂θ = 0``), a **parameter id** token lands ``∂σ/∂placeholder`` on *that parameter's* column --
+    which is why the ``sigma_sensitivity`` seam threads ``exp_data``/``exp_row`` (ADR-0080's follow-up:
+    the seam previously carried only the sim row)."""
 
     estimated = True
 
@@ -275,10 +333,12 @@ class PerMeasurementFormulaSigma(SigmaSource):
         #: parse resolves them, then the compiler's canonical sorted order. Picklable.
         self.names = list(names) if names is not None else None
         self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+        self._dfunc = None  # {symbol: ∂σ/∂symbol} lambdify callables; not pickled (#385/#505)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_func'] = None
+        state['_dfunc'] = None  # the partials are lambdify callables too; recompile worker-side
         return state
 
     def _ensure_names(self):
@@ -293,6 +353,18 @@ class PerMeasurementFormulaSigma(SigmaSource):
             func, names = compile_petab_formula(self.formula, self._ensure_names())
             self._func, self.names = func, names
         return self._func, self.names
+
+    def _derivative_callables(self):
+        """The partials ``{symbol: ∂σ/∂symbol}`` sharing :meth:`_callable`'s argument order, for the
+        gradient path (#505). Lazy + not pickled (the same compile-once-per-worker pattern as the value
+        callable). A placeholder is a free symbol of the compiled expression like any other, so it gets
+        its own partial; whether that partial lands on a column is decided per row by the token binding
+        in :meth:`sigma_sensitivity`."""
+        if self._dfunc is None:
+            from ..petab.formula import compile_petab_formula_derivatives
+            derivs, names = compile_petab_formula_derivatives(self.formula, self._ensure_names())
+            self._dfunc, self.names = derivs, names
+        return self._dfunc, self.names
 
     def required_free_params(self):
         # Only the FIXED (non-placeholder) symbols are always-required PSet names; the
@@ -311,6 +383,49 @@ class PerMeasurementFormulaSigma(SigmaSource):
                 args.append(owner._pset_values[name])
         return float(func(*args))
 
+    def sigma_sensitivity(self, owner, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index):
+        """``∂σ/∂θ`` for a row-varying PSet-only composite scale (#505) -- :class:`FormulaSigma`'s
+        coefficient-only chain rule with the placeholder(s) bound **per row** from ``exp_data``/
+        ``exp_row`` exactly as :meth:`value` binds them. For each symbol of the compiled expression the
+        argument is resolved as in :meth:`value` (a fixed symbol from the PSet, a placeholder from the
+        row token), and its partial ``∂σ/∂symbol`` lands on the column of whatever free parameter that
+        symbol *is*:
+
+        * a **fixed** coefficient -> its own column (like :class:`FormulaSigma`);
+        * a placeholder bound to a **numeric** token -> no column (``∂token/∂θ = 0``);
+        * a placeholder bound to a **parameter id** -> ``∂σ/∂placeholder`` on *that parameter's* column
+          (``∂placeholder/∂that_param = 1``) -- a per-row estimated nuisance, so a row binding a constant
+          and a row binding a free id differentiate differently on the same source (ADR-0045).
+
+        There is no prediction coupling (no term C), so ``sim_data``/``sim_row``/``raw_sens`` are unused;
+        a parameter-id token not among the gradient free parameters contributes nothing (its ``∂/∂θ`` is
+        zero for every θ)."""
+        derivs, names = self._derivative_callables()
+        bindings = self._row_bindings(exp_data, col_name)
+        args, targets = [], []   # targets[k] = the free-parameter name symbol k perturbs, or None
+        for name in names:
+            if _PLACEHOLDER.match(name):
+                token = self._row_token(bindings, name, exp_row, col_name)
+                try:
+                    args.append(float(token))       # a per-row numeric token: perturbs nothing
+                    targets.append(None)
+                except (TypeError, ValueError):
+                    args.append(float(owner._pset_values[token]))
+                    targets.append(token)           # a per-row parameter id: ∂σ/∂placeholder on its column
+            else:
+                args.append(float(owner._pset_values[name]))
+                targets.append(name)                # a fixed coefficient: ∂σ/∂name on its own column
+        grad = np.zeros(len(index))
+        for name, target in zip(names, targets):
+            if target is None:
+                continue
+            partial = float(derivs[name](*args))
+            if partial == 0.0:
+                continue
+            if target in index:
+                grad[index[target]] += partial
+        return grad
+
     @staticmethod
     def _row_bindings(exp_data, col_name):
         table = getattr(exp_data, 'measurement_params', None)
@@ -322,13 +437,20 @@ class PerMeasurementFormulaSigma(SigmaSource):
         return table[col_name]
 
     @staticmethod
-    def _resolve_token(owner, bindings, placeholder, exp_row, col_name):
+    def _row_token(bindings, placeholder, exp_row, col_name):
+        """The raw per-row token for ``placeholder`` at ``exp_row`` (a number or a parameter id) from
+        the binding table -- the shared lookup :meth:`value` resolves to a value and
+        :meth:`sigma_sensitivity` classifies (numeric -> no column, id -> its column)."""
         try:
-            token = bindings[placeholder][exp_row]
+            return bindings[placeholder][exp_row]
         except (KeyError, IndexError):
             raise PybnfError(
                 f"The per-measurement binding table for '{col_name}' has no value for "
                 f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
+
+    @classmethod
+    def _resolve_token(cls, owner, bindings, placeholder, exp_row, col_name):
+        token = cls._row_token(bindings, placeholder, exp_row, col_name)
         try:
             return float(token)                 # a per-row numeric token, inlined
         except (TypeError, ValueError):
@@ -446,7 +568,7 @@ class PredictionFormulaSigma(SigmaSource):
                 for n in names]
         return float(func(*args))
 
-    def sigma_sensitivity(self, owner, sim_data, sim_row, col_name, raw_sens, index):
+    def sigma_sensitivity(self, owner, sim_data, sim_row, exp_data, exp_row, col_name, raw_sens, index):
         """``∂σ/∂θ`` for a prediction-dependent σ (ADR-0079) -- a ``(len(index),)`` native-space
         vector, the noise-side peer of
         :meth:`~pybnf.measurement.base.MeasurementModel.prediction_sensitivity` (ADR-0036). By the
