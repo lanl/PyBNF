@@ -190,8 +190,9 @@ class GradientResult:
     param_names: list         # free-parameter order of the columns / gradient
     least_squares_exact: bool = True   # False once an estimated sigma is present
     #: The expected-Fisher / Gauss-Newton Hessian (n_param, n_param), sampling space --
-    #: attached only on the EFIM trust-region path (``fit_type = gntr``, #481) by
-    #: :func:`assemble_fisher_hessian`; ``None`` for ``trf`` / ``lbfgs``, which never form it.
+    #: attached only on the EFIM trust-region path (``fit_type = gntr``, #481/#488) by
+    #: :func:`assemble_gradient_and_fisher_hessian`; ``None`` for ``trf`` / ``lbfgs``, which
+    #: never form it.
     hessian: np.ndarray = None
 
 
@@ -220,6 +221,24 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     ids, never on the parameter values -- so this per-evaluation assembly only reads
     the freshly simulated sensitivity tensors.
     """
+    return _assemble_gradient(objective, experiments, free_params, include_fisher=False)
+
+
+def assemble_gradient_and_fisher_hessian(objective, experiments, free_params):
+    """Assemble a :class:`GradientResult` and attach its expected-Fisher Hessian in one pass.
+
+    This is the ``gntr`` objective-assembly path (#488). It produces the same residual,
+    Jacobian, scalar gradient, and Fisher Hessian as calling :func:`assemble_gaussian_gradient`
+    and :func:`assemble_fisher_hessian` separately, but walks each scored point only once. The
+    shared point walk resolves the simulation row, filters missing observations, builds the raw
+    sensitivity accessor, and calls ``prediction_sensitivity`` once before feeding both the
+    gradient and curvature accumulators.
+    """
+    return _assemble_gradient(objective, experiments, free_params, include_fisher=True)
+
+
+def _assemble_gradient(objective, experiments, free_params, include_fisher):
+    """Implementation shared by the gradient-only and combined gradient/Fisher assemblers."""
     names = [p.name for p in free_params]
     index = {name: j for j, name in enumerate(names)}
     n_param = len(free_params)
@@ -242,10 +261,12 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     # contributes its scalar gradient ``sum_i w_i * d(data_fit_i)/d(pred_i) * d(pred_i)/d theta``
     # straight here. Zero for an all-Gaussian / Student-t fit (the residual-bearing path).
     data_fit_gradient = np.zeros(n_param)
+    hessian = np.zeros((n_param, n_param)) if include_fisher else None
     least_squares_exact = True
     for sim_data, exp_data, routing in experiments:
         if _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
-                                  rho_rows, jac_rows, noise_gradient, data_fit_gradient):
+                                  rho_rows, jac_rows, noise_gradient, data_fit_gradient,
+                                  hessian=hessian):
             least_squares_exact = False
 
     rho = np.asarray(rho_rows, dtype=float)
@@ -259,14 +280,17 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     jac = jac * factors[np.newaxis, :]
     noise_gradient = noise_gradient * factors
     data_fit_gradient = data_fit_gradient * factors
+    if hessian is not None:
+        hessian = hessian * np.outer(factors, factors)
 
     gradient = jac.T @ rho + data_fit_gradient + noise_gradient
     return GradientResult(residual=rho, jacobian=jac, gradient=gradient,
-                          param_names=names, least_squares_exact=least_squares_exact)
+                          param_names=names, least_squares_exact=least_squares_exact,
+                          hessian=hessian)
 
 
 def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
-                           rho_rows, jac_rows, noise_gradient, data_fit_gradient):
+                           rho_rows, jac_rows, noise_gradient, data_fit_gradient, hessian=None):
     """Append one experiment's per-point residual and native-space Jacobian rows (for a
     least-squares column -- Gaussian or Student-t, #459), accumulate any estimated-noise gradient
     columns into ``noise_gradient``, and accumulate a no-residual family's scalar data-fit gradient
@@ -279,11 +303,34 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
     observation axis (matching ``evaluate_pointwise``). Returns ``True`` iff this
     experiment made the result not ``least_squares_exact`` -- an estimated-noise column or a
     no-residual (Laplace / count) family was present (so the caller can clear the flag)."""
+    inexact = False
+    quantity = "gradient and Hessian" if hessian is not None else "gradient"
+    for point in _iter_scored_points(
+            objective, sim_data, exp_data, routing, index, n_param, quantity):
+        if _accumulate_gradient_point(
+                objective, sim_data, exp_data, index, point, rho_rows, jac_rows,
+                noise_gradient, data_fit_gradient):
+            inexact = True
+        if hessian is not None:
+            _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
+    return inexact
+
+
+def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, quantity):
+    """Yield each scored point and its native-space prediction sensitivity once (#488).
+
+    This is the point-selection scaffold shared by the gradient-only, Fisher-only, and combined
+    ``gntr`` assemblers: independent-variable resolution, comparable-column intersection, row
+    matching, NaN filtering, raw-sensitivity access, and the trajectory-transform chain rule all
+    live here. Each item is ``(sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens)``;
+    ``raw_sens`` travels with the point because estimated-noise gradient and Fisher blocks use the
+    same accessor when differentiating their scale sources.
+    """
     sens = sim_data.output_sensitivities
     if sens is None:
         raise GradientNotSupported(
             "An experiment carries no forward-sensitivity tensor; enable the gradient "
-            "path (apply_routing) on every scored model before assembling the gradient.")
+            "path (apply_routing) on every scored model before assembling the %s." % quantity)
 
     indvar = min(exp_data.cols, key=exp_data.cols.get)
     comparable = set(sim_data.cols) | set(objective._per_measurement_models)
@@ -292,14 +339,10 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
 
     # The per-column sensitivity accessor (#453): ∂(column as _prediction sees it)/∂θ -- the
     # #447 tensor read at a row, routing-factor-folded, NONE/pinned parameters at 0, with any
-    # Data-level normalization chain rule (ADR-0053) folded in, and any materialized
-    # measurement-model column (ADR-0036, layer H #455) differentiated through its formula's
-    # chain rule. The objective's prediction_sensitivity seam threads each trajectory transform
-    # (cumulative / per-measurement) on top of it; for a plain column it returns exactly the
-    # per-parameter Jacobian this loop built inline before (byte-identical), now vectorised.
+    # Data-level normalization and measurement-model chain rules folded in. Built once per
+    # experiment; the combined gradient/Fisher path then reuses it for both consumers.
     raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
 
-    inexact = False
     for rownum in range(exp_data.data.shape[0]):
         sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
         for col_name in sorted(compare_cols):
@@ -307,54 +350,65 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
             if np.isnan(observation):
                 continue
             weight = exp_data.weights[rownum, exp_data.cols[col_name]]
-            sqrt_w = np.sqrt(weight)
             # ∂pred/∂θ through the objective's transform seam (plain / cumulative / per-
-            # measurement; #453), so the gradient differentiates exactly what is scored.
-            # A pinned (factor 0) parameter and a model-unbound nuisance (a free sigma; layer
-            # D) carry 0 in raw_sens, so this stays the data fit's dependence alone -- an
-            # estimated noise parameter's own column is handled below on the scalar path.
+            # measurement; #453), so every consumer differentiates exactly what is scored. A
+            # pinned parameter and a model-unbound nuisance carry 0 in raw_sens.
             dpred_dtheta = objective.prediction_sensitivity(
                 sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
-            # Layer D/G (#451/#454), ADR-0079: the estimated noise scale contributes
-            # d(loss)/d(theta) straight to the scalar gradient (its normalizer is not a square,
-            # so it stays off the residual-Jacobian) as the full n_param vector
-            # ``sum_p (dL/dp) * (dp/dtheta)``. For a single free sigma dp/dtheta is a unit vector,
-            # so this is the historical scalar column on that parameter's coordinate; for a
-            # prediction-dependent sigma (dp/dtheta = the sigma formula's chain rule, ADR-0075)
-            # it also perturbs the model columns through the same forward sensitivity as the
-            # residual. Weighted by the full per-point weight, exactly as ``evaluate`` weights the
-            # per-point loss. ``None`` for a fixed-noise point (no column, path inert).
-            noise_vec = objective.noise_grad_point(
-                sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
-            if noise_vec is not None:
-                noise_gradient += weight * noise_vec
-                inexact = True
-            if objective.has_least_squares_residual(col_name):
-                # A family whose data fit is a smooth half-square -- a Gaussian (data_fit =
-                # 1/2 rho**2) or a Student-t (its exact sqrt-loss residual, #459): it contributes
-                # an exact residual row + native Jacobian row (sqrt(w)-folded), and its data-fit
-                # gradient comes from J^T rho. The Gaussian path is byte-identical to pre-layer-G.
-                rho, drho_dpred = objective.residual_point(
-                    sim_data, exp_data, sim_row, rownum, col_name)
-                rho_rows.append(sqrt_w * rho)
-                jac_rows.append(sqrt_w * drho_dpred * dpred_dtheta)
-            else:
-                # A family with no clean least-squares residual (Laplace, whose L1 data fit is the
-                # cusp sqrt|z|; the count family; layer G, #454/#459): its data-fit gradient goes
-                # straight to the scalar accumulator (full per-point weight), and the result is not
-                # least_squares_exact.
-                dfit_dpred = objective.data_fit_grad_point(
-                    sim_data, exp_data, sim_row, rownum, col_name)
-                data_fit_gradient += weight * dfit_dpred * dpred_dtheta
-                inexact = True
+            yield sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens
+
+
+def _accumulate_gradient_point(objective, sim_data, exp_data, index, point,
+                               rho_rows, jac_rows, noise_gradient, data_fit_gradient):
+    """Consume one :func:`_iter_scored_points` item for the scalar/residual gradient."""
+    sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens = point
+    sqrt_w = np.sqrt(weight)
+    # Layer D/G (#451/#454), ADR-0079: an estimated noise scale contributes its full
+    # ``sum_p (dL/dp) * (dp/dtheta)`` vector directly to the scalar gradient. The normalizer is
+    # not a square, so this stays off the residual-Jacobian. ``None`` means fixed noise.
+    noise_vec = objective.noise_grad_point(
+        sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
+    inexact = noise_vec is not None
+    if noise_vec is not None:
+        noise_gradient += weight * noise_vec
+
+    if objective.has_least_squares_residual(col_name):
+        # Gaussian and Student-t data fits are smooth half-squares: append their exact residual
+        # and native Jacobian rows, sqrt(weight)-folded.
+        rho, drho_dpred = objective.residual_point(
+            sim_data, exp_data, sim_row, rownum, col_name)
+        rho_rows.append(sqrt_w * rho)
+        jac_rows.append(sqrt_w * drho_dpred * dpred_dtheta)
+    else:
+        # Laplace and count families have no clean least-squares residual; accumulate their
+        # complete data-fit gradient on the scalar path.
+        dfit_dpred = objective.data_fit_grad_point(
+            sim_data, exp_data, sim_row, rownum, col_name)
+        data_fit_gradient += weight * dfit_dpred * dpred_dtheta
+        inexact = True
     return inexact
+
+
+def _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian):
+    """Consume one :func:`_iter_scored_points` item for its expected-Fisher terms."""
+    sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens = point
+    # Location block: w_i * kappa_i * outer(s_i, s_i).
+    kappa = objective.location_fisher_point(sim_data, exp_data, sim_row, rownum, col_name)
+    if kappa:
+        hessian += (weight * kappa) * np.outer(dpred_dtheta, dpred_dtheta)
+    # Noise block (ADR-0080): ``sum_p I_scale_p * outer(g_i^p, g_i^p)``. A single free
+    # sigma supplies a diagonal unit-vector block; prediction-dependent scales may couple axes.
+    noise_block = objective.noise_fisher_point(
+        sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
+    if noise_block is not None:
+        hessian += weight * noise_block
 
 
 def assemble_fisher_hessian(objective, experiments, free_params):
     """Assemble the expected-Fisher / Gauss-Newton **Hessian** ``H`` (n_param x n_param),
-    summed across experiments -- the curvature the EFIM trust-region path
-    (``fit_type = gntr``, #481) consumes alongside the scalar gradient
-    :func:`assemble_gaussian_gradient` already produces.
+    summed across experiments. This standalone API produces the same curvature the combined
+    :func:`assemble_gradient_and_fisher_hessian` path feeds to the EFIM trust-region optimizer
+    (``fit_type = gntr``, #481/#488).
 
     ``H = sum_i w_i [ kappa_i * outer(s_i, s_i)  +  sum_p I_scale_p * outer(g_i^p, g_i^p) ]``
     where ``s_i = d(prediction_i)/d(theta)`` is the same forward sensitivity the gradient uses
@@ -410,46 +464,9 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
     sorted-column walk -- so the Hessian is assembled over precisely the points the gradient
     is. The location block reads ``kappa_i`` (``location_fisher_point``) and the noise block the
     per-point matrix ``sum_p I_scale_p * outer(g_i^p, g_i^p)`` (``noise_fisher_point``, ADR-0080)."""
-    sens = sim_data.output_sensitivities
-    if sens is None:
-        raise GradientNotSupported(
-            "An experiment carries no forward-sensitivity tensor; enable the gradient "
-            "path (apply_routing) on every scored model before assembling the Hessian.")
-
-    indvar = min(exp_data.cols, key=exp_data.cols.get)
-    comparable = set(sim_data.cols) | set(objective._per_measurement_models)
-    compare_cols = set(exp_data.cols).intersection(comparable)
-    compare_cols.discard(indvar)
-
-    raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
-
-    for rownum in range(exp_data.data.shape[0]):
-        sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
-        for col_name in sorted(compare_cols):
-            observation = exp_data.data[rownum, exp_data.cols[col_name]]
-            if np.isnan(observation):
-                continue
-            weight = exp_data.weights[rownum, exp_data.cols[col_name]]
-            # d(prediction)/d(theta) through the objective's transform seam -- the SAME
-            # s_i the gradient's residual-Jacobian / data-fit column is built from.
-            dpred_dtheta = objective.prediction_sensitivity(
-                sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
-            # Location block: w_i * kappa_i * outer(s_i, s_i). A column whose location
-            # curvature is 0 (a pinned/constant prediction) adds nothing.
-            kappa = objective.location_fisher_point(sim_data, exp_data, sim_row, rownum, col_name)
-            if kappa:
-                hessian += (weight * kappa) * np.outer(dpred_dtheta, dpred_dtheta)
-            # Noise block: the full ``Σ_p I_scale_p * outer(g_i^p, g_i^p)`` matrix (ADR-0080), with
-            # g_i^p = ∂p/∂θ the same scale sensitivity the noise *gradient* rides. A single free
-            # sigma's g_i^p is the unit vector e_p, so its block is the historical diagonal entry
-            # (byte-identical); a prediction-dependent sigma's g_i^p carries model-parameter columns
-            # too, producing the genuine off-diagonal location↔scale coupling. ``None`` for a
-            # fixed-noise point (no estimated parameter). Threads raw_sens/index exactly as the
-            # gradient's noise_grad_point does.
-            noise_block = objective.noise_fisher_point(
-                sim_data, exp_data, sim_row, rownum, col_name, raw_sens, index)
-            if noise_block is not None:
-                hessian += weight * noise_block
+    for point in _iter_scored_points(
+            objective, sim_data, exp_data, routing, index, n_param, "Hessian"):
+        _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
 
 
 def _sensitivity(sens, selector, route, sim_row):

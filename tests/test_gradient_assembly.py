@@ -3377,6 +3377,55 @@ def test_fd_acceptance_gate_dose_response(k_type):
 # blocks); these checks are closed-form, plus the headline J^T J consistency that proves
 # the Gaussian case reduces to trf's curvature.
 
+def test_combined_gradient_fisher_assembles_each_scored_sensitivity_once(monkeypatch):
+    """The ``gntr`` combined assembler produces the same ``g`` and ``H`` as the standalone
+    assemblers while calling ``prediction_sensitivity`` exactly once per scored point (#488).
+
+    One NaN observation pins the count to the objective's actual scored-point set rather than the
+    rectangular data shape; the shared iterator owns that skip as well as sensitivity assembly.
+    """
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    obs = np.array([118.0, np.nan, 50.0, 38.0])
+    dk = np.array([0.0, -80.0, -106.0, -108.0])
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp(obs, 4.0)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 4.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('S0', 'uniform_var', 0.0, 500.0, 120.0))
+    experiments = [(sim, exp, routing)]
+
+    expected_grad = assemble_gaussian_gradient(obj, experiments, free)
+    expected_hessian = assemble_fisher_hessian(obj, experiments, free)
+    original = obj.prediction_sensitivity
+    calls = 0
+
+    def counted_prediction_sensitivity(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(obj, 'prediction_sensitivity', counted_prediction_sensitivity)
+    from pybnf.algorithms.optimizers.gntr import GNTRAlgorithm
+
+    class AlgorithmStub:
+        pass
+
+    # Exercise GNTR's override, not merely the combined assembler in isolation, so the test also
+    # guards the optimizer wiring that replaces its historical second Hessian pass.
+    algorithm = AlgorithmStub()
+    algorithm.objective = obj
+    combined = GNTRAlgorithm._assemble_objective_gradient(algorithm, experiments, free)
+
+    assert calls == np.count_nonzero(~np.isnan(obs))
+    np.testing.assert_allclose(combined.residual, expected_grad.residual)
+    np.testing.assert_allclose(combined.jacobian, expected_grad.jacobian)
+    np.testing.assert_allclose(combined.gradient, expected_grad.gradient)
+    np.testing.assert_allclose(combined.hessian, expected_hessian)
+
+
 def test_fisher_hessian_gaussian_equals_jtj():
     """The Fisher/Gauss-Newton Hessian of a fixed-sigma Gaussian fit is exactly the residual
     Jacobian's ``J^T J`` -- the same Gauss-Newton curvature ``trf`` uses (``kappa ==

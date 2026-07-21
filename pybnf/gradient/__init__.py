@@ -16,7 +16,9 @@ bngsim's forward output-sensitivity tensor. This package hosts the PyBNF-side ma
   penalties (#456). A configuration outside the supported set raises :class:`GradientNotSupported`,
   so a caller can fall back to a gradient-free step. For the EFIM trust-region optimizer
   (``fit_type = gntr``, #481) it additionally assembles the expected-Fisher / Gauss-Newton
-  **Hessian** (``assemble_fisher_hessian`` + the constraint sibling ``assemble_constraint_hessian``).
+  **Hessian** in the same point walk as the scalar gradient
+  (``assemble_gradient_and_fisher_hessian`` + the constraint sibling
+  ``assemble_constraint_hessian``); ``assemble_fisher_hessian`` remains the standalone API.
 
 The capability gate and the per-layer math are documented in ``docs/gradient_fitting.rst``.
 """
@@ -39,6 +41,7 @@ from .assembly import (
     assemble_constraint_gradient,
     assemble_constraint_hessian,
     assemble_fisher_hessian,
+    assemble_gradient_and_fisher_hessian,
     assemble_gaussian_gradient,
 )
 
@@ -56,6 +59,7 @@ __all__ = [
     'apply_routing',
     'GradientResult',
     'assemble_gaussian_gradient',
+    'assemble_gradient_and_fisher_hessian',
     'assemble_constraint_gradient',
     'assemble_fisher_hessian',
     'assemble_constraint_hessian',

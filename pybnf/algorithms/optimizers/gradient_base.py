@@ -451,7 +451,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                     experiments.append(
                         (sim_data, model_exp[suffix], self._routings[(model_name, suffix)]))
         try:
-            grad = assemble_gaussian_gradient(self.objective, experiments, free_params)
+            grad = self._assemble_objective_gradient(experiments, free_params)
             if self.config.constraints:
                 cgrad = assemble_constraint_gradient(
                     self.config.constraints, res.simdata, self._routings, free_params)
@@ -462,13 +462,22 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             raise self._unsupported_gradient_error(e) from e
         return grad
 
+    def _assemble_objective_gradient(self, experiments, free_params):
+        """Assemble the data-fit objective derivatives needed by this optimizer leaf.
+
+        The base ``trf`` / ``lbfgs`` path needs only the scalar gradient and residual model.
+        ``gntr`` overrides this seam to assemble those values and its Fisher Hessian in one
+        scored-point pass (#488).
+        """
+        return assemble_gaussian_gradient(self.objective, experiments, free_params)
+
     def _attach_curvature(self, grad, res, experiments, free_params):
         """Hook for a curvature-consuming leaf to attach its Hessian to the assembled
         gradient. A **no-op on the base**, so the residual-form (``trf``) and scalar-gradient
         (``lbfgs``) leaves -- which never form a Hessian -- are byte-identical; the EFIM
-        trust-region leaf (``fit_type = gntr``, #481) overrides it to set ``grad.hessian``
-        (:func:`~pybnf.gradient.assembly.assemble_fisher_hessian` plus, for a constrained fit,
-        :func:`~pybnf.gradient.assembly.assemble_constraint_hessian`). Called **inside**
+        trust-region leaf (``fit_type = gntr``, #481) receives the data-fit Hessian from its
+        combined :meth:`_assemble_objective_gradient` override, then uses this hook to add, for a
+        constrained fit, :func:`~pybnf.gradient.assembly.assemble_constraint_hessian`. Called **inside**
         :meth:`gradient_at`'s :class:`GradientNotSupported` guard, so an unsupported-curvature
         corner (a MEDIAN-count Fisher, a MEAN-on-log estimated scale, an estimated constraint
         scale, ...) converts to the same fail-fast :class:`PybnfError`."""

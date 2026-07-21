@@ -13,9 +13,9 @@ Hessian is the **expected-Fisher / Gauss-Newton information**
 
 built entirely from the #385 forward-sensitivity plumbing (``s_i = d(prediction_i)/d theta``,
 ``kappa_i`` the per-observation location Fisher) plus small analytic per-family factors
-(:func:`~pybnf.gradient.assembly.assemble_fisher_hessian`), extending ``trf``'s step quality to
-any NLL objective ``lbfgs`` handles. It consumes the **same scalar gradient** ``lbfgs`` does
-(``GradientResult.gradient``); only the curvature model differs.
+(:func:`~pybnf.gradient.assembly.assemble_gradient_and_fisher_hessian`), extending ``trf``'s step
+quality to any NLL objective ``lbfgs`` handles. It consumes the **same scalar gradient** ``lbfgs``
+does (``GradientResult.gradient``); only the curvature model differs.
 
 Why native (not a scipy/pip trust-region driver): the same reason ``trf`` / ``lbfgs`` /
 ``powell`` document -- a blocking driver calls ``fun`` / ``jac`` synchronously and cannot farm
@@ -69,7 +69,7 @@ import numpy as np
 from .gradient_base import GradientOptimizer
 from .trf import _TRFRunner
 from ...config_schema import PyBNFConfigModel
-from ...gradient import assemble_constraint_hessian, assemble_fisher_hessian
+from ...gradient import assemble_constraint_hessian, assemble_gradient_and_fisher_hessian
 from ...printing import PybnfError
 from ...registry import register_fit_type
 
@@ -104,9 +104,11 @@ class GNTRConfig(PyBNFConfigModel):
 class GNTRAlgorithm(GradientOptimizer):
     """General-objective Fisher/Gauss-Newton trust-region: a method-agnostic multi-start
     orchestrator (:class:`GradientOptimizer`) over per-start :class:`_GNTRRunner` step machines.
-    It differs from ``trf`` in exactly two seams -- it attaches the EFIM Hessian to the assembled
-    gradient (:meth:`_attach_curvature`) and its runner consumes ``(gradient, hessian)`` instead
-    of a residual model -- inheriting everything else (multi-start, routing, gates, reporting)."""
+    It differs from ``trf`` in two assembly seams -- it builds the gradient and data-fit EFIM in
+    one scored-point pass (:meth:`_assemble_objective_gradient`), then attaches any constraint
+    curvature (:meth:`_attach_curvature`) -- and its runner consumes ``(gradient, hessian)``
+    instead of a residual model. Everything else (multi-start, routing, gates, reporting) is
+    inherited."""
 
     #: Message label + refiner start-point key (see StartPointOptimizer).
     fit_type = 'gntr'
@@ -133,18 +135,21 @@ class GNTRAlgorithm(GradientOptimizer):
         return _GNTRRunner(u0, self._u_lower, self._u_upper, self.max_iterations,
                            grad_tol=self.grad_tol, step_tol=self.step_tol, ridge=self.ridge)
 
+    def _assemble_objective_gradient(self, experiments, free_params):
+        """Build the scalar/residual gradient and data-fit EFIM in one point walk (#488)."""
+        return assemble_gradient_and_fisher_hessian(self.objective, experiments, free_params)
+
     def _attach_curvature(self, grad, res, experiments, free_params):
-        """Attach the expected-Fisher / Gauss-Newton Hessian to the assembled gradient (#481):
-        the data-fit EFIM (:func:`~pybnf.gradient.assembly.assemble_fisher_hessian`) plus, for a
-        constrained fit, the constraint Gauss-Newton block
-        (:func:`~pybnf.gradient.assembly.assemble_constraint_hessian`). Runs inside
+        """Add constraint curvature to the already-attached data-fit EFIM (#481/#488).
+
+        :meth:`_assemble_objective_gradient` builds the objective gradient and data-fit Hessian
+        together. For a constrained fit this hook adds the constraint Gauss-Newton block
+        (:func:`~pybnf.gradient.assembly.assemble_constraint_hessian`). It runs inside
         ``gradient_at``'s ``GradientNotSupported`` guard, so an unsupported-curvature corner
         refuses cleanly to ``lbfgs`` (:meth:`_unsupported_gradient_error`)."""
-        hessian = assemble_fisher_hessian(self.objective, experiments, free_params)
         if self.config.constraints:
-            hessian = hessian + assemble_constraint_hessian(
+            grad.hessian = grad.hessian + assemble_constraint_hessian(
                 self.config.constraints, res.simdata, self._routings, free_params)
-        grad.hessian = hessian
 
     def _unsupported_gradient_error(self, exc):
         """Point the refusal at ``lbfgs`` (which consumes the scalar gradient and needs no Fisher
@@ -167,7 +172,8 @@ class _GNTRRunner(_TRFRunner):
 
     It overrides exactly two seams of the ``trf`` runner: :meth:`_require_exact` (a no-op -- the
     curvature is the EFIM, not an exact residual, so any objective the assembly could build a
-    Hessian for is accepted; that gate is upstream in :meth:`GNTRAlgorithm._attach_curvature`),
+    Hessian for is accepted; that gate is upstream in
+    :meth:`GNTRAlgorithm._assemble_objective_gradient` / :meth:`GNTRAlgorithm._attach_curvature`),
     and :meth:`_set_model` (ridge-regularise ``H`` and eigen-factor ``(g, H)`` into the pseudo
     ``(J, r)`` the inherited step machine consumes). Everything else -- the Coleman-Li scaling,
     the augmented-Jacobian SVD trust-region subproblem, the reflective step selection, the
@@ -185,6 +191,7 @@ class _GNTRRunner(_TRFRunner):
         """Accept any assembled gradient: the EFIM Hessian is the curvature model, not an exact
         least-squares residual, so the ``trf`` runner's exact-residual gate does not apply. The
         real gate -- whether the Fisher Hessian could be assembled at all -- fired upstream in
+        :meth:`GNTRAlgorithm._assemble_objective_gradient` or, for constraints,
         :meth:`GNTRAlgorithm._attach_curvature` (raising :class:`GradientNotSupported` for an
         out-of-scope corner)."""
         return grad
@@ -202,15 +209,15 @@ class _GNTRRunner(_TRFRunner):
         ``J^T r == g``). ``self.g`` recomputed as ``J^T r`` is exactly ``g`` -- the value the
         Coleman-Li scaling and the convergence test read."""
         if getattr(grad, 'hessian', None) is None:
-            # The EFIM leaf attaches the Fisher Hessian in GNTRAlgorithm._attach_curvature
-            # before the runner ever sees the gradient; a None here means this runner was
-            # driven off the residual-form (trf/lbfgs) path by mistake. Fail fast with the
-            # cause rather than an opaque numpy error deep in the eigen-factorisation.
+            # The EFIM leaf attaches the data-fit Hessian during combined objective assembly
+            # before the runner ever sees the gradient; a None here means this runner was driven
+            # off the residual-form (trf/lbfgs) path by mistake. Fail fast with the cause rather
+            # than an opaque numpy error deep in the eigen-factorisation.
             raise PybnfError(
                 "The GNTR (Fisher/Gauss-Newton trust-region) runner requires an assembled "
                 "EFIM Hessian, but the gradient carried none. This is an internal wiring "
                 "error -- a gntr runner must be driven by GNTRAlgorithm, which attaches the "
-                "Hessian in _attach_curvature.")
+                "Hessian in _assemble_objective_gradient.")
         g = np.asarray(grad.gradient, dtype=float)
         hessian = np.asarray(grad.hessian, dtype=float)
         n = self.n

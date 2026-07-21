@@ -267,10 +267,10 @@ def test_gntr_refusal_points_at_lbfgs_not_a_metaheuristic():
 
 
 def test_gntr_runner_fails_fast_without_an_attached_hessian():
-    """The GNTR runner needs an assembled EFIM Hessian (GNTRAlgorithm attaches it in
-    _attach_curvature before the runner sees the gradient). If it is ever driven off the
-    residual-form path with no hessian, it raises a clear PybnfError naming the wiring error
-    rather than an opaque numpy failure deep in the eigen-factorisation."""
+    """The GNTR runner needs an assembled EFIM Hessian (GNTRAlgorithm attaches the data-fit
+    block in _assemble_objective_gradient before the runner sees the gradient). If it is ever
+    driven off the residual-form path with no hessian, it raises a clear PybnfError naming the
+    wiring error rather than an opaque numpy failure deep in the eigen-factorisation."""
     from pybnf.printing import PybnfError
     runner = _GNTRRunner(_U0, _LOWER, _UPPER, 10, grad_tol=1e-8, step_tol=1e-8, ridge=1e-10)
     u = runner.start()

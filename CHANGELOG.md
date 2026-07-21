@@ -295,6 +295,11 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Changed
+- **`gntr` now assembles each scored forward-sensitivity row once per objective evaluation
+  (#488).** Its scalar-gradient and expected-Fisher calculations previously repeated the same
+  experiment/row/column walk and rebuilt `d(prediction)/d(theta)` independently. A shared scored-
+  point iterator now feeds both accumulators in one pass; standalone gradient-only (`trf` /
+  `lbfgs`) and Fisher-Hessian assembly APIs retain their existing results.
 - **Edition-2 one-model + `condition:` jobs now simulate only the scored `(experiment,
   condition)` diagonal, not the full `{action} × {condition}` cross-product (#484, ADR-0069).**
   Under edition-2 Mechanism A the single model ran every synthesized action under every
