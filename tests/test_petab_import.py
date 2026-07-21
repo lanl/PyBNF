@@ -1573,7 +1573,7 @@ class TestBoundaries:
             self._import_mutated(demo_petab, tmp_path,
                                  {'problem.yaml': ('language: bngl', 'language: pysb')})
 
-    @pytest.mark.parametrize('distribution', ['neg_bin', 'log-normal', 'log-laplace'])
+    @pytest.mark.parametrize('distribution', ['neg_bin', 'log-laplace'])
     def test_petab_inexpressible_noise_is_refused(self, demo_petab, tmp_path, distribution):
         with pytest.raises(NotImplementedError):
             self._import_mutated(demo_petab, tmp_path,
@@ -1646,13 +1646,14 @@ class TestBoundaries:
 
 
 # ---------------------------------------------------------------------------
-# A re-injected observableTransformation routes to the native scaled family (issue #499)
+# A re-injected observableTransformation routes to the native scaled family (issues #499/#509)
 #
 # The bug: a v1 log10 observable, its transformation dropped by petab1to2, imported as a
 # linear gaussian (objective = chi_sq) and scored the WRONG objective (linear residual, no
 # Jacobian). With the column re-injected (convert.py) the importer selects the additive scale
 # from it -- log10 -> the native lognormal family (Gaussian(LOG10), the base the paper scores
-# on). Dependency-free: the demo is BNGL, bare-name observables.
+# on), log -> lnnormal (Gaussian(LN), PEtab's natural-log scale). Dependency-free: the demo is
+# BNGL, bare-name observables.
 # ---------------------------------------------------------------------------
 
 class TestObservableTransformationImport:
@@ -1716,14 +1717,41 @@ class TestObservableTransformationImport:
             ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
         assert isinstance(cfg.obj.noise, Gaussian) and cfg.obj.noise.additive_on is LOG10
 
-    def test_log_natural_is_refused(self, demo_petab, tmp_path):
-        # A natural-log (LN) Gaussian has no native token -> NotImplementedError, never a
-        # silent mis-recovery as log10 or linear.
-        with pytest.raises(NotImplementedError):
-            self._import_with_transformation(demo_petab, tmp_path, 'log')
+    def test_log_natural_per_point_imports_as_lnnormal(self, demo_petab, tmp_path):
+        # PEtab v1's ``log`` is natural log. It must select the distinct lnnormal token, never
+        # alias to PyBNF's log10 ``lognormal`` or the linear Gaussian.
+        out = self._import_with_transformation(demo_petab, tmp_path, 'log')
+        conf = (out / 'imported.conf').read_text()
+        assert 'objective = lnnormal' in conf
+        assert 'objective = lognormal' not in conf
+        assert 'objective = chi_sq' not in conf
+
+    def test_v2_log_normal_distribution_imports_as_lnnormal(self, demo_petab, tmp_path):
+        # Native PEtab v2 spells the same natural-log family in noiseDistribution, without
+        # needing the v1 compatibility column.
+        out = self._import_with_transformation(
+            demo_petab, tmp_path, 'lin', distribution='log-normal')
+        assert 'objective = lnnormal' in (out / 'imported.conf').read_text()
+
+    def test_log_natural_constant_sigma_uses_lnnormal_noise_model(self, demo_petab, tmp_path):
+        out = self._import_with_transformation(
+            demo_petab, tmp_path, 'log', noise_formula='2.5')
+        conf = (out / 'imported.conf').read_text()
+        assert 'noise_model = lnnormal, sigma = fix_at 2.5' in conf
+        assert 'objective =' not in conf
+
+    def test_imported_lnnormal_conf_builds_gaussian_on_ln(self, demo_petab, tmp_path,
+                                                           monkeypatch):
+        from pybnf import config as config_mod
+        from pybnf.noise import LN, Gaussian
+        out = self._import_with_transformation(demo_petab, tmp_path, 'log')
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert isinstance(cfg.obj.noise, Gaussian) and cfg.obj.noise.additive_on is LN
 
     def test_log10_laplace_is_refused(self, demo_petab, tmp_path):
-        # Only the log10 Gaussian (lognormal) has a native token; a log10 Laplace does not.
+        # Both Gaussian log bases have native tokens; a log10 Laplace still does not.
         with pytest.raises(NotImplementedError):
             self._import_with_transformation(demo_petab, tmp_path, 'log10',
                                              distribution='laplace', noise_formula='2.5')

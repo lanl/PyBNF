@@ -7,10 +7,10 @@ benchmark problems in the fitting harness; here we pin the transforms that could
 
 * **parameterScale** -- a bare log/log10 estimated parameter gains a v2 `log-uniform` prior
   over its bounds, a linear one does not, and an existing prior is never clobbered.
-* **observableTransformation** (issue #499) -- a log/log10 observable gains a re-injected
+* **observableTransformation** (issues #499/#509) -- a log/log10 observable gains a re-injected
   `observableTransformation` column (v2 has no log10 noiseDistribution home), a linear one
   does not, and a full conversion carries a v1 `log10` observable through to the column PyBNF
-  imports as the native `lognormal` family.
+  imports as the matching native `lognormal` / `lnnormal` family.
 """
 import pytest
 
@@ -70,8 +70,8 @@ def _write_v1_problem(root, transformation):
 
 
 class TestFullConversion:
-    """End-to-end oracle for issue #499: a v1 log10 observable converts to a v2 problem whose
-    re-injected observableTransformation PyBNF imports as the native ``lognormal`` family."""
+    """End-to-end oracle for issues #499/#509: a v1 log-scale observable converts to a v2
+    problem whose re-injected transformation imports on the same base."""
 
     def test_log10_observable_transformation_is_reinjected(self, tmp_path):
         yaml = _write_v1_problem(tmp_path / 'v1', 'log10')
@@ -100,6 +100,17 @@ class TestFullConversion:
         assert 'objective = lognormal' in conf
         assert 'objective = chi_sq' not in conf     # the linear (wrong) import is gone
         assert 'loguniform_var = k' in conf         # parameterScale=log10 preserved too
+
+    def test_converted_log_problem_imports_as_lnnormal(self, tmp_path):
+        # v1 ``log`` means natural log. It reaches Gaussian(LN) through the explicit
+        # ``lnnormal`` token, distinct from PyBNF's log10 ``lognormal``.
+        from pybnf.petab import import_job
+        yaml = _write_v1_problem(tmp_path / 'v1', 'log')
+        petab1to2_preserve_scale(str(yaml), str(tmp_path / 'v2'))
+        out = import_job(tmp_path / 'v2' / 'problem.yaml', tmp_path / 'imported')
+        conf = (out / 'imported.conf').read_text()
+        assert 'objective = lnnormal' in conf
+        assert 'objective = lognormal' not in conf
 
 
 class TestInjectLogUniformPriors:

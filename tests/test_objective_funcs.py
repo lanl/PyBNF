@@ -891,6 +891,25 @@ class TestLogNormalNoise:
                        for s, e, sd in [(2.0, 3, 0.5), (5.0, 5, 0.5), (9.0, 8, 0.5)])
         npt.assert_almost_equal(obj.evaluate(self.sim, self.exp_sd), expected)
 
+    def test_lnnormal_named_objective_is_natural_log_space_chi_square(self):
+        """The modern lnnormal token is the distinct Gaussian(LN) member: sigma is an
+        ln-scale standard deviation and the residual uses np.log, not np.log10."""
+        obj = objective.build_named_objective({'ind_var_rounding': 0}, 'lnnormal')
+        expected = sum((np.log(s) - np.log(e)) ** 2 / (2 * sd ** 2)
+                       for s, e, sd in [(2.0, 3, 0.5), (5.0, 5, 0.5), (9.0, 8, 0.5)])
+        npt.assert_almost_equal(obj.evaluate(self.sim, self.exp_sd), expected)
+        assert obj.noise.additive_on is noise.LN
+
+    def test_lnnormal_pointwise_density_has_ln_jacobian(self):
+        """The normalized density (and therefore information criteria) carries -ln(obs),
+        without log10's extra -ln(ln 10) term."""
+        obj = objective.build_named_objective({'ind_var_rounding': 0}, 'lnnormal')
+        pred, obs, sigma = 9.0, 8.0, 0.5
+        got = obj.noise.log_density(pred, obs, sigma)
+        npt.assert_allclose(got, stats.lognorm.logpdf(obs, s=sigma, scale=pred))
+        log10 = noise.Gaussian(additive_on=noise.LOG10).log_density(pred, obs, sigma)
+        assert got != pytest.approx(log10)
+
     def test_family_nll_matches_scipy_lognorm(self):
         """Gaussian(LN, MEDIAN).nll plus the dropped Jacobian + constant equals the
         full natural-log lognormal -logpdf (scipy oracle); median -> scipy scale =

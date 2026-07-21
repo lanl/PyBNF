@@ -88,6 +88,8 @@ as the natural-log families.
   is log10 only), so the *conf-emitting importer* raises `NotImplementedError`. The
   `observables.py` adapter still builds them (it constructs the kernel directly); only the conf
   round-trip lacks a spelling.
+  **Superseded for Gaussian by ADR-0084 / issue #509:** `Gaussian(LN)` now has the explicit
+  `lnnormal` token and imports exactly. Log Laplace remains outside the native surface.
 - **A transformation that contradicts a log `noiseDistribution`** (e.g. `log10` over
   `log-normal`'s LN) is an ambiguous double-spelling of the scale → `PybnfError`. An unknown
   transformation spelling → `PybnfError`. A distribution v2 removed (`neg_bin`) → the existing
@@ -106,8 +108,8 @@ as the natural-log families.
 - **Leave the importer alone; document that log10 problems must be hand-corrected.** Rejected:
   running the problem *as specified* is the whole point of a benchmark (the same argument that
   justified #491). Silently scoring the wrong objective is the bug, not a UX gap.
-- **Add a natural-log native token so `log` also imports through the conf path.** Deferred: a
-  native-UX question (ADR-0023 already deferred it), not required by #499's log10 problems.
+- **Add a natural-log native token so `log` also imports through the conf path.** Deferred here,
+  then resolved as `lnnormal` by ADR-0084 / issue #509.
 
 Relevant ADRs: **0023** (the observables noise-half mapping this scopes an exception to —
 `noiseDistribution × noiseFormula`, and the earlier "no observableTransformation" rejection

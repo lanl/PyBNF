@@ -714,20 +714,22 @@ _PETAB_DISTRIBUTION = {
 # ``lin`` leaves the noiseDistribution's own scale, ``log`` is natural (LN), ``log10`` is LOG10.
 _TRANSFORMATION_SCALE = {'lin': None, 'log': 'ln', 'log10': 'log10'}
 
-# (base family, additive scale) -> the native noise_model family token that names it. Only the
-# log10 Gaussian gains a token beyond the linear families: ``lognormal`` = Gaussian(LOG10)
-# (objective.py). The natural-log families and any log Laplace have no native token
-# (observables.py) -> NotImplementedError in _resolve_noise.
+# (base family, additive scale) -> the native noise_model family token that names it. The two
+# log Gaussian members are explicit: ``lognormal`` = Gaussian(LOG10), following PyBNF's bare-log
+# convention, and ``lnnormal`` = Gaussian(LN), the natural-log member PEtab calls ``log-normal``
+# (ADR-0022/0084). Log Laplace still has no native token -> NotImplementedError in _resolve_noise.
 _NATIVE_FAMILY_TOKEN = {
     ('gaussian', 'linear'): 'gaussian',
     ('gaussian', 'log10'):  'lognormal',
+    ('gaussian', 'ln'):     'lnnormal',
     ('laplace',  'linear'): 'laplace',
 }
 
 # native noise_model family token -> its scale-parameter field name (for the emitted
-# ``noise_model = <family>, <param> = ...`` line). gaussian/lognormal share ``sigma`` (same
-# Gaussian kernel, different additive scale); laplace uses ``scale`` (ADR-0031, noise_params).
-_NOISE_MODEL_PARAM = {'gaussian': 'sigma', 'lognormal': 'sigma', 'laplace': 'scale'}
+# ``noise_model = <family>, <param> = ...`` line). gaussian/lognormal/lnnormal share ``sigma``
+# (same Gaussian kernel, different additive scale); laplace uses ``scale`` (ADR-0031).
+_NOISE_MODEL_PARAM = {
+    'gaussian': 'sigma', 'lognormal': 'sigma', 'lnnormal': 'sigma', 'laplace': 'scale'}
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
@@ -753,10 +755,9 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     placeholder (a ``noiseParameter*`` token or a named ``noisePlaceholders`` id) takes its
     sigma source from this map. A ``log10`` ``observableTransformation`` (issue #499) selects
     the native ``lognormal`` family (``objective = lognormal`` / a ``lognormal`` noise_model
-    line). A natural-log family (``log-normal`` / ``log-laplace`` distribution, or an
-    ``observableTransformation = log``), a log Laplace, an expression ``noiseFormula``, and a
-    per-point laplace placeholder raise ``NotImplementedError`` -- the boundary is in code, not
-    a silent mis-recovery.
+    line); natural-log Gaussian selects ``lnnormal``. A log Laplace, an expression
+    ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` -- the
+    boundary is in code, not a silent mis-recovery.
     """
     per_obs = [(row, *_resolve_noise(
                     row, noise_param_ids.get(row.observable_id),
@@ -772,7 +773,8 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
 def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
                    fixed_params=None, namespace=frozenset()):
     """One observables row -> ``(family_token, source)`` where ``family_token`` is the native
-    noise_model family (``gaussian`` / ``lognormal`` / ``laplace``) and ``source`` is one of
+    noise_model family (``gaussian`` / ``lognormal`` / ``lnnormal`` / ``laplace``) and ``source``
+    is one of
     ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
     ``('free', parameter_id)`` (an estimated sigma), ``('formula', expr)`` (an expression
     sigma over free parameters -> ``FormulaSigma``, ADR-0044), ``('prediction_formula', expr)``
@@ -790,9 +792,9 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
     The family token comes from ``noiseDistribution`` (the Gaussian/Laplace family) **and** a
     re-injected ``observableTransformation`` (the additive scale; issue #499): ``log10`` +
     ``normal`` selects the native ``lognormal`` token (``Gaussian(LOG10)``), the scale the
-    paper (and the v1 problem) score on. A family/scale with no native token -- the natural-log
-    families (``log-normal`` / ``log-laplace``, or ``observableTransformation = log``) and any
-    log Laplace -- raises ``NotImplementedError`` (:func:`_native_noise_family`).
+    paper (and the v1 problem) score on. Natural-log Gaussian selects ``lnnormal``; a family/scale
+    with no native token -- currently log Laplace on either base -- raises ``NotImplementedError``
+    (:func:`_native_noise_family`).
 
     ``row_varying`` (ADR-0045): the observable's ``noiseParameters`` id **differs** across its
     measurement rows, so it cannot reduce to one substituted symbol -- the noiseFormula is
@@ -858,15 +860,16 @@ def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
 
 
 def _native_noise_family(row):
-    """The native noise_model family token (``gaussian`` / ``lognormal`` / ``laplace``) for one
+    """The native noise_model family token (``gaussian`` / ``lognormal`` / ``lnnormal`` /
+    ``laplace``) for one
     observables row, from ``noiseDistribution`` + a re-injected ``observableTransformation``.
 
     The distribution names the Gaussian/Laplace family (its ``log-`` prefix a natural-log
     scale); an ``observableTransformation`` of ``log10`` / ``log`` overrides the scale, the
     only channel for a log10 residual (issue #499, ADR-0073). Raises ``NotImplementedError`` for a
-    distribution v2 removed (``neg_bin``) or a family/scale with no native token -- the
-    natural-log families and any log Laplace (only linear ``gaussian`` / ``laplace`` and log10
-    ``gaussian`` -> ``lognormal`` are recovered)."""
+    distribution v2 removed (``neg_bin``) or a family/scale with no native token -- currently
+    any log Laplace. Linear ``gaussian`` / ``laplace``, log10 Gaussian -> ``lognormal``, and
+    natural-log Gaussian -> ``lnnormal`` are recovered (ADR-0084)."""
     dist = (row.noise_distribution or 'normal').lower()
     base = _PETAB_DISTRIBUTION.get(dist)
     if base is None:
@@ -895,8 +898,8 @@ def _native_noise_family(row):
             f"Observable '{row.observable_id}': the {base_family} family on the {scale} scale "
             f"(from noiseDistribution {dist!r}"
             f"{f' / observableTransformation {transformation!r}' if trans_scale else ''}) has "
-            f"no native noise_model token yet (#407). Recovered: linear normal / laplace and "
-            f"log10 normal (lognormal).")
+            f"no native noise_model token yet (#407). Recovered: linear normal / laplace, "
+            f"log10 normal (lognormal), and natural-log normal (lnnormal).")
     return token
 
 
@@ -911,7 +914,7 @@ def _try_uniform_directive(per_obs, column_mean_of):
     kinds = {src[0] for _row, _family, src in per_obs}
     if len(families) != 1 or len(kinds) != 1:
         return None     # mixed family (incl. a log10 vs linear scale) or source -> per-observable
-    family = families.pop()     # native token: gaussian / lognormal / laplace
+    family = families.pop()     # native token: gaussian / lognormal / lnnormal / laplace
     kind = kinds.pop()
     param = _NOISE_MODEL_PARAM[family]
 
@@ -938,14 +941,17 @@ def _try_uniform_directive(per_obs, column_mean_of):
         return f'noise_model = {family}, {param} = formula {exprs.pop()}'
     if kind == 'placeholder':
         # Per-point _SD sigma: the Gaussian families have an objective token (chi_sq linear,
-        # lognormal log10); Laplace has no per-point token (#407).
+        # lognormal log10, lnnormal natural log); Laplace has no per-point token (#407).
         if family == 'gaussian':
             return 'objective = chi_sq'
         if family == 'lognormal':
             return 'objective = lognormal'
+        if family == 'lnnormal':
+            return 'objective = lnnormal'
         raise NotImplementedError(
             f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective token "
-            f"(only the Gaussian per-point _SD cases -- chi_sq, lognormal -- are recovered; "
+            f"(only the Gaussian per-point _SD cases -- chi_sq, lognormal, lnnormal -- are "
+            f"recovered; "
             f"#407).")
     if kind == 'free':
         ids = {src[1] for _row, _family, src in per_obs}
@@ -1003,7 +1009,7 @@ def _per_observable_directives(per_obs, observable_id_to_column):
                 f'noise_model {column} = {family}, {param} = fix_at {num(src[1])}')
         elif kind == 'placeholder':
             # Per-point _SD sigma: the Gaussian families read it (gaussian linear, lognormal
-            # log10); Laplace has no per-point _SD source (#407).
+            # log10, lnnormal natural log); Laplace has no per-point _SD source (#407).
             if family == 'laplace':
                 raise NotImplementedError(
                     f"Observable '{row.observable_id}': a per-point ({family}) placeholder "

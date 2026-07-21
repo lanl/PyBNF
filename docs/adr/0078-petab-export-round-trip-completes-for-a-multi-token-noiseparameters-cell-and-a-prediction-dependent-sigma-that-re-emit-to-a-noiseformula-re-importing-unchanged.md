@@ -78,8 +78,9 @@ formulas classify by substitution regardless). New-era only (PEtab interop is ne
   *EFIM Fisher* half remaining deferred. Export is orthogonal to the gradient path either way.
 - A **`relative`** sigma export (a noiseFormula expression over the measurement) — the unchanged
   ADR-0023/0031 boundary.
-- A **`lognormal`** / natural-log family, a `mean`-centered location, `neg_bin` — unchanged
-  `_reduce_noise_spec` boundaries.
+- A **`lognormal`** (log10) family, a `mean`-centered location, `neg_bin` — unchanged
+  `_reduce_noise_spec` boundaries. Natural-log Gaussian was subsequently given the exact
+  `lnnormal` -> PEtab `log-normal` mapping by ADR-0084 / issue #509.
 
 ## Boundaries (in code, each pointing here)
 

@@ -1408,7 +1408,7 @@ class Algorithm(ABC):
         aicc_str = ('%.10g' % ic.aicc) if ic.aicc is not None else 'n/a (n <= k+1)'
         lines = [
             '# Information criteria for the best-fit parameter set (lower is better).',
-            '# Valid for a likelihood objective only (normal / lognormal / laplace /',
+            '# Valid for a likelihood objective only (normal / lognormal / lnnormal / laplace /',
             '#   neg_bin / student_t). Computed from the full normalized log-likelihood',
             "#   at the best fit (the sum of the noise model's per-point log_density,",
             '#   ADR-0056), so AIC is an absolute value comparable across models.',

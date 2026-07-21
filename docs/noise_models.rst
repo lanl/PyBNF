@@ -25,8 +25,9 @@ Two shapes of noise model
 -------------------------
 
 A **per-point noise model** has a log-likelihood that factors into a sum of
-independent per-observation terms — ``chi_sq`` (Gaussian), ``laplace``
-(Laplace), ``neg_bin`` (negative binomial), and ``student_t`` (Student-t). It is
+independent per-observation terms — ``chi_sq`` (Gaussian), ``lognormal`` / ``lnnormal``
+(Gaussian on log10 / natural log), ``laplace`` (Laplace), ``neg_bin`` (negative binomial),
+and ``student_t`` (Student-t). It is
 defined by three orthogonal axes, paired with a **noise-parameter source**:
 
 - **Distribution family** — Gaussian, Laplace, Student-t, or negative binomial;
@@ -35,8 +36,8 @@ defined by three orthogonal axes, paired with a **noise-parameter source**:
   on the observable itself, the ordinary Gaussian), ``LOG10`` (additive on
   log10 — multiplicative, lognormal error), or ``LN`` (additive on the natural
   log). One log base across PyBNF: a bare "log" always means log10, so the
-  ``lognormal`` objective is log10 and ``LN`` is the only way to ask for natural
-  log.
+  ``lognormal`` objective is log10; the explicit ``lnnormal`` family asks for
+  natural log (``Gaussian(LN)``).
 - **Location interpretation** — which summary of the distribution the prediction
   is taken to be: ``median`` (PEtab v2's convention, and the no-correction
   default) or ``mean`` (which adds the family's moment correction on a log
@@ -151,6 +152,14 @@ legacy ``objfunc`` code; reach it through ``noise_model = student_t`` (its two
 parameters, :math:`\sigma` and :math:`\nu`, are sourced independently, so a fit
 may estimate zero, one, or both). See :doc:`gradient_fitting` for its
 differentiable square-root-loss residual.
+
+``lnnormal`` is the modern natural-log sibling of ``lognormal``. Both use the same
+Gaussian kernel and ``sigma`` sources; only the additive scale differs:
+``lognormal`` scores ``log10(prediction) - log10(observation)``, while ``lnnormal``
+scores ``ln(prediction) - ln(observation)`` and interprets ``sigma`` in natural-log units.
+The distinction also carries into normalized pointwise likelihoods: ``lnnormal`` has the
+change-of-variables Jacobian ``-ln(observation)``, whereas log10 additionally contributes
+``-ln(ln(10))``. PEtab v2 ``noiseDistribution = log-normal`` maps exactly to ``lnnormal``.
 
 A noise scale that depends on the prediction
 --------------------------------------------

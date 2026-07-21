@@ -6,6 +6,17 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **PEtab natural-log Gaussian observables now import exactly (#509, ADR-0084).** PEtab v1
+  ``observableTransformation = log`` and v2 ``noiseDistribution = log-normal`` previously reached
+  PyBNF's internal ``Gaussian(LN)`` kernel but could not be serialized into the generated ``.conf``;
+  ``import_job`` raised ``NotImplementedError``. The new explicit ``lnnormal`` noise family is
+  ``Gaussian(additive_on=LN, location=MEDIAN)`` and is kept distinct from PyBNF's existing
+  ``lognormal`` (log10) family. Imports now preserve the natural-log residual and sigma units, and
+  normalized pointwise log-likelihoods use the natural-log Jacobian ``-log(y)`` (so
+  ``information_criteria.txt`` is on the correct absolute scale). This unblocks
+  ``Blasi_CellSystems2016`` and ``Laske_PLOSComputBiol2019``. The exact reverse mapping also exports
+  ``lnnormal`` as PEtab v2 ``log-normal``; log-scale Laplace remains unsupported by the native
+  configuration surface.
 - **PEtab import now preserves replicate-specific `observableParameters` / `noiseParameters`
   bindings (#508, ADR-0083).** The per-measurement sidecar was keyed only by column, time, and
   placeholder, so repeated PEtab cells from different replicates collided and the last
@@ -64,9 +75,9 @@ All notable changes to PyBNF are documented below. This project adheres to
     line); `log + normal` maps to the natural-log `Gaussian(LN)` (v2's `log-normal`). The
     `pybnf.petab.observables` adapter reads it the same way (`log10` → LOG10, `log` → LN, `lin` →
     unchanged), with a guard against a transformation that contradicts a log `noiseDistribution`.
-    Families with no native token (natural-log, or any log `laplace`) still raise `NotImplementedError`
-    — the boundary stays in code, never a silent mis-recovery. A linear problem is byte-for-byte
-    unchanged.
+    Natural-log Gaussian now routes to ``lnnormal`` (#509, ADR-0084); log ``laplace`` families still
+    raise ``NotImplementedError`` — the boundary stays in code, never a silent mis-recovery. A
+    linear problem is byte-for-byte unchanged.
 
 ### Added
 - **Prediction-dependent noise: a `noise_model … = <family>, sigma = prediction_formula <expr>`

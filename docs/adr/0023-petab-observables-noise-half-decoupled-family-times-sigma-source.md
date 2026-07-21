@@ -129,7 +129,8 @@ here.)
   cross-check.** Deferred: the native surface uses `log10` (to match log10 priors,
   ADR-0022); a natural-log native token is a separate native-UX question, not
   required to import PEtab. The natural-log families are validated against their
-  analytic NLL instead.
+  analytic NLL instead. **Resolved for Gaussian by ADR-0084 / issue #509:** the explicit
+  `lnnormal` token is `Gaussian(LN)`; log Laplace remains structural-only.
 
 Relevant ADRs: **0021** (the decoupled `(family × σ-source)` engine and the
 `SigmaSource` kinds this consumes), **0022** (the `LINEAR`/`LOG10`/`LN` scales and

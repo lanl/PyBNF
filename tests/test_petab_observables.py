@@ -15,13 +15,13 @@ for a log10 residual. The prediction is the median for all.
 Layers tested:
 
 1. **Equivalence to the native surface** -- for the families with a native token
-   (``normal`` linear, ``laplace`` linear), the importer's pair matches the one
+   (``normal`` linear, ``laplace`` linear, ``lnnormal`` natural log), the importer's pair matches the one
    ``objective._build_noise_overrides`` builds from the equivalent ``noise_model``
    ``.conf`` line (both exactly: native ``normal`` and ``laplace`` now also default
    to ``MEDIAN`` -- ADR-0031).
 2. **The full mapping** -- all four ``noiseDistribution`` values, structurally;
-   the natural-log families (no native token) checked against the kernels' analytic
-   NLL; both sigma-source kinds. **2b** -- the re-injected ``observableTransformation``
+   natural-log Laplace (no native token) checked against the kernel's analytic NLL;
+   both sigma-source kinds. **2b** -- the re-injected ``observableTransformation``
    overriding the scale (``log10`` -> LOG10, the native ``lognormal`` base; #499).
 3. **The documented boundaries** -- ``NotImplementedError`` for a non-trivial
    ``noiseFormula`` expression (the deferred sympy layer); ``PybnfError`` for a
@@ -106,6 +106,17 @@ class TestEquivalenceToNativeNoiseModel:
             assert (adapter_fam.data_fit(pred, obs, sigma)
                     == pytest.approx(native_fam.data_fit(pred, obs, sigma)))
 
+    def test_log_normal_equals_native_lnnormal_pair_exactly(self):
+        # PEtab log-normal and native lnnormal are the same Gaussian(LN, MEDIAN), for either
+        # fixed or estimated sigma (issue #509 / ADR-0084).
+        for noise_formula, native_line in [
+            ('0.3', 'noise_model o = lnnormal, sigma = fix_at 0.3'),
+            ('sigma_o', 'noise_model o = lnnormal, sigma = fit sigma_o'),
+        ]:
+            got = noise_model_from_row(_row(noise_formula=noise_formula, dist='log-normal'))
+            native = _build_noise_overrides(ploop([native_line]))['o']
+            _assert_same_pair(got, native)
+
 
 # ---------------------------------------------------------------------------
 # 2. The full mapping: all four noiseDistribution values + sigma-source kinds
@@ -132,7 +143,7 @@ class TestMapping:
         assert fam.additive_on is noise.LN and fam.additive_on is not noise.LOG10
 
     def test_log_normal_nll_matches_natural_log_oracle(self):
-        # log-normal has no native token; validate the produced kernel directly:
+        # Validate the native lnnormal / PEtab log-normal kernel directly:
         # data_fit = (ln(pred) - ln(obs))^2 / (2 sigma^2).
         fam, _ = noise_model_from_row(_row(dist='log-normal'))
         pred, obs, sigma = 10.0, 8.0, 0.3

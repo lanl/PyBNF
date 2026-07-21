@@ -223,7 +223,7 @@ Required Keys
 
    - ``chi_sq`` - Chi squared (Gaussian noise; sigma per point from the data's ``_SD`` column)
    - ``chi_sq_dynamic`` - Chi squared with sigma as a free parameter (Requires sigma__FREE in the model and the configuration file)
-   - ``lognormal`` - Lognormal noise (Gaussian on the log scale; sigma per point from the data's ``_SD`` column)
+   - ``lognormal`` - Lognormal noise (Gaussian on the log10 scale; sigma per point from the data's ``_SD`` column)
    - ``laplace`` - Laplace (double-exponential) noise with the scale b as a free parameter (Requires b__FREE in the model and the configuration file)
    - ``neg_bin`` - Negative Binomial (Requires neg_bin_r set to a number in the configuration file i.e neg_bin_r = 2, Default = 24)
    - ``neg_bin_dynamic`` - Negative Binomial with r as a free parameter (Requires r__FREE in the model and the configuration file)
@@ -250,7 +250,8 @@ Required Keys
   accepts the same per-point token vocabulary as the legacy ``objfunc``
   (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``sos`` / ``sod`` /
   ``norm_sos`` / ``ave_norm_sos`` / ``neg_bin`` / ``neg_bin_dynamic``), plus ``score``
-  (pass a single ``score`` value straight through, ignoring the data). Each token
+  (pass a single ``score`` value straight through, ignoring the data) and the modern-only
+  ``lnnormal`` natural-log Gaussian synonym. Each token
   **desugars** to the equivalent per-point noise model on the
   :ref:`noise_model <noise_model_key>` engine -- e.g. ``objective = sos`` is
   ``noise_model = gaussian, sigma = fix_at 1``, ``objective = chi_sq`` is
@@ -390,9 +391,9 @@ Required Keys
 
     noise_model [<observable>] = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median][, cumulative]
 
-  The **family** is one of ``normal``, ``lognormal``, ``laplace``, ``neg_bin``, or
+  The **family** is one of ``normal``, ``lognormal``, ``lnnormal``, ``laplace``, ``neg_bin``, or
   ``student_t``. Each **parameter** is named by its standard statistical name --
-  ``sigma`` for ``normal`` / ``lognormal``, ``scale`` for ``laplace``, ``dispersion``
+  ``sigma`` for ``normal`` / ``lognormal`` / ``lnnormal``, ``scale`` for ``laplace``, ``dispersion``
   for ``neg_bin``, and ``sigma`` plus ``df`` for ``student_t`` (the only
   two-parameter family). Each **source** is one of:
 
@@ -428,8 +429,9 @@ Required Keys
   The optional **location** field sets which summary of the noise distribution the
   model prediction is taken to be: ``median`` (the default -- the prediction is the
   distribution's median, matching PEtab) or ``mean`` (the prediction is its
-  expected value). The two differ only for a ``lognormal`` observable, where
-  ``mean`` adds the moment correction ``mu = log10(prediction) - sigma**2*ln10/2``
+  expected value). The two differ for a ``lognormal`` / ``lnnormal`` observable, where
+  ``mean`` adds the moment correction ``mu = log10(prediction) - sigma**2*ln10/2`` or
+  ``mu = ln(prediction) - sigma**2/2`` respectively
   (the symmetric families are unaffected). ``neg_bin`` is parameterized directly by
   its mean, so ``location = mean`` is redundant (accepted); ``location = median``
   interprets the prediction as the count distribution's 0.5-quantile, solved for by a
@@ -452,6 +454,7 @@ Required Keys
     * ``noise_model obs3 = normal, sigma = read_exp_file _SD``
     * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
     * ``noise_model obs5 = lognormal, sigma = read_exp_file _SD, location = mean``
+    * ``noise_model obs_ln = lnnormal, sigma = read_exp_file _SD`` (natural-log Gaussian)
     * ``noise_model cases = neg_bin, dispersion = fit r__FREE, cumulative``
     * ``noise_model obs6 = student_t, sigma = fit s__FREE`` (robust; ``df`` defaults to 4)
     * ``noise_model obs7 = student_t, sigma = fit s__FREE, df = fit nu__FREE`` (estimate both)

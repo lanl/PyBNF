@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
+from .noise import (LN, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
                     PerMeasurementFormulaSigma, PredictionFormulaSigma, RelativeSigma,
                     StudentT)
@@ -23,7 +23,7 @@ _PLACEHOLDER_IN_FORMULA = re.compile(r'(?:observable|noise)Parameter\d')
 #
 # These rank competing models by trading goodness-of-fit against parameter count
 # (lower is better for all three). They are defined ONLY for a proper likelihood
-# objective -- the ADR-0011 noise families (normal / lognormal / laplace /
+# objective -- the ADR-0011 noise families (normal / lognormal / lnnormal / laplace /
 # neg_bin / student_t) -- because a bare least-squares / distance / pass-through
 # objective (sos / sod / norm_sos / kl / wasserstein / direct_pass) carries no
 # normalized density, so there is no log-likelihood to score. That is the same
@@ -725,12 +725,15 @@ class ColumnSummationObjective(ObjectiveFunction):
 # The native ``noise_model`` surface vocabulary: a family token -> its NoiseModel,
 # and a source verb -> its SigmaSource. Deliberately not a registry (ADR-0011): the
 # token sets are small and fixed, and objfunc dispatch is already the registry's
-# job. ``normal``/``gaussian`` are aliases; ``lognormal`` is the Gaussian family
-# reconfigured onto the log scale (median), mirroring the lognormal objfunc.
+# job. ``normal``/``gaussian`` are aliases; ``lognormal`` and ``lnnormal`` are the
+# Gaussian family reconfigured onto the log10 and natural-log scales respectively
+# (both median-centered by default). ``lnnormal`` is explicit because PyBNF's bare
+# "log" convention is log10 (ADR-0022/0084).
 _NOISE_FAMILIES = {
     'normal': lambda: Gaussian(),
     'gaussian': lambda: Gaussian(),
     'lognormal': lambda: Gaussian(additive_on=LOG10, location=MEDIAN),
+    'lnnormal': lambda: Gaussian(additive_on=LN, location=MEDIAN),
     'laplace': lambda: Laplace(),
     'neg_bin': lambda: NegBinomial(),
     'student_t': lambda: StudentT(),
@@ -1838,8 +1841,9 @@ class DirectPassObjective(ObjectiveFunction):
 # fold also restores the statistically-proper ``1/2`` that legacy ``sos`` /
 # ``norm_sos`` / ``ave_norm_sos`` drop (Gaussian's ``1/(2 sigma**2)``): argmin-
 # identical, so the located optimum is unchanged, but the modern form is the honest
-# likelihood. ``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``sod``
-# / ``neg_bin`` / ``neg_bin_dynamic`` are value-identical to their legacy objfuncs.
+# likelihood. ``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``sod`` /
+# ``neg_bin`` / ``neg_bin_dynamic`` are value-identical to their legacy objfuncs;
+# ``lnnormal`` is the modern-only natural-log sibling.
 
 #: ``objective = <token>`` -> the whole-fit ``noise_model`` value tuple it desugars to
 #: (a callable of the config, since ``neg_bin`` reads ``neg_bin_r``). ``kl`` /
@@ -1850,6 +1854,7 @@ _OBJECTIVE_DESUGAR = {
     'chi_sq':          lambda c: ('gaussian', {'sigma': ('read_exp_file', '_SD')}, None),
     'chi_sq_dynamic':  lambda c: ('gaussian', {'sigma': ('fit', 'sigma__FREE')}, None),
     'lognormal':       lambda c: ('lognormal', {'sigma': ('read_exp_file', '_SD')}, None),
+    'lnnormal':        lambda c: ('lnnormal', {'sigma': ('read_exp_file', '_SD')}, None),
     'laplace':         lambda c: ('laplace', {'scale': ('fit', 'b__FREE')}, None),
     'sod':             lambda c: ('laplace', {'scale': ('fix_at', '1')}, None),
     'norm_sos':        lambda c: ('gaussian', {'sigma': ('relative', None)}, None),

@@ -68,6 +68,8 @@ median default. (Same rule as `neg_bin`, lessons 18/28/41.)
 - **`laplace` / `student_t`** (lesson 08) — additive, heavy-tailed (outlier-robust).
 - **`lognormal`** (this lesson) — **multiplicative**, constant *relative* scatter;
   the right choice for data across orders of magnitude.
+- **`lnnormal`** — the same Gaussian family on the natural-log scale, with ``sigma`` in
+  natural-log units; this is the exact family PEtab calls ``log-normal``.
 
 ## The test
 

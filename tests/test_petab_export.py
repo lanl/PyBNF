@@ -431,6 +431,32 @@ class TestExportObjectiveFamily:
         assert all(m['noiseParameters'] != '' for m in meas)
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
+    def test_lnnormal_exports_as_petab_log_normal(self, tmp_path_factory):
+        # The explicit natural-log member is an exact mapping; PyBNF's bare lognormal remains
+        # log10 and deliberately has no PEtab-v2 home. Make the demo's fitted columns positive,
+        # as required by the lognormal support, so the external PEtab oracle validates the result.
+        import shutil
+        src = tmp_path_factory.mktemp('lnnormal_src')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        columns = [c for c, _i in sorted(data.cols.items(), key=lambda item: item[1])]
+        rows_text = ['# ' + ' '.join(columns)]
+        for row in data.data:
+            vals = [abs(value) + 1.0 if c not in ('time',) and not c.endswith('_SD') else value
+                    for c, value in zip(columns, row)]
+            rows_text.append(' '.join(str(value) for value in vals))
+        (src / 'positive.exp').write_text('\n'.join(rows_text) + '\n')
+        (src / 'job.conf').write_text(
+            f'edition = 2\njob_type = de\nobjective = lnnormal\nmodel: {DEMO_MODEL}\n'
+            'experiment: positive, data: positive.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n')
+        out = tmp_path_factory.mktemp('lnnormal_out')
+        export_job(src / 'job.conf', out)
+        rows = _tsv_rows(out / 'observables.tsv')
+        assert all(r['noiseDistribution'] == 'log-normal' for r in rows)
+        assert all(r['noiseFormula'] == f"noiseParameter1_{r['observableId']}" for r in rows)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
     def test_modern_whole_fit_noise_model_line_exports(self, tmp_path_factory):
         # The modern ADR-0031 surface (not legacy objfunc): a whole-fit noise_model line.
         import shutil

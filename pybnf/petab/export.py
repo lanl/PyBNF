@@ -42,7 +42,8 @@ scan time (``inf`` for the steady-state default => PEtab time=inf, or a finite `
 
 The objective and prior surfaces map to PEtab as far as PEtab v2 can express them
 (ADR-0023/0031 reversed): the Gaussian/Laplace likelihoods with a ``_SD``-column,
-fixed, or column-mean sigma (``chi_sq``/``sos``/``sod``/``ave_norm_sos``), and the
+fixed, or column-mean sigma (``chi_sq``/``sos``/``sod``/``ave_norm_sos``), natural-log
+Gaussian (``lnnormal`` -> PEtab ``log-normal``), and the
 ``uniform``/``log-uniform``/``normal``/``laplace`` prior families with their log forms.
 A BNGL (``.bngl``) or SBML (``.xml``) model is exported in its own native language
 (ADR-0040): a BNGL model PEtab-cleaned, an SBML model carried byte-verbatim with its
@@ -108,10 +109,11 @@ logger = logging.getLogger(__name__)
 # -> the PEtab v2 noiseDistribution it maps to (ADR-0023 reversed). The LINEAR Gaussian
 # / Laplace likelihoods map (``normal`` is the Gaussian alias); the other families are
 # explicit boundaries handled in ``_resolve_noise``: ``neg_bin`` was removed from PEtab
-# v2, and PyBNF's ``lognormal`` is log10 whereas PEtab's ``log-normal`` is natural log (a
-# deferred sigma scale-conversion).
+# v2, and PyBNF's ``lognormal`` is log10 whereas PEtab's ``log-normal`` is natural log.
+# The explicit ``lnnormal`` member is the exact reverse mapping (ADR-0084).
 _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {
-    'gaussian': 'normal', 'normal': 'normal', 'laplace': 'laplace'}
+    'gaussian': 'normal', 'normal': 'normal', 'lnnormal': 'log-normal',
+    'laplace': 'laplace'}
 
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
@@ -835,7 +837,7 @@ def _resolve_noise(conf):
       every family;
     * an objective with no per-point noise model (``score`` / unknown token);
     * a family PEtab v2 cannot express (``neg_bin`` -- removed; ``lognormal`` -- log10 vs
-      PEtab natural log, a deferred sigma scale-conversion).
+      PEtab natural log). The distinct ``lnnormal`` family maps exactly to ``log-normal``.
     """
     if conf.get('profile_objective') is not None:
         raise NotImplementedError(
@@ -958,7 +960,8 @@ def _reduce_noise_spec(family_token, fields, location, where):
     whole-fit base (:func:`_resolve_noise`) and the per-observable overrides
     (:func:`_resolve_per_observable_noise`): a ``mean``-centered location (PEtab is median-only)
     and a family PEtab v2 cannot express (``neg_bin`` removed; ``lognormal`` is log10 vs PEtab's
-    natural ``log-normal``). ``where`` names the spec in the error message."""
+    natural ``log-normal``; ``lnnormal`` is its exact native match). ``where`` names the spec in
+    the error message."""
     if location == 'mean':
         raise NotImplementedError(
             f"{where} is mean-centered (location = mean); PEtab v2 takes the prediction as "
@@ -969,7 +972,7 @@ def _reduce_noise_spec(family_token, fields, location, where):
         raise NotImplementedError(
             f"{where}: the '{family_token}' noise family cannot be expressed in PEtab v2: "
             f"neg_bin was removed from v2, and PyBNF's lognormal is log10 while PEtab's "
-            f"log-normal is natural log (the sigma scale-conversion is a later chunk). "
+            f"log-normal is natural log (use the distinct lnnormal family for that scale). "
             f"ADR-0023/0031, #423.")
     (_param, (verb, arg)), = fields.items()
     return distribution, verb, arg

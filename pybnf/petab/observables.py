@@ -57,19 +57,18 @@ scoring the wrong objective. The scale-preserving converter (:mod:`pybnf.petab.c
 re-injects ``observableTransformation`` as a preserved extra column, and this adapter reads
 it to *override* the additive scale (``log10`` -> LOG10, ``log`` -> LN, ``lin`` -> unchanged),
 selecting the family's scale from the transformation, not just the family from
-noiseDistribution. LOG10 matches PyBNF's native ``lognormal`` token; the natural-log families
-stay reachable via v2's ``log-normal`` / ``log-laplace`` too.
+noiseDistribution. LOG10 matches PyBNF's native ``lognormal`` token; natural-log Gaussian matches
+the explicit ``lnnormal`` token (issue #509, ADR-0084), while natural-log Laplace stays reachable
+through this structural adapter only.
 
-**The two-adapter equivalence is exact for the linear families and ``laplace``,
-structural for the natural-log families.** ``laplace`` matches the native
+**The two-adapter equivalence is exact for both Gaussian log bases and the linear families,
+structural only for natural-log Laplace.** ``laplace`` matches the native
 ``laplace`` token exactly (``Laplace(LINEAR, MEDIAN)``), and ``normal`` matches the
 native ``normal`` token exactly too (``Gaussian(LINEAR, MEDIAN)``): native ``normal``
-now also defaults to ``MEDIAN`` (ADR-0031). The natural-log families have
-**no native ``.conf`` token** -- the native ``lognormal`` token is log10, and the
-native surface has no natural-log family -- so ``log-normal`` / ``log-laplace`` are
-validated structurally and against the kernels' analytic NLL rather than a native
-config line. That PyBNF can represent natural-log noise the native surface does not
-expose is fine: the engine is the superset, the native grammar a convenience.
+now also defaults to ``MEDIAN`` (ADR-0031). ``log-normal`` matches native ``lnnormal``
+(``Gaussian(LN, MEDIAN)``; issue #509), deliberately distinct from log10 ``lognormal``.
+``log-laplace`` has no native ``.conf`` token and is validated structurally against the kernel's
+analytic NLL; the engine remains a superset of the native grammar.
 
 The noise mapping is **complete** for PEtab v2: every one of the four
 ``noiseDistribution`` values maps with no gaps (the Laplace kernel landed in #410,
