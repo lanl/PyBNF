@@ -6,6 +6,15 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **PEtab import now preserves replicate-specific `observableParameters` / `noiseParameters`
+  bindings (#508, ADR-0083).** The per-measurement sidecar was keyed only by column, time, and
+  placeholder, so repeated PEtab cells from different replicates collided and the last
+  replicate's token silently replaced the others. This blocked `Fiedler_BMCSystBiol2016` by
+  orphaning the first gel's scale parameters and could silently fit other problems with the wrong
+  per-row scaling/noise binding. Replicate-aware sidecars now add a 1-based `replicate` column,
+  using the same row-dealing partition that creates each `_repN.exp`; configuration loading and
+  PEtab re-export select tokens by `(replicate, time)`. Legacy four-column sidecars remain valid
+  and retain their shared-across-replicates meaning.
 - **PEtab import: `observableParameters`/`noiseParameters` placeholders with a fixed noise
   parameter, multiple noise tokens, or an affine/prediction-scaling noiseFormula now import (#495,
   ADR-0075).** Three related gaps in the placeholder→parameter mapping left benchmark-collection

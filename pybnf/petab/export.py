@@ -88,7 +88,7 @@ from .conditions import (
     write_experiment_table,
     write_mapping_table,
 )
-from ._measurement_params import read_measurement_params
+from ._measurement_params import measurement_params_for_replicate, read_measurement_params
 from .formula import bngl_body_to_petab_math
 from .measurements import (
     dose_response_measurement_rows,
@@ -490,13 +490,15 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         model_id = Path(exp['model']).stem if multi_model else ''
         # Each replicate Data contributes its own rows under the one experiment (PEtab
         # models replicates as repeated rows -- no need to pre-stack as config.py does). A
-        # row-varying placeholder's per-row token comes from the experiment's measurement_params
-        # sidecar (ADR-0045), shared across the replicate Datas (each measures the same cells).
-        for data in exp['datas']:
+        # row-varying placeholder's per-row token comes from that replicate's slice of the
+        # experiment's measurement_params sidecar (ADR-0083); a legacy four-column sidecar is
+        # selected for every replicate and therefore keeps its original shared-token semantics.
+        for replicate, data in enumerate(exp['datas']):
             cmap = {c: o for c, o in column_to_observable_id.items() if c in data.cols}
             measurement_rows += measurement_rows_from_data(
                 data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id,
-                measurement_params=exp['measurement_params'])
+                measurement_params=measurement_params_for_replicate(
+                    exp['measurement_params'], replicate))
 
     # Dose-response (ADR-0046): each dose row of the swept-axis .exp becomes its own Condition
     # (setting the swept parameter) + Experiment, and the observable columns become measurements
@@ -554,7 +556,8 @@ def _read_experiments(conf, conf_path, models):
     ``'parameter_scan'``), the dose-response ``scan_time`` (``inf`` for the steady-state
     default, a finite ``t_end:`` otherwise; ``None`` for a time course -- ADR-0046), and its
     row-varying per-measurement binding table read from the ``measurement_params:`` sidecar
-    (``{column: {placeholder: {time: token}}}``, or ``None`` when none -- ADR-0045). Raises:
+    (``{column: {placeholder: {key: token}}}``, where ``key`` is ``(replicate, time)`` in the
+    ADR-0083 format or a shared bare time in the legacy format; ``None`` when absent). Raises:
 
     * the ambiguous-model error if an experiment names no model but the job has more than
       one (mirrors ``config.py::_resolve_experiment_model``);

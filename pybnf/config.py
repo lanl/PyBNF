@@ -1402,9 +1402,10 @@ class Configuration:
             if exp_files:
                 # The common case: quantitative .exp data drives the simulation grid (and the
                 # objective). A constraint, if any, rides the same simulation (below).
-                stacked = self._load_experiment_data(name, exp_files)
+                stacked, replicate_lengths = self._load_experiment_data(name, exp_files)
                 if fields.get('measurement_params'):
-                    self._attach_measurement_params(name, stacked, fields['measurement_params'])
+                    self._attach_measurement_params(
+                        name, stacked, fields['measurement_params'], replicate_lengths)
                 action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
                 points = sorted({float(x) for x in stacked[stacked.indvar]})
                 if preequilibrate is not None:
@@ -1811,9 +1812,11 @@ class Configuration:
         self.constraints.add(cs)
 
     def _load_experiment_data(self, name, data_files):
-        """Read an experiment's ``.exp`` ``data:`` files into one ``Data``, stacking replicates.
+        """Read an experiment's ``.exp`` ``data:`` files and stack their replicates.
 
-        A single file is returned as-is. Multiple files are **replicates**: their rows are
+        Returns ``(stacked_data, replicate_lengths)``; the row counts retain the block boundary
+        needed to align a replicate-aware ``measurement_params`` sidecar (ADR-0083). A single
+        file's Data is returned as-is. Multiple files are **replicates**: their rows are
         vertically concatenated into one ``Data`` (NOT averaged -- the objective sums over
         all rows, so duplicate-indvar rows from replicates add measurement terms).
         *Ragged* replicates -- replicate files that measure different subsets of observables
@@ -1834,9 +1837,10 @@ class Configuration:
                 raise PybnfError(f"Experimental data file {ef} for experiment '{name}' was not found.")
             except DuplicateColumnError as err:
                 raise PybnfError(f"Parsing data file {ef} for experiment '{name}'. {err.args[0]}")
+        replicate_lengths = [d.data.shape[0] for d in datas]
         if len(datas) == 1:
-            return datas[0]
-        return self._stack_replicates(datas)
+            return datas[0], replicate_lengths
+        return self._stack_replicates(datas), replicate_lengths
 
     @staticmethod
     def _stack_replicates(datas):
@@ -1875,28 +1879,43 @@ class Configuration:
         stacked.data = np.vstack(blocks)
         return stacked
 
-    def _attach_measurement_params(self, name, stacked, mp_file):
+    def _attach_measurement_params(self, name, stacked, mp_file, replicate_lengths):
         """Attach an experiment's per-measurement binding table to its exp ``Data`` (ADR-0045).
 
         Reads the ``measurement_params: <file>.tsv`` sidecar -- ``{column: {placeholder:
-        {time: token}}}`` -- and rebuilds it onto ``stacked.measurement_params`` as
+        {key: token}}}`` -- and rebuilds it onto ``stacked.measurement_params`` as
         ``{column: {placeholder: [token_per_row]}}`` aligned to ``stacked``'s row order (so a
         :class:`~pybnf.noise.PerMeasurementFormulaSigma` can read the row's token at
-        ``exp_row``). Each row is matched to its sidecar entry by the independent-variable
-        (time) value, so replicate rows that share a time share the token (the stacking in
-        :meth:`_load_experiment_data` repeats times; this is robust to it). A token that is a
-        parameter id (not a number) is collected into ``_per_measurement_free_params`` so the
-        free-parameter orphan check recognizes it as used.
+        ``exp_row``). In the ADR-0083 five-column format ``key`` is ``(replicate, time)`` and
+        ``replicate_lengths`` maps each stacked row back to the owning ``data:`` file. In a
+        legacy ADR-0045 four-column sidecar ``key`` is a bare time and its token is shared by all
+        replicates. A token that is a parameter id (not a number) is collected into
+        ``_per_measurement_free_params`` so the free-parameter orphan check recognizes it as used.
+        A ragged replicate's NaN-padded cell gets a ``None`` token without requiring a sidecar
+        entry because the objective does not score that absent measurement.
         """
         from .petab._measurement_params import read_measurement_params
         raw = read_measurement_params(self._absolute(mp_file))
         row_times = list(stacked[stacked.indvar])
+        if sum(replicate_lengths) != len(row_times):
+            raise PybnfError(
+                f"Experiment '{name}': internal replicate row counts do not match the stacked "
+                "experimental data while loading measurement_params (ADR-0083).")
+        row_replicates = [replicate for replicate, length in enumerate(replicate_lengths)
+                          for _ in range(length)]
         binding = {}
         for column, by_placeholder in raw.items():
             binding[column] = {}
             for placeholder, by_time in by_placeholder.items():
-                tokens = [self._token_at_time(by_time, t, name, column, placeholder)
-                          for t in row_times]
+                tokens = []
+                for exp_row, (replicate, t) in enumerate(zip(row_replicates, row_times)):
+                    # _stack_replicates NaN-pads a column absent from a ragged replicate. It is
+                    # not a measured point and therefore needs no token for that replicate.
+                    if column in stacked.cols and np.isnan(stacked.data[exp_row, stacked.cols[column]]):
+                        tokens.append(None)
+                    else:
+                        tokens.append(self._token_at_time(
+                            by_time, t, name, column, placeholder, replicate))
                 binding[column][placeholder] = tokens
                 for tok in tokens:
                     if tok is not None and not self._is_numeric_token(tok):
@@ -1914,18 +1933,32 @@ class Configuration:
             return False
 
     @staticmethod
-    def _token_at_time(by_time, t, name, column, placeholder):
-        """The sidecar token for time ``t``: an exact float-key hit, else the closest key
-        within a tight tolerance (the .exp and sidecar times share a source, so this only
-        absorbs float-repr noise). Raises if no row matches."""
+    def _token_at_time(by_time, t, name, column, placeholder, replicate=None):
+        """The sidecar token for ``(replicate, time)`` with legacy bare-time fallback.
+
+        Exact hits precede a tight-tolerance match (the .exp and sidecar times share a source,
+        so tolerance only absorbs float-repr noise). Raises if no row matches.
+        """
+        replicate_key = (replicate, t)
+        if replicate is not None and replicate_key in by_time:
+            return by_time[replicate_key]
+        if replicate is not None:
+            for key, token in by_time.items():
+                if (isinstance(key, tuple) and len(key) == 2 and key[0] == replicate
+                        and np.isclose(key[1], t, rtol=0, atol=1e-9)):
+                    return token
+        # A four-column ADR-0045 sidecar intentionally shares a time binding across every
+        # replicate. Bare-time rows in a mixed table provide the same explicit fallback.
         if t in by_time:
             return by_time[t]
-        for st, token in by_time.items():
-            if np.isclose(st, t, rtol=0, atol=1e-9):
+        for key, token in by_time.items():
+            if not isinstance(key, tuple) and np.isclose(key, t, rtol=0, atol=1e-9):
                 return token
+        replicate_hint = '' if replicate is None else f' in replicate {replicate + 1}'
         raise PybnfError(
             f"Experiment '{name}': the measurement_params sidecar has no token for "
-            f"placeholder '{placeholder}' of column '{column}' at time={t} (ADR-0045).")
+            f"placeholder '{placeholder}' of column '{column}' at time={t}{replicate_hint} "
+            "(ADR-0083).")
 
     def _infer_experiment_type(self, name, data, explicit_type):
         """Infer an experiment's simulation type from the data's independent variable

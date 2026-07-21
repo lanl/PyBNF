@@ -102,7 +102,9 @@ following all survive an import and an export:
 - **Observable and noise parameters** — a constant-per-observable
   ``observableParameters`` scale/offset is substituted in, and the Boehm-style
   ``sd_*`` pattern (a parameter id in the ``noiseParameters`` column, e.g.
-  ``sd_pSTAT5A_rel``) imports as an estimated noise parameter.
+  ``sd_pSTAT5A_rel``) imports as an estimated noise parameter. Row-varying bindings
+  are retained per measurement, including distinct tokens for replicate rows at the
+  same observable and time.
 - **Measurement models** — an arithmetic ``observableFormula`` (a scale, a ratio,
   a log, a sum of species) becomes an edition-2 measurement model
   (``observable: <id>, formula: <expr>``) evaluated after simulation, rather than by

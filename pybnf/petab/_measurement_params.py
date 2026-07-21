@@ -10,10 +10,12 @@ reads it back and attaches it to that experiment's experimental :class:`~pybnf.d
 :class:`~pybnf.noise.PerMeasurementFormulaSigma` consumes).
 
 This is the *disposable* half of the seam (mirroring :mod:`pybnf.petab._tsv` and the other
-table readers): a dependency-free, deterministic ``column / time / placeholder / token`` TSV.
-The in-memory shape on both sides is ``{column: {placeholder: {time: token}}}`` -- one entry
-per measured point; the token is carried as a string (a number or an id), classified at eval
-time exactly as the measurements-table tokens are.
+table readers): a dependency-free, deterministic ``replicate / column / time / placeholder /
+token`` TSV. ``replicate`` is 1-based on disk and 0-based in memory. The in-memory shape is
+``{column: {placeholder: {key: token}}}``, where ``key`` is ``(replicate, time)`` for a
+replicate-aware table (ADR-0083) and a bare ``time`` for the original shared-across-replicates
+four-column format (ADR-0045). The token is carried as a string (a number or an id), classified
+at eval time exactly as the measurements-table tokens are.
 """
 
 import csv
@@ -23,28 +25,91 @@ from ._tsv import num, write_tsv
 #: The sidecar's column order. ``column`` is the experimental-data column (the model entity the
 #: observable measures -- what the objective sees), not the PEtab observableId; ``placeholder``
 #: is the full PEtab placeholder name the noiseFormula references (``noiseParameter1_<id>``).
-_COLUMNS = ['column', 'time', 'placeholder', 'token']
+#: The legacy four-column header remains writable/readable for a table with bare-time keys.
+_COLUMNS = ['replicate', 'column', 'time', 'placeholder', 'token']
+_LEGACY_COLUMNS = _COLUMNS[1:]
 
 
 def write_measurement_params(table, path):
-    """Write a per-experiment binding ``table`` -- ``{column: {placeholder: {time: token}}}`` --
-    to ``path`` as a sidecar TSV (sorted for a deterministic, re-export-stable file)."""
+    """Write a per-experiment binding ``table`` to ``path`` as a sidecar TSV.
+
+    A replicate-aware table has ``(zero_based_replicate, time)`` leaf keys and writes the
+    five-column ADR-0083 format. A table with only bare-time keys writes the original ADR-0045
+    four-column format, keeping native single-replicate sidecars byte-compatible. Records are
+    sorted for a deterministic, re-export-stable file.
+    """
+    replicate_aware = any(
+        _is_replicate_key(key)
+        for by_placeholder in table.values()
+        for by_key in by_placeholder.values()
+        for key in by_key)
     records = []
     for column in sorted(table):
         for placeholder in sorted(table[column]):
-            for time in sorted(table[column][placeholder]):
-                token = table[column][placeholder][time]
-                records.append([column, num(time), placeholder, str(token)])
-    write_tsv(path, _COLUMNS, records)
+            by_key = table[column][placeholder]
+            for key in sorted(by_key, key=_binding_sort_key):
+                token = by_key[key]
+                if _is_replicate_key(key):
+                    replicate, time = key
+                    record = [replicate + 1, column, num(time), placeholder, str(token)]
+                else:
+                    record = ['', column, num(key), placeholder, str(token)]
+                records.append(record if replicate_aware else record[1:])
+    write_tsv(path, _COLUMNS if replicate_aware else _LEGACY_COLUMNS, records)
 
 
 def read_measurement_params(path):
-    """Read a sidecar TSV at ``path`` back into ``{column: {placeholder: {time(float):
-    token(str)}}}`` -- the inverse of :func:`write_measurement_params`. Dependency-free
-    (stdlib ``csv``)."""
+    """Read a sidecar TSV at ``path`` -- the inverse of :func:`write_measurement_params`.
+
+    Five-column rows become ``(zero_based_replicate, time)`` leaf keys. The original
+    four-column format remains supported and becomes bare-time keys, meaning that its token is
+    shared by every replicate. Dependency-free (stdlib :mod:`csv`).
+    """
     table = {}
     with open(path, newline='') as fh:
         for rec in csv.DictReader(fh, delimiter='\t'):
             col, ph = rec['column'], rec['placeholder']
-            table.setdefault(col, {}).setdefault(ph, {})[float(rec['time'])] = rec['token']
+            time = float(rec['time'])
+            replicate = rec.get('replicate', '').strip()
+            if replicate:
+                replicate = int(replicate)
+                if replicate < 1:
+                    raise ValueError(
+                        f"measurement_params replicate must be 1 or greater (got {replicate})")
+                key = (replicate - 1, time)
+            else:
+                key = time
+            table.setdefault(col, {}).setdefault(ph, {})[key] = rec['token']
     return table
+
+
+def measurement_params_for_replicate(table, replicate):
+    """Select one zero-based ``replicate`` from a sidecar ``table``.
+
+    Returns the original bare-time shape consumed by :func:`measurement_rows_from_data`.
+    Legacy bare-time entries apply to every replicate; an explicit replicate entry overrides a
+    legacy entry at the same time. Columns/placeholders with no entry for this replicate are
+    omitted (ragged replicate grids need not carry every observable).
+    """
+    selected = {}
+    for column, by_placeholder in (table or {}).items():
+        for placeholder, by_key in by_placeholder.items():
+            by_time = {float(key): token for key, token in by_key.items()
+                       if not _is_replicate_key(key)}
+            by_time.update({float(key[1]): token for key, token in by_key.items()
+                            if _is_replicate_key(key) and key[0] == replicate})
+            if by_time:
+                selected.setdefault(column, {})[placeholder] = by_time
+    return selected
+
+
+def _is_replicate_key(key):
+    """Whether ``key`` is the ADR-0083 ``(zero_based_replicate, time)`` pair."""
+    return isinstance(key, tuple) and len(key) == 2
+
+
+def _binding_sort_key(key):
+    """A total order for a possibly mixed legacy/replicate-aware leaf mapping."""
+    if _is_replicate_key(key):
+        return 1, int(key[0]), float(key[1])
+    return 0, -1, float(key)

@@ -1091,10 +1091,11 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     ``model_location_of`` maps it to the model file, emitted as a per-experiment ``model:``
     field (omitted for a single-model job, whose modelId is ``''``).
 
-    ``param_bindings`` (ADR-0045) is the ``{(experiment_id, model_id): {column: {placeholder:
-    {time: token}}}}`` per-measurement binding table; a group with an entry also writes a
-    ``<name>_measparams.tsv`` sidecar carrying its row-varying noise tokens, emitted as the
-    experiment's ``measurement_params:`` field. Returns a list of :class:`ImportedExperiment`
+    ``param_bindings`` (ADR-0045/0083) is the ``{(experiment_id, model_id): {column:
+    {placeholder: {key: token}}}}`` per-measurement binding table, where a multi-replicate
+    group's ``key`` is ``(replicate, time)``; a group with an entry also writes a
+    ``<name>_measparams.tsv`` sidecar carrying its row-varying tokens, emitted as the experiment's
+    ``measurement_params:`` field. Returns a list of :class:`ImportedExperiment`
     in measurement order; ``t_end`` is ``None`` for a time course (the dose-response scans
     append their own entries -- :func:`_dose_response_experiments`).
     """

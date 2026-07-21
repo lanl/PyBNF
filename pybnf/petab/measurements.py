@@ -110,8 +110,9 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     ragged long table round trips through PyBNF's ``NaN``-skipping objective). Rows are
     grouped by observable, then ordered by the independent variable as it appears in ``data``.
 
-    ``measurement_params`` (ADR-0045) is this experiment's per-measurement binding table
-    ``{column: {placeholder: {time: token}}}`` (the ``measurement_params:`` sidecar), the
+    ``measurement_params`` (ADR-0045) is one replicate's per-measurement binding-table slice
+    ``{column: {placeholder: {time: token}}}`` (selected from a replicate-aware
+    ``measurement_params:`` sidecar by the exporter, ADR-0083), the
     source of a **row-varying** placeholder's per-row token. For a column whose sidecar
     carries ``noiseParameter1_<id>`` the row's token becomes its ``noiseParameters`` id (a
     :class:`~pybnf.noise.PerMeasurementFormulaSigma` noise source); for ``observableParameter{n}_<id>``
@@ -793,8 +794,10 @@ def measurement_param_bindings(rows, observable_id_to_column, row_varying_noise=
     """Per-experiment per-measurement binding tables for the row-varying observables (ADR-0045)
     -- the source the importer writes to the sidecar TSV.
 
-    Returns ``{(experiment_id, model_id): {column: {placeholder: {time: token}}}}``, collecting
-    **both** row-varying frontiers into the one sidecar shape:
+    Returns ``{(experiment_id, model_id): {column: {placeholder: {key: token}}}}``, collecting
+    **both** row-varying frontiers into the one sidecar shape. ``key`` is a bare ``time`` for a
+    one-replicate group and ``(zero_based_replicate, time)`` when the group has repeated cells
+    (ADR-0083):
 
     * **noise** (``row_varying_noise``) -- each measurement row's ``noiseParameters`` token(s)
       bind ``noiseParameter${n}_<observable_id>`` at that row's ``time`` (the n-th token to the
@@ -808,39 +811,47 @@ def measurement_param_bindings(rows, observable_id_to_column, row_varying_noise=
     the model entity / materialized measurement-model column the objective compares, what the
     per-point evaluator looks up at eval), not the PEtab observableId, and grouped by
     ``(experiment_id, model_id)`` to match :func:`data_from_measurement_rows` so each experiment
-    gets its own sidecar. Two replicate rows at the same ``(observable, time)`` share the token
-    (last-wins; a per-replicate-varying token is out of scope). The two placeholder families
-    (noise vs observable) coexist under one column with distinct placeholder keys.
+    gets its own sidecar. Replicate rows are dealt with :func:`_deal_replicates`, the exact same
+    partition used by :func:`data_from_measurement_rows`, so each sidecar token follows the row
+    into the corresponding ``.exp`` file. The two placeholder families (noise vs observable)
+    coexist under one column with distinct placeholder keys. The single-replicate case keeps bare
+    time keys so its original four-column sidecar stays byte-compatible.
     """
     table = {}
+    by_group = {}
     for row in rows:
-        key = (row.experiment_id, row.model_id)
-        # A single-id row (ADR-0045) carries its token in noise_parameter_id; a multi-parameter
-        # row (ADR-0075) carries them in noise_param_tokens. Prefer the tuple, falling back to
-        # the single id, so a row built either way binds correctly.
-        noise_tokens = row.noise_param_tokens or (
-            (row.noise_parameter_id,) if row.noise_parameter_id is not None else ())
-        if row.observable_id in row_varying_noise and noise_tokens:
-            # Bind every noiseParameter${n} token per row (ADR-0075): a single-id row-varying
-            # noise binds noiseParameter1 (byte-identical to ADR-0045); a multi-parameter
-            # row-varying noise (Fiedler's per-gel scale × a shared sigma) binds noiseParameter1..n.
-            column = observable_id_to_column[row.observable_id]
-            for n, token in enumerate(noise_tokens, start=1):
-                _bind(table, key, column, f'noiseParameter{n}_{row.observable_id}',
-                      row.time, token)
-        if row.observable_id in row_varying_obs and row.observable_parameters:
-            column = observable_id_to_column[row.observable_id]
-            for n, token in enumerate(row.observable_parameters, start=1):
-                _bind(table, key, column, f'observableParameter{n}_{row.observable_id}',
-                      row.time, token)
+        by_group.setdefault((row.experiment_id, row.model_id), []).append(row)
+    for key, group in by_group.items():
+        buckets = _deal_replicates(group)
+        replicate_aware = len(buckets) > 1
+        for replicate, bucket in enumerate(buckets):
+            for row in bucket:
+                # A single-id row (ADR-0045) carries its token in noise_parameter_id; a
+                # multi-parameter row (ADR-0075) carries them in noise_param_tokens. Prefer the
+                # tuple, falling back to the single id, so a row built either way binds correctly.
+                noise_tokens = row.noise_param_tokens or (
+                    (row.noise_parameter_id,) if row.noise_parameter_id is not None else ())
+                if row.observable_id in row_varying_noise and noise_tokens:
+                    # Bind every noiseParameter${n} token per row (ADR-0075): a single-id
+                    # row-varying noise binds noiseParameter1; a multi-parameter row-varying
+                    # noise (Fiedler's per-gel scale × a shared sigma) binds every placeholder.
+                    column = observable_id_to_column[row.observable_id]
+                    for n, token in enumerate(noise_tokens, start=1):
+                        _bind(table, key, column, f'noiseParameter{n}_{row.observable_id}',
+                              row.time, token, replicate if replicate_aware else None)
+                if row.observable_id in row_varying_obs and row.observable_parameters:
+                    column = observable_id_to_column[row.observable_id]
+                    for n, token in enumerate(row.observable_parameters, start=1):
+                        _bind(table, key, column, f'observableParameter{n}_{row.observable_id}',
+                              row.time, token, replicate if replicate_aware else None)
     return table
 
 
-def _bind(table, key, column, placeholder, time, token):
-    """Record one ``(experiment, column, placeholder, time) -> token`` cell in the nested
-    binding table (a small helper so the noise and observable arms share the insertion)."""
+def _bind(table, key, column, placeholder, time, token, replicate=None):
+    """Record one binding-table cell (shared by the noise and observable insertion arms)."""
+    binding_key = time if replicate is None else (replicate, time)
     (table.setdefault(key, {}).setdefault(column, {})
-          .setdefault(placeholder, {}))[time] = token
+          .setdefault(placeholder, {}))[binding_key] = token
 
 
 def _classify_observable_params(rows):

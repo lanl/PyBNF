@@ -75,12 +75,18 @@ Required Keys
 
   The line is ``experiment: <name>, data: <file1.exp>[, <file2.exp>…]`` plus the optional
   labeled fields ``condition: <name>``, ``preequilibrate: <name>``, ``model: <file>``,
-  ``type: <type>``, and ``method: <ode|ssa|pla|nf>``, which may appear in any order after
-  the name; only ``data:`` is required.
+  ``type: <type>``, ``method: <ode|ssa|pla|nf>``, and
+  ``measurement_params: <file.tsv>``, which may appear in any order after the name; only
+  ``data:`` is required.
 
     * **data:** a comma list of ``.exp`` files. **Multiple files are replicates** — all
       their rows become measurements under the one experiment (stacked, not averaged), the
       thing the legacy surface cannot express without pre-averaging.
+    * **measurement_params:** optionally names a tab-separated per-measurement placeholder
+      sidecar. Replicate-aware sidecars use the columns ``replicate``, ``column``, ``time``,
+      ``placeholder``, and ``token`` (``replicate`` is 1-based); the original four-column
+      format without ``replicate`` remains valid and shares each time binding across all
+      replicate files.
     * **The simulation outputs at exactly the data's points.** The independent-variable
       column of the data supplies the simulation's output grid (the BNGL ``begin actions``
       block is no longer needed for fitting); PyBNF synthesizes the ``simulate`` action

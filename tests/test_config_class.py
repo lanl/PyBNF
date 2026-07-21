@@ -878,6 +878,41 @@ class TestRaggedReplicates:
         assert np.array_equal(stacked['y'][:2], [2, 4])   # rep A intact
         assert np.all(np.isnan(stacked['y'][2:]))         # rep B unmeasured -> NaN
 
+    def test_replicate_sidecar_allows_missing_token_for_nan_padded_cell(self, tmp_path):
+        # ADR-0083: y is measured only by replicate 1. Its sidecar therefore has no replicate-2
+        # y token; the NaN-padded runtime row gets None instead of a false missing-token error.
+        from pybnf.petab._measurement_params import write_measurement_params
+        full = self._grid(['time', 'x', 'y'], [[0, 1, 2]])
+        xonly = self._grid(['time', 'x'], [[0, 3]])
+        stacked = config.Configuration._stack_replicates([full, xonly])
+        sidecar = tmp_path / 'params.tsv'
+        write_measurement_params(
+            {'y': {'observableParameter1_obs_y': {(0, 0.0): 'scale'}}}, sidecar)
+
+        cfg = object.__new__(config.Configuration)
+        cfg._per_measurement_free_params = set()
+        cfg._absolute = lambda path: path
+        cfg._attach_measurement_params('ragged', stacked, sidecar, [1, 1])
+        assert stacked.measurement_params == {
+            'y': {'observableParameter1_obs_y': ['scale', None]}}
+        assert cfg._per_measurement_free_params == {'scale'}
+
+    def test_replicate_sidecar_requires_token_for_measured_cell(self, tmp_path):
+        # The same absent replicate-2 token is an error when y is actually measured there.
+        from pybnf.petab._measurement_params import write_measurement_params
+        a = self._grid(['time', 'y'], [[0, 2]])
+        b = self._grid(['time', 'y'], [[0, 3]])
+        stacked = config.Configuration._stack_replicates([a, b])
+        sidecar = tmp_path / 'params.tsv'
+        write_measurement_params(
+            {'y': {'observableParameter1_obs_y': {(0, 0.0): 'scale'}}}, sidecar)
+
+        cfg = object.__new__(config.Configuration)
+        cfg._per_measurement_free_params = set()
+        cfg._absolute = lambda path: path
+        with pytest.raises(printing.PybnfError, match='replicate 2'):
+            cfg._attach_measurement_params('measured', stacked, sidecar, [1, 1])
+
     def test_column_absent_from_first_grid_is_appended_after_indvar(self):
         # A column that first appears in a later replicate joins the union (indvar stays
         # column 0); each grid NaN-pads the column it did not measure.

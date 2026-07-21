@@ -2293,6 +2293,105 @@ class TestMultiTokenRowVaryingNoiseImport:
         assert not np.isclose(score, float(np.sum(res ** 2 / (2 * wrong ** 2) + np.log(wrong))))
 
 
+class TestReplicateSpecificMeasurementParamsImport:
+    """Repeated ``(observable, time)`` rows retain distinct placeholder tokens (issue #508).
+
+    This is the minimal Fiedler shape: gel/replicate 1 binds ``s_lo`` at every time, while
+    gel/replicate 2 binds ``s_hi`` at those same cells. Before ADR-0083 the sidecar's bare time
+    key let the second gel overwrite the first, orphaning ``s_lo`` and silently scoring both
+    replicate files with ``s_hi``.
+    """
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        fixture = tmp_path_factory.mktemp('replicate_params') / 'problem'
+        shutil.copytree(MULTISIGMA_DIR, fixture)
+        (fixture / 'observables.tsv').write_text(
+            'observableId\tobservableFormula\tnoiseFormula\tobservablePlaceholders\t'
+            'noisePlaceholders\tnoiseDistribution\n'
+            'obs_y\tobservableParameter1_obs_y * y\t'
+            'noiseParameter1_obs_y * noiseParameter2_obs_y\t'
+            'observableParameter1_obs_y\t'
+            'noiseParameter1_obs_y;noiseParameter2_obs_y\tnormal\n')
+        # PEtab encodes replicates as repeated cells. The first occurrence of every time is gel 1
+        # (s_lo), the second gel 2 (s_hi), exactly the dealing order used to build the two .exp
+        # files. Fiedler binds the gel scale through BOTH placeholder families.
+        (fixture / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
+            'obs_y\tepo\t0\t43\ts_lo\ts_lo;sig\n'
+            'obs_y\tepo\t0\t42\ts_hi\ts_hi;sig\n'
+            'obs_y\tepo\t1\t34.5\ts_lo\ts_lo;sig\n'
+            'obs_y\tepo\t1\t32.5\ts_hi\ts_hi;sig\n'
+            'obs_y\tepo\t2\t27\ts_lo\ts_lo;sig\n'
+            'obs_y\tepo\t2\t25\ts_hi\ts_hi;sig\n')
+        out = import_job(fixture / 'problem.yaml', fixture.parent / 'out')
+        return fixture, out
+
+    def test_import_writes_two_exp_files_and_a_replicate_aware_sidecar(self, imported):
+        _fixture, out = imported
+        text = (out / 'imported.conf').read_text()
+        exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
+        assert 'data: epo.exp, epo_rep2.exp' in exp_line
+        assert (out / 'epo_measparams.tsv').read_text().splitlines()[0].split('\t') == [
+            'replicate', 'column', 'time', 'placeholder', 'token']
+
+        from pybnf.petab._measurement_params import read_measurement_params
+        table = read_measurement_params(out / 'epo_measparams.tsv')
+        assert table == {'obs_y': {
+            'observableParameter1_obs_y': {
+                (0, 0.0): 's_lo', (0, 1.0): 's_lo', (0, 2.0): 's_lo',
+                (1, 0.0): 's_hi', (1, 1.0): 's_hi', (1, 2.0): 's_hi'},
+            'noiseParameter1_obs_y': {
+                (0, 0.0): 's_lo', (0, 1.0): 's_lo', (0, 2.0): 's_lo',
+                (1, 0.0): 's_hi', (1, 1.0): 's_hi', (1, 2.0): 's_hi'},
+            'noiseParameter2_obs_y': {
+                (0, 0.0): 'sig', (0, 1.0): 'sig', (0, 2.0): 'sig',
+                (1, 0.0): 'sig', (1, 1.0): 'sig', (1, 2.0): 'sig'}}}
+
+    def test_config_attaches_each_replicates_tokens_and_scores_them(self, imported, monkeypatch):
+        _fixture, out = imported
+        cfg = _load_conf(out, monkeypatch)
+        # Both gel scales are recognized as used nuisances; neither is orphaned (#508 reproducer).
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 's_lo', 's_hi', 'sig'}
+        epo = cfg.exp_data['multisigma_model']['epo']
+        assert epo.measurement_params == {'obs_y': {
+            'observableParameter1_obs_y': ['s_lo'] * 3 + ['s_hi'] * 3,
+            'noiseParameter1_obs_y': ['s_lo'] * 3 + ['s_hi'] * 3,
+            'noiseParameter2_obs_y': ['sig'] * 6}}
+
+        score = _score(cfg, 'multisigma_model',
+                       {'v1': .5, 'v2': 1., 'v3': 3., 's_lo': .5, 's_hi': 1., 'sig': 2.})
+        sigma = np.array([1., 1., 1., 2., 2., 2.])
+        prediction = np.r_[.5 * _SIM_Y[:, 1], _SIM_Y[:, 1]]
+        residual = prediction - np.array([43., 34.5, 27., 42., 32.5, 25.])
+        expected = float(np.sum(residual ** 2 / (2 * sigma ** 2) + np.log(sigma)))
+        assert score == pytest.approx(expected)
+
+    def test_export_restores_each_replicate_placeholder_tokens(self, imported, tmp_path, monkeypatch):
+        _fixture, out = imported
+        monkeypatch.chdir(out)
+        exported = export_job('imported.conf', tmp_path / 'exported')
+        rows = read_measurement_table(exported / 'measurements.tsv')
+        assert [row.observable_parameters for row in rows] == \
+            [('s_lo',)] * 3 + [('s_hi',)] * 3
+        assert [row.noise_param_tokens for row in rows] == \
+            [('s_lo', 'sig')] * 3 + [('s_hi', 'sig')] * 3
+
+    def test_legacy_four_column_sidecar_still_shares_tokens_across_replicates(self, tmp_path):
+        from pybnf.petab._measurement_params import (
+            measurement_params_for_replicate,
+            read_measurement_params,
+            write_measurement_params,
+        )
+        sidecar = tmp_path / 'legacy.tsv'
+        original = {'y': {'noiseParameter1_obs_y': {0.0: 'shared', 1.0: 'shared'}}}
+        write_measurement_params(original, sidecar)
+        assert sidecar.read_text().splitlines()[0] == 'column\ttime\tplaceholder\ttoken'
+        loaded = read_measurement_params(sidecar)
+        assert measurement_params_for_replicate(loaded, 0) == original
+        assert measurement_params_for_replicate(loaded, 1) == original
+
+
 class TestPredictionDependentNoiseImport:
     """An affine noiseFormula whose sigma scales with the simulated output imports as a
     PredictionFormulaSigma; sigma reads the current simulation, its coefficients the PSet

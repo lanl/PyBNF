@@ -13,6 +13,13 @@ So a row-varying placeholder cannot be a pre-simulation column or a single subst
 must be **bound per data point, after the match**, with that row's token in hand. This ADR pins
 that per-data-point binding seam.
 
+**Replicate-key correction (ADR-0083, #508).** The original implementation serialized only
+`column / time / placeholder / token`, despite this ADR's `(observable, time, condition,
+replicate)` contract. Distinct tokens on repeated cells therefore collided. Replicate-aware
+sidecars now add a 1-based `replicate` column and are dealt by the same ADR-0039 partition as the
+`.exp` files; legacy four-column sidecars remain readable as one time binding shared by every
+replicate.
+
 **Update (Phase 2b, the observable side).** The observable side — `observableParameters` that
 differs row to row — is now implemented exactly as pinned below: a `PerMeasurementModel`
 (the observable sibling of `PerMeasurementFormulaSigma`) registered on the objective in a

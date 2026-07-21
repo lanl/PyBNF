@@ -186,7 +186,8 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
         ``{'Stot': 'gaussian, sigma = prediction_formula sd_abs + sd_rel*Stot'}`` for a
         prediction-dependent (combined additive+proportional) scale.
     :param measurement_params: optional per-measurement binding table
-        ``{column: {placeholder: {time: token}}}`` -- written to a sidecar TSV and referenced
+        ``{column: {placeholder: {time: token}}}`` -- written to a legacy-compatible sidecar TSV
+        whose time bindings apply to every replicate, and referenced
         by ``measurement_params: <file>`` on the experiment line, so a row-varying
         ``noiseFormula`` (a :class:`~pybnf.noise.PerMeasurementFormulaSigma`) can bind its
         placeholder token per data row (ADR-0045).
