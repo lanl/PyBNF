@@ -687,6 +687,94 @@ class BngsimSbmlModelNoTimeout(Model):
             data.output_sensitivities = self._extract_output_sensitivities(result)
         return data
 
+    def _initial_state_derivative(self, engine_model, base_state, mut, name):
+        """Numerically differentiate initialized concentrations with respect to ``name``.
+
+        SBML ``initialAssignment`` expressions are evaluated while an engine model is
+        prepared, before bngsim's ODE sensitivity system starts. Re-prepare the model at
+        two nearby values so a t=0-only experiment retains those assignment derivatives
+        (for example ``Rec2(0) = ini_R1 * ini_R2fold`` in Schwen_PONE2014).
+        """
+        value = self._get_engine_value_if_present(engine_model, name)
+        if value is None:
+            return np.zeros_like(base_state)
+        step = np.sqrt(np.finfo(float).eps) * max(1.0, abs(value))
+
+        states = {}
+        for direction in (-1.0, 1.0):
+            try:
+                perturbed = self._engine_model_for_action(
+                    mut=mut, scan_override=(name, value + direction * step))
+                state = np.asarray([
+                    perturbed.get_concentration(species)
+                    for species in engine_model.species_names
+                ], dtype=float)
+                if np.all(np.isfinite(state)):
+                    states[direction] = state
+            except Exception:
+                # A one-sided difference remains valid when an expression's domain or a
+                # model bound makes one perturbation invalid.
+                pass
+        if -1.0 in states and 1.0 in states:
+            return (states[1.0] - states[-1.0]) / (2.0 * step)
+        if 1.0 in states:
+            return (states[1.0] - base_state) / step
+        if -1.0 in states:
+            return (base_state - states[-1.0]) / step
+        raise PybnfError(
+            f"Model {self.name}: could not differentiate the initialized state with "
+            f"respect to '{name}' for a t=0-only experiment.")
+
+    def _initial_state_data(self, engine_model, *, method, mut):
+        """Return the initialized SBML state as a one-row trajectory at ``t=0``.
+
+        Both bngsim integrators require a positive-duration span, but an experiment
+        whose only measurement is at ``t=0`` needs no integration (#510). Construct
+        the gradient tensor directly too: ordinary initial conditions contribute an
+        identity column, while parameters/species used by an ``initialAssignment`` are
+        differentiated through that expression by re-preparing the initialized model.
+        """
+        species_names = list(engine_model.species_names)
+        state = np.asarray([
+            engine_model.get_concentration(name) for name in species_names
+        ], dtype=float)
+        data = self._data_with_headers(
+            np.concatenate(([0.0], state))[np.newaxis, :], ['time'] + species_names)
+
+        # Preserve the usual method/differentiability gate even though no Simulator is
+        # built: a scored SSA action still cannot supply a gradient, while an unscored
+        # SSA diagnostic remains sensitivity-free.
+        self._sensitivity_request_kwargs(method)
+        req = self._sensitivity_request
+        if req is None or method != 'ode' or (not req.params and not req.ic):
+            return data
+
+        selectors = ['species:%s' % name for name in species_names]
+        d_param = None
+        if req.params:
+            d_param = np.zeros((1, len(species_names), len(req.params)), dtype=float)
+            initial_deps = self._initial_dep_names
+            for axis, name in enumerate(req.params):
+                if initial_deps is None or name in initial_deps:
+                    d_param[0, :, axis] = self._initial_state_derivative(
+                        engine_model, state, mut, name)
+        d_ic = None
+        if req.ic:
+            d_ic = np.zeros((1, len(species_names), len(req.ic)), dtype=float)
+            species_index = {name: i for i, name in enumerate(species_names)}
+            initial_deps = self._initial_dep_names
+            for axis, name in enumerate(req.ic):
+                if (initial_deps is None or name in initial_deps
+                        or name in self._initial_expr_species):
+                    d_ic[0, :, axis] = self._initial_state_derivative(
+                        engine_model, state, mut, name)
+                elif name in species_index:
+                    d_ic[0, species_index[name], axis] = self._species_unit_factor[name]
+        data.output_sensitivities = OutputSensitivities(
+            selectors=selectors, param_names=list(req.params), ic_species=list(req.ic),
+            d_param=d_param, d_ic=d_ic)
+        return data
+
     def _extract_output_sensitivities(self, result):
         """Read the native-space ∂(species)/∂θ tensor off a sensitivity-bearing SBML Result.
 
@@ -995,12 +1083,16 @@ class BngsimSbmlModelNoTimeout(Model):
                     )
                     if isinstance(act, TimeCourse):
                         engine_model = self._engine_model_for_action(mut=mut)
-                        result = self._run_simulation(
-                            engine_model, act.time, act.stepnumber + 1,
-                            method=method, seed=seed_value, timeout=timeout,
-                            sample_times=act.explicit_points,
-                        )
-                        data = self._result_to_data(result, stochastic=method == 'ssa')
+                        if act.initial_state_only:
+                            data = self._initial_state_data(
+                                engine_model, method=method, mut=mut)
+                        else:
+                            result = self._run_simulation(
+                                engine_model, act.time, act.stepnumber + 1,
+                                method=method, seed=seed_value, timeout=timeout,
+                                sample_times=act.explicit_points,
+                            )
+                            data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(

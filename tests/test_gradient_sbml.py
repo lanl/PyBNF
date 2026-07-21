@@ -143,6 +143,46 @@ def test_sbml_scalar_path_carries_no_sensitivities(tmp_path):
 
 
 @_needs_output_sens
+def test_sbml_time_zero_only_returns_initial_state_and_sensitivities(tmp_path):
+    """A t=0-only condition is a one-row initial-state observation, including on gntr."""
+    action = TimeCourse({'suffix': 'initial'}, explicit_points=[0])
+    model = _decay_model(tmp_path, actions=(action,))
+    model.enable_output_sensitivities(params=['k'], ic=['S'])
+
+    data = model.execute(str(tmp_path), 'decay_initial', 0)['initial']
+
+    np.testing.assert_array_equal(data['time'], [0.0])
+    np.testing.assert_array_equal(data['S'], [TRUE_S0])
+    sens = data.output_sensitivities
+    assert sens is not None
+    np.testing.assert_array_equal(
+        sens.slice_for('species:S', axis='parameter'), [[0.0]])
+    np.testing.assert_array_equal(
+        sens.slice_for('species:S', axis='ic'), [[1.0]])
+
+
+@_needs_output_sens
+def test_sbml_time_zero_only_differentiates_initial_assignment(tmp_path):
+    """The t=0 tensor includes parameter derivatives baked into SBML initials (#510)."""
+    from .test_bngsim_sbml_bridge import _IA_SBML
+
+    xml = tmp_path / 'initial_assignment.xml'
+    xml.write_text(_IA_SBML)
+    ps = PSet([FreeParameter('k_init', 'uniform_var', 1.0, 20.0, value=5.0)])
+    action = TimeCourse({'suffix': 'initial'}, explicit_points=[0])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        str(xml), str(xml), pset=ps, actions=(action,))
+    model.enable_output_sensitivities(params=['k_init'])
+
+    data = model.execute(str(tmp_path), 'initial_assignment', 0)['initial']
+
+    np.testing.assert_allclose(data['S0'], [10.0], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(
+        data.output_sensitivities.slice_for('species:S0', axis='parameter'),
+        [[2.0]], rtol=1e-7, atol=1e-9)
+
+
+@_needs_output_sens
 def test_sbml_unscored_stochastic_action_runs_sensitivity_free(tmp_path):
     """An UNSCORED ssa diagnostic beside a scored ODE course no longer aborts (#475/#482).
 

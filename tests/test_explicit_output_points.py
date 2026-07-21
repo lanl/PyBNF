@@ -13,11 +13,12 @@ points instead of a uniform grid. This file covers the backend plumbing in
 """
 
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from .context import pset, printing, data, raises
+from .context import config, data, parse, printing, pset, raises
 
 
 class TestExplicitPointsActions:
@@ -39,10 +40,16 @@ class TestExplicitPointsActions:
         assert tc.explicit_points is None
         assert tc.stepnumber == 5
 
+    def test_time_course_accepts_an_initial_state_only_point(self):
+        tc = pset.TimeCourse({'suffix': 'e'}, explicit_points=[0])
+        assert tc.explicit_points == [0.0]
+        assert tc.initial_state_only is True
+        assert tc.time == 0.0
+        assert tc.output_length() == 1
+
     @raises(printing.PybnfError)
-    def test_time_course_needs_a_positive_point(self):
-        # Only t=0 would remain after forcing it in -- not a usable grid.
-        pset.TimeCourse({'suffix': 'e'}, explicit_points=[0])
+    def test_time_course_rejects_only_negative_points(self):
+        pset.TimeCourse({'suffix': 'e'}, explicit_points=[-1])
 
     def test_param_scan_sorts_dedupes_and_keeps_no_zero(self):
         ps = pset.ParamScan({'param': 'kAB', 'time': '500'},
@@ -85,6 +92,36 @@ class TestExplicitPointsActions:
     @raises(printing.PybnfError)
     def test_param_scan_steady_state_must_be_0_or_1(self):
         pset.ParamScan({'param': 'kAB', 'steady_state': 2}, explicit_points=[0.005, 0.02])
+
+
+@pytest.mark.roadrunner
+def test_config_loads_t0_only_experiment_beside_regular_time_course(tmp_path, monkeypatch):
+    """One initial-state condition must not sink the other experiments (#510)."""
+    source = Path(__file__).parent / 'bngl_files' / 'abc.xml'
+    model_file = tmp_path / 'abc.xml'
+    model_file.write_bytes(source.read_bytes())
+    (tmp_path / 'initial.exp').write_text('# time A\n0 20\n')
+    (tmp_path / 'later.exp').write_text('# time A\n1 19\n2 18\n')
+    conf_file = tmp_path / 'job.conf'
+    conf_file.write_text(
+        'edition = 2\n'
+        'job_type = de\n'
+        'objective = sos\n'
+        'model: abc.xml\n'
+        'experiment: initial, data: initial.exp\n'
+        'experiment: later, data: later.exp\n'
+        'uniform_var = kAB 0.001 0.1\n'
+        'population_size = 4\n'
+        'max_iterations = 1\n')
+    monkeypatch.chdir(tmp_path)
+
+    cfg = config.Configuration(parse.ploop(conf_file.read_text().splitlines(keepends=True)))
+
+    actions = cfg.models['abc'].actions
+    assert [(a.suffix, a.explicit_points) for a in actions] == [
+        ('initial', [0.0]), ('later', [0.0, 1.0, 2.0])]
+    assert cfg.config['time_length']['initial'] == 0
+    assert cfg.config['time_length']['later'] == 2
 
 
 class TestBnglActionText:
@@ -196,6 +233,17 @@ class TestSbmlExplicitPoints:
             assert np.isclose(sim['A'][sim_row], exp['A'][row], atol=0.05)
             assert np.isclose(sim['B'][sim_row], exp['B'][row], atol=0.05)
             assert np.isclose(sim['C'][sim_row], exp['C'][row], atol=0.05)
+
+    def test_time_zero_only_returns_the_initialized_state_without_integrating(self):
+        f, ps = self._abc_model()
+        action = pset.TimeCourse({'suffix': 'initial'}, explicit_points=[0])
+        m = pset.SbmlModelNoTimeout(f, os.getcwd() + '/' + f, pset=ps, actions=(action,))
+        sim = m.execute(os.getcwd(), 'abc_initial_only', 1000)['initial']
+
+        assert list(sim['time']) == [0.0]
+        assert list(sim['A']) == [20.0]
+        assert list(sim['B']) == [0.0]
+        assert list(sim['C']) == [0.0]
 
     def test_param_scan_sweeps_exactly_the_data_values(self):
         f, ps = self._abc_model()

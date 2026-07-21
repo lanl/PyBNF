@@ -6,6 +6,14 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **PEtab conditions measured only at `t = 0` now load and evaluate as initial-state
+  observations (#510).** A data-derived ``TimeCourse`` previously required at least one positive
+  output time, so one legitimate initial-state condition rejected the entire imported problem
+  (including every ordinary time course); this blocked ``Schwen_PONE2014``. SBML/RoadRunner and
+  SBML/bngsim now return the initialized model as a one-row ``t = 0`` trajectory without invoking
+  an integrator. The bngsim gradient path also supplies the initial-condition identity derivative
+  and differentiates parameter-driven SBML ``initialAssignment`` expressions, so ``trf`` /
+  ``lbfgs`` / ``gntr`` retain correct forward sensitivities for an initial-only experiment.
 - **PEtab natural-log Gaussian observables now import exactly (#509, ADR-0084).** PEtab v1
   ``observableTransformation = log`` and v2 ``noiseDistribution = log-normal`` previously reached
   PyBNF's internal ``Gaussian(LN)`` kernel but could not be serialized into the generated ``.conf``;

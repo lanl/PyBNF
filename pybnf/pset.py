@@ -1550,7 +1550,17 @@ class SbmlModelNoTimeout(Model):
                         runner.integrator.subdivision_steps = act.subdivisions
                 if isinstance(act, TimeCourse):
                     try:
-                        if act.explicit_points is not None:
+                        if act.initial_state_only:
+                            # A PEtab condition may legitimately measure only the initialized
+                            # state at t=0 (#510). RoadRunner requires simulate(times=...) to
+                            # contain at least two values, so read the already-reset model state
+                            # directly instead of inventing a positive integration endpoint.
+                            headers = [s.strip('[]') for s in selection]
+                            values = [float(runner.getValue(s)) for s in selection]
+                            res = Data.from_columns(
+                                np.asarray([values], dtype=float), headers)
+                            res_array = res.data
+                        elif act.explicit_points is not None:
                             # New-era explicit output points (ADR-0028): output at exactly
                             # the data's time points. RoadRunner's times= overrides
                             # start/end/points and integrates from the first listed time --
@@ -1563,11 +1573,14 @@ class SbmlModelNoTimeout(Model):
                     except RuntimeError:
                         # Rethrow simulation errors as something more specific to be caught
                         raise FailedSimulationError
-                    res = Data(named_arr=res_array)
+                    if not act.initial_state_only:
+                        res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
                     if self.save_files:
                         np.savetxt(f'{folder}/{filename}_{act.suffix}{mut.suffix}.gdat', res_array,
-                                   header=' '.join(res_array.colnames))
+                                   header=(' '.join(res.headers[i] for i in range(res.data.shape[1]))
+                                           if act.initial_state_only
+                                           else ' '.join(res_array.colnames)))
                 elif isinstance(act, ParamScan):
                     # Manually run parameter scan with several simulate commands
                     if act.param not in self.param_names:
@@ -1695,7 +1708,9 @@ class TimeCourse(Action):
         at which the simulation should output, derived from an experiment's data (ADR-0028,
         Chunk 3). When given, the action outputs at exactly these time points instead of a
         uniform ``n_steps`` grid (BNGL ``sample_times`` / RoadRunner ``simulate(times=...)``).
-        ``t=0`` is always included so integration starts at the model's baseline.
+        ``t=0`` is always included so integration starts at the model's baseline. A
+        singleton ``[0]`` grid is a valid initial-state observation; SBML backends
+        return the model's initialized state directly without integrating.
         """
         # Available keys and default values
         num_keys = {'time', 'step', 't_start'}
@@ -1745,12 +1760,14 @@ class TimeCourse(Action):
         # the simulation outputs one row per distinct time; replicate data with repeated
         # times stacks extra measurement rows that all match that one sim row.
         self.explicit_points = None
+        self.initial_state_only = False
         if explicit_points is not None:
             pts = sorted({float(p) for p in explicit_points} | {0.0})
-            if len(pts) < 2:
+            if pts[-1] <= 0.0 and pts != [0.0]:
                 raise PybnfError('A time_course with explicit output points needs at least one '
-                                 'positive time point.')
+                                 'nonnegative time point, and may contain only t=0.')
             self.explicit_points = pts
+            self.initial_state_only = pts == [0.0]
             if self.time is None:
                 self.time = pts[-1]
 
@@ -1768,7 +1785,7 @@ class TimeCourse(Action):
         # forces a leading t=0 baseline, ADR-0028) shifts the integration window: the grid
         # spans [t_start, t_end], so n_steps = (t_end - t_start)/step. t_start defaults to 0,
         # so legacy/data-driven actions are unchanged.
-        if self.time <= self.t_start:
+        if self.time <= self.t_start and not self.initial_state_only:
             raise PybnfError(
                 f'For key "time_course", t_end ({self.time}) must be greater than t_start '
                 f'({self.t_start}).')
