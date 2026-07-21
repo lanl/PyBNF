@@ -53,8 +53,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # per chain per generation (n_try = 1 is the classic single-try engine).
                'n_try',
                # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the maximum number
-               # of IPOP / BIPOP restarts (0 = a single run).
-               'cmaes_restarts',
+               # of IPOP / BIPOP restarts (0 = a single run), and the optional
+               # per-run generation cap (#507/ADR-0085).
+               'cmaes_restarts', 'cmaes_run_maxgen',
                # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).

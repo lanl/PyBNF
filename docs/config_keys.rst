@@ -1404,13 +1404,22 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_t
     * ``cmaes_stop_tol = 1e-8``
 
 **cmaes_restarts**
-  Maximum number of IPOP / BIPOP restarts for multimodal search. A single CMA-ES run descends into the one basin its start lands in, so on a multimodal objective it reaches only a local minimum. With ``cmaes_restarts > 0``, whenever a run *converges* (its search distribution shrinks below ``cmaes_stop_tol``, or its step size degenerates) — as distinct from exhausting the generation budget ``max_iterations`` — CMA-ES reinitializes from a fresh random point in the prior box with a rescaled population and keeps searching, up to this many restarts, keeping the global best across all runs. Requires the box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors), which provides the box restarts resample from. ``0`` (the default) is a single run.
+  Maximum number of IPOP / BIPOP restarts for multimodal search. A single CMA-ES run descends into the one basin its start lands in, so on a multimodal objective it reaches only a local minimum. With ``cmaes_restarts > 0``, whenever a run *finishes* by converging (its search distribution shrinks below ``cmaes_stop_tol``, or its step size degenerates) or reaching ``cmaes_run_maxgen`` — as distinct from exhausting the generation budget ``max_iterations`` — CMA-ES reinitializes from a fresh random point in the prior box with a rescaled population and keeps searching, up to this many restarts, keeping the global best across all runs. Requires the box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors), which provides the box restarts resample from. ``0`` (the default) is a single run.
 
   Default: 0
 
   Example:
 
     * ``cmaes_restarts = 9``
+
+**cmaes_run_maxgen**
+  Optional generation cap for each individual CMA-ES run, including the initial run and every IPOP / BIPOP restart. Reaching the cap yields to the next restart when one remains; on the final run it ends the fit. This prevents a single steadily improving local basin from consuming the global ``max_iterations`` generation budget before the configured restarts can run. The global budget still applies across all runs. BIPOP small runs also have an automatic evaluation-balancing cap; the smaller of that cap and ``cmaes_run_maxgen`` applies.
+
+  Default: unset (no per-run cap)
+
+  Example:
+
+    * ``cmaes_run_maxgen = 100``
 
 **cmaes_restart_strategy**
   The restart schedule (used only when ``cmaes_restarts > 0``). ``ipop`` grows the population geometrically each restart (``population_size`` × ``cmaes_ipop_factor``\ :sup:`k`), a progressively broader global search (Auger & Hansen 2005). ``bipop`` interleaves that increasing-population regime with a small-population regime, launching whichever has spent fewer evaluations so far, which balances broad sweeps against many quick fine-grained searches (Hansen 2009).

@@ -743,14 +743,21 @@ Restart for multimodal search
 A single CMA-ES run descends into the one basin its start lands in, so on a
 multimodal objective it reaches only a local minimum. Setting ``cmaes_restarts >
 0`` (global-start / box mode only) turns on the standard multimodal-CMA-ES
-**restart**: each time a run *converges* — as distinct from spending the whole
-``max_iterations`` budget — CMA-ES reinitializes from a fresh random point in the
-box with a rescaled population and keeps searching, keeping the best fit across all
-runs. ``cmaes_restart_strategy = ipop`` grows the population geometrically each
+**restart**: each time a run *finishes* by converging or reaching its optional
+``cmaes_run_maxgen`` cap — as distinct from spending the whole ``max_iterations``
+budget — CMA-ES reinitializes from a fresh random point in the box with a rescaled
+population and keeps searching, keeping the best fit across all runs.
+``cmaes_restart_strategy = ipop`` grows the population geometrically each
 restart (a progressively broader global search, [AugerHansen2005]_);
 ``cmaes_restart_strategy = bipop`` interleaves that with a small-population regime,
 balancing broad and fine-grained search across the budget ([Hansen2009]_). This is
 the recommended setting for a primary global search over a multimodal landscape.
+Set ``cmaes_run_maxgen`` to bound every individual run (initial and restarted) to a
+fixed number of generations. Reaching that cap yields to the next restart while one
+remains, ensuring a run that keeps making slow progress in one basin cannot monopolize
+the global ``max_iterations`` budget. It is unset by default, preserving the existing
+unbounded-per-run behavior; BIPOP small runs keep their own automatic, possibly smaller,
+evaluation-balancing cap.
 
 
 .. _alg-gradient:

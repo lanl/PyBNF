@@ -88,6 +88,15 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **CMA-ES gains an optional bounded per-run generation budget
+  (`cmaes_run_maxgen`; #507, ADR-0085).** The global `max_iterations` budget previously
+  left the initial run and every IPOP / BIPOP large run unbounded, so one run making
+  slow progress in an ill-conditioned local basin could consume nearly the entire fit
+  before later restarts launched. Setting the new positive-integer cap applies it to
+  every run and turns reaching it into the existing per-run restart trigger; the final
+  run then stops at the same cap. BIPOP small runs use the smaller of this user cap and
+  their existing automatic evaluation-balancing cap. The default is unset, preserving
+  the prior schedule and results.
 - **Prediction-dependent noise: a `noise_model … = <family>, sigma = prediction_formula <expr>`
   source whose σ scales with the simulated output (#495, ADR-0075).** The honest combined
   additive+proportional error model `σ = σ_abs + σ_rel · y` — where `y` is the observable's

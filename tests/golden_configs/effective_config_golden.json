@@ -5374,6 +5374,10 @@
     0
    ],
    [
+    "cmaes_run_maxgen",
+    4
+   ],
+   [
     "cmaes_sigma0",
     0.5
    ],
@@ -5682,6 +5686,10 @@
    [
     "cmaes_restarts",
     0
+   ],
+   [
+    "cmaes_run_maxgen",
+    null
    ],
    [
     "cmaes_sigma0",
@@ -6669,6 +6677,10 @@
    [
     "cmaes_restarts",
     0
+   ],
+   [
+    "cmaes_run_maxgen",
+    null
    ],
    [
     "cmaes_sigma0",

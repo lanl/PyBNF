@@ -308,6 +308,8 @@ def test_cmaes_restarts_default_zero_is_a_single_run(tmp_path):
     conf = _trap_config(tmp_path, cmaes_restarts=0)
     alg = algorithms.CMAESAlgorithm(conf)
     assert alg.max_restarts == 0
+    assert np.isinf(alg.configured_run_maxgen)
+    assert np.isinf(alg.run_maxgen)
     H.drive(alg)
 
     assert alg.restart_count == 0                 # never restarted
@@ -323,6 +325,60 @@ def test_cmaes_invalid_restart_strategy_raises(tmp_path):
     conf = _trap_config(tmp_path, cmaes_restarts=2, cmaes_restart_strategy='bogus')
     with pytest.raises(PybnfError, match='cmaes_restart_strategy'):
         algorithms.CMAESAlgorithm(conf)
+
+
+@pytest.mark.parametrize('bad_cap', [0, -1])
+def test_cmaes_run_maxgen_must_be_positive(tmp_path, bad_cap):
+    """A configured per-run cap is a positive generation count; zero and negative
+    values are rejected by the method schema instead of stopping obscurely after the
+    first completed generation."""
+    from pybnf.printing import PybnfError
+    with pytest.raises(PybnfError, match='cmaes_run_maxgen'):
+        _trap_config(tmp_path, cmaes_run_maxgen=bad_cap)
+
+
+def test_cmaes_run_maxgen_caps_initial_and_every_ipop_run(tmp_path):
+    """The #507 contract end to end: the cap applies to the initial run and every
+    IPOP large restart, so a steadily improving basin cannot consume the whole global
+    budget before the configured restart count is spent. Four runs at two generations
+    each must finish after eight global generations, well before max_iterations."""
+    alg = algorithms.CMAESAlgorithm(
+        _trap_config(tmp_path, max_iterations=100, cmaes_restarts=3,
+                     cmaes_restart_strategy='ipop', cmaes_run_maxgen=2,
+                     cmaes_stop_tol=1e-30))
+    assert alg.configured_run_maxgen == 2
+    assert alg.run_maxgen == 2
+
+    H.drive(alg)
+
+    assert alg.restart_count == 3
+    assert alg._lam_history == [8, 16, 32, 64]
+    assert alg.generation == 8
+    assert alg.run_generation == 2
+    assert alg.run_maxgen == 2
+
+
+def test_cmaes_run_maxgen_is_an_upper_bound_on_bipop_small_runs(tmp_path):
+    """BIPOP's small regime keeps its automatic evaluation-balancing cap. The user
+    cap applies to all regimes, so a small run receives the smaller of the two, while a
+    large run receives the configured cap directly."""
+    alg = algorithms.CMAESAlgorithm(
+        _trap_config(tmp_path, cmaes_restarts=3, cmaes_restart_strategy='bipop',
+                     cmaes_run_maxgen=7))
+    assert alg.run_maxgen == 7                       # initial large run
+
+    alg._small_evals, alg._large_evals = 0, 1       # select a small run
+    alg._last_large_evals = 800                     # automatic cap is safely > 7
+    _, _, cap = alg._next_regime_bipop()
+    assert cap == 7
+
+    alg._last_large_evals = 8                       # automatic cap floors to one
+    _, _, cap = alg._next_regime_bipop()
+    assert cap == 1
+
+    alg._small_evals, alg._large_evals = 2, 1       # select a large run
+    _, _, cap = alg._next_regime_bipop()
+    assert cap == 7
 
 
 @pytest.mark.slow

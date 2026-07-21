@@ -45,7 +45,7 @@ multimodal objective it reaches only a local minimum. Opting into
 run *finishes* -- it converges (Hansen's stopping battery: the search distribution
 shrinks below ``cmaes_stop_tol``, the best objective stagnates, every coordinate step
 falls below tolerance, the covariance goes ill-conditioned, or the step size
-degenerates) -- as distinct from exhausting the global generation budget
+degenerates) or reaches ``cmaes_run_maxgen`` -- as distinct from exhausting the global generation budget
 ``max_iterations`` -- CMA-ES reinitializes from a fresh random point in the box with
 a rescaled population and keeps searching, until ``cmaes_restarts`` restarts have run
 or the global budget is spent. (The stagnation / ill-conditioning triggers are the
@@ -62,6 +62,13 @@ small-population regime, launching whichever has spent fewer evaluations so far
 pre-restart behavior. Restarts only draw fresh box points in box / global-start mode;
 a point-start / refine fit has no box to resample.
 
+An optional ``cmaes_run_maxgen`` bounds the generations spent in **each** run
+(initial and restarted) before yielding to the next restart (#507, ADR-0085). This
+prevents one steadily improving local basin from monopolizing the global
+``max_iterations`` budget. It defaults to unset (unbounded), preserving the existing
+schedule. BIPOP small runs retain their automatic evaluation-balancing cap; when the
+user cap is set, the smaller of the two applies.
+
 All state is plain ``numpy`` / ``float`` / ``list`` (mean, sigma, covariance,
 evolution paths, the pending generation, the restart bookkeeping) -- picklable, so
 backup/resume work like every other method.
@@ -74,8 +81,10 @@ from ...pset import PSet
 from ...registry import register_fit_type
 
 import logging
+from typing import Optional
 
 import numpy as np
+from pydantic import Field
 
 
 # Preserve the original module logger name so log records keep the
@@ -97,8 +106,9 @@ class CMAESConfig(PyBNFConfigModel):
     the tolerance for the restart battery (#506) -- the relative TolFun (best-objective)
     stagnation threshold and the absolute TolX coordinate-step threshold. The population
     size ``lambda`` is the global
-    ``population_size`` (consistent with de/pso/sa), and the generation budget is
-    the global ``max_iterations``, so neither is duplicated here.
+    ``population_size`` (consistent with de/pso/sa), and ``max_iterations`` remains
+    the global generation budget across all runs. ``cmaes_run_maxgen`` optionally
+    adds a smaller per-run generation cap; unset means no user cap.
     ``cmaes_start_point`` is internal (the refiner injects it), so it is not a
     schema field.
 
@@ -107,7 +117,9 @@ class CMAESConfig(PyBNFConfigModel):
     the restart schedule -- ``ipop`` (increasing population, the default) or ``bipop``
     (interleaved small / large populations). ``cmaes_ipop_factor`` is the geometric
     population growth per restart (``2.0`` = the standard population doubling), used by
-    IPOP and by BIPOP's large regime.
+    IPOP and by BIPOP's large regime. ``cmaes_run_maxgen`` (#507, ADR-0085) is an
+    optional positive per-run generation cap applied to the initial run and every
+    restart.
     """
 
     cmaes_sigma0: float = 0.3
@@ -115,6 +127,7 @@ class CMAESConfig(PyBNFConfigModel):
     cmaes_restarts: int = 0
     cmaes_restart_strategy: str = 'ipop'
     cmaes_ipop_factor: float = 2.0
+    cmaes_run_maxgen: Optional[int] = Field(default=None, ge=1)
 
 
 @register_fit_type('cmaes', family='optimizer', display_name='CMA-ES',
@@ -142,11 +155,11 @@ class CMAESAlgorithm(StartPointOptimizer):
 
         # Restart schedule (#498, ADR-0070). cmaes_restarts == 0 (the default) is a
         # single run -- byte-identical to the pre-restart behavior. > 0 opts into
-        # IPOP / BIPOP restart: on a *convergence* stop (not the global generation
-        # budget) reinitialize from a fresh box point with a rescaled population and
-        # keep searching, up to this many restarts, until max_iterations generations
-        # total are spent. The global best is kept for free (every evaluated pset
-        # lands in the trajectory).
+        # IPOP / BIPOP restart: on a per-run stop (convergence or cmaes_run_maxgen,
+        # not the global generation budget) reinitialize from a fresh box point with
+        # a rescaled population and keep searching, up to this many restarts, until
+        # max_iterations generations total are spent. The global best is kept for free
+        # (every evaluated pset lands in the trajectory).
         self.max_restarts = int(config.config['cmaes_restarts'])
         self.restart_strategy = config.config['cmaes_restart_strategy']
         if self.restart_strategy not in ('ipop', 'bipop'):
@@ -154,6 +167,9 @@ class CMAESAlgorithm(StartPointOptimizer):
                 'Invalid cmaes_restart_strategy "%s". Options are: ipop, bipop.'
                 % self.restart_strategy)
         self.ipop_factor = config.config['cmaes_ipop_factor']
+        configured_run_maxgen = config.config['cmaes_run_maxgen']
+        self.configured_run_maxgen = (np.inf if configured_run_maxgen is None
+                                      else int(configured_run_maxgen))
 
         # Population (lambda) and every constant derived from it live in
         # _configure_strategy, since a restart rescales lambda and they all scale with
@@ -203,7 +219,9 @@ class CMAESAlgorithm(StartPointOptimizer):
         self._configure_strategy(self.base_lam)
         self.generation = 0        # monotonic across restarts: global budget + unique names
         self.restart_count = 0
-        self.run_maxgen = np.inf   # per-run generation cap (finite only for a BIPOP small run)
+        # User cap applies to the initial run and every restart. Unset is infinity;
+        # BIPOP small runs may choose a smaller schedule cap in _next_regime_bipop.
+        self.run_maxgen = self.configured_run_maxgen
         self._small_regime = False  # was the current run launched in the BIPOP small regime?
         self._n_large = 0          # completed large-regime restarts (BIPOP population growth)
         self._large_evals = 0      # evaluations spent so far in each BIPOP regime, for the
@@ -347,7 +365,7 @@ class CMAESAlgorithm(StartPointOptimizer):
             logger.info('CMA-ES stopping: reached max_iterations (%i generations)'
                         % self.max_generations)
             return 'STOP'
-        # A per-run termination (convergence / degenerate step / BIPOP small-run cap)
+        # A per-run termination (convergence / degenerate step / generation cap)
         # restarts the search if any restarts remain, else ends the fit (#498).
         reason = self._run_stop_reason()
         if reason is not None:
@@ -363,7 +381,7 @@ class CMAESAlgorithm(StartPointOptimizer):
         Distinct from the global generation budget (checked separately, and always a
         hard stop): these are the reasons a *single* CMA-ES run has finished -- its
         search distribution converged below ``cmaes_stop_tol``, its step size
-        degenerated, or (a BIPOP small run) it reached its per-run generation cap. On
+        degenerated, or it reached its optional per-run generation cap. On
         any of them a restart may fire; only the global budget ends the whole fit.
 
         With ``cmaes_restarts > 0`` a fuller **restart battery** (``_battery_stop_reason``,
@@ -468,16 +486,18 @@ class CMAESAlgorithm(StartPointOptimizer):
         """The ``(population, sigma0, per-run generation cap)`` for the upcoming restart.
 
         IPOP grows the population geometrically (``base * factor**restart``) at the base
-        step size, with no per-run cap (only the global budget bounds it). BIPOP
+        step size. BIPOP
         interleaves that increasing-population regime with a small-population regime,
         launching whichever regime has consumed fewer evaluations so far (Hansen 2009):
         the small regime draws a random population between the base and half the current
         large population, a randomly shrunk step size, and a per-run budget capped at
-        half the last large run's -- so evaluations stay balanced between the regimes."""
+        half the last large run's -- so evaluations stay balanced between the regimes.
+        ``cmaes_run_maxgen`` bounds every regime; for a BIPOP small run the smaller of
+        the configured cap and its automatic balancing cap applies."""
         if self.restart_strategy == 'bipop':
             return self._next_regime_bipop()
         return (self.base_lam * self.ipop_factor ** self.restart_count,
-                self.base_sigma0, np.inf)
+                self.base_sigma0, self.configured_run_maxgen)
 
     def _next_regime_bipop(self):
         if self._small_evals <= self._large_evals:
@@ -489,15 +509,17 @@ class CMAESAlgorithm(StartPointOptimizer):
             u = self.rng.random()
             lam = self.base_lam * (0.5 * lam_large / self.base_lam) ** (u * u)
             sigma0 = self.base_sigma0 * 10.0 ** (-2.0 * self.rng.random())
+            run_maxgen = self.configured_run_maxgen
             if self._last_large_evals:
-                run_maxgen = max(1, int(0.5 * self._last_large_evals / max(int(lam), 4)))
-            else:
-                run_maxgen = np.inf
+                schedule_maxgen = max(
+                    1, int(0.5 * self._last_large_evals / max(int(lam), 4)))
+                run_maxgen = min(run_maxgen, schedule_maxgen)
             return lam, sigma0, run_maxgen
-        # Large-population regime: geometric growth, base step size, no per-run cap.
+        # Large-population regime: geometric growth and the user-configured cap.
         self._small_regime = False
         self._n_large += 1
-        return self.base_lam * self.ipop_factor ** self._n_large, self.base_sigma0, np.inf
+        return (self.base_lam * self.ipop_factor ** self._n_large,
+                self.base_sigma0, self.configured_run_maxgen)
 
     def _random_start_pset(self):
         """A fresh start point for a restart: a uniform random draw across the prior box

@@ -222,6 +222,8 @@ wall_time_sim = 0
 """,
     # powell + cmaes: the two new start-point optimizers (#403/ADR-0015). Like sim
     # they take the no-prior var/logvar start point; each narrows to its own schema.
+    # CMA-ES also sets its optional per-run generation cap (#507/ADR-0085), exercising
+    # that the new int key parses and survives method-schema narrowing.
     'matrix/powell': """
 model = gaussian.target : target.exp
 objfunc = direct_pass
@@ -242,6 +244,7 @@ logvar = p2 3
 population_size = 10
 max_iterations = 10
 cmaes_sigma0 = 0.5
+cmaes_run_maxgen = 4
 wall_time_sim = 0
 """,
     # cmaes in box / global-start mode (#404/ADR-0017): bounded uniform priors
