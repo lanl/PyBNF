@@ -1,9 +1,9 @@
-"""Validate the ``examples/real-world/`` corpus through the bngsim backend (issue #380).
+"""Validate the ``examples/real-world/`` corpus through the bngsim backend (#380/#472).
 
-The 2019 PyBNF-paper case studies (Mitra et al., iScience 2019), upgraded to the
-edition-2 surface, are the representative deterministic / stochastic / network-free
-examples #380 asks be validated against the BNGsim-backed default path -- the
-integration surface the tiny tutorial fits and the fixture-level unit tests (#379)
+The 2019 PyBNF-paper case studies (Mitra et al., iScience 2019), upgraded to the edition-2
+surface, and the compact Rijal/Mehta 2025 promoter-noise collection are the representative
+deterministic / stochastic / network-free examples validated against the BNGsim-backed default
+path. This is the integration surface the tiny tutorial fits and fixture-level unit tests (#379)
 deliberately do not exercise. Their committed ``.conf`` files ARE the test inputs;
 ``examples/real-world/_manifest.py`` records what each should produce.
 
@@ -108,6 +108,14 @@ def test_real_world_conf_is_wellformed(example, tmp_path):
         f'stochastic={example.stochastic}')
 
 
+def test_real_world_has_workstation_ssa_recovery_coverage():
+    """#472's regression guard: SSA must have a non-heavy real-world example in the recovery
+    tier, rather than only the cluster-scale FcERI reference and fixture-level execution tests."""
+    ssa = [example for example in EXAMPLES if example.simulator == 'ssa' and not example.heavy]
+    assert ssa, 'real-world recovery tier has no workstation-scale SSA example'
+    assert any(example.folder.startswith('Rijal-2025/') for example in ssa)
+
+
 @pytest.mark.parametrize('example', [e for e in EXAMPLES if e.simulator == 'nf'],
                          ids=lambda e: e.folder)
 def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
@@ -196,10 +204,10 @@ def test_nf_preequilibration_without_equil_t_end_errors(tmp_path):
 # --------------------------------------------------------------------------- #
 def _e2e_params():
     # Cluster-scale examples (``heavy``) are excluded from the executable tier: the Kozer
-    # EGFR crosslinking network takes >10 min to generate, the FcERI network is ~58k
-    # reactions, and the network-free EGFR clustering fit needs NFsim options the edition-2
-    # synthesis does not yet emit (see README / _manifest). They are covered by the
-    # backend-free tier above and validated by construction; running them here is impractical.
+    # EGFR crosslinking network takes >10 min to generate, the FcERI network is ~58k reactions,
+    # and the network-free receptor/EGFR jobs require many event-by-event simulations. They are
+    # covered by the backend-free tier above and validated by construction; running them here is
+    # impractical. The compact Rijal promoter networks supply the workstation-scale SSA coverage.
     out = []
     for ex in EXAMPLES:
         if ex.heavy:

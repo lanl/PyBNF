@@ -1,0 +1,117 @@
+begin model
+
+#@title: Two-state lacUD5 promoter expression -- exact moment ODEs (Rijal and Mehta, 2025)
+
+#@description: |
+#  Deterministic twin of the exact-SSA lacUD5 job. The underlying process is identical -- a
+#  repressor switches the lacUD5 promoter between transcriptionally active and inactive states,
+#  the active promoter transcribes, and mRNA decays -- but the quantities the SSA job estimates
+#  by path sampling are here obtained by integrating the process's EXACT moment equations.
+#
+#  Every propensity of the two-state model is linear in the state, and the promoter indicator
+#  g is binary (g^2 = g), so the moment hierarchy CLOSES EXACTLY on four variables: <g>, <m>,
+#  <g m>, and <m^2>. No moment-closure approximation is made and nothing is truncated.
+#
+#      d<g>/dt   = -kon<g> + koff(1-<g>)
+#      d<m>/dt   =  r<g> - gamma<m>
+#      d<gm>/dt  = -kon<gm> + koff(<m>-<gm>) + r<g> - gamma<gm>
+#      d<m^2>/dt = 2r<gm> + r<g> - 2gamma<m^2> + gamma<m>
+#
+#  That linear system has non-negative couplings, so it is itself expressible as a mass-action
+#  reaction network: the species below ARE the four moments, and this network's rate equations
+#  are the moment equations term for term. Integrating it deterministically therefore yields
+#  E[m] and E[m^2] exactly, with no Monte Carlo error.
+#
+#  IMPORTANT: the species are moments, not molecules. This network is meaningful only under
+#  deterministic (ODE) integration; simulating IT with SSA would be meaningless.
+
+#@keyword: |
+#  gene regulation, stochastic gene expression, two-state promoter, telegraph model,
+#  exact moment equations, moment closure, deterministic twin, Escherichia coli
+
+#@reference: |
+#  Rijal K, Mehta P (2025). A differentiable Gillespie algorithm for simulating chemical
+#  kinetics, parameter estimation, and designing synthetic biological circuits. eLife
+#  14:RP103877. doi:10.7554/eLife.103877
+#  Jones DL, Brewster RC, Phillips R (2014). Promoter architecture dictates cell-to-cell
+#  variability in gene expression. Science 346:1533-1536. doi:10.1126/science.1255301
+
+begin parameters
+  # Scanned target mean. It parameterizes the latent repressor on-rate through the exact
+  # steady-state mean relation, exactly as in the SSA twin.
+  mean_target   1.0            # molecules
+
+  # FITTED: unregulated mean capacity r/gamma. Nominal = 90.25/6.20 from Rijal Fig. 7.
+  r_over_gamma  14.5564516129  # dimensionless
+
+  # FITTED: mRNA degradation rate. Nominal = Rijal Fig. 7 (koff_R-normalized units).
+  gamma         6.20           # /normalized_time
+
+  # Rijal fixes the repressor unbinding rate to one and measures all rates relative to it.
+  koff_R        1.0            # /normalized_time
+end parameters
+
+begin molecule types
+  # <g>: mean active-promoter indicator (equivalently, P(promoter active)).
+  Eg()
+  # <m>: mean mRNA copy number.
+  Em()
+  # <g m>: mean of the promoter-state/mRNA product.
+  Egm()
+  # <m^2>: mean squared mRNA copy number.
+  Emm()
+end molecule types
+
+begin seed species
+  # The SSA twin starts from an active promoter with no transcript, so the moments start at
+  # <g>=1, <m>=<gm>=<m^2>=0.
+  Eg()   1
+  Em()   0
+  Egm()  0
+  Emm()  0
+end seed species
+
+begin observables
+  Molecules  g_mean     Eg()
+  Molecules  m_mean     Em()
+  Molecules  gm_mean    Egm()
+  Molecules  m_second   Emm()
+end observables
+
+begin functions
+  # Repressor association rate inferred from the experimental mean at steady state:
+  # <m> = (r/gamma) * koff_R/(kon_R+koff_R).  Kept as a function, not a derived parameter,
+  # so it tracks mean_target as the parameter scan advances.
+  kon_R()               koff_R*(r_over_gamma/mean_target-1)
+  # Transcription rate r = (r/gamma)*gamma.
+  transcription_rate()  r_over_gamma*gamma
+  # Decay coefficients of the three non-conserved moment equations.
+  decay_g()             koff_R*(r_over_gamma/mean_target-1) + koff_R
+  decay_gm()            koff_R*(r_over_gamma/mean_target-1) + koff_R + gamma
+  decay_mm()            2*gamma
+  # Production of <m^2> from <gm> carries the factor 2r.
+  two_r()               2*r_over_gamma*gamma
+end functions
+
+begin reaction rules
+  # --- d<g>/dt = koff - (kon+koff)<g> ---
+  Rg_source:    0     -> Eg()          koff_R
+  Rg_decay:     Eg()  -> 0             decay_g()
+
+  # --- d<m>/dt = r<g> - gamma<m> ---
+  Rm_from_g:    Eg()  -> Eg() + Em()   transcription_rate()
+  Rm_decay:     Em()  -> 0             gamma
+
+  # --- d<gm>/dt = r<g> + koff<m> - (kon+koff+gamma)<gm> ---
+  Rgm_from_g:   Eg()  -> Eg() + Egm()  transcription_rate()
+  Rgm_from_m:   Em()  -> Em() + Egm()  koff_R
+  Rgm_decay:    Egm() -> 0             decay_gm()
+
+  # --- d<m^2>/dt = 2r<gm> + r<g> + gamma<m> - 2gamma<m^2> ---
+  Rmm_from_gm:  Egm() -> Egm() + Emm() two_r()
+  Rmm_from_g:   Eg()  -> Eg() + Emm()  transcription_rate()
+  Rmm_from_m:   Em()  -> Em() + Emm()  gamma
+  Rmm_decay:    Emm() -> 0             decay_mm()
+end reaction rules
+
+end model

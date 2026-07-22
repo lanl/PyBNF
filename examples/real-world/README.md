@@ -1,27 +1,30 @@
-# Real-world examples (the 2019 PyBNF-paper corpus, on the edition-2 surface)
+# Real-world examples
 
-These are the biological case studies from the original PyBNF paper —
+This gallery starts with the biological case studies from the original PyBNF paper —
 
 > Mitra ED, Suderman R, Colvin J, Ionkov A, Hu A, Sauro HM, Posner RG, Hlavacek WS.
 > **PyBioNetFit and the Biological Property Specification Language.** *iScience* 2019,
 > 19:1012–1036.
 
-— re-expressed on PyBNF's **edition-2 (new-era) config surface** (ADR-0028/0034/0046/0052).
-They complement two neighbouring collections: the tiny teaching fits in
+— re-expressed on PyBNF's **edition-2 (new-era) config surface** (ADR-0028/0034/0046/0052),
+and now also includes the compact [`Rijal-2025/`](Rijal-2025/) promoter-noise collection:
+paired exact-SSA fits and exact moment-ODE twins derived from Rijal and Mehta (2025) and Jones
+et al. (2014). The examples complement two neighbouring collections: the tiny teaching fits in
 [`../tutorial/`](../tutorial/) and the interactive notebooks in
 [`../notebooks/`](../notebooks/). Where those are small and pedagogical, these are the
 *real* rule-based models — Kozer's EGFR, the FcεRI γ-chain network, the trivalent-ligand
-aggregation model — fit to real or realistic data, exactly the workflows the paper
-benchmarked.
+aggregation model, and two-state bacterial promoters — fit to real or realistic data.
 
 Their purpose here is also to **validate PyBNF's bngsim-backed default simulator path on
-representative deterministic, stochastic, and network-free models** (issue #380): targeted
-unit tests and the tutorial fits are necessary but not sufficient; these paper-scale
-examples catch integration issues in realistic workflows.
+representative deterministic, stochastic, and network-free models** (issues #380 and #472):
+targeted unit tests and the tutorial fits are necessary but not sufficient; these published-model
+examples catch integration issues in realistic workflows. In particular, the small Rijal networks
+provide the workstation-scale SSA fitting coverage that the cluster-scale FcεRI model cannot.
 
 ## What changed from the classic examples
 
-Each example is the edition-2 twin of a classic `examples/<name>/` job. The upgrade is
+Each example inherited from the 2019 corpus is the edition-2 twin of a classic
+`examples/<name>/` job. The upgrade is
 mechanical and faithful (same model, same data, same fit); only the *surface* changes:
 
 | classic | edition 2 |
@@ -44,6 +47,10 @@ bngsim backend (see "How these are validated" and "Known limitations" below):
 |---|---|---|---|---|
 | [`receptor`](receptor/) | ligand/receptor, BioNetFit 1 ex 5 | **ODE** | pre-equilibration (`preequilibrate:` + gate parameter), `sos` | ✅ validated |
 | [`igf1r`](igf1r/) | IGF1R competition binding, Erickson et al. | **ODE** (network-generating) | dose-response scan, whole-fit `normalization = init`, `chi_sq`, refinement | ✅ validated |
+| [`Rijal-2025/lacud5_ode`](Rijal-2025/lacud5_ode/) | lacUV5/lacUD5 noise, Rijal & Mehta 2025 / Jones et al. 2014 | **ODE** | exact moment equations, measurement formulas, `gntr` | ✅ validated |
+| [`Rijal-2025/five_dl1_ode`](Rijal-2025/five_dl1_ode/) | 5DL1 promoter noise, Rijal & Mehta 2025 / Jones et al. 2014 | **ODE** | exact moment equations, measurement formulas, `gntr` | ✅ validated |
+| [`Rijal-2025/lacud5_ssa`](Rijal-2025/lacud5_ssa/) | lacUV5/lacUD5 noise, Rijal & Mehta 2025 / Jones et al. 2014 | **SSA** | `method: ssa`, 200-trajectory smoothing, ensemble-moment formulas | ✅ validated |
+| [`Rijal-2025/five_dl1_ssa`](Rijal-2025/five_dl1_ssa/) | 5DL1 promoter noise, Rijal & Mehta 2025 / Jones et al. 2014 | **SSA** | `method: ssa`, 200-trajectory smoothing, ensemble-moment formulas | ✅ validated |
 | [`tlbr`](tlbr/) | trivalent-ligand aggregation, BioNetFit 1 ex 3 | **NF** (NFsim) | `method: nf` dose-response scan (fixed `t_end`) | ✅ validated |
 | [`egfr_nf`](egfr_nf/) | EGFR clustering, Kozer 2013 (BioNetFit 1 ex 2) | **NF** (NFsim) | `method: nf`, time course + dose-response scan, `gml:`/`complex:` | 🔶 runs; heavy (NFsim) |
 | [`egfr_ode`](egfr_ode/) | EGFR activation, Kozer 2013 (Problem 2) | **ODE** (network-generating) | time course + dose-response scan, `chi_sq`, scaled-observable functions | 🔶 cluster-scale network |
@@ -90,8 +97,9 @@ ODE/SSA synthesis is unchanged throughout; guarded by the backend-free tests in
   backend-free tier, matching the paper's use of a cluster for these problems.
 - **`egfr_ode`, `fceri_gamma` — cluster-scale networks.** The Kozer EGFR crosslinking network takes
   >10 min to generate; the FcεRI network is ~58k reactions and its SSA fit is a cluster job. Both
-  build correctly but are impractical to run in CI. SSA-through-bngsim itself is covered at the
-  fixture level by `tests/test_bngsim_ssa_replaces_rr.py` (#379).
+  build correctly but are impractical in CI. The two finite, four-reaction Rijal promoter jobs now
+  exercise edition-2 SSA synthesis and fitting end to end on a workstation (#472), complementing
+  the fixture-level execution checks in `tests/test_bngsim_ssa_replaces_rr.py` (#379).
 
 ## Running an example
 
@@ -104,8 +112,8 @@ pybnf -c examples/real-world/receptor/receptor.conf
 
 `egfr_ode` and `fceri_gamma` are **cluster-scale**: the Kozer EGFR crosslinking network
 and the 58k-reaction FcεRI network take minutes to generate and their published fits used
-large populations on a cluster (see each conf's header). The other five run on a
-workstation.
+large populations on a cluster (see each conf's header). The Rijal collection includes its own
+run and reproduction instructions.
 
 ## How these are validated
 
@@ -115,9 +123,9 @@ tiers against these committed confs:
 * **default CI, backend-free** — for *every* example: the conf parses, is edition 2, selects
   its documented simulator, and binds its data; and each NF example synthesizes a
   network-free action set (the regression guard for the fix above). No bngsim/BNG2.pl needed.
-* **opt-in `recovery`** — the ✅ examples (`receptor`, `igf1r`, `tlbr`) are built through the
-  real bngsim backend and driven through a short bounded fit; the check is that the whole
-  simulate → score → propose loop runs and yields a finite objective — observables map, the
+* **opt-in `recovery`** — the ✅ examples (`receptor`, `igf1r`, `tlbr`, and the four Rijal jobs)
+  are built through the real bngsim backend and driven through a short bounded fit; the check is
+  that the whole simulate → score → propose loop runs and yields a finite objective — observables map, the
   objective scores, and the optimizer advances, on a real paper model through bngsim. The
   cluster-scale / blocked examples are deliberately excluded from this tier (see above).
   Per-observable numerics are covered at the fixture level by `test_bngsim_bngl_e2e` /

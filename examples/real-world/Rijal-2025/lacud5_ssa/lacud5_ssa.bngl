@@ -1,0 +1,81 @@
+begin model
+
+#@title: Two-state lacUD5 promoter expression (Rijal and Mehta, 2025)
+
+#@description: |
+#  A repressor switches the lacUD5 promoter between transcriptionally active and inactive
+#  states. Active promoter produces mRNA, and mRNA degrades by first-order kinetics. Exact SSA
+#  trajectories fluctuate in both promoter state and mRNA count; repeated trajectories provide
+#  the first and second mRNA moments used to fit the Jones et al. (2014) steady-state data.
+
+#@keyword: |
+#  gene regulation, stochastic gene expression, two-state promoter, exact SSA,
+#  simple repression, Escherichia coli
+
+#@reference: |
+#  Rijal K, Mehta P (2025). A differentiable Gillespie algorithm for simulating chemical
+#  kinetics, parameter estimation, and designing synthetic biological circuits. eLife
+#  14:RP103877. doi:10.7554/eLife.103877
+#  Jones DL, Brewster RC, Phillips R (2014). Promoter architecture dictates cell-to-cell
+#  variability in gene expression. Science 346:1533-1536. doi:10.1126/science.1255301
+
+begin parameters
+  # Avogadro constant and an E. coli reference volume; the model itself uses molecule counts.
+  NA            6.02214076e23  # molecules/mol
+  V_ref         1e-15          # L/cell
+
+  # Scanned target mean. It parameterizes the latent repressor on-rate through the exact
+  # steady-state mean relation; see the job README for the reduction from Rijal et al. (2025).
+  mean_target   1.0            # molecules
+
+  # FITTED: unregulated mean capacity r/gamma. Nominal = 90.25/6.20 from Rijal Fig. 7.
+  r_over_gamma  14.5564516129  # dimensionless
+
+  # FITTED: mRNA degradation rate. Nominal = Rijal Fig. 7 (koff_R-normalized units).
+  gamma         6.20           # /normalized_time
+
+  # Rijal fixes the repressor unbinding rate to one and measures all rates relative to it.
+  koff_R        1.0            # /normalized_time
+end parameters
+
+begin molecule types
+  # The operator is either free/active or repressor-bound/inactive.
+  Promoter(state~on~off)
+  # One transcript molecule.
+  mRNA()
+end molecule types
+
+begin seed species
+  Promoter(state~on)  1  # molecules
+  mRNA()              0  # molecules
+end seed species
+
+begin observables
+  # Instantaneous mRNA copy number in one SSA trajectory.
+  Molecules  mRNA_count   mRNA()
+  # Instantaneous active-promoter copy number (zero or one).
+  Molecules  promoter_on  Promoter(state~on)
+end observables
+
+begin functions
+  # Repressor association rate inferred from the experimental mean at steady state:
+  # <m> = (r/gamma) * koff_R/(kon_R+koff_R).
+  kon_R()               koff_R*(r_over_gamma/mean_target-1)
+  # Transcription rate r = (r/gamma)*gamma.
+  transcription_rate()  r_over_gamma*gamma
+  # Per-trajectory second moment. PyBNF averages this column across smoothing replicates.
+  mRNA_squared()        mRNA_count^2
+end functions
+
+begin reaction rules
+  # Repressor binding switches transcription off.
+  R_repressor_bind:    Promoter(state~on)  -> Promoter(state~off)  kon_R()
+  # Repressor dissociation restores the active promoter.
+  R_repressor_unbind:  Promoter(state~off) -> Promoter(state~on)   koff_R
+  # Transcription occurs only from the active promoter.
+  R_transcribe:        Promoter(state~on)  -> Promoter(state~on) + mRNA()  transcription_rate()
+  # Each transcript degrades independently.
+  R_mRNA_degrade:      mRNA()              -> 0  gamma
+end reaction rules
+
+end model

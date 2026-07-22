@@ -1,5 +1,5 @@
 """Ground truth for the ``examples/real-world/`` corpus (the PyBNF 2019-paper case
-studies, upgraded to the edition-2 surface -- see README.md and issue #380).
+studies plus newer published-model examples, on the edition-2 surface -- see README.md).
 
 Like ``examples/tutorial/_manifest.py``, this keeps the *test* knowledge (which conf,
 which simulator, what a run should produce) OUT of the committed ``.conf`` files, so
@@ -64,8 +64,26 @@ EXAMPLES = [
         folder='igf1r', conf='igf1r.conf', simulator='ode',
         observables=('IGF1_hot_bound',),
         system='IGF1R competition binding (Erickson et al.); ODE, dose-response scan + normalization'),
+    RealWorldExample(
+        folder='Rijal-2025/lacud5_ode', conf='lacud5_ode.conf', simulator='ode',
+        observables=('Mean_mRNA', 'mRNA_SD'),
+        system='lacUV5/lacUD5 promoter noise (Rijal & Mehta 2025; Jones et al. 2014); exact moment ODE twin'),
+    RealWorldExample(
+        folder='Rijal-2025/five_dl1_ode', conf='five_dl1_ode.conf', simulator='ode',
+        observables=('Mean_mRNA', 'mRNA_SD'),
+        system='5DL1 promoter noise (Rijal & Mehta 2025; Jones et al. 2014); exact moment ODE twin'),
 
     # ---- stochastic SSA ---------------------------------------------------- #
+    RealWorldExample(
+        folder='Rijal-2025/lacud5_ssa', conf='lacud5_ssa.conf', simulator='ssa',
+        stochastic=True,
+        observables=('Mean_mRNA', 'mRNA_SD'),
+        system='lacUV5/lacUD5 promoter noise (Rijal & Mehta 2025; Jones et al. 2014); exact SSA ensemble moments'),
+    RealWorldExample(
+        folder='Rijal-2025/five_dl1_ssa', conf='five_dl1_ssa.conf', simulator='ssa',
+        stochastic=True,
+        observables=('Mean_mRNA', 'mRNA_SD'),
+        system='5DL1 promoter noise (Rijal & Mehta 2025; Jones et al. 2014); exact SSA ensemble moments'),
     RealWorldExample(
         folder='fceri_gamma', conf='fceri_gamma.conf', simulator='ssa',
         stochastic=True, heavy=True,

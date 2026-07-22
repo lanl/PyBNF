@@ -88,6 +88,15 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **Workstation-scale exact-SSA real-world examples (#472).** The new
+  `examples/real-world/Rijal-2025/` collection fits lacUV5/lacUD5 and 5DL1 promoter-noise data
+  from Jones et al. (2014) with the two-state model studied by Rijal and Mehta (2025). Each
+  edition-2 SSA job uses `method: ssa`, 200-trajectory smoothing, and measurement formulas for
+  ensemble mean and standard deviation; paired exact moment-ODE jobs provide deterministic
+  references, with source tables, regeneration scripts, validation notes, and reproduction
+  figures preserved alongside them. All four configurations receive backend-free corpus checks,
+  and the bounded SSA fits enter the opt-in bngsim recovery tier, closing the gap left by the
+  cluster-scale FcERI SSA reference.
 - **CMA-ES gains an optional bounded per-run generation budget
   (`cmaes_run_maxgen`; #507, ADR-0085).** The global `max_iterations` budget previously
   left the initial run and every IPOP / BIPOP large run unbounded, so one run making
