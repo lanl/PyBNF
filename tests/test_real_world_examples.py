@@ -11,7 +11,8 @@ Two tiers:
 
 * ``test_real_world_conf_is_wellformed`` -- **default CI, backend-free.** Every conf
   parses, is edition 2, selects the simulator (ode/ssa/nf) the manifest expects, and
-  binds its data. Catches conf bit-rot without needing bngsim or BNG2.pl.
+  binds its quantitative data or qualitative BPSL constraints. Catches conf bit-rot
+  without needing bngsim or BNG2.pl.
 
 * ``test_real_world_runs_through_bngsim`` -- **opt-in (``recovery``; ``heavy`` ones add
   ``slow``).** Each example is built through the real bngsim backend (BNG2.pl network
@@ -85,14 +86,20 @@ def _build(conf, fit_type):
 @pytest.mark.parametrize('example', EXAMPLES, ids=lambda e: e.folder)
 def test_real_world_conf_is_wellformed(example, tmp_path):
     """Every committed real-world conf parses, is edition 2, selects its documented
-    simulator, and binds its data -- backend-free (no bngsim / BNG2.pl needed)."""
+    simulator, and binds its data/constraints -- backend-free (no bngsim / BNG2.pl needed)."""
     conf = _load_conf(example, tmp_path)
     assert conf.config.get('edition') == 2, f'{example.folder}: not edition 2'
     # job_type -> fit_type on the resolved config; must be a real algorithm.
     fit_type = conf.config['fit_type']
     assert fit_type in FIT_TYPE_REGISTRY, f'{example.folder}: unknown fit_type {fit_type!r}'
-    # The experiment introduced its data (exp_data is keyed by the model name).
-    assert conf.exp_data, f'{example.folder}: no experiment data bound'
+    # Quantitative jobs bind at least one .exp dataset. A BPSL-only job instead binds
+    # qualitative .prop constraints while retaining empty per-model exp_data mappings.
+    if example.constraint_only:
+        assert conf.constraints, f'{example.folder}: no BPSL constraints bound'
+        assert not any(conf.exp_data.values()), (
+            f'{example.folder}: constraint-only job unexpectedly has quantitative data')
+    else:
+        assert any(conf.exp_data.values()), f'{example.folder}: no experiment data bound'
     # The free parameters bind by id (edition-2, ADR-0034): none carry a __FREE marker.
     names = [v.name for v in conf.variables]
     assert names, f'{example.folder}: no free parameters'
@@ -146,7 +153,7 @@ def test_receptor_nf_equilibrates_for_a_fixed_time(tmp_path):
     """NF pre-equilibration uses a FIXED-time equilibration (``equil_t_end:``), not a
     steady-state solve (NFsim has none): the unmeasured equilibration simulate integrates to
     t_end without ``steady_state=>1``. Backend-free."""
-    ex = _manifest.example_by_folder('receptor_nf')
+    ex = _manifest.example_by_folder('Mitra-2019/receptor_nf')
     m = list(_load_conf(ex, tmp_path).models.values())[0]
     equil = [a for a in m.actions if 'preequil' in a]
     assert len(equil) == 1, m.actions
@@ -157,7 +164,7 @@ def test_receptor_nf_equilibrates_for_a_fixed_time(tmp_path):
 def test_egfr_nf_carries_nfsim_options(tmp_path):
     """The ``gml:``/``complex:`` NFsim options ride into every synthesized NF action.
     Backend-free."""
-    ex = _manifest.example_by_folder('egfr_nf')
+    ex = _manifest.example_by_folder('Kozer-2013/egfr_nf')
     m = list(_load_conf(ex, tmp_path).models.values())[0]
     sims = [a for a in m.actions if a.startswith(('simulate', 'parameter_scan'))]
     assert sims, m.actions
@@ -172,7 +179,7 @@ def test_egfr_ode_carries_generate_network_options(tmp_path):
     edition-2 actions block stripped, the cap lives in the job config. Without this the
     synthesized network is unbounded and generation never terminates. Backend-free (the ODE
     ``egfr_nf`` NFsim guard's deterministic sibling)."""
-    ex = _manifest.example_by_folder('egfr_ode')
+    ex = _manifest.example_by_folder('Kozer-2013/egfr_ode')
     m = list(_load_conf(ex, tmp_path).models.values())[0]
     assert m.generates_network, 'egfr_ode should generate a reaction network'
     assert m.generate_network_line == 'generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})', (
@@ -183,7 +190,7 @@ def test_nf_preequilibration_without_equil_t_end_errors(tmp_path):
     """A network-free pre-equilibration MUST give a fixed equilibration time (``equil_t_end:``)
     because NFsim has no steady-state solve -- omitting it is a clear error at config time, not a
     hang at run time. Backend-free (the error is raised during action synthesis)."""
-    ex = _manifest.example_by_folder('receptor_nf')
+    ex = _manifest.example_by_folder('Mitra-2019/receptor_nf')
     model, data = ex.path / 'receptor_nf.bngl', ex.path / 'receptor_nf.exp'
     conf = '\n'.join([
         'edition = 2', 'bngl_backend = bngsim', f'output_dir = {tmp_path}/out',

@@ -1,0 +1,3 @@
+# MUT4 (SPFENEF / F-motif mutant): the p38 F-site (FRS) contact is crippled (kon2 1.2,
+# from the Fig. 3c enzyme kinetics), so bipartite p38 recruitment is LOWER than WT.
+p38ATF2all < wt.p38ATF2all at 20000 weight 8

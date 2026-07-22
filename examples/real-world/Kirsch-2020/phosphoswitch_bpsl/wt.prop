@@ -1,0 +1,5 @@
+# WT (no mutation, no inhibitor) -- anchors the reference suffix `wt` and asserts the
+# baseline behaviour. `p38ATF2all` = total p38:ATF2 TAD complex; `pT69pT71` = doubly
+# phosphorylated (active) ATF2. Evaluated at the stimulated steady state (t = 20000 s).
+p38ATF2all > 0.001 at 20000 weight 1     # p38 does recruit to WT ATF2 at steady state
+pT69pT71 > 0.5 at 20000 weight 1         # WT reaches substantial ATF2 phosphorylation

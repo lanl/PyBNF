@@ -1,0 +1,163 @@
+# IGF1 / IGF1R harmonic-oscillator binding model -- EDITION-2 (new-era), the PRIMARY igf1r job.
+#
+# Same model as the SI-verbatim igf1r_legacy.bngl (the file that produced Erickson 2019 Table 1),
+# but on PyBNF's edition-2 surface: the seven fit rate constants bind to model ids BY NAME
+# (ADR-0034 -- no `__FREE` aliases; the nominals here are the Kiselyov-2009 published values,
+# overridden by the optimizer), and there is NO `begin actions` block -- the full incubate -> wash
+# -> dose-scan protocol is SYNTHESIZED from the igf1r.conf experiment:/condition: lines (issue
+# lanl/PyBNF#474, which added parameter_scan-with-pre-equilibration + species setConcentration
+# interventions; needs bngsim >= 0.11.34 for the carried-state scan, lanl/bngsim#11).
+#
+# Default IGF1_hot_conc is 7 pM (the F5B steady-state competition condition); the F5D dissociation
+# experiments set 24 pM hot inline in their `incubate` pre-equilibration condition.
+#
+# See igf1r_legacy.bngl / README.md / VALIDATION.md for the biology, provenance, and validation.
+#
+
+begin model
+
+# Model for IGF1 interaction with IGF1R
+
+# References:
+# Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+
+begin parameters
+
+# fraction of cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers,
+#   and rate constants for zero-order processes.
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# volume of extracellular fluid per cell
+#   Assumptions:
+#    - 15 cm culture dishes (cells 95% confluent)
+#    - 1.2e5 cells per cm^2
+#    - growth surface area of 140 cm^2
+#    - 1.7e7 cells per dish
+#    - 0.25 mL of medium per square cm of growth surface
+#    - 35 mL of medium per dish
+Vecf_default 2.1e-9*f # [=] L per cell
+
+dilution 1.0
+Vecf=dilution*Vecf_default
+
+IGF1_hot_conc 7.0e-12 # [=] M (7 pM or 24 pM, p. 8 of Kiselyov et al., 2009)
+
+IGF1_cold_conc 0 # [=] M
+
+# copies of IGF1 per cell
+IGF1_hot_total=IGF1_hot_conc*(NA*Vecf)
+IGF1_cold_total=IGF1_cold_conc*(NA*Vecf)
+
+IGF1R_total 20000*f # [=] copies per cell (two copies of IGF1R per dimer)
+
+# Rate constants.
+a1_perMpers 3.47e5		# /M/s
+a1=a1_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+a2_perMpers 8.7e3		# /M/s
+a2=a2_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+# reverse rate constant for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+d1 3.2e-3	# [=] /s
+
+# reverse rate constant for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+d2 4.2e-3		# [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime 3.2e-3
+#   Release of ligand from Site 2
+d2prime 4.2e-3
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+kcr 0.33 # [=] /s
+a1prime=kcr	# [=] /s
+a2prime=(a2*a1prime*d1*d2prime)/(a1*d1prime*d2)	# [=] /s [By applying the detailed balance constraint]
+
+
+end parameters
+
+begin molecule types
+
+# ligand (insulin-like growth factor 1)
+#  ds: dimerization surface (this site is not functional in IGF1, as it is in insulin)
+#  hs: hexamerization surface
+IGF1(ds,hs,label~hot~cold)
+
+# receptor (IGF1 receptor)
+#  S1: Site 1
+#  S2: Site 2
+#  C: cysteine residues involved in disulfide bonds of the receptor dimer
+IGF1R(S1,S2,C)
+
+end molecule types
+
+begin seed species
+
+IGF1(ds,hs,label~hot) IGF1_hot_total
+IGF1(ds,hs,label~cold) IGF1_cold_total
+IGF1R(S1,S2,C!0).IGF1R(S1,S2,C!0) 0.5*IGF1R_total
+
+end  seed species
+
+begin observables
+
+
+Molecules IGF1_hot_bound IGF1(ds!+,hs,label~hot) \
+                         IGF1(ds,hs!+,label~hot) \
+                         IGF1R(S1!1).IGF1(ds!1,hs!2,label~hot).IGF1R(S2!2)
+
+#Species IGF1_hot_free IGF1(ds,hs,label~hot)
+#Molecules IGF1_cold_bound IGF1(ds!+,hs,label~cold) \
+#                         IGF1(ds,hs!+,label~cold) \
+#                         IGF1R(S1!1).IGF1(ds!1,hs!2,label~cold).IGF1R(S2!2)
+#Species IGF1_cold_free IGF1(ds,hs,label~cold)
+
+end observables
+
+begin functions
+
+# B()=IGF1_hot_bound+IGF1_cold_bound
+# B_div_F()=B()/(IGF1_hot_free+IGF1_cold_free)
+
+end functions
+
+
+begin reaction rules
+
+# Free IGF1 reversibly binds a free copy of Site 1 in dimeric IGF1R.
+IGF1(ds,hs)+IGF1R(S1,C!0).IGF1R(S2,C!0)<->IGF1(ds!1,hs).IGF1R(S1!1,C!0).IGF1R(S2,C!0) a1,d1
+#   This rules stipulates that ligand binds S1 in R1 only if S2 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S1 in R1 and S2 in R2 by two different ligands.
+#   In other words, the ligand binding pocket comprising S1 in R1 and S2 in R2 can only accomodate a single ligand.
+# Free IGF1 reversibly binds a free copy of Site 2 in dimeric IGF1R.
+
+IGF1(ds,hs)+IGF1R(S2,C!0).IGF1R(S1,C!0)<->IGF1(ds,hs!1).IGF1R(S2!1,C!0).IGF1R(S1,C!0) a2,d2
+#   This rules stipulates that ligand binds S2 in R1 only if S1 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S2 in R1 and S1 in R2 by two different ligands.
+#   In other words, the ligand binding pocket comprising S2 in R1 and S1 in R2 can only accomodate a single ligand.
+
+# IGF1 bound at Site 1 in R1 reversibly crosslinks Site 1 in R1 and Site 2 in R2.
+#   Crosslinking is contingent on absence of a crosslink connecting Site 2 in R1 and Site 1 in R2.
+IGF1R(S1!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+
+# IGF1 bound at Site 2 in R1 reversibly crosslinks Site 2 in R1 and Site 1 in R2.
+#   Crosslinking is contingent on absence of a crosslink connecting Site 1 in R1 and Site 2 in R2.
+IGF1R(S2!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S2!1,C!0).IGF1R(S1!2,S2,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+IGF1R(S1,S2!1,C!0).IGF1R(S1,S2!+,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S1,S2!1,C!0).IGF1R(S1!2,S2!+,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+
+end reaction rules
+
+end model

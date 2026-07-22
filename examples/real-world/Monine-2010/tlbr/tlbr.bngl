@@ -1,0 +1,117 @@
+# Trivalent-ligand / bivalent-receptor aggregation -- edition-2, fitting-ready NETWORK-FREE
+# model for NFsim (method: nf). A trivalent ligand crosslinks bivalent cell-surface receptors
+# into aggregates that grow without bound, so the reaction network is not finite and the model
+# is simulated network-free. No `begin actions` block -- network-free models need no
+# generate_network; the dose-response scan is synthesized from tlbr.conf (ADR-0028/0046).
+#
+# The model AND the fit data are from (primary):
+#   Monine MI, Posner RG, Savage PB, Faeder JR, Hlavacek WS. "Modeling multivalent
+#   ligand-receptor interactions with steric constraints on configurations of cell-surface
+#   receptor aggregates." Biophys J 2010; 98(1):48-56.  PMID: 20074516  DOI: 10.1016/j.bpj.2009.09.043
+#   -- tlbr.exp is Monine 2010 Fig 2a (flow-cytometric binding of Alexa-488 compound 6a to
+#      IgE-FceRI on RBL cells); the fitted params are Monine 2010 Table 1 (TLBR column).
+# The trivalent ligand (compound 6a) was synthesized, and its DEGRANULATION response measured, by:
+#   Posner RG, Geng D, Haymore S, Bogert J, Pecht I, Licht A, Savage PB. "Trivalent antigens
+#   for degranulation of mast cells." Org Lett 2007; 9(18):3551-3554.  PMID: 17691814
+#   DOI: 10.1021/ol071231z   (Posner 2007 reports degranulation, NOT the binding titration fit here.)
+#
+# Provenance (unchanged model network): the trivalent-ligand/bivalent-receptor model of Monine
+#   et al. (2010); the same fitting problem as BioNetFit 1 example 3 (Thomas et al. 2016,
+#   Bioinformatics 32:798-800) and PyBNF 2019 corpus problem 11-TLBR (Mitra et al., iScience
+#   2019). Upgraded to the edition-2 surface for the curate-pybnf-job corpus: the three fitted
+#   parameters (alpha, K1, K2) bind to model ids BY NAME (ADR-0034, no __FREE aliases; the
+#   nominals here are overridden by the optimizer) and the model carries NO actions block --
+#   the dose-response simulation is synthesized from tlbr.conf.
+
+# A model of trivalent ligand, bivalent receptor
+
+begin model
+
+# Reference:
+# 1. Monine MI et al. (2010) Biophys J 98: 48-56. <-- model, Fig 2a binding data, Table 1 fit
+# 2. Posner RG et al. (2007) Org Lett 9: 3551-3554. <-- ligand (compound 6a) + degranulation data
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# fraction of a cell to consider in a stochastic simulation
+f 0.001 # [=] dimensionless, from Table 1 in Ref 1
+
+chi=1.0/f
+
+# cell density
+cellDensity 1.0e9 # [=] cells per L (1e6 cells per ml), from Table 1 in Ref 1
+
+# volume of ECF surrounding a single cell (on average)
+Vref=f/cellDensity # [=] L, from Table 1 in Ref 1
+
+LTconc 7.0 # [=] nM
+
+RTref f*3.0e5 # [=] molecules per cell, from Table 1 in Ref 1
+LTref = LTconc*1.0e-9*(NA*Vref) # [=] ~4,200,000 molecules per cell, cf. Table 1 in Ref 1
+RTconc = RTref*1.0e9/(NA*Vref) # [=] nM
+
+# dissociation rate constants (settings are arbitrary)
+koff 0.01 # [=] /s, from Table 1 in Ref
+kr1=koff # [=] /s
+kr2=koff # [=] /s
+
+# FITTED (bind by id, ADR-0034): overall scale for the FL readout.
+# Nominal = Monine 2010 Table 1 best-fit (TLBR model): alpha = 0.816 (CI 0.758-0.881).
+alpha	0.816
+
+inverse_alpha=1.0/alpha # 1/alpha
+
+# FITTED (bind by id, ADR-0034): free-ligand (K1) and crosslinking (K2) equilibrium constants (/nM).
+# Nominals = Monine 2010 Table 1 best-fit (TLBR model): K1 = 0.467 /nM (CI 0.111-0.767),
+# K2 = 87.03 /nM (CI 31.6-128.1). (These fit the Fig 2a titration -- see README + VALIDATION.md.)
+K1	0.467 # [=] /nM, Monine 2010 Table 1 (TLBR)
+K2	87.03 # [=] /nM, Monine 2010 Table 1 (TLBR)
+
+kf1=K1*1.0e9*kr1/(NA*Vref) # [=] /(molecule/cell)/s
+kf2=K2*1.0e9*kr2/(NA*Vref) # [=] /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+L(s,s,s)
+R(s,s)
+
+end molecule types
+
+begin seed species
+
+L(s,s,s) LTref
+R(s,s) RTref
+
+end  seed species
+
+begin observables
+
+Molecules R_total R()
+Molecules L_total L()
+Species L_free L(s,s,s)
+
+end observables
+
+begin functions
+
+lambda() (L_total-L_free)/(2.0*R_total) # [=] dimensionless, (0,1)
+FL() inverse_alpha*(L_total-L_free)/(2.0*R_total) # FL = lambda/alpha or lambda = alpha*FL
+# I am multiplying by the inverse of alpha instead of dividing by alpha
+# to avoid a "divide by zero" error
+
+end functions
+
+begin reaction rules
+
+L(s,s,s)+R(s)->L(s!1,s,s).R(s!1) kf1
+L(s!+,s)+R(s)->L(s!+,s!1).R(s!1) kf2
+L(s!1).R(s!1)->L(s)+R(s) koff
+
+end reaction rules
+
+end model

@@ -274,7 +274,7 @@ class TestModel:
 
     def test_config_param_scan_sets_stochastic_flag(self):
         # The scan synthesis path (add_action, ParamScan branch) must set the flag too:
-        # a network-free dose-response (examples/real-world/tlbr) uses method: nf.
+        # a network-free dose-response (examples/real-world/Monine-2010/tlbr) uses method: nf.
         model = pset.BNGLModel(self.file1, suppress_free_param_error=True)
         model.add_action(pset.ParamScan({'min': 1, 'max': 2, 'step': 1, 'time': 5,
                                          'suffix': 'sc', 'param': 'kon', 'method': 'nf'}))

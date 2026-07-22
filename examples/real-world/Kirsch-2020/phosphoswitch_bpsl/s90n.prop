@@ -1,0 +1,6 @@
+# S90N (invertebrate-like F-site): the S90 phospho-site is removed (k2 = 0) AND the
+# intrinsic bipartite affinity is higher (kon2 77.1, from the Fig. 4b Ki). p38 recruitment
+# is the strongest of all conditions -- above WT, and above the pharmacological JNK
+# inhibitor (genetic removal of the block exceeds inhibiting the kinase that installs it).
+p38ATF2all > wt.p38ATF2all at 20000 weight 10
+p38ATF2all > jnki.p38ATF2all at 20000 weight 5

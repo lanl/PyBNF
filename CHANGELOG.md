@@ -88,6 +88,17 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **Published-source organization and two curated real-world jobs.** The real-world gallery now
+  uses `Author-Year/job_slug` paths aligned with the BNGL-Models job corpus. The former flat
+  Kozer EGFR, Monine TLBR, Gupta FcεRI, and Mitra receptor jobs retain their tested edition-2
+  configurations under source-oriented collections; curated provenance, validation notes, and
+  reproduction assets accompany the Kozer and Monine jobs. The reduced F5B-only IGF1R teaching
+  fit is replaced here by `Erickson-2019/igf1r`, the authors' published seven-rate,
+  three-dataset preincubate→wash→dose-scan fit (the reduced job remains under `examples/igf1r/`).
+  Two additional workstation examples broaden the executable corpus:
+  `Salazar-Cavazos-2019/egfr_simpull` adds an authors' multisite-EGFR ODE fit, and
+  `Kirsch-2020/phosphoswitch_bpsl` adds a four-model, constraint-only BPSL fit. The default
+  corpus test now distinguishes quantitative `.exp` jobs from qualitative `.prop` jobs.
 - **Workstation-scale exact-SSA real-world examples (#472).** The new
   `examples/real-world/Rijal-2025/` collection fits lacUV5/lacUD5 and 5DL1 promoter-noise data
   from Jones et al. (2014) with the two-state model studied by Rijal and Mehta (2025). Each

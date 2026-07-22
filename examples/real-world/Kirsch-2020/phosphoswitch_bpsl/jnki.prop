@@ -1,0 +1,4 @@
+# JNK inhibitor (JNK-IN-8): JNK can no longer phosphorylate the F-site S90 (k2 = 0), so
+# the S90-P block on p38's F-site is never installed. The phosphoswitch prediction:
+# inhibiting JNK RELIEVES the block -> p38 recruits to ATF2 MORE than in WT.
+p38ATF2all > wt.p38ATF2all at 20000 weight 10

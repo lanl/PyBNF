@@ -1,19 +1,37 @@
 # Real-world examples
 
-This gallery starts with the biological case studies from the original PyBNF paper —
+This gallery contains published biological parameter-estimation jobs on PyBNF's
+**edition-2** configuration surface. Collections use the same convention as the curated
+BNGL-Models corpus: **`Author-Year/job_slug/`**, with each job kept self-contained.
+
+The gallery started with the biological case studies from the original PyBNF paper —
 
 > Mitra ED, Suderman R, Colvin J, Ionkov A, Hu A, Sauro HM, Posner RG, Hlavacek WS.
 > **PyBioNetFit and the Biological Property Specification Language.** *iScience* 2019,
 > 19:1012–1036.
 
-— re-expressed on PyBNF's **edition-2 (new-era) config surface** (ADR-0028/0034/0046/0052),
-and now also includes the compact [`Rijal-2025/`](Rijal-2025/) promoter-noise collection:
-paired exact-SSA fits and exact moment-ODE twins derived from Rijal and Mehta (2025) and Jones
-et al. (2014). The examples complement two neighbouring collections: the tiny teaching fits in
-[`../tutorial/`](../tutorial/) and the interactive notebooks in
-[`../notebooks/`](../notebooks/). Where those are small and pedagogical, these are the
-*real* rule-based models — Kozer's EGFR, the FcεRI γ-chain network, the trivalent-ligand
-aggregation model, and two-state bacterial promoters — fit to real or realistic data.
+— and now includes jobs grounded directly in Erickson (2019), Kirsch (2020), Kozer
+(2013), Monine (2010), Rijal and Mehta (2025), and Salazar-Cavazos et al. (2020).
+These complement the small teaching fits in [`../tutorial/`](../tutorial/) and the
+interactive notebooks in [`../notebooks/`](../notebooks/): this directory intentionally
+uses realistic published models, protocols, data, and qualitative constraints.
+
+## Layout and naming
+
+```text
+examples/real-world/
+  Author-Year/
+    job_slug/
+      job_slug.conf
+      job_slug.bngl
+      README.md
+      VALIDATION.md       # where a primary-source audit is available
+```
+
+The main `.conf` and `.bngl` share the lower-case `job_slug`; supporting data,
+reproduction scripts, figures, and constraint files live beside them. Generated outputs
+are not committed. A legacy twin is retained only when it is itself a provenance or
+reproduction oracle, as in [`Erickson-2019/igf1r/`](Erickson-2019/igf1r/).
 
 Their purpose here is also to **validate PyBNF's bngsim-backed default simulator path on
 representative deterministic, stochastic, and network-free models** (issues #380 and #472):
@@ -45,17 +63,19 @@ bngsim backend (see "How these are validated" and "Known limitations" below):
 
 | example | paper mapping | simulator | edition-2 features exercised | status |
 |---|---|---|---|---|
-| [`receptor`](receptor/) | ligand/receptor, BioNetFit 1 ex 5 | **ODE** | pre-equilibration (`preequilibrate:` + gate parameter), `sos` | ✅ validated |
-| [`igf1r`](igf1r/) | IGF1R competition binding, Erickson et al. | **ODE** (network-generating) | dose-response scan, whole-fit `normalization = init`, `chi_sq`, refinement | ✅ validated |
+| [`Mitra-2019/receptor`](Mitra-2019/receptor/) | ligand/receptor, BioNetFit 1 ex 5 | **ODE** | pre-equilibration (`preequilibrate:` + gate parameter), `sos` | ✅ validated |
+| [`Erickson-2019/igf1r`](Erickson-2019/igf1r/) | published IGF1R competition/dissociation fit | **ODE** | three datasets, fixed-time preincubation → wash → dose scans, normalization | ✅ validated |
 | [`Rijal-2025/lacud5_ode`](Rijal-2025/lacud5_ode/) | lacUV5/lacUD5 noise, Rijal & Mehta 2025 / Jones et al. 2014 | **ODE** | exact moment equations, measurement formulas, `gntr` | ✅ validated |
 | [`Rijal-2025/five_dl1_ode`](Rijal-2025/five_dl1_ode/) | 5DL1 promoter noise, Rijal & Mehta 2025 / Jones et al. 2014 | **ODE** | exact moment equations, measurement formulas, `gntr` | ✅ validated |
 | [`Rijal-2025/lacud5_ssa`](Rijal-2025/lacud5_ssa/) | lacUV5/lacUD5 noise, Rijal & Mehta 2025 / Jones et al. 2014 | **SSA** | `method: ssa`, 200-trajectory smoothing, ensemble-moment formulas | ✅ validated |
 | [`Rijal-2025/five_dl1_ssa`](Rijal-2025/five_dl1_ssa/) | 5DL1 promoter noise, Rijal & Mehta 2025 / Jones et al. 2014 | **SSA** | `method: ssa`, 200-trajectory smoothing, ensemble-moment formulas | ✅ validated |
-| [`tlbr`](tlbr/) | trivalent-ligand aggregation, BioNetFit 1 ex 3 | **NF** (NFsim) | `method: nf` dose-response scan (fixed `t_end`) | ✅ validated |
-| [`egfr_nf`](egfr_nf/) | EGFR clustering, Kozer 2013 (BioNetFit 1 ex 2) | **NF** (NFsim) | `method: nf`, time course + dose-response scan, `gml:`/`complex:` | 🔶 runs; heavy (NFsim) |
-| [`egfr_ode`](egfr_ode/) | EGFR activation, Kozer 2013 (Problem 2) | **ODE** (network-generating) | time course + dose-response scan, `chi_sq`, scaled-observable functions | 🔶 cluster-scale network |
-| [`fceri_gamma`](fceri_gamma/) | FcεRI γ-chain, Gupta & Mendes 2018 (Problem 3) | **SSA** (Gillespie) | `method: ssa`, `smoothing` over replicate trajectories | 🔶 cluster-scale (58k rxns) |
-| [`receptor_nf`](receptor_nf/) | ligand/receptor, BioNetFit 1 ex 6 | **NF** (NFsim) | `method: nf` + pre-equilibration (`equil_t_end:`) | 🔶 runs; heavy (NFsim) |
+| [`Salazar-Cavazos-2019/egfr_simpull`](Salazar-Cavazos-2019/egfr_simpull/) | multisite EGFR phosphorylation, authors' PyBioNetFit setup | **ODE** | time course + dose-response, three observables, `chi_sq` | ✅ validated |
+| [`Kirsch-2020/phosphoswitch_bpsl`](Kirsch-2020/phosphoswitch_bpsl/) | JNK/p38/ATF2 S90 phosphoswitch | **ODE** | four-model BPSL-only qualitative fit with cross-condition constraints | ✅ validated |
+| [`Monine-2010/tlbr`](Monine-2010/tlbr/) | trivalent-ligand aggregation | **NF** (NFsim) | `method: nf` dose-response scan (fixed `t_end`) | ✅ validated |
+| [`Kozer-2013/egfr_nf`](Kozer-2013/egfr_nf/) | EGFR clustering | **NF** (NFsim) | `method: nf`, time course + dose-response scan, `gml:`/`complex:` | 🔶 runs; heavy (NFsim) |
+| [`Kozer-2013/egfr_ode`](Kozer-2013/egfr_ode/) | EGFR activation | **ODE** (network-generating) | time course + dose-response scan, `chi_sq`, capped network | 🔶 cluster-scale network |
+| [`Gupta-2018/fceri_gamma`](Gupta-2018/fceri_gamma/) | FcεRI γ-chain | **SSA** (Gillespie) | `method: ssa`, `smoothing` over replicate trajectories | 🔶 cluster-scale (58k rxns) |
+| [`Mitra-2019/receptor_nf`](Mitra-2019/receptor_nf/) | ligand/receptor, BioNetFit 1 ex 6 | **NF** (NFsim) | `method: nf` + pre-equilibration (`equil_t_end:`) | 🔶 runs; heavy (NFsim) |
 
 ✅ validated end-to-end through bngsim (runs in the `recovery` test tier) · 🔶 builds and runs
 but too heavy to run routinely (reference only, backend-free tier only): `egfr_nf`/`receptor_nf`
@@ -107,7 +127,7 @@ Each subdirectory is self-contained (edition-2 `.bngl`, `.exp` data, `.conf`). F
 repo root, with `BNGPATH` set to your BioNetGen install:
 
 ```bash
-pybnf -c examples/real-world/receptor/receptor.conf
+pybnf -c examples/real-world/Mitra-2019/receptor/receptor.conf
 ```
 
 `egfr_ode` and `fceri_gamma` are **cluster-scale**: the Kozer EGFR crosslinking network
@@ -121,9 +141,10 @@ run and reproduction instructions.
 tiers against these committed confs:
 
 * **default CI, backend-free** — for *every* example: the conf parses, is edition 2, selects
-  its documented simulator, and binds its data; and each NF example synthesizes a
+  its documented simulator, and binds its quantitative data and/or BPSL constraints; each NF example synthesizes a
   network-free action set (the regression guard for the fix above). No bngsim/BNG2.pl needed.
-* **opt-in `recovery`** — the ✅ examples (`receptor`, `igf1r`, `tlbr`, and the four Rijal jobs)
+* **opt-in `recovery`** — every non-heavy example (the Mitra receptor, published Erickson
+  IGF1R fit, Monine TLBR, four Rijal jobs, Salazar-Cavazos SiMPull fit, and Kirsch BPSL job)
   are built through the real bngsim backend and driven through a short bounded fit; the check is
   that the whole simulate → score → propose loop runs and yields a finite objective — observables map, the
   objective scores, and the optimizer advances, on a real paper model through bngsim. The

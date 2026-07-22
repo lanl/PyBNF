@@ -1,0 +1,131 @@
+# JNK / p38 / ATF2 phosphoswitch -- p38 recruitment at stimulated steady state (BPSL base).
+#
+# Real-world PyBNF example derived from:
+#   Kirsch K, Zeke A, Toke O, ... Remenyi A. "Co-regulation of the transcription
+#   controlling ATF2 phosphoswitch by JNK and p38." Nat Commun 2020; 11(1):5769.
+#   PMCID: PMC7666158   DOI: 10.1038/s41467-020-19582-3   (Supplementary Software 1)
+#
+# This is the BASELINE (WT) copy for the constraint-bearing (BPSL) sibling of
+# ../fig7b_timecourse. It fits the paper's SIGNATURE qualitative claim -- that JNK
+# phosphorylation of the ATF2 F-site (S90) sterically diminishes p38's F-site (FRS)
+# recruitment (the "phosphoswitch") -- expressed as BPSL .prop constraints on the model
+# observable `p38ATF2all` (total p38:ATF2 TAD complex, the NanoBit binding readout).
+#
+# Same reaction network as ../fig7b_timecourse/fig7b_timecourse.bngl, with two differences:
+#   - Stim = 1 (anisomycin-stimulated): each constraint experiment integrates from the seed
+#     to the STIMULATED steady state (a BPSL constraint experiment carries its own timing
+#     and cannot pre-equilibrate, so activation is baked ON here).
+#   - Mutant/inhibitor variants (JNK inhibitor, S90N, MUT4) are baked into their own model
+#     copies by ./make_models.sh, following the shipped Miller2025 one-model-per-condition
+#     pattern (a BPSL experiment cannot apply a non-free-parameter condition).
+#
+# The four free landscape params (dp2, dp4, kstim6, kstim7) bind BY NAME across all four
+# copies (ADR-0034, no __FREE). Mutant deltas (Supplementary Table 2):
+#   JNK inhibitor : k1 = 0, k2 = 0     (JNK kinase activity abolished)
+#   S90N          : kon2 = 77.1, k2 = 0  (F-site removed -> no S90-P block; tighter p38 bind)
+#   MUT4          : kon2 = 1.2           (F-motif mutant -> crippled p38 FRS binding)
+
+begin model
+begin parameters
+    # --- JNK/p38 docking on the ATF2 TAD (in vitro, Fig. S7a; FIXED) [uM-1 s-1 / s-1] ---
+    kon1   5.6        # JNK(DRS) : ATF2(D-site) association
+    koff1  19.6       # JNK(DRS) : ATF2(D-site) dissociation
+    kon2   1.2       # pp-p38 : ATF2 bipartite (DRS+FRS) association   (S90N: 77.1; MUT4: 1.2)
+    koff2  429        # pp-p38 : ATF2 bipartite dissociation
+    kon3   0.429      # p38 : ATF2 D-site-only association (assumption)
+    koff3  429        # p38 : ATF2 D-site-only dissociation (assumption; = koff2)
+
+    # --- catalytic rates (in vitro, Fig. S7; FIXED) [s-1] ---
+    k1     3.52       # JNK phosphorylation of T69 / T71                (JNK inhibitor: 0)
+    k2     0.78       # JNK phosphorylation of the F-site S90           (JNK inhibitor / S90N: 0)
+    k3     8.2        # p38 phosphorylation of T69 / T71
+    k4     1.67       # p38 phosphorylation of T71 when T69 already phosphorylated
+
+    # --- MAPK activation, basal (keq*) vs stimulated (kstim*) [s-1] ---
+    keq7   4.695e-6   # basal MKK7 -> JNK activation
+    kstim7 9.074e-5   # anisomycin-stimulated MKK7 -> JNK activation
+    keq6   1.74e-5    # basal MKK6 -> p38 activation
+    kstim6 1.16e-4    # anisomycin-stimulated MKK6 -> p38 activation
+
+    # --- phosphatases [s-1] ---
+    dp1    6.26e-4    # pp-JNK  -> JNK
+    dp2    1.76e-3    # pp-p38  -> p38
+    dp3    9.54e-3    # ATF2 pT69 / pT71 -> T69 / T71
+    dp4    4.50e-3    # ATF2 pS90 -> S90   (sets how fast the S90-P block is reversed)
+
+    # --- total protein (Supplementary Table 2) [uM] ---
+    totJNK  1         # assumption
+    totp38  2.65      # estimated from Fig. 4a WB
+    totATF2 1         # assumption
+
+    # --- stimulation gate: 1 = anisomycin-stimulated (this is the stimulated-steady-state job) ---
+    Stim   1
+end parameters
+
+begin molecule types
+    JNK(DRS,TY~0~p)
+    p38(DRS,FRS,TY~0~p)
+    ATF2(D,T71~0~p,T69~0~p,F~0~p)
+end molecule types
+
+begin seed species
+    JNK(DRS,TY~0)              totJNK
+    p38(DRS,FRS,TY~0)          totp38
+    ATF2(D,T71~0,T69~0,F~0)    totATF2
+end seed species
+
+begin functions
+    # Activation rate = basal (keq*) with Stim=0, stimulated (kstim*) with Stim=1.
+    k7_act() = keq7 + Stim*(kstim7 - keq7)
+    k6_act() = keq6 + Stim*(kstim6 - keq6)
+end functions
+
+begin observables
+    Molecules pT69pT71   ATF2(T71~p,T69~p)
+    Molecules p38ATF2all p38(DRS!2,FRS!3,TY~p).ATF2(D!2,F~0!3),p38(DRS!2,FRS,TY~0).ATF2(D!2,F),p38(DRS!2,FRS,TY~p).ATF2(D!2,F~p)
+    Molecules ppp38      p38(TY~p)
+    Molecules ppJNK      JNK(TY~p)
+end observables
+
+begin reaction rules
+    # JNK / p38 activation (gated) and dephosphorylation, unbound from ATF2
+    JNK(DRS,TY~0)      -> JNK(DRS,TY~p)      k7_act()
+    JNK(DRS,TY~p)      -> JNK(DRS,TY~0)      dp1
+    p38(DRS,FRS,TY~0)  -> p38(DRS,FRS,TY~p)  k6_act()
+    p38(DRS,FRS,TY~p)  -> p38(DRS,FRS,TY~0)  dp2
+
+    # JNK - ATF2 docking (D-site)
+    JNK(DRS) + ATF2(D) <-> JNK(DRS!1).ATF2(D!1) kon1,koff1
+
+    # JNK phosphorylation of T69 / T71 (distributive) and the F-site S90
+    JNK(DRS!1,TY~p).ATF2(D!1,T71~0,T69~0) -> JNK(DRS!1,TY~p).ATF2(D!1,T71~p,T69~0) k1
+    JNK(DRS!1,TY~p).ATF2(D!1,T71~p,T69~0) -> JNK(DRS!1,TY~p).ATF2(D!1,T71~p,T69~p) k1
+    JNK(DRS!1,TY~p).ATF2(D!1,T71~0,T69~0) -> JNK(DRS!1,TY~p).ATF2(D!1,T71~0,T69~p) k1
+    JNK(DRS!1,TY~p).ATF2(D!1,T71~0,T69~p) -> JNK(DRS!1,TY~p).ATF2(D!1,T71~p,T69~p) k1
+    JNK(DRS!1,TY~p).ATF2(D!1,F~0)         -> JNK(DRS!1,TY~p).ATF2(D!1,F~p)         k2
+
+    # p38 - ATF2 bipartite docking (D-site + F-site); requires unphosphorylated F-site (F~0)
+    p38(DRS,FRS,TY~p) + ATF2(D,F~0) <-> p38(DRS!2,FRS!3,TY~p).ATF2(D!2,F~0!3) kon2,koff2
+
+    # p38 - ATF2 D-site-only docking (available whether or not F-site is phosphorylated)
+    p38(DRS,FRS,TY~0) + ATF2(D,F)   <-> p38(DRS!2,FRS,TY~0).ATF2(D!2,F)   kon3,koff3
+    p38(DRS,FRS,TY~p) + ATF2(D,F~p) <-> p38(DRS!2,FRS,TY~p).ATF2(D!2,F~p) kon3,koff3
+
+    # p38 phosphorylation of T69 / T71 -- bipartite-bound
+    p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~0,T69~0,F~0!3) -> p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~p,T69~0,F~0!3) k3
+    p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~p,T69~0,F~0!3) -> p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~p,T69~p,F~0!3) k3
+    p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~0,T69~0,F~0!3) -> p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~0,T69~p,F~0!3) k3
+    p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~0,T69~p,F~0!3) -> p38(DRS!2,FRS!3,TY~p).ATF2(D!2,T71~p,T69~p,F~0!3) k4
+
+    # p38 phosphorylation of T69 / T71 -- D-site-only bound (F-site phosphorylated)
+    p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~0,T69~0,F~p) -> p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~p,T69~0,F~p) k3
+    p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~p,T69~0,F~p) -> p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~p,T69~p,F~p) k3
+    p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~0,T69~0,F~p) -> p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~0,T69~p,F~p) k3
+    p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~0,T69~p,F~p) -> p38(DRS!2,FRS,TY~p).ATF2(D!2,T71~p,T69~p,F~p) k4
+
+    # ATF2 dephosphorylation
+    ATF2(T71~p) -> ATF2(T71~0) dp3
+    ATF2(T69~p) -> ATF2(T69~0) dp3
+    ATF2(F~p)   -> ATF2(F~0)   dp4
+end reaction rules
+end model
