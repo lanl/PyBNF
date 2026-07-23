@@ -36,6 +36,7 @@ from .parsing import (
 )
 from .expressions import (
     _build_safe_eval_namespace,
+    _eval_numeric,
     _eval_model_expression,
     _build_mutant_param_set,
     _parse_net_species_initializers,
@@ -814,30 +815,30 @@ class BngsimModel(NetModel):
         sample_times = _resolve_sample_times(sim_params)
 
         # Gap 1: continue=>1
-        continue_flag = bool(int(float(sim_params.get('continue', 0))))
+        continue_flag = bool(int(_eval_numeric(str(sim_params.get('continue', 0)))))
         if continue_flag and 't_start' not in sim_params:
             t_start = state.current_time
         else:
-            t_start = float(sim_params.get('t_start', 0))
-        t_end = float(sim_params.get('t_end', 100))
-        n_steps = int(sim_params.get('n_steps', 100))
+            t_start = _eval_numeric(str(sim_params.get('t_start', 0)))
+        t_end = _eval_numeric(str(sim_params.get('t_end', 100)))
+        n_steps = int(_eval_numeric(str(sim_params.get('n_steps', 100))))
         suffix = sim_params.get('suffix', 'time_course')
         # Gate this action's sensitivity request on whether its output is scored
         # (#475): set before any Simulator (re)construction below reads it.
         self._current_action_suffix = suffix
 
         # Gap 4: print_functions
-        print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
+        print_funcs = bool(int(_eval_numeric(str(sim_params.get('print_functions', 0)))))
 
         # Gap 3: atol, rtol, seed
         run_kwargs = {}
         if 'atol' in sim_params:
-            run_kwargs['atol'] = float(sim_params['atol'])
+            run_kwargs['atol'] = _eval_numeric(str(sim_params['atol']))
         if 'rtol' in sim_params:
-            run_kwargs['rtol'] = float(sim_params['rtol'])
+            run_kwargs['rtol'] = _eval_numeric(str(sim_params['rtol']))
         explicit_seed = None
         if 'seed' in sim_params:
-            explicit_seed = int(float(sim_params['seed']))
+            explicit_seed = int(_eval_numeric(str(sim_params['seed'])))
         if method in ('ssa', 'psa'):
             seed_value = self._resolve_action_seed(
                 explicit_seed=explicit_seed,
@@ -859,7 +860,7 @@ class BngsimModel(NetModel):
         # resetConcentrations between them). ``t_end`` remains the max-time bound for the
         # run if steady state is not reached within the window. Additive: no existing
         # simulate action emits ``steady_state``; only parameter_scan did (its own path).
-        if bool(int(float(sim_params.get('steady_state', 0)))):
+        if bool(int(_eval_numeric(str(sim_params.get('steady_state', 0))))):
             run_kwargs['steady_state'] = True
 
         # Gap 2: stop_if
@@ -1197,12 +1198,12 @@ class BngsimModel(NetModel):
         """
         concentration_overrides = concentration_overrides or {}
         param_name = ps_params.get('parameter', '')
-        t_start = float(ps_params.get('t_start', 0))
-        t_end = float(ps_params.get('t_end', 100))
+        t_start = _eval_numeric(str(ps_params.get('t_start', 0)))
+        t_end = _eval_numeric(str(ps_params.get('t_end', 100)))
         suffix = ps_params.get('suffix', 'param_scan')
-        use_ss = int(ps_params.get('steady_state', 0))
+        use_ss = int(_eval_numeric(str(ps_params.get('steady_state', 0))))
         ss_method = _normalize_ss_method(ps_params.get('ss_method'))
-        print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
+        print_funcs = bool(int(_eval_numeric(str(ps_params.get('print_functions', 0)))))
         method, poplevel = _normalize_action_method(
             ps_params.get('method', 'ode'),
             ps_params.get('poplevel'),
@@ -1213,7 +1214,7 @@ class BngsimModel(NetModel):
         # produces distinct trajectories per the user's clarification.
         explicit_seed = None
         if 'seed' in ps_params:
-            explicit_seed = int(float(ps_params['seed']))
+            explicit_seed = int(_eval_numeric(str(ps_params['seed'])))
         if method in ('ssa', 'psa'):
             scan_seed = self._resolve_action_seed(
                 explicit_seed=explicit_seed,
@@ -1236,7 +1237,7 @@ class BngsimModel(NetModel):
         if is_bifurcate:
             reset_conc = False
         else:
-            reset_conc = bool(int(float(ps_params.get('reset_conc', 1))))
+            reset_conc = bool(int(_eval_numeric(str(ps_params.get('reset_conc', 1)))))
 
         # bifurcate is a continuation scan: it carries state between points
         # (reset_conc=False) to trace hysteresis/multistability. Independent
