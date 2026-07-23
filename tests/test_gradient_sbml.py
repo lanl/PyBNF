@@ -41,7 +41,7 @@ import pytest
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
 from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS
 from pybnf.data import Data
-from pybnf.gradient import assemble_gaussian_gradient, route_experiment
+from pybnf.gradient import assemble_gaussian_gradient, route_experiment, route_for_model
 from pybnf.objective import ChiSquareObjective
 from pybnf.printing import PybnfError
 from pybnf.pset import (
@@ -330,6 +330,217 @@ def test_sbml_fd_acceptance_gate(tmp_path):
         obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
 
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+# --- #511: per-condition estimated initial conditions through a condition ------ #
+# A mini-Bruno: species S's initial value is seeded by a bare initialAssignment from global
+# param S0, and two decay channels carry rate multipliers kmult1/kmult2. A condition sets S0
+# and BOTH multipliers to the value of free parameters (a per-condition estimated initial
+# condition + a shared multiplier, ADR-0076), so the free parameters reach the model ONLY
+# through the condition -- S(t) = S0*exp(-(k1*kmult1 + k2*kmult2)*t).
+_SEEDED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="seeded_decay">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="S0" value="100" constant="true"/>
+      <parameter id="k1" value="0.3" constant="true"/>
+      <parameter id="k2" value="0.2" constant="true"/>
+      <parameter id="kmult1" value="1" constant="true"/>
+      <parameter id="kmult2" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>S0</ci></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="r1" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k1</ci><ci>kmult1</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="r2" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k2</ci><ci>kmult2</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_ic_seed_map_exposes_bare_initial_assignment(tmp_path):
+    """The SBML namespace exposes ``{S0 -> S}`` for the bare ``initialAssignment`` ``S = S0``,
+    so the router can compose a per-condition estimated initial condition (ADR-0076, #511)."""
+    xml = Path(tmp_path) / 'seeded.xml'
+    xml.write_text(_SEEDED_SBML)
+    ps = PSet([FreeParameter('k1', 'uniform_var', 0.0, 1e6, value=0.3)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        str(xml), str(xml), pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    param_ids, species, ic_seed_map = model.sensitivity_entity_namespace()
+    assert set(param_ids) == {'S0', 'k1', 'k2', 'kmult1', 'kmult2'}
+    assert ic_seed_map == {'S0': 'S'}
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_free_params_routed_through_a_condition(tmp_path):
+    """Central-difference FD of loss(u) vs the assembled gradient(u) when the free parameters
+    reach the model ONLY through a condition (ADR-0076, #511): ``s0_free`` sets the IC-seeding
+    param S0 (a per-condition estimated initial condition -> IC axis), and ``m_free`` sets BOTH
+    rate multipliers at once (a shared multiplier -> the SUM of two parameter-axis columns).
+    ``k1`` binds by id. The pre-fix gradient path aborted on this; here its gradient must match
+    finite differences on both composed axes."""
+    xml_path = Path(tmp_path) / 'seeded.xml'
+    xml_path.write_text(_SEEDED_SBML)
+    xml = str(xml_path)
+
+    def run(s0, m, k1, with_sensitivities, route=None):
+        # The condition sets S0=s0 (seeds S's IC), kmult1=kmult2=m (both channels), k1=k1.
+        ps = PSet([FreeParameter('S0', 'uniform_var', 0.0, 1e6, value=s0),
+                   FreeParameter('kmult1', 'uniform_var', 0.0, 1e6, value=m),
+                   FreeParameter('kmult2', 'uniform_var', 0.0, 1e6, value=m),
+                   FreeParameter('k1', 'uniform_var', 0.0, 1e6, value=k1)])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
+        if with_sensitivities:
+            model.enable_output_sensitivities(
+                params=route.sensitivity_params, ic=route.sensitivity_ic)
+        return model.execute(str(tmp_path), 'fd511', 0)['time_course']
+
+    obj = ChiSquareObjective()
+    free = [FreeParameter('s0_free', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('m_free', 'uniform_var', 0.01, 100.0, value=0.8),
+            FreeParameter('k1', 'uniform_var', 0.01, 100.0, value=0.4)]
+    names = [p.name for p in free]
+
+    # The routing comes from the live model's namespaces (the SBML ic_seed_map end-to-end): the
+    # condition param-refs S0/kmult1/kmult2 to free parameters.
+    cond = MutationSet([
+        Mutation('S0', '=', 's0_free', is_param_ref=True),
+        Mutation('kmult1', '=', 'm_free', is_param_ref=True),
+        Mutation('kmult2', '=', 'm_free', is_param_ref=True),
+    ], 'c')
+    route_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=PSet([FreeParameter('k1', 'uniform_var', 0.0, 1e6, value=0.3)]),
+        actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    route = route_for_model(route_model, names, cond)
+    # s0_free -> IC(S); m_free -> PARAM(kmult1) + PARAM(kmult2) (summed); k1 -> PARAM(k1).
+    assert route.sensitivity_ic == ['S']
+    assert set(route.sensitivity_params) == {'kmult1', 'kmult2', 'k1'}
+    assert len(route.routes['m_free'].contributions) == 2
+
+    # Synthetic data at the true params -> non-zero residuals at the evaluation point.
+    s0_true, m_true, k1_true, sigma = 100.0, 1.0, 0.3, 5.0
+    exp = _exp_from_species(run(s0_true, m_true, k1_true, False), sigma)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return obj.evaluate(run(theta['s0_free'], theta['m_free'], theta['k1'], False), exp)
+
+    u0 = np.array([p.to_sampling_space(p.value) for p in free])
+    h = 1e-6
+    grad_fd = np.zeros(len(free))
+    for j in range(len(free)):
+        up, um = u0.copy(), u0.copy()
+        up[j] += h
+        um[j] -= h
+        grad_fd[j] = (loss_at(up) - loss_at(um)) / (2.0 * h)
+
+    sim = run(free[0].value, free[1].value, free[2].value, True, route=route)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, route)], free)
+
+    assert res.param_names == names
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=2e-3, atol=2e-3)
+
+
+_NONBARE_SEED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="nonbare_seed">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="S0" value="100" constant="true"/>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><cn>2</cn><ci>S0</ci></apply></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_non_bare_initial_assignment_seed_is_refused(tmp_path):
+    """A **non-bare** initialAssignment ``S = 2*S0`` has a parameter-dependent d(IC)/d(S0), so
+    S0 is exposed as non-routable (``{'S0': None}``) and routing a per-condition estimated
+    initial condition through it refuses rather than emitting a wrong factor (ADR-0076, #511)."""
+    from pybnf.gradient import GradientNotSupported
+    xml_path = Path(tmp_path) / 'nonbare.xml'
+    xml_path.write_text(_NONBARE_SEED_SBML)
+    xml = str(xml_path)
+    ps = PSet([FreeParameter('k', 'uniform_var', 0.0, 1e6, value=0.3)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    _, _, ic_seed_map = model.sensitivity_entity_namespace()
+    assert ic_seed_map == {'S0': None}
+    cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
+    with pytest.raises(GradientNotSupported, match='non-bare'):
+        route_for_model(model, ['s0_free'], cond)
+
+
+_AMOUNT_SEED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="amount_seed">
+    <listOfCompartments><compartment id="c" size="2" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialAmount="0" hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="S0" value="100" constant="true"/>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>S0</ci></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_amount_species_with_non_unit_volume_seed_is_refused(tmp_path):
+    """A **bare** initialAssignment is still non-routable when the species is amount-based in a
+    non-unit compartment: the PyBNF species value is an amount but bngsim's IC axis is a
+    concentration, so d(IC)/d(S0) is 1/size, not 1. The seed is exposed as non-routable and the
+    per-condition estimated initial condition refuses (ADR-0076, #511)."""
+    from pybnf.gradient import GradientNotSupported
+    xml_path = Path(tmp_path) / 'amount.xml'
+    xml_path.write_text(_AMOUNT_SEED_SBML)
+    xml = str(xml_path)
+    ps = PSet([FreeParameter('k', 'uniform_var', 0.0, 1e6, value=0.3)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    # size-2 compartment on an amount species -> unit factor 0.5, so S0 is NOT a unit-slope seed.
+    assert model._species_unit_factor['S'] == 0.5
+    _, _, ic_seed_map = model.sensitivity_entity_namespace()
+    assert ic_seed_map == {'S0': None}
+    cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
+    with pytest.raises(GradientNotSupported, match='not a plain 1'):
+        route_for_model(model, ['s0_free'], cond)
 
 
 # --- setup regression guard (default CI, no full fit) -------------------------- #

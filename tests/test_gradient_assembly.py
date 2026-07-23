@@ -29,7 +29,7 @@ from pybnf.data import Data, OutputSensitivities
 from pybnf.gradient import (
     assemble_constraint_gradient, assemble_constraint_hessian, assemble_fisher_hessian,
     assemble_gaussian_gradient, GradientNotSupported,
-    PARAM, IC, NONE, ExperimentRouting, ParamRoute, route_experiment,
+    PARAM, IC, NONE, ExperimentRouting, ParamRoute, RouteContribution, route_experiment,
 )
 from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
@@ -160,7 +160,7 @@ def test_residual_jacobian_and_scalar_gradient_param_axis():
     obj = ChiSquareObjective()
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -188,8 +188,8 @@ def test_initial_condition_axis_and_factor():
     exp = _exp(obs, sigma)
     # k scaled by 4 in this condition (factor 4); S0 unperturbed IC (factor 1).
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 4.0),
-        'S0': ParamRoute('S0', IC, 'S()', 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 4.0),
+        'S0': ParamRoute.single('S0', IC, 'S()', 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('S0', 'uniform_var', 0.0, 500.0, 120.0))
@@ -203,6 +203,33 @@ def test_initial_condition_axis_and_factor():
     np.testing.assert_allclose(res.gradient, J.T @ rho)
 
 
+def test_multi_contribution_route_sums_columns():
+    """A free parameter a condition assigns to several targets at once (a per-condition
+    estimated initial condition / shared multiplier, ADR-0076, #511) sums the native
+    sensitivity columns it reaches: its Jacobian column is the sum over its RouteContributions.
+    Here one free param 'm' is routed to both the parameter axis (k) and the IC axis (S()),
+    each with chain-rule factor 1, so its column is dk + ds0."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    obs = np.array([118.0, 82.0, 50.0, 38.0])
+    sigma = 4.0
+    dk = np.array([0.0, -80.0, -106.0, -108.0])   # d Stot/d k   (parameter axis)
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])        # d Stot/d S(0) (ic axis)
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'m': ParamRoute('m', (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0)))})
+    free = _free(('m', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    rho = (pred - obs) / sigma
+    J = ((1.0 / sigma) * (dk + ds0)).reshape(-1, 1)   # the two columns SUM into m's column
+    assert res.param_names == ['m']
+    np.testing.assert_allclose(res.jacobian, J)
+    np.testing.assert_allclose(res.gradient, J.T @ rho)
+
+
 def test_summation_across_experiments_stacks_residuals_and_sums_gradient():
     """Two experiments contribute stacked residual/Jacobian rows and a summed gradient --
     equal to assembling each alone and adding the scalar gradients."""
@@ -211,11 +238,11 @@ def test_summation_across_experiments_stacks_residuals_and_sums_gradient():
 
     sim1 = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp1 = _exp([100, 70, 60, 40], 5.0)
-    r1 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    r1 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
 
     sim2 = _sim_with_sensitivities([100, 55, 30, 17], d_param=[0, -110, -120, -100])
     exp2 = _exp([100, 58, 28, 20], 3.0)
-    r2 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 4.0)})
+    r2 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 4.0)})
 
     both = assemble_gaussian_gradient(obj, [(sim1, exp1, r1), (sim2, exp2, r2)], free)
     g1 = assemble_gaussian_gradient(obj, [(sim1, exp1, r1)], free).gradient
@@ -236,9 +263,9 @@ def test_pinned_and_unbound_parameters_have_zero_gradient_columns():
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'kpin': ParamRoute('kpin', PARAM, 'kpin', 0.0),    # pinned -> dropped
-        'sigma': ParamRoute('sigma', NONE, None, 1.0),     # unbound nuisance
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'kpin': ParamRoute.single('kpin', PARAM, 'kpin', 0.0),    # pinned -> dropped
+        'sigma': ParamRoute.single('sigma', NONE, None, 1.0),     # unbound nuisance
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('kpin', 'uniform_var', 0.0, 10.0, 0.5),
@@ -259,7 +286,7 @@ def test_bootstrap_weight_folds_in_as_sqrt_w():
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
     exp.weights[:, exp.cols['Stot']] = np.array([1.0, 4.0, 0.0, 2.0])  # bootstrap counts
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -288,8 +315,8 @@ def test_estimated_sigma_adds_a_scalar_noise_gradient_column():
     exp = _exp_dyn(obs)
     # k -> the parameter axis; noise_sd -> NONE (a free sigma, bound to no model id).
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
@@ -321,7 +348,7 @@ def test_fixed_sigma_objective_is_least_squares_exact():
     obj = ChiSquareObjective()
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -341,10 +368,10 @@ def test_estimated_sigma_gradient_sums_across_experiments():
     exp1 = _exp_dyn([100, 70, 60, 40])
     sim2 = _sim_with_sensitivities([100, 55, 30, 17], d_param=[0, -110, -120, -100])
     exp2 = _exp_dyn([100, 58, 28, 20])
-    r1 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
-                                   'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
-    r2 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 4.0),
-                                   'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
+    r1 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+                                   'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0)})
+    r2 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 4.0),
+                                   'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0)})
 
     both = assemble_gaussian_gradient(obj, [(sim1, exp1, r1), (sim2, exp2, r2)], free)
     expected = 0.0
@@ -375,7 +402,7 @@ def test_logscale_residual_is_in_additive_space(scale, forward, dforward):
     obj = _logscale_objective(scale)
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -401,7 +428,7 @@ def test_log_scale_collapses_to_linear_when_linear():
     obj = ChiSquareObjective()
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -425,8 +452,8 @@ def test_estimated_sigma_on_log_scale_composes_d_with_e():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)   # no _SD column: sigma is the free parameter, not the data
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
@@ -461,7 +488,7 @@ def test_logscale_nonpositive_point_propagates_nonfinite(pred, obs):
     obj = _logscale_objective(LOG10)
     sim = _sim_with_sensitivities(np.array(pred, float), d_param=[0.0, -74.0, -110.0, -123.0])
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     with np.errstate(all='ignore'):
@@ -512,7 +539,7 @@ def test_cumulative_prediction_sensitivity_differences_rows():
     obj._cumulative_cols = frozenset({'Stot'})
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -544,8 +571,8 @@ def test_per_measurement_scale_offset_chain_rule():
     obj = _per_measurement_objective()
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_pm(obs, sigma, scale_token='scale', offset_token=3.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
-                                        'scale': ParamRoute('scale', NONE, None, 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+                                        'scale': ParamRoute.single('scale', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('scale', 'uniform_var', 0.0, 10.0, scale))
 
@@ -570,7 +597,7 @@ def test_per_measurement_numeric_tokens_only_touch_model_axis():
     obj = _per_measurement_objective()
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_pm([200., 150., 120., 90.], 5.0, scale_token=2.0, offset_token=3.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -623,8 +650,8 @@ def test_measurement_model_chain_rule():
     _materialize(obj, sim, {'w': w})                    # adds obs = w*Stot + 3 into sim
     obs_pred = w * pred + 3.0
     exp = _exp_obs(obs_pred - 10.0, sigma)              # a constant 10-unit miss -> non-zero rho
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
-                                        'w': ParamRoute('w', NONE, None, 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+                                        'w': ParamRoute.single('w', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('w', 'uniform_var', 0.0, 10.0, w))
 
@@ -649,7 +676,7 @@ def test_measurement_model_numeric_only_touches_model_axis():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     _materialize(obj, sim, {})
     exp = _exp_obs(2.0 * pred + 3.0 - 8.0, 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -666,8 +693,8 @@ def test_capability_gate_now_accepts_measurement_layer():
     sim = _sim_with_sensitivities([100., 74., 55., 41.], d_param=[0., -74., -110., -123.])
     _materialize(obj, sim, {'w': 1.5})
     exp = _exp_obs([150., 110., 80., 60.], 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
-                                        'w': ParamRoute('w', NONE, None, 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+                                        'w': ParamRoute.single('w', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3), ('w', 'uniform_var', 0.0, 10.0, 1.5))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -702,9 +729,9 @@ def _prediction_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1,
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
-        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'sd_abs': ParamRoute.single('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute.single('sd_rel', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, k),
                  ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
                  ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel))
@@ -802,9 +829,9 @@ def test_prediction_sigma_referencing_other_species_chains_that_sensitivity():
         d_param=np.stack([dstot, daux], axis=1).reshape(4, 2, 1), d_ic=None)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
-        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'sd_abs': ParamRoute.single('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute.single('sd_rel', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
                  ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel))
@@ -871,7 +898,7 @@ def test_normalization_peak_closed_form():
     sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
     sim.normalize('peak')                      # rescales Stot in place, records (N, ref_row)
     exp = _exp(np.zeros(4), sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj := ChiSquareObjective(), [(sim, exp, routing)], free)
@@ -897,7 +924,7 @@ def test_normalization_chain_rule_matches_finite_difference(method):
     sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
     sim.normalize(method)
     exp = _exp(np.zeros(4), sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
@@ -921,7 +948,7 @@ def test_floor_normalization_gradient_is_deferred():
     sim.normalize(('floor', 0.03))             # records method='floor'
     assert sim.normalization['Stot'].method == 'floor'
     exp = _exp(np.zeros(4), 1.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     with pytest.raises(GradientNotSupported, match='[Ff]loor'):
         assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
@@ -934,7 +961,7 @@ def test_analytic_scale_gradient_is_deferred():
     raw = np.array([2.0, 9.0, 5.0, 3.0])
     sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
     exp = _exp(np.zeros(4), 1.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     obj = ChiSquareObjective()
     obj._analytic_scale = {'expt': frozenset({'Stot'})}
@@ -948,7 +975,7 @@ def test_capability_gate_now_accepts_trajectory_transforms():
     ``_prediction`` transforms once refused by the gate -- now assemble a residual/Jacobian like
     any other MEDIAN Gaussian (the trajectory-transform gate clause is gone)."""
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     cum = ChiSquareObjective()
@@ -972,7 +999,7 @@ def test_capability_gate_refuses_unsupported_objectives(factory):
     obj = factory()
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     with pytest.raises(GradientNotSupported):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -985,7 +1012,7 @@ def test_capability_gate_now_accepts_log_scale_gaussian():
     that once refused it is gone)."""
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 0.1)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     for obj in (LogNormalObjective(), _logscale_objective(LOG10)):
         res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1021,10 +1048,10 @@ def _formula_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1, scaling=2.0,
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'sd_abs': ParamRoute('sd_abs', NONE, None, 1.0),
-        'sd_rel': ParamRoute('sd_rel', NONE, None, 1.0),
-        'scaling': ParamRoute('scaling', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'sd_abs': ParamRoute.single('sd_abs', NONE, None, 1.0),
+        'sd_rel': ParamRoute.single('sd_rel', NONE, None, 1.0),
+        'scaling': ParamRoute.single('scaling', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, k),
                  ('sd_abs', 'uniform_var', 0.01, 100.0, sd_abs),
                  ('sd_rel', 'uniform_var', 0.001, 2.0, sd_rel),
@@ -1109,8 +1136,8 @@ def test_formula_sigma_single_symbol_matches_free_parameter_sigma():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'sig': ParamRoute('sig', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'sig': ParamRoute.single('sig', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('sig', 'uniform_var', 0.01, 100.0, 5.0))
     obj_formula = LikelihoodObjective(noise=Gaussian(), sigma_sources={'sigma': FormulaSigma('sig')})
@@ -1169,9 +1196,9 @@ def _per_measurement_sigma_setup(sd_base=4.0, s_hi=3.0,
     exp = _exp_dyn(obs)
     exp.measurement_params = {'Stot': {'noiseParameter1_Stot': list(tokens)}}
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'sd_base': ParamRoute('sd_base', NONE, None, 1.0),
-        's_hi': ParamRoute('s_hi', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'sd_base': ParamRoute.single('sd_base', NONE, None, 1.0),
+        's_hi': ParamRoute.single('s_hi', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('sd_base', 'uniform_var', 0.01, 100.0, sd_base),
                  ('s_hi', 'uniform_var', 0.01, 100.0, s_hi))
@@ -1400,7 +1427,7 @@ def test_laplace_scalar_data_fit_gradient():
     obj = _laplace_objective()                   # fixed scale b from the _SD column
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, b)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1420,7 +1447,7 @@ def test_laplace_kink_takes_the_zero_subgradient():
     obj = _laplace_objective()
     sim = _sim_with_sensitivities(pred, d_param=[10.0, -74.0, -110.0, -123.0])
     exp = _exp(pred, 2.0)                          # obs == pred everywhere -> every point a kink
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1445,7 +1472,7 @@ def test_student_t_exact_sqrt_loss_residual():
     obj = _student_t_objective()                  # fixed sigma (_SD), default df=4
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1479,7 +1506,7 @@ def test_student_t_residual_jacobian_smooth_through_zero():
     obj = _student_t_objective()
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1511,9 +1538,9 @@ def test_student_t_estimated_sigma_and_df_columns():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)                            # no _SD: sigma & df are free parameters
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
-        'nu_free': ParamRoute('nu_free', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0),
+        'nu_free': ParamRoute.single('nu_free', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, sigma),
@@ -1548,8 +1575,8 @@ def test_laplace_estimated_scale_column():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'b_free': ParamRoute('b_free', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'b_free': ParamRoute.single('b_free', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('b_free', 'uniform_var', 0.01, 100.0, b))
@@ -1583,7 +1610,7 @@ def test_mixed_gaussian_and_laplace_objective():
     obj = LikelihoodObjective(
         noise=Gaussian(), sigma_sources={'sigma': DataColumnSigma()},
         overrides={'B': (Laplace(), {'scale': ConstantSigma(b)})})
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1612,7 +1639,7 @@ def test_neg_bin_mean_scalar_data_fit_gradient():
     obj = _neg_bin_objective(location=MEAN, dispersion=r)
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)                            # a PMF self-normalizes: no _SD column
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1639,7 +1666,7 @@ def test_neg_bin_median_gradient_matches_prediction_finite_difference():
     obj = _neg_bin_objective(location=MEDIAN, dispersion=r)
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1669,8 +1696,8 @@ def test_neg_bin_estimated_dispersion_column():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'r_free': ParamRoute('r_free', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'r_free': ParamRoute.single('r_free', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('r_free', 'uniform_var', 0.01, 100.0, r))
 
@@ -1690,7 +1717,7 @@ def test_capability_gate_now_accepts_laplace_and_student_t():
     exact sqrt-loss residual (#459) and so is ``least_squares_exact`` True."""
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     for obj, expect_exact in ((_laplace_objective(), False), (_student_t_objective(), True)):
         res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1704,7 +1731,7 @@ def test_capability_gate_now_accepts_negative_binomial():
     clause that once refused every negative-binomial (pointing at #458) is gone."""
     sim = _sim_with_sensitivities([10, 7, 5, 4], d_param=[0, -7, -11, -12])
     exp = _exp_dyn([10, 6, 6, 4])
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     for obj in (_neg_bin_objective(location=MEAN), _neg_bin_objective(location=MEDIAN)):
         res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1730,8 +1757,8 @@ def test_capability_gate_now_accepts_median_negative_binomial_with_estimated_dis
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'r_free': ParamRoute('r_free', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'r_free': ParamRoute.single('r_free', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3),
                  ('r_free', 'uniform_var', 0.01, 100.0, r))
 
@@ -1767,8 +1794,8 @@ def test_capability_gate_now_accepts_mean_on_log_scale_with_estimated_noise():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
@@ -1794,7 +1821,7 @@ def test_mean_location_on_linear_scale_matches_median():
     dk = np.array([0.0, -74.0, -110.0, -123.0])
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, sigma)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     mean_obj = LikelihoodObjective(noise=Gaussian(location=MEAN),
@@ -1815,7 +1842,7 @@ def test_routed_key_absent_from_tensor_refuses():
     obj = ChiSquareObjective()
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])  # only 'k'
     exp = _exp([100, 70, 60, 40], 5.0)
-    routing = ExperimentRouting(routes={'k2': ParamRoute('k2', PARAM, 'k2', 1.0)})  # 'k2' absent
+    routing = ExperimentRouting(routes={'k2': ParamRoute.single('k2', PARAM, 'k2', 1.0)})  # 'k2' absent
     free = _free(('k2', 'uniform_var', 0.0, 10.0, 0.3))
     with pytest.raises(GradientNotSupported):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1827,7 +1854,7 @@ def test_missing_sensitivity_payload_refuses():
     obj = ChiSquareObjective()
     sim = Data.from_columns(np.column_stack([TIMES, [100, 74, 55, 41]]), ['time', 'Stot'])
     exp = _exp([100, 70, 60, 40], 5.0)
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     with pytest.raises(GradientNotSupported):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -1864,8 +1891,8 @@ def test_log_scale_multiplies_the_right_jacobian_column():
     sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
     exp = _exp(obs, sigma)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'S0': ParamRoute('S0', IC, 'S()', 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'S0': ParamRoute.single('S0', IC, 'S()', 1.0),
     })
     free = _free(('k', 'loguniform_var', 0.01, 100.0, 0.3),    # log10
                  ('S0', 'uniform_var', 0.0, 500.0, 120.0))     # linear
@@ -2053,8 +2080,8 @@ def test_log_scaled_free_sigma_column_takes_the_sampling_factor():
     sim = _sim_with_sensitivities(pred, d_param=[0.0, -74.0, -110.0, -123.0])
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'loguniform_var', 0.01, 100.0, sigma))
@@ -2693,7 +2720,7 @@ def _constraint_sim(stot, dk, ds0, model='m', suffix='tc'):
         d_ic=np.asarray(ds0, float).reshape(len(stot), 1, 1))
     sdd = {model: {suffix: sim}}
     routings = {(model, suffix): ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})}
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0), 'S0': ParamRoute.single('S0', IC, 'S()', 1.0)})}
     free = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0))
     return sdd, routings, free
 
@@ -2715,6 +2742,56 @@ def test_constraint_static_penalty_gradient():
     g = assemble_constraint_gradient([cset], sdd, routings, free)
     # d/d theta of weight*(90 - Stot(row2)) = -weight * dStot(row2)
     np.testing.assert_allclose(g, [-2.0 * _C_DK[2], -2.0 * _C_DS0[2]])
+
+
+def test_constraint_gradient_sums_a_multi_contribution_route():
+    """The **constraint** accessor sums a route's contributions too (ADR-0076, #511) -- the
+    constraint peer of ``test_multi_contribution_route_sums_columns``. One free parameter 'p'
+    reaches both the parameter axis (k) and the IC axis (S()), so the constraint readout's
+    sensitivity is their sum."""
+    times = np.arange(len(_C_STOT), dtype=float)
+    sim = Data.from_columns(np.column_stack([times, np.asarray(_C_STOT, float)]),
+                            ['time', 'Stot'])
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:Stot'], param_names=['k'], ic_species=['S()'],
+        d_param=np.asarray(_C_DK, float).reshape(len(_C_STOT), 1, 1),
+        d_ic=np.asarray(_C_DS0, float).reshape(len(_C_STOT), 1, 1))
+    sdd = {'m': {'tc': sim}}
+    routings = {('m', 'tc'): ExperimentRouting(routes={'p': ParamRoute('p', (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0)))})}
+    free = _free(('p', 'uniform_var', 0.0, 100.0, 0.4))
+
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    cset = ConstraintSet('m', 'tc')
+    cset.constraints = [c]
+
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    np.testing.assert_allclose(g, [-2.0 * (_C_DK[2] + _C_DS0[2])])
+
+
+def test_fisher_hessian_with_a_multi_contribution_route_equals_jtj():
+    """The Fisher/EFIM block (gntr's curvature) is built from the same summed Jacobian column as
+    the gradient for a multi-contribution route (ADR-0076, #511), so it still equals ``J^T J``
+    and stays symmetric PSD -- the curvature peer of the gradient sum test."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    obs = np.array([118.0, 82.0, 50.0, 38.0])
+    sigma = 4.0
+    dk = np.array([0.0, -80.0, -106.0, -108.0])
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'m': ParamRoute('m', (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0)))})
+    free = _free(('m', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    np.testing.assert_allclose(res.jacobian, ((1.0 / sigma) * (dk + ds0)).reshape(-1, 1))
+    np.testing.assert_allclose(H, res.jacobian.T @ res.jacobian)
+    np.testing.assert_allclose(H, H.T)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-9)
 
 
 def test_constraint_satisfied_has_zero_gradient():
@@ -3392,7 +3469,7 @@ def test_combined_gradient_fisher_assembles_each_scored_sensitivity_once(monkeyp
     sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
     exp = _exp(obs, 4.0)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 4.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 4.0), 'S0': ParamRoute.single('S0', IC, 'S()', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('S0', 'uniform_var', 0.0, 500.0, 120.0))
     experiments = [(sim, exp, routing)]
@@ -3440,7 +3517,7 @@ def test_fisher_hessian_gaussian_equals_jtj():
     sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
     exp = _exp(obs, sigma)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 4.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 4.0), 'S0': ParamRoute.single('S0', IC, 'S()', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3), ('S0', 'uniform_var', 0.0, 500.0, 120.0))
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
@@ -3458,10 +3535,10 @@ def test_fisher_hessian_sums_across_experiments():
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     sim1 = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp1 = _exp([100, 70, 60, 40], 5.0)
-    r1 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    r1 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     sim2 = _sim_with_sensitivities([100, 55, 30, 17], d_param=[0, -110, -120, -100])
     exp2 = _exp([100, 58, 28, 20], 3.0)
-    r2 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 4.0)})
+    r2 = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 4.0)})
 
     both = assemble_fisher_hessian(obj, [(sim1, exp1, r1), (sim2, exp2, r2)], free)
     h1 = assemble_fisher_hessian(obj, [(sim1, exp1, r1)], free)
@@ -3482,8 +3559,8 @@ def test_fisher_hessian_estimated_sigma_adds_diagonal_noise_block():
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
 
@@ -3506,7 +3583,7 @@ def test_fisher_hessian_laplace_location_block():
     obj = _laplace_objective()                 # fixed _SD column scale
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp(obs, b)                          # Stot_SD column == b
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
     H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
@@ -3524,7 +3601,7 @@ def test_fisher_hessian_neg_bin_mean_location_block():
     obj = _neg_bin_objective(location=MEAN, dispersion=r)
     sim = _sim_with_sensitivities(pred, d_param=dk)
     exp = _exp_dyn(obs)                          # self-normalizing PMF, no _SD column
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
 
     H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
@@ -3538,7 +3615,7 @@ def test_fisher_hessian_refuses_median_negative_binomial():
     obj = _neg_bin_objective(location=MEDIAN, dispersion=6.0)
     sim = _sim_with_sensitivities([50.0, 40.0, 30.0, 22.0], d_param=[0.0, -8.0, -12.0, -11.0])
     exp = _exp_dyn([48.0, 42.0, 28.0, 24.0])
-    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
     with pytest.raises(GradientNotSupported):
         assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
@@ -3552,8 +3629,8 @@ def test_fisher_hessian_refuses_mean_on_log_estimated_scale():
     sim = _sim_with_sensitivities([100.0, 74.0, 55.0, 41.0], d_param=[0.0, -74.0, -110.0, -123.0])
     exp = _exp_dyn([100.0, 70.0, 60.0, 40.0])
     routing = ExperimentRouting(routes={
-        'k': ParamRoute('k', PARAM, 'k', 1.0),
-        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
+        'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute.single('noise_sd', NONE, None, 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
                  ('noise_sd', 'uniform_var', 0.01, 100.0, 0.2))
     with pytest.raises(GradientNotSupported):

@@ -47,7 +47,7 @@ import numpy as np
 from .concurrent_multistart import DONE, ConcurrentMultiStartOptimizer
 from ...gradient import (
     GradientNotSupported,
-    apply_routing,
+    apply_routings,
     assemble_constraint_gradient,
     assemble_gaussian_gradient,
     route_for_model,
@@ -379,31 +379,41 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         routings -- idempotent, called once from the leaf's ``start_run`` (before the
         model scatter, so the request rides the pickle to the workers).
 
-        For each model: ``apply_routing`` the **wildtype** routing, whose request
-        lists (``sensitivity_params`` / ``sensitivity_ic``) are the union over
-        conditions -- the wildtype pins nothing, so every parameter-/IC-bound free
-        parameter is requested, a superset of any single condition's (a ``=``-pinned
-        condition only ever *drops* columns). Then build one
-        :class:`ExperimentRouting` per scored ``(model, suffix)``, carrying that
-        condition's chain-rule factors for the assembly. Raises (capability gate) if
-        the bngsim build lacks ``output_sensitivities``."""
+        For each model: build one :class:`ExperimentRouting` per scored
+        ``(model, suffix)`` (carrying that condition's chain-rule factors for the
+        assembly), then ``apply_routings`` the **union** of their sensitivity
+        requests -- plus the wildtype's. The wildtype alone is not a superset: a
+        condition can route a free parameter to a column no other experiment binds (a
+        per-condition estimated initial condition, ADR-0076), so that column is
+        reached only through the condition and must be unioned in (an extra requested
+        column is harmless; a missing one aborts the assembly). Raises (capability
+        gate) if the bngsim build lacks ``output_sensitivities``."""
         if self._routings is not None:
             return
         names = [v.name for v in self.variables]
         routings = {}
         for model in self.model_list:
-            # Union sensitivity request (wildtype) -> sets _sensitivity_request,
-            # which survives the scatter and is applied at every simulate().
-            apply_routing(model, route_for_model(model, names, condition=None))
             # Declare which of this model's outputs are scored gradient targets so
             # an incidental/unscored action (a stochastic diagnostic, a
             # carried-state pre-equilibration scan) runs sensitivity-free instead
             # of aborting the whole fit at a differentiability guard (#475). Rides
             # the scatter alongside the sensitivity request.
             model.set_scored_suffixes(self.exp_data.get(model.name, {}))
+            # Apply the UNION sensitivity request over the wildtype and every scored
+            # condition -> sets _sensitivity_request, which survives the scatter and is
+            # applied at every simulate(). The wildtype alone is NOT a superset once a
+            # condition routes a free parameter to a column no other experiment binds --
+            # a per-condition estimated initial condition (ADR-0076): its species-IC /
+            # multiplier column is reached only through that condition, so the union must
+            # include every scored routing (an extra column is harmless; a missing one aborts).
+            wildtype = route_for_model(model, names, condition=None)
+            model_routings = {}
             for suffix in self.exp_data.get(model.name, {}):
                 condition = self._condition_for_suffix(model, suffix)
-                routings[(model.name, suffix)] = route_for_model(model, names, condition)
+                model_routings[suffix] = route_for_model(model, names, condition)
+            apply_routings(model, [wildtype, *model_routings.values()])
+            for suffix, routing in model_routings.items():
+                routings[(model.name, suffix)] = routing
         self._routings = routings
 
     def _condition_for_suffix(self, model, suffix):

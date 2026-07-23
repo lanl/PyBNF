@@ -144,6 +144,31 @@ def test_parse_net_species_initializers():
     assert expressions._parse_net_species_initializers(lines) == [('A()', '100'), ('B()', '3.0*Vo')]
 
 
+def test_net_species_ic_seed_map_bare_param_seed():
+    """A bare initializer ``species <- <param>`` maps that parameter to its species (routable,
+    d(IC)/d(param) = 1), so a condition assigning the parameter to a free parameter can route it
+    onto the species IC axis (ADR-0076, #511)."""
+    inits = [('A()', 'initA'), ('B()', 'initB')]
+    assert expressions._net_species_ic_seed_map(inits, ['initA', 'initB', 'k']) == {
+        'initA': 'A()', 'initB': 'B()'}
+
+
+def test_net_species_ic_seed_map_non_bare_and_numeric_are_not_routable():
+    """A numeric initializer seeds nothing; a non-bare expression maps its referenced parameters
+    to None (present-but-non-routable), so the router refuses rather than emitting a
+    parameter-dependent factor."""
+    inits = [('A()', '100'), ('B()', '3.0*Vo'), ('C()', 'k+kf')]
+    seed = expressions._net_species_ic_seed_map(inits, ['Vo', 'k', 'kf'])
+    assert seed == {'Vo': None, 'k': None, 'kf': None}
+
+
+def test_net_species_ic_seed_map_multi_species_seed_is_not_routable():
+    """A parameter that bares more than one species maps to None: routing it to a single IC axis
+    would drop the other species' contribution."""
+    inits = [('A()', 'init'), ('B()', 'init')]
+    assert expressions._net_species_ic_seed_map(inits, ['init']) == {'init': None}
+
+
 # ---------------------------------------------------------- model expression eval
 class _FakeModel:
     def __init__(self, params):

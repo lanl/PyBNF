@@ -278,15 +278,19 @@ def test_sensitivity_entity_namespace_global_params_and_species_ic():
     """The gradient router's bind-by-id namespace (#448/#455): the SBML backend reports its
     global model parameters as the parameter axis and each species as its own bare initializer,
     so a free parameter named for a global param routes to ``sensitivity_params`` and one named
-    for a species routes to ``sensitivity_ic`` keyed by that species."""
+    for a species routes to ``sensitivity_ic`` keyed by that species. The third element is the
+    bare-``initialAssignment`` seed map (ADR-0076, #511) -- empty for this model, which has no
+    parameter-seeded species initials."""
     model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
     model._global_param_names = ('kAB', 'kBA')
     model._species_names = ('A', 'B', 'C')
+    model._ic_seed_map = {}
 
-    param_ids, species_initializers = model.sensitivity_entity_namespace()
+    param_ids, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
 
     assert param_ids == ['kAB', 'kBA']
     assert species_initializers == [('A', 'A'), ('B', 'B'), ('C', 'C')]
+    assert ic_seed_map == {}
 
 
 def test_make_simulator_threads_sensitivity_request_for_ode(monkeypatch):

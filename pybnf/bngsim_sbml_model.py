@@ -212,6 +212,7 @@ class BngsimSbmlModelNoTimeout(Model):
         self._initial_dep_names = self._compute_initial_dependency_names(doc.getModel())
         self._species_unit_factor, self._unsafe_volume = self._compute_species_unit_factors(
             doc.getModel())
+        self._ic_seed_map = self._compute_ic_seed_map(doc.getModel())
 
     @staticmethod
     def _collect_ast_names(node, out):
@@ -288,6 +289,50 @@ class BngsimSbmlModelNoTimeout(Model):
                     seen.add(ref)
                     worklist.append(ref)
         return dep
+
+    def _compute_ic_seed_map(self, sbml_model):
+        """Map a model parameter to the species whose initial value it *bares*.
+
+        A **bare** ``initialAssignment`` ``species = <param>`` (a single ``ci`` naming a global
+        parameter, on a concentration-based / unit-factor-1 species) has ``d(IC)/d(param) = 1``,
+        so the gradient router can route a free parameter a condition assigns to that parameter
+        (a per-condition estimated initial condition, ADR-0076, #511) straight onto the species'
+        initial-condition sensitivity axis. Such a parameter maps to its species.
+
+        A parameter that seeds a species initial value through a **non-bare** expression
+        (``2*init``, ``a+b``), or on an amount species whose value needs a non-unit
+        concentration factor, or that bares more than one species, maps to ``None`` -- present
+        but non-routable: its ``d(IC)/d(param)`` is not a plain ``1``, so the router refuses
+        (``classify_condition_target``) rather than emitting a wrong/silently-zero column.
+        """
+        param_set = set(self._global_param_names)
+        bare = {}      # param -> set(species) it bares
+        nonbare = set()  # params a species IA references non-baruely (force a refuse)
+        for i in range(sbml_model.getNumInitialAssignments()):
+            ia = sbml_model.getInitialAssignment(i)
+            symbol = ia.getSymbol()
+            if symbol not in self._species_name_set:
+                continue
+            math = ia.getMath()
+            is_bare = (
+                math is not None
+                and math.getType() == libsbml.AST_NAME
+                and math.getNumChildren() == 0
+                and math.getName() in param_set
+                and self._species_unit_factor.get(symbol, 1.0) == 1.0
+            )
+            if is_bare:
+                bare.setdefault(math.getName(), set()).add(symbol)
+            else:
+                refs = set()
+                self._collect_ast_names(math, refs)
+                nonbare.update(r for r in refs if r in param_set)
+        seed_map = {}
+        for param, species in bare.items():
+            seed_map[param] = next(iter(species)) if len(species) == 1 else None
+        for param in nonbare:
+            seed_map[param] = None  # a non-bare use forces a refuse, even if also bare elsewhere
+        return seed_map
 
     def _compute_species_unit_factors(self, sbml_model):
         """Per-species factor converting a PyBNF species value to a bngsim
@@ -909,7 +954,7 @@ class BngsimSbmlModelNoTimeout(Model):
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 
-        Returns ``(param_ids, species_initializers)``:
+        Returns ``(param_ids, species_initializers, ic_seed_map)``:
 
         * ``param_ids`` -- the model's global ``parameter`` ids, the kinetic ids a free
           parameter binds to via ``set_param`` and thus routes to
@@ -919,14 +964,19 @@ class BngsimSbmlModelNoTimeout(Model):
           for a species sets that species' initial value (via ``set_concentration``, the
           bind-by-id convention, ADR-0034), so each species' bare initializer expression *is*
           its own name; such a free parameter routes to the initial-condition axis keyed by the
-          species (an IC parameter is absent from the ODE RHS, so its parameter axis is zero).
+          species (an IC parameter is absent from the ODE RHS, so its parameter axis is zero);
+        * ``ic_seed_map`` -- ``{model parameter -> species}`` for a bare ``initialAssignment``
+          ``species = <param>`` (:meth:`_compute_ic_seed_map`), so the router can route a free
+          parameter a condition assigns to that parameter onto the species' IC axis (a
+          per-condition estimated initial condition, ADR-0076, #511); a non-routable seed maps
+          to ``None``.
 
         This is the only model coupling :mod:`pybnf.gradient.routing` needs, so the routing core
-        stays backend-agnostic. No simulation -- both namespaces are known at load time. (A
-        species whose initial is a non-trivial *expression* of a parameter is the deferred
-        non-bare-initializer case the router documents, exactly as for the net backend.)
+        stays backend-agnostic. No simulation -- all three are known at load time.
         """
-        return list(self._global_param_names), [(s, s) for s in self._species_names]
+        return (list(self._global_param_names),
+                [(s, s) for s in self._species_names],
+                dict(self._ic_seed_map))
 
     def _sensitivity_request_kwargs(self, method):
         """Simulator kwargs requesting forward sensitivities on the gradient path.

@@ -469,24 +469,25 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
         _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
 
 
-def _sensitivity(sens, selector, route, sim_row):
+def _sensitivity(sens, selector, contribution, sim_row, free_param):
     """The native forward sensitivity ``d(observable)/d(routed entity)`` at one time row.
 
-    Reads the parameter axis (``sensitivity_params``) for a PARAM route and the
-    initial-condition axis (``sensitivity_ic``) for an IC route, addressing the
-    entity by the route's ``key`` (parameter id, or species for an IC)."""
-    if route.target == PARAM:
+    Reads the parameter axis (``sensitivity_params``) for a PARAM contribution and the
+    initial-condition axis (``sensitivity_ic``) for an IC contribution, addressing the entity by
+    the contribution's ``key`` (parameter id, or species for an IC). ``free_param`` names the
+    routed free parameter for the diagnostic when a requested column is absent."""
+    if contribution.target == PARAM:
         axis, labels = 'parameter', sens.param_names
     else:  # IC
         axis, labels = 'ic', sens.ic_species
-    if route.key not in labels:
+    if contribution.key not in labels:
         raise GradientNotSupported(
             "Free parameter '%s' routes to %s '%s', but the simulation's "
             "sensitivity tensor has no such column (axis labels: %s). Apply the same "
             "routing to the model before running it (apply_routing)."
-            % (route.free_param, axis, route.key, ', '.join(map(str, labels)) or '(none)'))
+            % (free_param, axis, contribution.key, ', '.join(map(str, labels)) or '(none)'))
     column = sens.slice_for(selector, axis=axis)   # (n_times, n_axis)
-    return column[sim_row, labels.index(route.key)]
+    return column[sim_row, labels.index(contribution.key)]
 
 
 def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar):
@@ -522,9 +523,12 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
         vec = np.zeros(n_param)
         selector = _selector_for(sens, col_name)
         for name, route in routing.routes.items():
-            if route.factor == 0.0 or route.target == NONE:
-                continue
-            vec[index[name]] = route.factor * _sensitivity(sens, selector, route, row)
+            total = 0.0
+            for c in route.contributions:
+                if c.target == NONE or c.factor == 0.0:
+                    continue
+                total += c.factor * _sensitivity(sens, selector, c, row, name)
+            vec[index[name]] = total
         return vec
 
     def raw_sens(col_name, row):
@@ -743,8 +747,11 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
         selector = _selector_for(sens, observable)
         vec = np.zeros(n_param)
         for name, route in routing.routes.items():
-            if route.factor == 0.0 or route.target == NONE:
-                continue
-            vec[index[name]] = route.factor * _sensitivity(sens, selector, route, row)
+            total = 0.0
+            for c in route.contributions:
+                if c.target == NONE or c.factor == 0.0:
+                    continue
+                total += c.factor * _sensitivity(sens, selector, c, row, name)
+            vec[index[name]] = total
         return vec
     return raw_sens
