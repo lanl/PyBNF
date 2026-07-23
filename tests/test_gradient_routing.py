@@ -19,11 +19,16 @@ import pytest
 
 from pybnf.gradient import routing as R
 from pybnf.gradient.routing import (
-    PARAM, IC, NONE, ParamRoute,
-    classify_free_param, condition_factor, route_experiment,
+    PARAM, IC, NONE, RouteContribution, ParamRoute,
+    classify_free_param, classify_condition_target, condition_factor, route_experiment,
 )
 from pybnf.pset import Mutation, MutationSet
 from pybnf.printing import PybnfError
+
+
+def _pref(*mutations):
+    """A MutationSet from ``(name, op, value)`` triples, each a parameter-reference (ADR-0076)."""
+    return MutationSet([Mutation(n, op, v, is_param_ref=True) for n, op, v in mutations], 'c')
 
 
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
@@ -107,9 +112,11 @@ def test_route_experiment_wildtype():
     r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, None)
     assert r.sensitivity_params == ['k']
     assert r.sensitivity_ic == ['S()']
-    assert r.routes['k'] == ParamRoute('k', PARAM, 'k', 1.0)
-    assert r.routes['S0'] == ParamRoute('S0', IC, 'S()', 1.0)
-    assert r.routes['sigma'] == ParamRoute('sigma', NONE, None, 1.0)
+    assert r.routes['k'] == ParamRoute('k', (RouteContribution(PARAM, 'k', 1.0),))
+    assert r.routes['S0'] == ParamRoute('S0', (RouteContribution(IC, 'S()', 1.0),))
+    assert r.routes['sigma'] == ParamRoute('sigma', (RouteContribution(NONE, None, 1.0),))
+    # The single-contribution convenience accessors read that sole contribution.
+    assert (r.routes['k'].target, r.routes['k'].key, r.routes['k'].factor) == (PARAM, 'k', 1.0)
 
 
 def test_route_experiment_pinned_param_drops_request_column():
@@ -148,15 +155,166 @@ def test_route_experiment_preserves_declaration_order_and_dedups():
     assert r.sensitivity_params == ['k2', 'k1']
 
 
-def test_route_experiment_parameter_reference_condition_raises():
-    """A per-condition estimated initial condition (ADR-0076) -- a condition that sets a model
-    entity to the value of a free parameter -- refuses on the gradient path rather than
-    silently emitting a zero sensitivity column: the referenced parameter reaches the
-    trajectory through a *different* id, which bind-by-id routing does not model."""
+# --------------------------- per-condition estimated initial conditions (ADR-0076, #511) ----
+
+# ic_seed_map: the model parameter S0 bares species S()'s initial value (a bare
+# initialAssignment / .net initializer), so a condition that sets S0 to a free parameter routes
+# that free parameter onto the S() initial-condition sensitivity axis.
+IC_SEED_MAP = {'S0': 'S()'}
+
+
+def test_classify_condition_target_ic_seed():
+    """A condition target that bares a species IC routes to the IC axis, factor 1."""
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == (IC, 'S()', 1.0)
+
+
+def test_classify_condition_target_param():
+    """A condition target that is an ordinary global routes to the parameter axis, factor 1."""
+    assert classify_condition_target('k', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == (PARAM, 'k', 1.0)
+
+
+def test_classify_condition_target_non_bare_seed_refuses():
+    """A parameter that seeds a species IC non-baruely (map value None) refuses rather than
+    emitting a parameter-dependent factor."""
     from pybnf.gradient import GradientNotSupported
-    cond = MutationSet([Mutation('S0', '=', 'S0_A', is_param_ref=True)], 'c')
-    with pytest.raises(GradientNotSupported, match='S0_A'):
-        route_experiment(['k', 'S0_A'], DECAY_PARAMS, DECAY_SPECIES, cond)
+    with pytest.raises(GradientNotSupported, match='non-bare'):
+        classify_condition_target('S0', {'S0', 'k'}, {'S()'}, {'S0': None})
+
+
+def test_classify_condition_target_unbindable_refuses():
+    """A target that is neither a parameter nor a species IC binds no sensitivity column."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='cannot route'):
+        classify_condition_target('nope', {'S0', 'k'}, {'S()'}, IC_SEED_MAP)
+
+
+def test_route_experiment_param_ref_routes_to_ic():
+    """A per-condition estimated initial condition ``S0 = S0_A`` routes the *referenced* free
+    parameter S0_A onto species S()'s IC axis (chain-rule factor 1), instead of aborting."""
+    r = route_experiment(['k', 'S0_A'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('S0', '=', 'S0_A')), ic_seed_map=IC_SEED_MAP)
+    assert r.routes['S0_A'].contributions == (RouteContribution(IC, 'S()', 1.0),)
+    assert r.sensitivity_ic == ['S()']
+    assert r.sensitivity_params == ['k']       # k still binds by id
+
+
+def test_route_experiment_param_ref_routes_to_param():
+    """A condition ``k = kfree`` (target is an ordinary global) routes kfree onto the parameter
+    axis for k."""
+    r = route_experiment(['kfree'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('k', '=', 'kfree')), ic_seed_map=IC_SEED_MAP)
+    assert r.routes['kfree'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+    assert r.sensitivity_params == ['k']
+
+
+def test_route_experiment_param_ref_multi_target_sums():
+    """One free parameter assigned to several targets in one condition (a shared multiplier)
+    accumulates one contribution per target -- its derivative is their sum."""
+    r = route_experiment(['m'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('k', '=', 'm'), ('S0', '=', 'm')), ic_seed_map=IC_SEED_MAP)
+    assert r.routes['m'].contributions == (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
+    assert r.sensitivity_params == ['k']
+    assert r.sensitivity_ic == ['S()']
+    # A multi-contribution route has no single target/key/factor.
+    with pytest.raises(ValueError):
+        _ = r.routes['m'].target
+
+
+def test_route_experiment_param_ref_non_bare_seed_refuses():
+    """A per-condition estimated IC through a non-bare seed (map value None) refuses."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='non-bare'):
+        route_experiment(['S0_A'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('S0', '=', 'S0_A')), ic_seed_map={'S0': None})
+
+
+def test_route_experiment_param_ref_non_equals_refuses():
+    """A parameter reference must be an ``=`` assignment (ADR-0076); a relative op refuses."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match="non-'='"):
+        route_experiment(['m'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('k', '*', 'm')), ic_seed_map=IC_SEED_MAP)
+
+
+def test_route_experiment_param_ref_composes_with_a_non_unit_condition_factor():
+    """A free parameter that is BOTH scaled by its own condition perturbation AND param-refed
+    onto another target keeps each term's own chain-rule factor: the base bind carries the
+    condition factor (``k*3`` -> 3), the param-ref term carries ``d(target)/d(k) = 1``. Their
+    sum is the derivative (#511)."""
+    cond = MutationSet([Mutation('k', '*', 3.0),                          # scales the base bind
+                        Mutation('S0', '=', 'k', is_param_ref=True)],     # k also seeds S()'s IC
+                       'c')
+    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP)
+    assert r.routes['k'].contributions == (
+        RouteContribution(PARAM, 'k', 3.0), RouteContribution(IC, 'S()', 1.0))
+    assert r.sensitivity_params == ['k'] and r.sensitivity_ic == ['S()']
+
+
+def test_route_experiment_param_ref_survives_a_pinned_base_bind():
+    """A free parameter pinned out of its own base bind (factor 0) still contributes through the
+    condition's param-ref: the zero term drops from the request, the param-ref term does not."""
+    cond = MutationSet([Mutation('k', '=', 0.5),                          # base bind pinned -> 0
+                        Mutation('S0', '=', 'k', is_param_ref=True)],
+                       'c')
+    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP)
+    assert r.routes['k'].contributions == (
+        RouteContribution(PARAM, 'k', 0.0), RouteContribution(IC, 'S()', 1.0))
+    assert r.sensitivity_params == []          # pinned term dropped from the request
+    assert r.sensitivity_ic == ['S()']         # param-ref term survives
+
+
+def test_route_experiment_param_ref_directly_bound_free_param_still_binds():
+    """A free parameter that binds by id AND is param-referenced accumulates both contributions
+    (its base bind plus the condition target)."""
+    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('S0', '=', 'k')), ic_seed_map=IC_SEED_MAP)
+    # k binds param 'k' by id (base) and is routed to IC 'S()' by the condition.
+    assert r.routes['k'].contributions == (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
+
+
+class _CapturingModel:
+    """Records the request :func:`apply_routings` hands to the gradient path."""
+
+    def __init__(self):
+        self.applied = None
+
+    def enable_output_sensitivities(self, *, params=None, ic=None):
+        self.applied = (list(params or []), list(ic or []))
+
+
+def test_apply_routings_unions_a_column_reached_only_through_a_condition():
+    """The applied request is the UNION over routings, not the wildtype's.
+
+    A free parameter routed only through a condition (a per-condition estimated initial
+    condition, ADR-0076) reaches a column the wildtype never binds, so the wildtype request is
+    NOT a superset -- the union must carry it or the assembly aborts on a missing column
+    (#511)."""
+    free = ['k', 's0_free']
+    wildtype = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None, ic_seed_map=IC_SEED_MAP)
+    conditioned = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES,
+                                   _pref(('S0', '=', 's0_free')), ic_seed_map=IC_SEED_MAP)
+    # The wildtype binds no IC column at all: s0_free matches no model id on its own.
+    assert wildtype.sensitivity_ic == []
+    assert conditioned.sensitivity_ic == ['S()']
+
+    model = _CapturingModel()
+    params, ic = R.apply_routings(model, [wildtype, conditioned])
+
+    assert ic == ['S()']            # carried in from the condition alone
+    assert params == ['k']
+    assert model.applied == (['k'], ['S()'])
+
+
+def test_apply_routings_dedups_across_routings():
+    """A column several conditions reach is requested once."""
+    free = ['k', 'S0']
+    r1 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None)
+    r2 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None)
+    model = _CapturingModel()
+    params, ic = R.apply_routings(model, [r1, r2])
+    assert params == ['k'] and ic == ['S()']
 
 
 # ------------------------------------------------- model adapter (bngsim) ----
@@ -177,9 +335,12 @@ def decay_model():
 
 @pytest.mark.bngsim
 def test_sensitivity_entity_namespace(decay_model):
-    param_ids, species = decay_model.sensitivity_entity_namespace()
+    param_ids, species, ic_seed_map = decay_model.sensitivity_entity_namespace()
     assert set(param_ids) == {'S0', 'k'}
     assert species == [('S()', 'S0')]
+    # S0 bares species S()'s initial value, so a condition setting S0 to a free parameter can
+    # route that free parameter onto the S() IC axis (ADR-0076, #511).
+    assert ic_seed_map == {'S0': 'S()'}
 
 
 @pytest.mark.bngsim
@@ -188,6 +349,31 @@ def test_route_for_model_matches_pure_core(decay_model):
     assert r.sensitivity_params == ['k']
     assert r.sensitivity_ic == ['S()']
     assert r.routes['S0'].target == IC and r.routes['S0'].key == 'S()'
+
+
+@pytest.mark.bngsim
+def test_route_for_model_composes_param_ref_on_the_net_backend(decay_model):
+    """A per-condition estimated initial condition composes on the **net** backend too
+    (ADR-0076, #511): the .net species block's bare initializer ``S() <- S0`` makes S0 an IC
+    seed, so a condition setting S0 to free parameter S0_A routes S0_A onto species S()'s IC
+    axis -- the net peer of the SBML initialAssignment path."""
+    cond = MutationSet([Mutation('S0', '=', 'S0_A', is_param_ref=True)], 'c')
+    r = R.route_for_model(decay_model, ['k', 'S0_A'], cond)
+    assert r.routes['S0_A'].contributions == (RouteContribution(IC, 'S()', 1.0),)
+    assert r.sensitivity_ic == ['S()']
+    assert r.sensitivity_params == ['k']
+
+
+@pytest.mark.bngsim
+def test_route_for_model_net_backend_multi_target_param_ref_sums(decay_model):
+    """One free parameter a condition assigns to both a rate parameter and an IC-seeding
+    parameter accumulates both contributions on the net backend (their sum, #511)."""
+    cond = MutationSet([Mutation('k', '=', 'm', is_param_ref=True),
+                        Mutation('S0', '=', 'm', is_param_ref=True)], 'c')
+    r = R.route_for_model(decay_model, ['m'], cond)
+    assert r.routes['m'].contributions == (
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
+    assert r.sensitivity_params == ['k'] and r.sensitivity_ic == ['S()']
 
 
 @pytest.mark.bngsim

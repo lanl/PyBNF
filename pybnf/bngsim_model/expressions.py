@@ -172,6 +172,38 @@ def _parse_net_species_initializers(net_lines):
     return initializers
 
 
+def _net_species_ic_seed_map(species_initializers, param_names):
+    """Map a model parameter to the species whose initial value it *bares* in a .net species
+    block, for the gradient router's per-condition estimated initial condition composition
+    (ADR-0076, #511).
+
+    A **bare** initializer ``species <- <param>`` (the whole expression is a single parameter
+    id) has ``d(IC)/d(param) = 1``, so a free parameter a condition assigns to that parameter
+    routes straight onto the species' initial-condition sensitivity axis. Such a parameter maps
+    to its species. A parameter referenced by a **non-bare** initializer expression (``2*p``,
+    ``a+b``), or that bares more than one species, maps to ``None`` -- present but non-routable
+    (its ``d(IC)/d(param)`` is not a plain ``1``), so the router refuses rather than emitting a
+    wrong column.
+    """
+    param_set = set(param_names)
+    bare = {}      # param -> set(species) it bares
+    nonbare = set()  # params a non-bare initializer references (force a refuse)
+    ident = re.compile(r'^[A-Za-z_]\w*$')
+    token = re.compile(r'[A-Za-z_]\w*')
+    for species, expr in species_initializers:
+        e = expr.strip()
+        if ident.match(e) and e in param_set:
+            bare.setdefault(e, set()).add(species)
+        else:
+            nonbare.update(t for t in token.findall(e) if t in param_set)
+    seed_map = {}
+    for param, species in bare.items():
+        seed_map[param] = next(iter(species)) if len(species) == 1 else None
+    for param in nonbare:
+        seed_map[param] = None  # a non-bare use forces a refuse, even if also bare elsewhere
+    return seed_map
+
+
 def _parse_bngl_param_block(model_lines):
     """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
     params = []
