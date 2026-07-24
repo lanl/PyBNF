@@ -799,15 +799,21 @@ class TestDualBackendLayer:
 
 
 # ---------------------------------------------------------------------------
-# 5. The real-world Boehm problem reproduces its published data (-m recovery)
+# 5. The real-world Boehm problem reproduces its published data
 #
 # The crafted decay model above isolates the layer with an analytic oracle; this closes
 # the loop on the HEADLINE milestone -- the externally-authored Boehm v2 problem imported
 # end to end (ADR-0037). Simulated at the published optimum (the SBML's embedded parameter
 # values) on RoadRunner, the imported measurement layer's materialized observable columns
 # track the published measurement table (the fit IS the optimum), and agree across
-# RoadRunner and bngsim. Opt-in (-m recovery): a real stiff-ODE simulation of the full
-# model, not a unit-scale crafted one.
+# RoadRunner and bngsim.
+#
+# Tier split (mirrors the module docstring's rule): the RoadRunner leg is a core-dependency
+# path and runs in the DEFAULT tier (~3s -- a real stiff-ODE sim of the full model, but a
+# single one, cheap enough for the per-push gate), so it is unmarked. The bngsim cross-check
+# is the expensive one and stays opt-in (-m recovery + @pytest.mark.bngsim). Keeping the
+# RoadRunner leg in the default tier is what restores the one end-to-end real-backend signal
+# that #515 dropped from per-push CI (#517).
 # ---------------------------------------------------------------------------
 
 _BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
@@ -851,7 +857,6 @@ def _simulate_boehm(model_cls, out_dir):
     return ds[next(iter(ds))]
 
 
-@pytest.mark.recovery
 class TestBoehmRecovery:
 
     def test_roadrunner_reproduces_published_data(self, tmp_path):
@@ -866,6 +871,7 @@ class TestBoehmRecovery:
             assert np.corrcoef(pred, y)[0, 1] > 0.9
             assert np.sqrt(np.mean((pred - y) ** 2)) < 0.15 * (y.max() - y.min())
 
+    @pytest.mark.recovery
     @pytest.mark.bngsim
     def test_layer_agrees_across_roadrunner_and_bngsim_on_boehm(self, tmp_path):
         """Neither backend exposes Boehm's computed observables; the measurement layer
