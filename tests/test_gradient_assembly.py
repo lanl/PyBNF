@@ -2980,6 +2980,9 @@ def test_fd_acceptance_gate_estimated_scale(model_kind):
     chain rule end-to-end on the real bngsim decay net. The scale never enters the data fit, so its
     whole gradient comes from the constraint's scalar column -- the estimated-noise pattern, applied
     to a qualitative constraint."""
+    # ``s_q`` is loguniform, so the scale column's log-space chain rule autodiffs through jax
+    # (the optional pybnf[jax] extra) -- same declaration as every other log-scale leg here.
+    pytest.importorskip('jax')
     obj = ChiSquareObjective()
     sigma = 5.0
     model_name = 'e2e_ode_decay'

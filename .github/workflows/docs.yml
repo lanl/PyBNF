@@ -49,14 +49,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Reuse the tests' composite action: it installs pybnf + its PUBLIC runtime
-      # deps into a uv venv WITHOUT the private, mac-only bngsim wheel -- exactly
-      # the environment autodoc needs to import pybnf on Linux. (It also fetches
-      # BNG2.pl, unused here but harmless; the win is one source of truth for the
-      # dependency list.)
+      # Reuse the tests' composite action: it installs pybnf + its runtime deps
+      # into a uv venv -- exactly the environment autodoc needs to import pybnf
+      # on Linux. (It also fetches BNG2.pl, unused here but harmless; the win is
+      # one source of truth for the dependency list.)
       - uses: ./.github/actions/setup-pybnf
         with:
           python-version: '3.12'
+          # autodoc only imports pybnf; it never simulates. Skip the bngsim
+          # install and build under PYBNF_NO_BNGSIM=1 (below) so the docs job
+          # stays lean -- and so a docs build keeps proving that pybnf imports
+          # cleanly with no backend present.
+          bngsim: 'false'
           # Distinct uv cache namespace so this job does not race the tests /
           # lint jobs' content-addressed cache saves on the same push.
           cache-suffix: docs

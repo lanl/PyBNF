@@ -14,26 +14,49 @@ jobs:
         # Every supported version (requires-python >= 3.11; classifiers list
         # through 3.14). CI is free on this public repo, so we test each claimed
         # version rather than just the endpoints.
-        python-version: ['3.11', '3.12', '3.13', '3.14']
-    name: pytest (py${{ matrix.python-version }})
+        include:
+          - python-version: '3.11'
+          - python-version: '3.12'
+          - python-version: '3.13'
+          # bngsim publishes cp310-cp313 wheels, so 3.14 would fall back to
+          # building the sdist (C++17 toolchain, CMake >= 3.20, Ninja) inside
+          # the pytest job. Keep this leg deliberately bngsim-less instead: it
+          # is the guard that the bngsim-free code paths still work (a bare
+          # `pip install pybnf` on a machine with no wheel), which is worth a
+          # leg of its own regardless. Drop `no-bngsim` here the day a cp314
+          # wheel ships.
+          - python-version: '3.14'
+            no-bngsim: '1'
+    name: pytest (py${{ matrix.python-version }}${{ matrix.no-bngsim == '1' && ', bngsim-less' || '' }})
     steps:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-pybnf
         with:
           python-version: ${{ matrix.python-version }}
+          bngsim: ${{ matrix.no-bngsim == '1' && 'false' || 'true' }}
 
-      - name: Run unit tests (bngsim-less, parallel)
+      - name: Run unit tests (parallel)
         env:
-          # bngsim is a private mac-only wheel; with it absent, conftest.py
-          # auto-skips bngsim/nfsim/sbml/etc.-marked tests. The remaining suite
-          # runs against the bngsim-less code paths (and BNG2.pl from the
-          # composite action). -n auto parallelizes across the runner's cores.
-          PYBNF_NO_BNGSIM: '1'
+          # Empty except on the bngsim-less leg, where it is '1'. An empty value
+          # reads as unset (pybnf/_bngsim_caps.py tests truthiness), so bngsim
+          # is imported and the bngsim/nfsim/rulemonkey/sbml/antimony-marked
+          # tests run for real; with '1' conftest.py auto-skips them.
+          PYBNF_NO_BNGSIM: ${{ matrix.no-bngsim }}
+        # -m: the default addopts expression is `not slow and not recovery`, and
+        # naming -m here REPLACES it -- so both tiers must be restated. Omitting
+        # `not recovery` used to be harmless because 129 of the 130 recovery
+        # tests skip without bngsim; with bngsim installed they are real
+        # parameter-recovery fits through the backend and the job would run for
+        # over an hour. (The cost of deselecting: the 130th, a roadrunner-backed
+        # Boehm oracle in test_petab_sbml_layer.py, is bngsim-free and no longer
+        # runs here.) -n auto parallelizes across the runner's cores.
+        #
         # --no-sync: do NOT let `uv run` re-resolve the project env from
-        # pyproject.toml (that would pull the private bngsim and fail). The
-        # composite action already populated .venv.
-        run: uv run --no-sync pytest -m "not slow" -n auto
+        # pyproject.toml -- the composite action already populated .venv with an
+        # exact dependency set (and on the bngsim-less leg a re-resolve would
+        # pull bngsim right back in).
+        run: uv run --no-sync pytest -m "not slow and not recovery" -n auto
 
   # The PEtab v2 export oracle (ADR-0025/0026) validates emitted `language: bngl`
   # problems at MODEL level. On the pytest job above (stock PyPI petab) that runs
@@ -51,6 +74,11 @@ jobs:
       - uses: ./.github/actions/setup-pybnf
         with:
           python-version: '3.12'
+          # This leg is about petab's loader, not simulation: the two oracle
+          # files it runs are backend-free, so skip the bngsim install (and run
+          # under PYBNF_NO_BNGSIM=1 below) rather than pay for a wheel nothing
+          # here exercises. The matrix legs above cover bngsim.
+          bngsim: 'false'
           petab-spec: 'petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support'
           # This job also runs 3.12 through setup-pybnf, so without its own
           # suffix it shares the matrix py3.12 job's cache key and one save loses
@@ -71,4 +99,4 @@ jobs:
         # `language: bngl` through petab's own native BnglModel here (the
         # register_bngl() monkeypatch collapses to a no-op). This is where the
         # TestRegisterBngl native-no-op test actually runs instead of skipping.
-        run: uv run --no-sync pytest -m "not slow" tests/test_petab_export.py tests/test_petab_import.py
+        run: uv run --no-sync pytest -m "not slow and not recovery" tests/test_petab_export.py tests/test_petab_import.py

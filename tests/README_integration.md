@@ -60,8 +60,11 @@ pytest -m recovery -k m03 # just one model
 
 Requirements / behaviour:
 
-- **bngsim** must be installed (the macOS-only C++ wheel) — auto-skips via the
-  `bngsim` marker otherwise, so this never runs in hosted CI.
+- **bngsim** must be installed (public PyPI: `pip install bngsim`) — auto-skips
+  via the `bngsim` marker otherwise. Hosted CI installs bngsim and runs the
+  bngsim-marked suites, but explicitly deselects this tier
+  (`-m "not slow and not recovery"`): the fits across all 16 recovery-marked
+  files run well over an hour. It stays a dev-machine tier.
 - **BNG2.pl** must be resolvable (via `BNGPATH`): bngsim is a simulation engine,
   not a network generator, so rules→`.net` expansion runs once per fit at setup.
   `recovery_harness.require_bng2pl` skips the tier if it isn't found.
