@@ -3,7 +3,7 @@ name: integration
 # The home for the test tiers too slow for the per-push gate. Two jobs:
 #
 #   slow     -- the 4 statistical-recovery tests against analytical targets
-#               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~8 min. Runs
+#               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~32 min. Runs
 #               nightly AND on manual dispatch.
 #   recovery -- the `recovery` tier: ~130 real parameter-recovery fits through
 #               the bngsim backend (over an hour on a dev machine, unmeasured on
