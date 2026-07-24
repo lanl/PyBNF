@@ -8,18 +8,23 @@
 #      `ruff@0.15.14 check .`). Runs FIRST and takes seconds, so a lint failure
 #      aborts the push immediately instead of after the pytest gate (the pytest
 #      hook does NOT run ruff -- that gap let an F401 reach CI once).
-#   2. pytest-bngsim -- the bngsim (mac-only) tests CI *cannot* run, since the
-#      private bngsim wheel is absent on hosted runners. This is the gate's
-#      unique value: every other test already runs in CI. Run with `-n auto`
-#      so the whole gate finishes in well under a minute.
+#   2. pytest-bngsim -- the simulation-backend tests, as a fast local smoke.
+#      These are no longer CI-exclusive: bngsim is on public PyPI and tests.yml
+#      installs it, so hosted runners now run these files too (#514). The hook
+#      stays because it is the shortest path from "I broke the backend seam" to
+#      knowing it -- seconds locally instead of a CI round-trip. Run with
+#      `-n auto` so the whole gate finishes in well under a minute.
 #
-# Deliberately NOT here: the bngsim-less suite (`PYBNF_NO_BNGSIM=1 pytest
-# -m "not slow" -n auto`). CI's tests.yml runs that exact command on every push,
-# so mirroring it locally added minutes to the gate for zero extra coverage --
-# and a multi-minute pre-push hook holds the push's SSH connection idle long
-# enough for GitHub to reap it ("Connection to github.com closed by remote
-# host"), so the push silently never lands. Keeping the gate fast is what makes
-# `git push` actually complete. Bngsim-less regressions still surface in CI.
+# Deliberately NOT here: the rest of the suite (`pytest -m "not slow and not
+# recovery" -n auto`, ~3300 tests). CI's tests.yml runs that on every push, so
+# mirroring it locally added minutes to the gate -- and a multi-minute pre-push
+# hook holds the push's SSH connection idle long enough for GitHub to reap it
+# ("Connection to github.com closed by remote host"), so the push silently never
+# lands. Keeping the gate fast is what makes `git push` actually complete.
+#
+# Also NOT here: the `recovery` tier (real parameter-recovery fits through the
+# backend, over an hour). That one runs nowhere automatically -- run it by hand
+# when a change touches the fitting loop.
 #
 # `uv run --no-sync` uses the project's interpreter without touching the
 # environment -- the .venv is already populated and uv.lock isn't fully
@@ -40,9 +45,9 @@ repos:
         stages: [pre-push]
       - id: pytest-bngsim
         name: pytest (bngsim test suite)
-        # Every bngsim-area test file: bngsim is mac-only and absent in CI, so
-        # these run nowhere else. `-n auto` parallelizes across cores to keep the
-        # gate fast. Add files here as bngsim coverage expands.
+        # Every bngsim-area test file, as a pre-push smoke (CI runs them too --
+        # this is the fast local copy). `-n auto` parallelizes across cores to
+        # keep the gate fast. Add files here as bngsim coverage expands.
         entry: >-
           uv run --no-sync pytest -m "not bionetgen" -n auto
           tests/test_bngsim_bridge.py

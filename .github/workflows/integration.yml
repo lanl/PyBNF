@@ -3,10 +3,10 @@ name: integration
 # Manual only. The slow tier is the 4 statistical-recovery tests against
 # analytical targets (AnalyticalModel) -- bngsim-free and BNG2.pl-free, ~8 min.
 #
-# NOTE: the bngsim *simulation* suites (true NFsim/RuleMonkey/SBML runs) are
-# deliberately NOT in hosted CI -- they need the private, macOS-only bngsim
-# wheel. They remain covered by the local pre-push hook (.pre-commit-config.yaml)
-# on a dev machine until bngsim ships Linux wheels.
+# NOTE: the fast bngsim *simulation* suites (true NFsim/RuleMonkey/SBML runs)
+# DO run in hosted CI -- tests.yml installs bngsim from public PyPI (#514). Not
+# covered anywhere hosted yet: the `recovery` tier (real parameter-recovery fits
+# through the backend, over an hour), which still runs on a dev machine.
 #
 # Runs nightly and on manual dispatch.
 on:
@@ -27,6 +27,10 @@ jobs:
       - uses: ./.github/actions/setup-pybnf
         with:
           python-version: '3.12'
+          # The slow tier is analytical (AnalyticalModel): no simulation
+          # backend, so no bngsim install, and PYBNF_NO_BNGSIM=1 below keeps it
+          # honest about that.
+          bngsim: 'false'
 
       - name: Run slow analytical recovery tests
         env:
