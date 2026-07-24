@@ -153,11 +153,11 @@ def test_hmc_recovers_banana_moments(tmp_path):
     sampler.
 
     A gentle ``b=8`` with a Stan-tight ``target_accept=0.95`` is what makes HMC a *clean*
-    reference here: the small step size lets NUTS negotiate the sharp tip without a single
-    divergent transition (``b=100`` is sharp enough that NUTS diverges and its own R-hat
-    rejects it — exactly the honesty the reliability gate enforces). All three of HMC's own
-    diagnostics — rank-normalized split-R-hat, bulk ESS, and the NUTS divergence count —
-    must pass before its draws are trusted as a yardstick."""
+    reference here: the small step size lets NUTS negotiate the sharp tip with at most a
+    negligible divergence rate (``b=100`` is sharp enough that NUTS diverges heavily and its
+    own R-hat rejects it — exactly the honesty the reliability gate enforces). All three of
+    HMC's own diagnostics — rank-normalized split-R-hat, bulk ESS, and the NUTS divergence
+    rate — must pass before its draws are trusted as a yardstick."""
     a, b = 1.0, 8.0
     true_mean, true_var = _banana_moments(a, b)
     conf = _hmc_config(tmp_path, H.banana_spec(a=a, b=b), 2, num_chains=4,
@@ -181,12 +181,21 @@ def test_hmc_recovers_banana_moments(tmp_path):
     # The reliability gate: HMC's own diagnostics certify the reference. Well-mixed
     # (R-hat ≈ 1), healthy ESS (the curved ridge autocorrelates, so ESS/draw is below a
     # Gaussian's but still ample), and -- because target_accept is tight enough for the
-    # tip's curvature -- exactly zero divergent transitions.
+    # tip's curvature -- a NEGLIGIBLE divergence rate. Not literally zero: the exact count
+    # is not portable across jaxlib/XLA builds (the same seed diverged 0 times on the
+    # author's machine, 1 in ~10^4 transitions on a hosted runner). A clean reference stays
+    # orders of magnitude below the pathological regime -- Stan/ArviZ likewise flag on a
+    # divergence FRACTION, not an absolute zero -- so we bound the rate well under the ~0.5%
+    # that would signal trouble, which still fails hard for the divergence-heavy b=100 case.
     rhat = alg.compute_rhat()
     bulk_ess, _tail = alg.compute_ess()
     assert rhat is not None and np.nanmax(rhat) < 1.05
     assert np.nanmin(bulk_ess) > 350
-    assert sum(alg.divergences) == 0, 'clean reference must be divergence-free'
+    n_transitions = conf.config['population_size'] * conf.config['num_samples']
+    n_div = sum(alg.divergences)
+    assert n_div / n_transitions < 0.005, (
+        f'clean reference must be ~divergence-free, got {n_div}/{n_transitions} '
+        f'({n_div / n_transitions:.2%}) divergent transitions')
 
 
 @pytest.mark.parametrize('var_type,loc,scale,true_mean,true_var', [
