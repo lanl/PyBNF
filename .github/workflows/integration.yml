@@ -63,6 +63,15 @@ jobs:
           # The whole point of this tier: real fits through the simulation
           # backend, so bngsim must be present (and PYBNF_NO_BNGSIM stays unset).
           bngsim: 'true'
+          # The recovery tier includes gradient-path fits (test_gradient_*,
+          # and the Rijal-2025 real-world cases in test_real_world_examples.py)
+          # whose LOG-SCALED parameters route the gradient into sampling space
+          # via jax -- without the extra those tests raise PybnfError rather than
+          # skip, so a recovery run without jax fails deterministically (2 hard
+          # failures the first dispatch, #517). A complete recovery environment
+          # provisions jax; install it here (as the pytest-jax job in tests.yml
+          # does for the same gradient path).
+          jax: 'true'
           # Also a 3.12 setup-pybnf run; give it its own uv-cache namespace so it
           # does not race the `slow` job's save on a dispatch (both run then).
           cache-suffix: pybnf-recovery
