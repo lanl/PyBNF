@@ -100,3 +100,37 @@ jobs:
         # register_bngl() monkeypatch collapses to a no-op). This is where the
         # TestRegisterBngl native-no-op test actually runs instead of skipping.
         run: uv run --no-sync pytest -m "not slow and not recovery" tests/test_petab_export.py tests/test_petab_import.py
+
+  # The gradient path (ADR-0059): the HMC reference sampler and the jax-gated
+  # gradient-assembly tests need the optional pybnf[jax] extra (jax + jaxlib +
+  # blackjax). jaxlib is a large install relative to the rest of the dep set, so
+  # rather than pay it on all four matrix legs above this one dedicated job turns
+  # the `jax` input on and runs exactly the two files that exercise the gradient
+  # path: tests/test_hmc.py (the whole ADR-0059 HMC oracle, skipif-gated on the
+  # extra) and tests/test_gradient_assembly.py (its jax tests importorskip). Those
+  # gradient tests include the fd-acceptance-gate cases, which are ALSO
+  # bngsim-marked -- they check the analytic jax gradient against a
+  # finite-difference through a real bngsim model -- so this leg keeps bngsim
+  # installed (the default) and PYBNF_NO_BNGSIM unset. One Python version is
+  # enough: the oracle is about numerical correctness, not version-compat. Before
+  # this job, tests/test_hmc.py had never run on a hosted runner (#516).
+  pytest-jax:
+    runs-on: ubuntu-latest
+    name: pytest (jax / HMC)
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-pybnf
+        with:
+          python-version: '3.12'
+          jax: 'true'
+          # This job also runs 3.12 through setup-pybnf, so give it its own cache
+          # namespace to avoid racing the matrix py3.12 job's save (see the
+          # cache-suffix input / the native-BNGL job above).
+          cache-suffix: pybnf-jax
+
+      - name: Run the HMC + jax gradient tests
+        # Deselect slow/recovery exactly as the matrix legs do (the one slow HMC
+        # cross-check in test_hmc.py stays out of the default run). -n auto
+        # parallelizes across the runner's cores.
+        run: uv run --no-sync pytest -m "not slow and not recovery" tests/test_hmc.py tests/test_gradient_assembly.py -n auto

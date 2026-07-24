@@ -24,6 +24,18 @@ inputs:
       "false" leg must also set PYBNF_NO_BNGSIM=1 when it runs pytest.
     required: false
     default: 'true'
+  jax:
+    description: >-
+      Install the optional pybnf[jax] extra (jax + jaxlib + blackjax). Default
+      "false": jaxlib is a large install relative to the rest of the dep set, so
+      rather than pay it on every matrix leg only the dedicated HMC/gradient job
+      turns it on. When "true", the jax-gated suites run for real instead of
+      importorskip-skipping -- tests/test_hmc.py (the whole ADR-0059 HMC oracle,
+      skipif-gated on the extra) and the jax gradient tests in
+      tests/test_gradient_assembly.py. Keep the pins in sync with pyproject.toml's
+      [jax] extra.
+    required: false
+    default: 'false'
   petab-spec:
     description: >-
       The petab requirement to install. Defaults to stock PyPI petab. A CI leg
@@ -87,6 +99,7 @@ runs:
       shell: bash
       env:
         BNGSIM: ${{ inputs.bngsim }}
+        JAX: ${{ inputs.jax }}
         PETAB_SPEC: ${{ inputs.petab-spec }}
       run: |
         # Build the venv from the setup-python interpreter (see note above), not
@@ -104,18 +117,35 @@ runs:
         if [ "$BNGSIM" = 'true' ]; then
           BNGSIM_SPEC=('bngsim[antimony]>=0.11.35,<1')
         fi
+        # The optional pybnf[jax] extra (jax + jaxlib + blackjax) -- the ADR-0059
+        # HMC reference sampler and the jax-gated gradient-assembly tests. Heavy
+        # (jaxlib), so gated behind the `jax` input and installed only on the
+        # dedicated HMC/gradient job rather than every matrix leg (#516). Keep the
+        # pins in sync with pyproject.toml's [jax]/[tests] extras.
+        JAX_SPEC=()
+        if [ "$JAX" = 'true' ]; then
+          JAX_SPEC=('jax>=0.4' 'jaxlib>=0.4' 'blackjax>=1.2')
+        fi
         # Mirror pyproject.toml's runtime deps, plus the test stack (pytest,
-        # hypothesis, pytest-xdist) and petab. petab is BOTH the PEtab v2
-        # export/BnglModel oracle (ADR-0025/0026 -- BNG2.pl is installed above,
-        # so model-level validation runs here too) AND the runtime math
-        # translator backing the expression observableFormula path
-        # (pybnf[petab], ADR-0035, petab.v2.math); stock PyPI petab carries the
-        # math grammar, so one install covers both. The exact petab requirement
-        # is the `petab-spec` input (default stock PyPI; a CI leg overrides it
-        # with the Step B fork to run the NATIVE BNGL loader). Keep these
-        # version bounds in sync with pyproject.toml.
+        # hypothesis, pytest-xdist), petab, and the optional test extras that
+        # otherwise leave whole suites importorskip-skipping on the runner (#516).
+        # petab is BOTH the PEtab v2 export/BnglModel oracle (ADR-0025/0026 --
+        # BNG2.pl is installed above, so model-level validation runs here too) AND
+        # the runtime math translator backing the expression observableFormula
+        # path (pybnf[petab], ADR-0035, petab.v2.math); stock PyPI petab carries
+        # the math grammar, so one install covers both. The exact petab
+        # requirement is the `petab-spec` input (default stock PyPI; a CI leg
+        # overrides it with the Step B fork to run the NATIVE BNGL loader).
+        # arviz/h5netcdf/h5py unskip the ArviZ InferenceData bridge oracle
+        # (ADR-0055; tests/test_inference_data.py + the tutorial diagnostics beat)
+        # and matplotlib unskips the profile-likelihood plot oracle (#467). These
+        # are cheap (pure-python or small wheels) so every leg installs them; the
+        # heavy jax stack is instead gated behind the `jax` input above. Keep ALL
+        # of these version bounds in sync with pyproject.toml's [tests] extra --
+        # anything declared there but missing here silently reverts to a skip.
         uv pip install \
           "${BNGSIM_SPEC[@]}" \
+          "${JAX_SPEC[@]}" \
           'dask>=2024.1.0' \
           'distributed>=2024.1.0' \
           'libroadrunner>=1.6.0' \
@@ -129,6 +159,10 @@ runs:
           'pytest>=7,<10' \
           'hypothesis>=6,<7' \
           'pytest-xdist' \
+          'arviz>=0.17' \
+          'h5netcdf>=1' \
+          'h5py' \
+          'matplotlib>=3.5' \
           "$PETAB_SPEC"
         # Install pybnf itself without re-resolving deps: on a bngsim: 'false'
         # leg a re-resolve would pull bngsim in through pyproject.toml and
