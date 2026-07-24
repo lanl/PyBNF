@@ -64,6 +64,9 @@ def test_split_top_level_commas(text, expected):
         ('["a", "b"]', ['a', 'b']),
         ('[]', []),
         ('[[1,2],[3,4]]', [['1', '2'], ['3', '4']]),   # nested lists recurse
+        # Exponential literals survive as strings for float() downstream — BNGL
+        # writes sample_times this way (adopted from bngsim, lanl/bngsim#45).
+        ('[5e-1,1,1E1]', ['5e-1', '1', '1E1']),
     ],
 )
 def test_parse_action_value(value_text, expected):
@@ -78,6 +81,52 @@ def test_parse_simulate_action_scalars_and_lists():
         't_end': '10',
         'n_steps': '5',
         'print_functions': ['a', 'b'],
+    }
+
+
+def test_parse_simulate_action_sample_times_with_other_params():
+    # sample_times is the list key that actually matters to the bngsim bridge:
+    # it must survive alongside scalars, and the parser must decline non-simulate
+    # lines rather than returning a partial dict (adopted from bngsim,
+    # lanl/bngsim#45).
+    line = 'simulate({method=>"ode", sample_times=>[0,5,10], suffix=>"tc"})'
+    assert parsing._parse_simulate_action(line) == {
+        'method': 'ode',
+        'sample_times': ['0', '5', '10'],
+        'suffix': 'tc',
+    }
+
+
+@pytest.mark.parametrize(
+    'parser, line',
+    [
+        (parsing._parse_simulate_action, "setParameter('k1', 0.5)"),
+        (parsing._parse_parameter_scan_action, 'simulate({method=>ode})'),
+        (parsing._parse_parameter_scan_action, '# comment'),
+    ],
+)
+def test_action_parsers_decline_foreign_lines(parser, line):
+    assert parser(line) is None
+
+
+def test_parse_parameter_scan_action_canonical_keys():
+    # The alias test above feeds param/min/max/time/logspace; this feeds the
+    # canonical spellings plus the suffix/steady_state passthroughs the bngsim
+    # scan path reads (adopted from bngsim, lanl/bngsim#45).
+    line = (
+        'parameter_scan({parameter=>"kf",method=>"ode",'
+        'par_min=>0.001,par_max=>1.0,n_scan_pts=>5,'
+        'suffix=>"dose",t_end=>1000,steady_state=>1})'
+    )
+    assert parsing._parse_parameter_scan_action(line) == {
+        'parameter': 'kf',
+        'method': 'ode',
+        'par_min': '0.001',
+        'par_max': '1.0',
+        'n_scan_pts': '5',
+        'suffix': 'dose',
+        't_end': '1000',
+        'steady_state': '1',
     }
 
 

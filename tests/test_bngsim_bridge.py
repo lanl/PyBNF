@@ -1440,6 +1440,10 @@ class TestResolveSampleTimes:
         result = bngsim_model._resolve_sample_times({'sample_times': [1.0, 0.0, 0.5]})
         assert result == [0.0, 0.5, 1.0]
 
+    # Further cases (explicit None, n_output_steps precedence, t_end appending,
+    # exponential literals) live in test_bngsim_scan.py, which is the bngsim-less
+    # CI tier — see the note there (lanl/bngsim#45).
+
 
 # ── addConcentration parser tests ─────────────────────────────────────────────
 

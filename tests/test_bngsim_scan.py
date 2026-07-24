@@ -38,6 +38,23 @@ def test_resolve_scan_points_defaults():
         ({'sample_times': []}, None),                           # empty
         ({'sample_times': ['5']}, None),                        # <2 points
         ({'sample_times': ['1', '2'], 'n_steps': '10'}, None),  # n_steps wins
+        # ── adopted from bngsim (lanl/bngsim#45) ──────────────────────────────
+        # bngsim kept a fork of these tests that imported this private helper
+        # across the repo boundary. When 14a8e25c lowered the minimum from 3
+        # points to 2, their copy kept asserting the old rule and went red — in a
+        # suite that skips wherever roadrunner is absent, i.e. every CI leg they
+        # have, so nothing reported it for months. Landing the cases their fork
+        # had and this one didn't lets them delete the cross-repo import. Here
+        # rather than in test_bngsim_bridge.py because this file is the
+        # bngsim-less tier, so these actually run in CI.
+        ({'sample_times': None}, None),                          # explicit None
+        ({'sample_times': ['0', '5', '10'],
+          'n_output_steps': '50'}, None),                        # n_steps alias wins
+        ({'sample_times': ['0', '5', '10'],
+          't_end': '20'}, [0.0, 5.0, 10.0, 20.0]),               # t_end beyond last -> appended
+        ({'sample_times': ['0', '5', '10'],
+          't_end': '10'}, [0.0, 5.0, 10.0]),                     # t_end not beyond -> untouched
+        ({'sample_times': ['5e-1', '1', '1E1']}, [0.5, 1.0, 10.0]),  # BNGL exponential literals
     ],
 )
 def test_resolve_sample_times(sim_params, expected):
