@@ -1,14 +1,18 @@
 name: integration
 
-# Manual only. The slow tier is the 4 statistical-recovery tests against
-# analytical targets (AnalyticalModel) -- bngsim-free and BNG2.pl-free, ~8 min.
+# The home for the test tiers too slow for the per-push gate. Two jobs:
+#
+#   slow     -- the 4 statistical-recovery tests against analytical targets
+#               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~8 min. Runs
+#               nightly AND on manual dispatch.
+#   recovery -- the `recovery` tier: ~130 real parameter-recovery fits through
+#               the bngsim backend (over an hour on a dev machine, unmeasured on
+#               a 2-core hosted runner). DISPATCH-ONLY for now (see the job's
+#               `if:`), so it can be sized and given a flake policy before it
+#               goes on the nightly schedule (#517).
 #
 # NOTE: the fast bngsim *simulation* suites (true NFsim/RuleMonkey/SBML runs)
-# DO run in hosted CI -- tests.yml installs bngsim from public PyPI (#514). Not
-# covered anywhere hosted yet: the `recovery` tier (real parameter-recovery fits
-# through the backend, over an hour), which still runs on a dev machine.
-#
-# Runs nightly and on manual dispatch.
+# DO run in hosted CI -- tests.yml installs bngsim from public PyPI (#514).
 on:
   workflow_dispatch:
   schedule:
@@ -36,3 +40,39 @@ jobs:
         env:
           PYBNF_NO_BNGSIM: '1'
         run: uv run --no-sync pytest -m slow -n auto
+
+  recovery:
+    runs-on: ubuntu-latest
+    name: recovery tier (bngsim fits)
+    # Dispatch-only for now, NOT on the nightly cron. The `slow` job above runs
+    # on both triggers; this one is gated to manual dispatch so a maintainer can
+    # run it once to measure the wall-clock on a 2-core runner (over an hour on a
+    # dev machine) and decide a flake policy for these stochastic fits BEFORE it
+    # is committed to a schedule -- an unmeasured hour-plus job that reds nightly
+    # for tolerance reasons gets ignored, which is worse than not having it
+    # (#517). To put it on the 08:00 nightly, delete this `if:` (the `on:` block
+    # already schedules the workflow); to make it non-blocking instead, add
+    # `continue-on-error: true` here.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-pybnf
+        with:
+          python-version: '3.12'
+          # The whole point of this tier: real fits through the simulation
+          # backend, so bngsim must be present (and PYBNF_NO_BNGSIM stays unset).
+          bngsim: 'true'
+          # Also a 3.12 setup-pybnf run; give it its own uv-cache namespace so it
+          # does not race the `slow` job's save on a dispatch (both run then).
+          cache-suffix: pybnf-recovery
+
+      - name: Run the recovery tier
+        # -m recovery: the ~130 synthetic-data parameter-recovery fits through
+        # the backend (test_recovery.py, the tutorial suites, profile-likelihood,
+        # the gradient/SBML fits, ...). -n auto parallelizes across the runner's
+        # cores -- fewer here than on a dev box, so expect this to be the slow leg.
+        #
+        # --no-sync: the composite action already populated .venv; do not let
+        # `uv run` re-resolve it from pyproject.toml.
+        run: uv run --no-sync pytest -m recovery -n auto
