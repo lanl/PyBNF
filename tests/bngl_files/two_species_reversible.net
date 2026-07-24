@@ -1,0 +1,22 @@
+# Reversible binding: A + B <-> C
+# kf = 0.001 (M^-1 s^-1), kr = 0.1 (s^-1)
+# A(0) = 100, B(0) = 50, C(0) = 0
+# Equilibrium: Keq = kf/kr = 0.01
+begin parameters
+    1 kf  0.001  # Constant
+    2 kr  0.1    # Constant
+end parameters
+begin species
+    1 A() 100
+    2 B() 50
+    3 C() 0
+end species
+begin reactions
+    1 1,2 3 kf #_R1
+    2 3 1,2 kr #_reverse__R1
+end reactions
+begin groups
+    1 A_free   1
+    2 B_free   2
+    3 C_total  3
+end groups
