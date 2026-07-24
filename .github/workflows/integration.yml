@@ -6,10 +6,10 @@ name: integration
 #               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~32 min. Runs
 #               nightly AND on manual dispatch.
 #   recovery -- the `recovery` tier: ~130 real parameter-recovery fits through
-#               the bngsim backend (over an hour on a dev machine, unmeasured on
-#               a 2-core hosted runner). DISPATCH-ONLY for now (see the job's
-#               `if:`), so it can be sized and given a flake policy before it
-#               goes on the nightly schedule (#517).
+#               the bngsim backend (over an hour on a dev machine, but ~12 min on
+#               a 2-core hosted runner, #517). DISPATCH-ONLY for now (see the
+#               job's `if:`), so a flake policy can be settled before it goes on
+#               the nightly schedule.
 #
 # NOTE: the fast bngsim *simulation* suites (true NFsim/RuleMonkey/SBML runs)
 # DO run in hosted CI -- tests.yml installs bngsim from public PyPI (#514).
