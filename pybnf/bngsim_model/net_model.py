@@ -1914,18 +1914,50 @@ class BngsimModel(NetModel):
         return data
 
     @staticmethod
-    def _extract_output_sensitivities(result, print_functions):
+    def _differentiable_expression_names(result):
+        """The expressions on ``result`` that bngsim can hand back an output sensitivity for.
+
+        bngsim differentiates a global function symbolically (lanl/bngsim#198) and
+        **refuses**, per function, any body carrying a non-differentiable construct --
+        an ``if()`` conditional, a comparison, ``min``/``max``/``abs``/``floor``, a table
+        function. It records the per-function verdict on the Result, and
+        ``output_sensitivities`` raises ``ValueError`` if a refused function is among the
+        requested selectors. ``has_sensitivities_expressions`` is only "some expression
+        block exists", not "every expression is differentiable", so it cannot stand in.
+
+        Asking for a refused selector fails the whole simulation, and a *scored* column
+        is almost never one of these functions -- so filter them out. This matters for
+        any piecewise model: an epidemic model whose rates switch at ``if(t >= tau)``
+        has every one of its functions refused, and before this filter every simulation
+        of such a model died with ``ValueError`` on the gradient path, making the fit's
+        objective ``inf`` everywhere. Should a scored column genuinely be a refused
+        expression, its absence surfaces later as a clean "no sensitivity column"
+        gradient error rather than a dead simulation.
+
+        Empty support map (an older bngsim, or a Result loaded from disk) ⇒ no verdicts
+        to filter on ⇒ every expression is kept, exactly as before.
+        """
+        names = list(getattr(result, 'expression_names', None) or [])
+        support = getattr(result, '_expression_sens_support', None) or {}
+        if not support:
+            return names
+        return [name for name in names if support.get(name) is None]
+
+    @classmethod
+    def _extract_output_sensitivities(cls, result, print_functions):
         """Read the native-space ∂g/∂θ tensor off a sensitivity-bearing Result.
 
         Selectors mirror the Data columns -- ``observable:<name>`` for every
-        observable, plus ``expression:<name>`` for each expression when
-        ``print_functions`` is on and the backend computed expression
-        sensitivities. The ``parameter`` axis is read whenever sensitivity params
-        were requested; the ``ic`` axis whenever IC species were.
+        observable, plus ``expression:<name>`` for each *differentiable* expression
+        (:meth:`_differentiable_expression_names`) when ``print_functions`` is on and
+        the backend computed expression sensitivities. The ``parameter`` axis is read
+        whenever sensitivity params were requested; the ``ic`` axis whenever IC species
+        were.
         """
         selectors = ['observable:%s' % name for name in result.observable_names]
         if print_functions and getattr(result, 'has_sensitivities_expressions', False):
-            selectors += ['expression:%s' % name for name in result.expression_names]
+            selectors += ['expression:%s' % name
+                          for name in cls._differentiable_expression_names(result)]
         param_names = list(result.sensitivity_params)
         ic_species = list(result.sensitivity_ic_species)
         d_param = None
@@ -1969,7 +2001,8 @@ class BngsimModel(NetModel):
         """
         selectors = ['observable:%s' % name for name in ss_result.observable_names]
         if print_functions and getattr(ss_result, 'expression_names', None):
-            selectors += ['expression:%s' % name for name in ss_result.expression_names]
+            selectors += ['expression:%s' % name
+                          for name in self._differentiable_expression_names(ss_result)]
         param_names = list(ss_result.sensitivity_params)
         d_param = None
         if param_names:

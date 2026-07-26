@@ -458,3 +458,61 @@ def test_scored_continuation_dose_response_refuses_on_gradient_path():
     with pytest.raises(PybnfError) as exc:
         model.execute('/tmp', 'dr_cont', 120)
     assert 'reset_conc' in str(exc.value).lower() or 'seed' in str(exc.value).lower()
+
+
+# --------------------------------------- non-differentiable expressions ----
+
+class _StubResult:
+    """The three attributes the selector builder reads off a bngsim ``Result``."""
+
+    has_sensitivities_expressions = True
+    observable_names = ['Atot']
+    sensitivity_params = ['k']
+    sensitivity_ic_species = []
+
+    def __init__(self, expression_names, support):
+        self.expression_names = expression_names
+        self._expression_sens_support = support
+
+    def output_sensitivities(self, selectors, axis='parameter'):
+        for sel in selectors:
+            name = sel.split(':', 1)[1]
+            reason = self._expression_sens_support.get(name)
+            if sel.startswith('expression:') and reason is not None:
+                raise ValueError(
+                    "output_sensitivities: expression '%s' has no output sensitivity -- %s"
+                    % (name, reason))
+        return np.zeros((3, len(selectors), 1))
+
+
+IF_REASON = 'uses unsupported construct: if() conditional'
+
+
+def test_non_differentiable_expressions_are_left_out_of_the_selector_request():
+    """bngsim refuses an output sensitivity for any function whose body carries an ``if()``
+    (or a comparison / min / max / floor / table function), and raises if such a selector is
+    requested -- which failed the whole simulation. Every function of a piecewise model (an
+    epidemic model switching rates at ``if(t >= tau)``) is refused, so before this filter the
+    gradient path scored ``inf`` everywhere on such a model. Only the differentiable ones are
+    requested; the observable the fit actually scores is unaffected."""
+    result = _StubResult(['smooth_f', 'switch_f'],
+                         {'smooth_f': None, 'switch_f': IF_REASON})
+    sens = bngsim_model.BngsimModel._extract_output_sensitivities(result, True)
+    assert sens.selectors == ['observable:Atot', 'expression:smooth_f']
+
+
+def test_every_expression_refused_leaves_only_the_observables():
+    """The Mallela/Lin COVID case: all 14 functions are ``if()`` chains, so the request
+    degenerates to the observables -- which is all a fit scoring a Molecules observable needs."""
+    names = ['v_rate', 'Ytheta', 'Lambdatau', 'Ptau']
+    result = _StubResult(names, {n: IF_REASON for n in names})
+    sens = bngsim_model.BngsimModel._extract_output_sensitivities(result, True)
+    assert sens.selectors == ['observable:Atot']
+
+
+def test_missing_support_map_keeps_every_expression():
+    """An older bngsim (or a Result read back from disk) records no per-function verdict;
+    with nothing to filter on the request is unchanged from before the filter existed."""
+    result = _StubResult(['f1', 'f2'], {})
+    sens = bngsim_model.BngsimModel._extract_output_sensitivities(result, True)
+    assert sens.selectors == ['observable:Atot', 'expression:f1', 'expression:f2']

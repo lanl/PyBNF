@@ -7,6 +7,16 @@ from scipy.special import betainc, betaln, digamma, loggamma
 from .base import NoiseModel
 from .location import MEDIAN
 
+#: The clip :meth:`NegBinomial.data_fit` puts on ``prob = r/(r+mean)`` to keep a
+#: degenerate point's ``-logpmf`` finite.
+_PROB_CLIP = 1e-10
+
+#: The mean-side image of that clip: ``prob <= 1 - _PROB_CLIP`` iff
+#: ``mean >= r * _PROB_CLIP/(1 - _PROB_CLIP)``. Every derivative that divides by the mean
+#: floors it here (:meth:`NegBinomial._mean_for_slope`) so a zero prediction -- which the
+#: value path scores finitely -- yields a finite slope rather than ``nan``/``-inf``.
+_MEAN_FLOOR_REL = _PROB_CLIP / (1 - _PROB_CLIP)
+
 
 def _d_betainc_d_b(a, b, x, rel=1e-6):
     """``d/db`` of the regularized incomplete beta ``betainc(a, b, x) = I_x(a, b)`` w.r.t. its
@@ -108,11 +118,34 @@ class NegBinomial(NoiseModel):
             return _mean_for_median(prediction, noise)
         return prediction
 
+    def _mean_for_slope(self, prediction, noise):
+        """:meth:`_mean`, floored away from zero for the expressions that divide by it.
+
+        A MEAN-centered prediction of **exactly** zero is not pathological -- it is what
+        any model whose output is gated off over part of the fit window predicts there (an
+        epidemic model before its start time ``t0``, a stimulus-driven readout before the
+        stimulus). :meth:`data_fit` scores such a point finitely because it clips
+        ``prob = r/(r+mean)`` at ``1 - _PROB_CLIP``; every *derivative* below instead
+        divides by the mean (``r (mean - obs) / (mean (r + mean))``, ``r / (mean (r+mean))``),
+        which at ``mean == 0`` is ``0/0 -> nan`` for an observed zero and ``-inf`` otherwise.
+        That ``nan`` propagates into the gradient and out to the optimizer, which then tries
+        to assign a free parameter ``nan``.
+
+        So mirror the value path's clip on the mean side: ``prob <= 1 - _PROB_CLIP`` is
+        exactly ``mean >= r _PROB_CLIP / (1 - _PROB_CLIP)``, i.e. this floor. The slope
+        is then the finite value belonging to the objective actually being scored -- large
+        (order ``obs / (r _PROB_CLIP)``) where the model predicts zero against a positive
+        count, which is correct: the objective there really is nearly flat-then-cliff, and a
+        large finite push toward a positive prediction is the right search direction.
+        MEDIAN centering never reaches the floor (``_mean_for_median`` returns a strictly
+        positive mean for any prediction), so it is a no-op there."""
+        return max(self._mean(prediction, noise), noise * _MEAN_FLOOR_REL)
+
     def data_fit(self, prediction, observation, noise, extra=None):
         if observation < 0:
             return 0
         mean = self._mean(prediction, noise)
-        prob = np.clip(noise / (noise + mean), 1e-10, 1 - 1e-10)
+        prob = np.clip(noise / (noise + mean), _PROB_CLIP, 1 - _PROB_CLIP)
         assert isinstance(noise, float)
         # log of the negative-binomial PMF P(observation | r=noise, prob)
         # == scipy.stats.nbinom.logpmf(observation, noise, prob).
@@ -145,12 +178,14 @@ class NegBinomial(NoiseModel):
         A negative observation contributes nothing (the count-domain guard, mirroring
         :meth:`data_fit`). A prediction clamped to the count floor (``pred <= 0``, where ``target``
         floors at 0 and the median stops moving) has slope 0 -- a kink at ``pred == 0`` where PyBNF
-        takes the floor-side subgradient, like the Laplace kink (#454). The gradient uses the
-        un-clipped analytic form (``data_fit`` clips ``prob`` only at pathological extremes)."""
+        takes the floor-side subgradient, like the Laplace kink (#454). The mean-slope divides by
+        the mean, so it reads it through :meth:`_mean_for_slope` -- the value path's ``prob`` clip
+        expressed on the mean -- which keeps a MEAN-centered zero prediction finite instead of
+        ``nan``; away from that floor the form is the un-clipped analytic one."""
         if observation < 0:
             return 0.0
         r = noise
-        mean = self._mean(prediction, r)
+        mean = self._mean_for_slope(prediction, r)
         d_fit_d_mean = r * (mean - observation) / (mean * (r + mean))
         if self.location is not MEDIAN:
             return d_fit_d_mean   # MEAN: d mean/d pred = 1
@@ -191,11 +226,15 @@ class NegBinomial(NoiseModel):
           at a clamped prediction. (Validated FD-first: the partial-only form is off 5-15%, sometimes
           far more, on the median.)
 
-        A negative observation contributes nothing (the count-domain guard)."""
+        A negative observation contributes nothing (the count-domain guard). The mean is read
+        through :meth:`_mean_for_slope` for consistency with :meth:`d_data_fit_d_prediction` --
+        it matters only for the MEDIAN coupling term, which divides by the mean; the MEAN
+        partial above is finite at a zero prediction either way, and the floor shifts it by
+        ``O(_PROB_CLIP)``. MEDIAN centering never reaches the floor."""
         if observation < 0:
             return {'dispersion': 0.0}
         r = noise
-        mean = self._mean(prediction, r)
+        mean = self._mean_for_slope(prediction, r)
         prob = r / (r + mean)
         d_fit_d_r = (digamma(r) - digamma(observation + r) - np.log(prob) - 1.0
                      + (r + observation) / (r + mean))
@@ -222,7 +261,16 @@ class NegBinomial(NoiseModel):
           ``d mean/d pred`` is the non-elementary implicit derivative; its location Fisher is out of
           scope for this cut -- refused, pointing at ``fit_type = lbfgs`` (which fits it via the
           scalar data-fit gradient). A negative observation contributes no curvature (the
-          count-domain guard, mirroring :meth:`data_fit`)."""
+          count-domain guard, mirroring :meth:`data_fit`).
+
+        A **zero mean** deliberately reports **no curvature** rather than the
+        :meth:`_mean_for_slope` floor the *gradient* uses. The two want opposite things: the
+        true ``I_mean`` diverges as ``1/mean``, so flooring it would put a ``~1/(r
+        _PROB_CLIP)`` weight on every gated-off row (an epidemic model's whole pre-``t0``
+        stretch) and let those rows dominate the Fisher matrix, crushing the trust-region
+        step. Zero says "this row carries no information about the mean", which is the stable
+        reading and leaves the gradient -- which does floor -- to supply the descent
+        direction."""
         if self.location is MEDIAN:
             from ..gradient.errors import GradientNotSupported
             raise GradientNotSupported(

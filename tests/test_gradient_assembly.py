@@ -1295,6 +1295,39 @@ def test_family_prediction_derivative_matches_finite_difference(family, extra):
     np.testing.assert_allclose(ana, num, rtol=1e-5)
 
 
+@pytest.mark.parametrize('obs', [0.0, 1.0, 4212.0], ids=['obs_zero', 'obs_one', 'obs_big'])
+def test_neg_bin_mean_gradient_finite_at_a_zero_prediction(obs):
+    """A MEAN-centered prediction of **exactly** zero has a finite data fit and must have a
+    finite slope. The closed form ``r (mean - obs)/(mean (r + mean))`` is ``0/0`` there (``nan``
+    for an observed zero, ``-inf`` otherwise), and a ``nan`` gradient reaches the optimizer as a
+    ``nan`` parameter proposal. It is not a pathological point: any model gated off over part of
+    the fit window predicts exactly zero there (an epidemic model before its start time), and
+    ``data_fit`` scores it finitely via its ``prob`` clip -- so the slope mirrors that clip."""
+    family, r = NegBinomial(location=MEAN), 3.0
+    assert np.isfinite(family.data_fit(0.0, obs, r))
+    slope = family.d_data_fit_d_prediction(0.0, obs, r)
+    assert np.isfinite(slope)
+    # An observed positive count at a zero prediction pushes the prediction UP (slope < 0);
+    # an observed zero is already at its optimum from below (slope >= 0).
+    assert slope < 0 if obs > 0 else slope >= 0
+    assert np.isfinite(family.d_nll_d_noise_params(0.0, obs, r)['dispersion'])
+
+
+def test_neg_bin_mean_zero_prediction_slope_matches_the_scored_objective():
+    """The zero-prediction slope is not an arbitrary sentinel: it is the un-floored closed form
+    at the very mean the value path's ``prob`` clip already pretends to score, so value and
+    gradient stay consistent and neither jumps across the floor."""
+    family, r, obs = NegBinomial(location=MEAN), 3.0, 7.0
+    floor = r * 1e-10 / (1 - 1e-10)     # prob == 1 - 1e-10, data_fit's upper clip
+    np.testing.assert_allclose(family.data_fit(0.0, obs, r), family.data_fit(floor, obs, r),
+                               rtol=1e-12)
+    closed_form = r * (floor - obs) / (floor * (r + floor))
+    np.testing.assert_allclose(family.d_data_fit_d_prediction(0.0, obs, r), closed_form,
+                               rtol=1e-12)
+    np.testing.assert_allclose(family.d_data_fit_d_prediction(floor, obs, r), closed_form,
+                               rtol=1e-12)
+
+
 # ===================== exact square-root-loss least-squares residual (layer G follow-up, #459) ===
 
 @pytest.mark.parametrize('family, extra', [
