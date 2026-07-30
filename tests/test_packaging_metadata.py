@@ -60,6 +60,98 @@ def test_every_pybnf_subpackage_is_shipped():
         )
 
 
+def test_subprocess_no_jax_import_outside_hmc():
+    """No non-HMC path may import ``jax``: importing PyBNF, registering every job type,
+    and running a **log-scaled gradient assembly** must leave ``sys.modules`` jax-free.
+
+    ``jax``/``jaxlib``/``blackjax`` are the optional ``pybnf[jax]`` extra, adopted for
+    exactly one thing (ADR-0059): autodiff of the analytical model's log-density for the
+    ``hmc`` reference sampler. That surface -- each prior family's ``logpdf_jax``, the
+    bijector's ``*_jax`` peers, ``Scale.inverse_jax``, the PEtab formula's ``jax``
+    lambdify backend -- hangs off general-purpose objects, so any layer can reach for a
+    jax peer and quietly make a second subsystem depend on the extra. That is exactly
+    what happened (#524): gradient assembly obtained a log-scaled parameter's
+    ``d theta/d u`` with ``jax.grad(inverse_jax)``, so most gradient fits -- anything
+    declaring a rate constant ``loguniform_var`` -- hard-required the extra. ADR-0087
+    replaced it with the scale's analytic ``d_inverse``; this test keeps the next such
+    reuse from going unnoticed.
+
+    Runs in a subprocess because the pytest session itself imports jax (``test_hmc.py``,
+    and the ADR-0087 parity tests), so the parent's ``sys.modules`` says nothing.
+
+    Both halves matter, and which one fires depends on the environment. **Without** the
+    extra installed, a module-scope ``import jax`` anywhere in the imported surface makes
+    the child die with ``ImportError`` (a nonzero exit, asserted below). **With** it
+    installed -- the ``pytest-jax`` CI leg, and a dev machine -- the ``sys.modules`` check
+    additionally catches a leak inside a function body, which is the shape #524 took.
+    """
+    script = textwrap.dedent('''
+        import sys
+
+        import numpy as np
+
+        # Every job type registers here, including hmc: its module must import no jax at
+        # import time (ADR-0059), or `pip install pybnf` could not even list the samplers.
+        import pybnf.algorithms
+        import pybnf.config
+        import pybnf.objective
+        import pybnf.pset
+        import pybnf.priors          # 18 families, each with a logpdf_jax peer
+        import pybnf.gradient
+        try:
+            import pybnf.petab       # its formula module has a 'jax' lambdify backend
+        except ImportError:
+            pass                     # the optional pybnf[petab] extra is absent
+
+        from pybnf.data import Data, OutputSensitivities
+        from pybnf.gradient import (
+            assemble_gaussian_gradient, ExperimentRouting, ParamRoute, PARAM)
+        from pybnf.objective import ChiSquareObjective
+        from pybnf.pset import FreeParameter
+
+        # A log-scaled free parameter through the prior/scale surface (sampling-space
+        # transform, prior density, a draw) -- the priors package's own jax peers.
+        k = FreeParameter('k', 'loguniform_var', 0.01, 100.0, value=2.0)
+        u = k.to_sampling_space(k.value)
+        assert np.isclose(k.from_sampling_space(u), k.value)
+        k.prior_logpdf(k.value)
+        k.sample_value(np.random.default_rng(0))
+
+        # ...and through a full gradient assembly, the #524 regression path: the
+        # native->sampling Jacobian factor of a log-scaled parameter.
+        times = np.array([0.0, 1.0, 2.0])
+        sim = Data.from_columns(
+            np.column_stack([times, [100.0, 74.0, 55.0]]), ['time', 'Stot'])
+        sim.output_sensitivities = OutputSensitivities(
+            selectors=['observable:Stot'], param_names=['k'], ic_species=[],
+            d_param=np.array([0.0, -80.0, -106.0]).reshape(3, 1, 1))
+        exp = Data.from_columns(
+            np.column_stack([times, [100.0, 70.0, 60.0], [5.0] * 3]),
+            ['time', 'Stot', 'Stot_SD'])
+        routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+        result = assemble_gaussian_gradient(
+            ChiSquareObjective(), [(sim, exp, routing)], [k])
+        # d theta/du = ln(10)*theta scales the one column (ADR-0087), analytically.
+        assert np.isclose(result.jacobian[1, 0], (-80.0 / 5.0) * np.log(10.0) * 2.0)
+
+        # Report the top-level roots only -- importing jax pulls in ~250 submodules,
+        # and the name that matters is which extra leaked, not its module list.
+        roots = {m.split('.')[0] for m in sys.modules}
+        leaked = sorted(roots & {'jax', 'jaxlib', 'blackjax'})
+        assert not leaked, (
+            'imported outside the hmc path: %r -- the pybnf[jax] extra is for '
+            'ADR-0059 autodiff of the analytical log-density only (see #524).' % (leaked,))
+        print('OK')
+    ''')
+    result = subprocess.run(
+        [sys.executable, '-c', script], capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, (
+        'stdout=%r stderr=%r' % (result.stdout, result.stderr)
+    )
+    assert 'OK' in result.stdout
+
+
 def test_subprocess_pybnf_no_bngsim_package_root_import_smoke():
     """Importing pybnf and its bngsim-aware submodules must not raise under
     PYBNF_NO_BNGSIM=1.
