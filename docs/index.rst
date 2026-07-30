@@ -19,8 +19,8 @@ workstations as well as on computing clusters.
 Algorithms
 ----------
 
-A fit is driven by one algorithm, chosen by ``fit_type`` (spelled ``job_type``
-in edition-2). These fall into distinct families, and PyBNF ships a broad,
+A fit is driven by one algorithm, chosen by ``job_type`` (spelled ``fit_type``
+in the legacy edition 1). These fall into distinct families, and PyBNF ships a broad,
 parallelized suite of each.
 
 **Optimization algorithms** search for the single best-fitting parameter set by

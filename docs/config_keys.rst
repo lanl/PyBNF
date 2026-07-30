@@ -713,7 +713,7 @@ Parameter and Model Specification
 
 The following two keys (``var`` and ``logvar``) are the single-value start point used by the start-point optimizers —
 :ref:`Simplex <alg-sim>`, :ref:`Powell <alg-powell>`, and :ref:`CMA-ES <alg-cmaes>`. A fit with one of these
-``fit_type``\ s must define every free parameter with ``var`` / ``logvar`` and use none of the prior-based
+``job_type``\ s must define every free parameter with ``var`` / ``logvar`` and use none of the prior-based
 parameter specifications above — except that CMA-ES may instead take bounded ``uniform_var`` / ``loguniform_var``
 priors to run as a global search over the box (see :ref:`CMA-ES <alg-cmaes>`). For any other algorithm, define
 parameters with the prior-based specifications, not ``var`` / ``logvar``. When refining a result (``refine = 1``),
@@ -1354,7 +1354,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
 :ref:`Powell <alg-powell>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``fit_type = powell`` and to any algorithm run with ``refine = 1`` and ``refine_method = powell``.
+These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``job_type = powell`` and to any algorithm run with ``refine = 1`` and ``refine_method = powell``.
 
 **powell_step**
   Initial bracketing step along each search direction, in the parameter sampling space (a factor of ``10**powell_step`` for a log-scaled parameter). Each line search starts by probing this far, then expands a bracket around the minimum and refines it (see ``powell_line_tol``); it is no longer the only step the search can take.
@@ -1396,7 +1396,7 @@ These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``fit_
 :ref:`CMA-ES <alg-cmaes>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget. Standalone, ``fit_type = cmaes`` accepts either a single ``var`` / ``logvar`` start point (local search) or a bounded ``uniform_var`` / ``loguniform_var`` box (its global-start mode, starting from the box center); see :ref:`CMA-ES <alg-cmaes>`.
+These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget. Standalone, ``job_type = cmaes`` accepts either a single ``var`` / ``logvar`` start point (local search) or a bounded ``uniform_var`` / ``loguniform_var`` box (its global-start mode, starting from the box center); see :ref:`CMA-ES <alg-cmaes>`.
 
 **cmaes_sigma0**
   Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter). In box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors) it is instead read as a fraction of each box width, so the initial per-coordinate standard deviation is ``cmaes_sigma0`` × (box width).
@@ -1456,7 +1456,7 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_t
 :ref:`Differential Evolution <alg-de>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronous differential evolution (``fit_type = de``) and asynchronous differential evolution (``fit_type = ade``). Both versions may be configured with the follwing keys.
+PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronous differential evolution (``job_type = de``) and asynchronous differential evolution (``job_type = ade``). Both versions may be configured with the follwing keys.
 
 **mutation_rate**
   When generating a new individual, mutate each parameter with this probability. 
@@ -1513,7 +1513,7 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
   
     * ``de_strategy = rand2``
 
-The following options are only available with ``fit_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
+The following options are only available with ``job_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
 
 **islands**
   Number of separate populations to evolve.
@@ -1664,7 +1664,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
 :ref:`Bayesian Algorithms (mh, pt, sa) <alg-mcmc>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`Metropolis-Hastings MCMC <alg-mcmc>` (``fit_type = mh``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``), and :ref:`DREAM <alg-dream>` (``fit_type = dream``). These algorithms have many configuration keys in common, as described below. 
+In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`Metropolis-Hastings MCMC <alg-mcmc>` (``job_type = mh``), :ref:`Parallel Tempering <alg-pt>` (``job_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``job_type = sa``), and :ref:`DREAM <alg-dream>` (``job_type = dream``). These algorithms have many configuration keys in common, as described below. 
 
 
 For all Bayesian algorithms

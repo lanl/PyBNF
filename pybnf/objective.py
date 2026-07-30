@@ -363,7 +363,7 @@ class ObjectiveFunction:
 
     def location_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """The expected per-point **Fisher information of the location** ``kappa`` for one scored
-        point -- the Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``, #481)
+        point -- the Gauss-Newton curvature the EFIM trust-region path (``job_type = gntr``, #481)
         weights ``d(prediction)/d(theta)`` by (``H = sum_i w_i * kappa_i * outer(s_i, s_i)``). The
         twin of :meth:`residual_point` on the curvature side; the base raises
         :class:`GradientNotSupported`, since only a per-point likelihood defines a location Fisher
@@ -372,7 +372,7 @@ class ObjectiveFunction:
         from .gradient.errors import GradientNotSupported
         raise GradientNotSupported(
             "Objective %s has no Fisher-information location curvature on the EFIM trust-region "
-            "path (fit_type = gntr, #481)." % type(self).__name__)
+            "path (job_type = gntr, #481)." % type(self).__name__)
 
     def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name, raw_sens, index):
         """The per-point expected **Fisher noise block** of the EFIM Hessian -- the full
@@ -1336,7 +1336,7 @@ class LikelihoodObjective(SummationObjective):
     def location_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """The expected per-point **Fisher information of the location** ``kappa`` -- the
         Gauss-Newton curvature the EFIM trust-region Hessian weights ``d(prediction)/d(theta)``
-        by (``fit_type = gntr``, #481). Read through the same ``_prediction`` / ``_noise_values``
+        by (``job_type = gntr``, #481). Read through the same ``_prediction`` / ``_noise_values``
         seams as ``residual_point`` / ``data_fit_grad_point``, so it is the curvature of exactly
         the loss PyBNF scores.
 

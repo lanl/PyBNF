@@ -250,7 +250,7 @@ class NegBinomial(NoiseModel):
 
     def location_fisher(self, prediction, observation, noise, extra=None):
         """``kappa = I_mean = r / (mean (r + mean))`` -- the negative-binomial **mean's** Fisher
-        information, the Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``,
+        information, the Gauss-Newton curvature the EFIM trust-region path (``job_type = gntr``,
         #481) weights ``d(prediction)/d(theta)`` by. It is the variance of the mean score
         ``d(-logpmf)/d mean = r (mean - obs) / (mean (r + mean))`` (``Var(obs) = mean (r + mean)/r``,
         so ``I_mean = [r/(mean(r+mean))]**2 * Var(obs) = r/(mean(r+mean))``).
@@ -259,7 +259,7 @@ class NegBinomial(NoiseModel):
           directly -- the case this cut supports (``neg_bin`` / ``neg_bin_dynamic`` pinned to MEAN).
         * **MEDIAN**: the mean sits behind the betainc CDF inversion (``_mean_for_median``), whose
           ``d mean/d pred`` is the non-elementary implicit derivative; its location Fisher is out of
-          scope for this cut -- refused, pointing at ``fit_type = lbfgs`` (which fits it via the
+          scope for this cut -- refused, pointing at ``job_type = lbfgs`` (which fits it via the
           scalar data-fit gradient). A negative observation contributes no curvature (the
           count-domain guard, mirroring :meth:`data_fit`).
 
@@ -275,8 +275,8 @@ class NegBinomial(NoiseModel):
             from ..gradient.errors import GradientNotSupported
             raise GradientNotSupported(
                 "A MEDIAN-centered negative-binomial has its mean behind a betainc CDF inversion, "
-                "whose location Fisher the EFIM trust-region path (fit_type = gntr, #481) does not "
-                "assemble this cut; use fit_type = lbfgs.")
+                "whose location Fisher the EFIM trust-region path (job_type = gntr, #481) does not "
+                "assemble this cut; use job_type = lbfgs.")
         mean = self._mean(prediction, noise)
         if observation < 0 or mean <= 0.0:
             return 0.0

@@ -102,11 +102,11 @@ Parallelization
 ^^^^^^^^^^^^^^^
 Three versions of differential evolution are available: All run in parallel, but they differ in their level of synchronicity.
 
-Asynchronous differential evolution (``fit_type = ade``) never allows processors to sit idle. One new simulation is started every time a simulation completes. This version is the best choice when a large number of processors are available.
+Asynchronous differential evolution (``job_type = ade``) never allows processors to sit idle. One new simulation is started every time a simulation completes. This version is the best choice when a large number of processors are available.
 
-Synchronous differential evolution (``fit_type = de``) consists of discrete iterations. In each iteration, n simulations are run in parallel, but all must complete before moving on to the next iteration. 
+Synchronous differential evolution (``job_type = de``) consists of discrete iterations. In each iteration, n simulations are run in parallel, but all must complete before moving on to the next iteration. 
 
-Island-based differential evolution [Penas2015]_ is partially asynchronous algorithm. To use this version, set ``fit_type = de`` and set a value greater than 1 for the ``islands`` key. In this version, the current population consists of m islands. Each island is able to move on to the next iteration even if other islands are still in progress. If m is set to the number of available processors, then processors will never sit idle. Note however that this might still underperform compared to the synchronous algorithm run on the same number of processors. 
+Island-based differential evolution [Penas2015]_ is partially asynchronous algorithm. To use this version, set ``job_type = de`` and set a value greater than 1 for the ``islands`` key. In this version, the current population consists of m islands. Each island is able to move on to the next iteration even if other islands are still in progress. If m is set to the number of available processors, then processors will never sit idle. Note however that this might still underperform compared to the synchronous algorithm run on the same number of processors. 
 
 Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -639,7 +639,7 @@ PyBNF offers three derivative-free, black-box local optimizers for the post-fit
 polish step (``refine = 1``): `Simplex`_ (Nelder–Mead), `Powell`_, and `CMA-ES`_.
 Set ``refine_method`` to ``sim`` (the default, backward-compatible), ``powell``,
 or ``cmaes`` to choose; only the chosen optimizer's config keys are read. Each
-also runs standalone as its own ``fit_type`` (``sim`` / ``powell`` / ``cmaes``),
+also runs standalone as its own ``job_type`` (``sim`` / ``powell`` / ``cmaes``),
 started from a single point given with the ``var`` / ``logvar`` keys. CMA-ES
 additionally runs standalone as a *global* optimizer over a bounded ``uniform_var``
 / ``loguniform_var`` box (see `CMA-ES`_).
@@ -687,7 +687,7 @@ parameters), so a step is geometric for a log parameter.
 Applications
 ^^^^^^^^^^^^
 Use Powell to refine an already-good solution (``refine = 1`` with
-``refine_method = powell``), or standalone (``fit_type = powell``) from a starting
+``refine_method = powell``), or standalone (``job_type = powell``) from a starting
 point given with the ``var`` / ``logvar`` keys. Tune ``powell_step`` (initial
 bracketing step), ``powell_line_tol`` (1-D line-minimum precision),
 ``powell_stop_tol`` (per-cycle convergence), and ``powell_max_iterations`` (cycle
@@ -718,7 +718,7 @@ it searches in the parameter sampling space (log-scaled for log parameters).
 Applications
 ^^^^^^^^^^^^
 Use CMA-ES to refine a result (``refine = 1`` with ``refine_method = cmaes``) or
-standalone (``fit_type = cmaes``). Standalone, it accepts either of two starts:
+standalone (``job_type = cmaes``). Standalone, it accepts either of two starts:
 
 * a single starting **point** given with the ``var`` / ``logvar`` keys (local
   search, like Simplex and Powell); or
@@ -769,18 +769,18 @@ Gradient-based optimization
 For edition-2 fits of ODE-network models, PyBNF offers three gradient-based
 optimizers driven by exact forward parameter sensitivities:
 
-* ``fit_type = trf`` — a trust-region least-squares method (Trust-Region
+* ``job_type = trf`` — a trust-region least-squares method (Trust-Region
   Reflective), for objectives that are a sum of squared residuals;
-* ``fit_type = lbfgs`` — a quasi-Newton method (L-BFGS-B) that minimizes a scalar
+* ``job_type = lbfgs`` — a quasi-Newton method (L-BFGS-B) that minimizes a scalar
   objective from its analytic gradient; and
-* ``fit_type = gntr`` — a general-objective Fisher/Gauss-Newton trust-region method
+* ``job_type = gntr`` — a general-objective Fisher/Gauss-Newton trust-region method
   that gives ``trf``'s trust-region step quality for the general-NLL objectives ``trf``
   refuses (an estimated noise scale, the Laplace / count families, constrained fits),
   using an expected-Fisher Hessian built from the same sensitivities.
 
 All three converge far faster than the metaheuristics near a good fit, and the same
 sensitivity machinery drives profile-likelihood identifiability analysis
-(``fit_type = profile_likelihood``). These methods, the noise families and
+(``job_type = profile_likelihood``). These methods, the noise families and
 constraints they support, and the capability gate that decides when a gradient fit
 is possible are documented in full on the :ref:`gradient-based fitting
 <gradient_fitting>` page.
@@ -792,7 +792,7 @@ is possible are documented in full on the :ref:`gradient-based fitting
 Model checking
 --------------
 
-``fit_type = check`` (equivalently ``job_type = check``) is a first-class checking
+``job_type = check`` (``fit_type = check`` in the legacy edition) is a first-class checking
 method rather than a search: it evaluates the objective value and constraint
 satisfaction for a given set of parameter values without exploring parameter
 space. Use it to verify that a model satisfies a set of qualitative properties

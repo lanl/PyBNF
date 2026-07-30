@@ -23,7 +23,7 @@ sensitivities):
   fit runs on the new-era ``experiment:`` / ``data:`` surface (edition 2, bind-by-id),
   which gradient fitting requires.
 * **the gates** (fast, no simulation): a legacy (edition < 2) config is refused before
-  any model is built, with a message pointing at a metaheuristic fit_type.
+  any model is built, with a message pointing at a metaheuristic job_type.
 
 Mirrors ``tests/test_recovery.py``'s harness usage (real bngsim ODE solves, a
 synchronous fake dask client, ``BNG2.pl`` for the one-off ``.net`` expansion). The
@@ -258,7 +258,7 @@ def test_trf_refuses_discrete_event_model_before_run(tmp_path, monkeypatch):
     forward sensitivity -- bngsim refuses sensitivity requests on it (its CVODES
     sensitivity vectors are not reinitialised across the jump, GH #205). The
     differentiability gate refuses such a model **up front**, at construction next to
-    the backend gate, with an actionable message pointing at a metaheuristic fit_type
+    the backend gate, with an actionable message pointing at a metaheuristic job_type
     -- never a mid-run backend traceback (#461). The decay fixture carries no events
     and the net backend cannot author them (the engine's ``n_events`` is read-only), so
     we force the signal the gate reads (``has_discrete_events``); the gate fires before

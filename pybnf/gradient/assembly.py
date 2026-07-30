@@ -191,7 +191,7 @@ class GradientResult:
     param_names: list         # free-parameter order of the columns / gradient
     least_squares_exact: bool = True   # False once an estimated sigma is present
     #: The expected-Fisher / Gauss-Newton Hessian (n_param, n_param), sampling space --
-    #: attached only on the EFIM trust-region path (``fit_type = gntr``, #481/#488) by
+    #: attached only on the EFIM trust-region path (``job_type = gntr``, #481/#488) by
     #: :func:`assemble_gradient_and_fisher_hessian`; ``None`` for ``trf`` / ``lbfgs``, which
     #: never form it.
     hessian: np.ndarray = None
@@ -409,7 +409,7 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     """Assemble the expected-Fisher / Gauss-Newton **Hessian** ``H`` (n_param x n_param),
     summed across experiments. This standalone API produces the same curvature the combined
     :func:`assemble_gradient_and_fisher_hessian` path feeds to the EFIM trust-region optimizer
-    (``fit_type = gntr``, #481/#488).
+    (``job_type = gntr``, #481/#488).
 
     ``H = sum_i w_i [ kappa_i * outer(s_i, s_i)  +  sum_p I_scale_p * outer(g_i^p, g_i^p) ]``
     where ``s_i = d(prediction_i)/d(theta)`` is the same forward sensitivity the gradient uses
@@ -707,7 +707,7 @@ def assemble_constraint_gradient(constraint_sets, sim_data_dict, routings, free_
 def assemble_constraint_hessian(constraint_sets, sim_data_dict, routings, free_params):
     """The Gauss-Newton **Hessian** of the total constraint penalty w.r.t. the free parameters
     (layer I curvature, #481/#456), in **sampling space** -- the constraint block the EFIM
-    trust-region path (``fit_type = gntr``) adds to :func:`assemble_fisher_hessian`'s data-fit
+    trust-region path (``job_type = gntr``) adds to :func:`assemble_fisher_hessian`'s data-fit
     Hessian, the curvature sibling of :func:`assemble_constraint_gradient`.
 
     Each constraint's penalty is ``P(q(theta))`` for an at-/between-time readout ``q``, so its

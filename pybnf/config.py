@@ -536,7 +536,10 @@ class Configuration:
                 edition.require_edition(ed, 2, "the 'job_type' key")
             if 'fit_type' not in d:
                 d['fit_type'] = 'de'
-                print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
+                # Legacy branch only: 'job_type' is rejected at this edition, so name the
+                # key this reader actually sets rather than the modern one (#525 follow-up).
+                print1('Warning: No job type was specified (legacy key: fit_type). '
+                       'Defaulting to de (Differential Evolution).')
             if d['fit_type'] == 'bmc':
                 d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
 
@@ -620,12 +623,12 @@ class Configuration:
             if Configuration._is_unused_key(k, valid):
                 # % (k,) (not % k): only string keys reach here, but keep the
                 # single-arg tuple form so the message can never spread a value.
-                print1('Warning: Configuration key {} is not used in fit_type {}, so I am ignoring it'.format(k, conf_dict['fit_type']))
+                print1('Warning: Configuration key {} is not used in job_type {}, so I am ignoring it'.format(k, conf_dict['fit_type']))
                 logger.warning('Ignoring unused key {} for fitting algorithm {}'.format(k, conf_dict['fit_type']))
 
     @staticmethod
     def _strip_uncheckable_keys(conf_dict):
-        """Remove the keys ``fit_type = check`` cannot honor so they do not crash
+        """Remove the keys ``job_type = check`` cannot honor so they do not crash
         downstream: ``refine`` and ``bootstrap`` (model checking runs neither). The
         unused-key *warnings* for check now come from the unified
         :meth:`check_unused_keys`; this keeps only the crash-prevention deletion the
@@ -2933,7 +2936,7 @@ class Configuration:
                 raise PybnfError(
                     'Tried to use start-point variable type {} in another algorithm.'.format(' / '.join(sorted(point_kws))),
                     "You've used the {} keyword, but var / logvar are only for the "
-                    "start-point optimizers (fit_type = {}).\nValid keywords for other "
+                    "start-point optimizers (job_type = {}).\nValid keywords for other "
                     "algorithms are: uniform_var, normal_var, lognormal_var, "
                     "loguniform_var.".format(' / '.join(sorted(point_kws)), names))
             return
@@ -2946,7 +2949,7 @@ class Configuration:
         if fit_type not in box_types:
             raise PybnfError(
                 'Invalid start-point variable type {}'.format(' / '.join(sorted(prior_kws))),
-                "You've specified a start-point optimizer (fit_type = {}; one of {}), "
+                "You've specified a start-point optimizer (job_type = {}; one of {}), "
                 "but defined a variable with the {} keyword.\nFor these optimizers, "
                 "you must instead define a single initial value for each variable\n"
                 "using the var or logvar keyword (e.g. var = p1 42 ).".format(fit_type, names, ' / '.join(sorted(prior_kws))))
@@ -2955,14 +2958,14 @@ class Configuration:
         if point_kws:
             raise PybnfError(
                 'Mixed start-point and box variable types',
-                "fit_type = {} uses both a single-value start point (var / logvar) and "
+                "job_type = {} uses both a single-value start point (var / logvar) and "
                 "a prior-based variable ({}).\nUse one consistent style: var / logvar "
                 "for a point start, or uniform_var / loguniform_var for a global box "
                 "search.".format(fit_type, ' / '.join(sorted(prior_kws))))
         if unbounded_prior_kws:
             raise PybnfError(
                 'Box-mode optimizer requires a bounded prior',
-                "fit_type = {} runs a global box search when given priors, which needs a "
+                "job_type = {} runs a global box search when given priors, which needs a "
                 "bounded box, but variable type {} is unbounded.\nUse uniform_var / "
                 "loguniform_var for box mode, or var / logvar for a single-point start.".format(fit_type, ' / '.join(sorted(unbounded_prior_kws))))
 

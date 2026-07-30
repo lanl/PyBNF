@@ -2,7 +2,7 @@
 
 A native, derivative-free, black-box optimizer (Hansen & Ostermeier 2001), the
 third PyBNF refiner alongside Simplex and Powell (``refine_method = cmaes``) and a
-first-class standalone optimizer (``fit_type = cmaes``). Implemented inside the
+first-class standalone optimizer (``job_type = cmaes``). Implemented inside the
 run-loop contract -- ``start_run`` / ``got_result`` only, no ``run()`` override
 (ADR-0007) -- and natively (no ``cma`` dependency).
 

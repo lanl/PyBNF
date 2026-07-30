@@ -998,7 +998,7 @@ class Constraint:
                               once=False, require_length=None, imin2=None, imax2=None,
                               pset_values=None):
         """The **Gauss-Newton curvature** of this interval's penalty w.r.t. the free parameters --
-        the constraint block of the EFIM trust-region Hessian (``fit_type = gntr``, #481), the
+        the constraint block of the EFIM trust-region Hessian (``job_type = gntr``, #481), the
         curvature twin of :meth:`get_penalty_gradient`. The penalty is ``P(q)`` for the at-/
         between-time readout ``q = q1 - q2``, so its Gauss-Newton curvature is
         ``max(P''(q), 0) * outer(grad q, grad q)`` -- the second-order readout sensitivity
@@ -1033,7 +1033,7 @@ class Constraint:
     def penalty_curvature(self, sim_data_dict, raw_sens, index, n_param, pset_values=None):
         """The Gauss-Newton curvature of this constraint's **total** penalty (summed over the same
         enforcement intervals :meth:`penalty_gradient` sums the gradient over) -- the constraint
-        block the EFIM trust-region path (``fit_type = gntr``) adds to the data-fit Hessian (#481),
+        block the EFIM trust-region path (``job_type = gntr``) adds to the data-fit Hessian (#481),
         the curvature sibling of :meth:`penalty_gradient`.
 
         An **estimated constraint scale** (``scale_param``, ADR-0061) couples the readout to the
@@ -1045,7 +1045,7 @@ class Constraint:
             from .gradient.errors import GradientNotSupported
             raise GradientNotSupported(
                 "A constraint with an estimated scale ('%s') couples the readout and scale on the "
-                "EFIM trust-region path (fit_type = gntr, #481); use fit_type = lbfgs." % self.scale_param)
+                "EFIM trust-region path (job_type = gntr, #481); use job_type = lbfgs." % self.scale_param)
         curv = np.zeros((n_param, n_param))
         for interval in self._penalty_intervals(sim_data_dict):
             curv += self.get_penalty_curvature(sim_data_dict, raw_sens, index, n_param,

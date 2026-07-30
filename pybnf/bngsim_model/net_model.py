@@ -328,7 +328,7 @@ class BngsimModel(NetModel):
         gradient path reads this as its pre-flight differentiability gate
         (:meth:`GradientOptimizer._require_differentiable_dynamics`) to refuse a
         discrete-event model **up front** -- with an actionable "use a metaheuristic
-        fit_type" message -- instead of letting the fit start and fail at the first
+        job_type" message -- instead of letting the fit start and fail at the first
         sensitivity-bearing ``simulate()``.
 
         Only true state-jumping events are counted (the engine core's ``n_events``).

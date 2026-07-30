@@ -270,9 +270,9 @@ def _create_algorithm(config):
     fit_type = config.config['fit_type']
     entry = FIT_TYPE_REGISTRY.get(fit_type)
     if entry is None:
-        raise PybnfError('Invalid fit_type {}. Options are: {}'.format(fit_type, ', '.join(FIT_TYPE_REGISTRY)))
+        raise PybnfError('Invalid job_type {}. Options are: {}'.format(fit_type, ', '.join(FIT_TYPE_REGISTRY)))
     if entry.deprecated:
-        msg = f'fit_type {fit_type} is deprecated and may be removed in a future release.'
+        msg = f'job_type {fit_type} is deprecated and may be removed in a future release.'
         logger.warning(msg)
         print1(f'Warning: {msg}')
     return entry.cls(config, **entry.kwargs)

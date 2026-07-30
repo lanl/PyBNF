@@ -170,7 +170,7 @@ def test_create_algorithm_does_not_warn_for_active_fit_type(monkeypatch, caplog)
 
 
 def test_create_algorithm_rejects_unknown_fit_type():
-    with pytest.raises(PybnfError, match='Invalid fit_type'):
+    with pytest.raises(PybnfError, match='Invalid job_type'):
         _create_algorithm(_config_with_fit_type('not_a_real_type'))
 
 

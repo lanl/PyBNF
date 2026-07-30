@@ -185,7 +185,7 @@ class NoiseModel(ABC):
 
     def location_fisher(self, prediction, observation, noise, extra=None):
         """The expected per-point **Fisher information of the location** ``kappa`` -- the
-        Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``, #481)
+        Gauss-Newton curvature the EFIM trust-region path (``job_type = gntr``, #481)
         weights ``d(prediction)/d(theta)`` by to build its Hessian ``H = sum_i kappa_i
         s_i s_i^T``. ``kappa`` is the expected ``E[-d^2 log p / d mu^2]`` carried through
         the prediction: for a location-scale family additive on a scale it is
@@ -202,7 +202,7 @@ class NoiseModel(ABC):
         from ..gradient.errors import GradientNotSupported
         raise GradientNotSupported(
             "%s has no expected location Fisher on the EFIM trust-region path "
-            "(fit_type = gntr, #481)." % type(self).__name__)
+            "(job_type = gntr, #481)." % type(self).__name__)
 
     def noise_param_fisher(self, prediction, observation, noise, extra=None):
         """``{param_name: I_scale}`` -- the expected **Fisher information of each estimated
@@ -224,7 +224,7 @@ class NoiseModel(ABC):
         from ..gradient.errors import GradientNotSupported
         raise GradientNotSupported(
             "%s has no estimated-noise Fisher block on the EFIM trust-region path "
-            "(fit_type = gntr, #481)." % type(self).__name__)
+            "(job_type = gntr, #481)." % type(self).__name__)
 
     def nll(self, prediction, observation, noise, extra=None):
         """The full per-point negative log-likelihood (data fit + every parameter's

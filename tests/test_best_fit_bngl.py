@@ -133,7 +133,7 @@ class TestBareArtifact:
 
         text = _artifact_text(algo)
         assert '# Point: BEST FIT (minimum objective).' in text
-        assert '# fit_type: de' in text
+        assert '# job_type: de' in text
         assert 'Objective (minimum recorded): 3.25' in text
         assert 'MAXIMUM-LIKELIHOOD' not in text and 'samples.txt' not in text
 

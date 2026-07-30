@@ -141,11 +141,11 @@ class GradientRunner:
 
 # The one-line suggestion every gradient-path refusal ends with, so a user whose
 # model/config cannot be differentiated is pointed straight at a working fit_type
-# rather than left to guess. Gradient fitting is strictly opt-in (fit_type = trf /
+# rather than left to guess. Gradient fitting is strictly opt-in (job_type = trf /
 # lbfgs); a metaheuristic always works on the same config.
 _FALLBACK_HINT = (
     "Gradient-based fitting is not available for this fit; use a metaheuristic "
-    "fit_type instead (e.g. fit_type = de, the default, or pso / ss / cmaes), "
+    "job_type instead (e.g. job_type = de, the default, or pso / ss / cmaes), "
     "which needs no gradient."
 )
 
@@ -325,7 +325,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         edition = config.config.get('edition')
         if not edition or edition < 2:
             raise PybnfError(
-                "Gradient-based fitting (fit_type = %s) requires the edition-2 "
+                "Gradient-based fitting (job_type = %s) requires the edition-2 "
                 "config surface, but this fit is %s." % (
                     self._fit_type_label(),
                     "edition 1 (legacy)" if not edition else "edition %d" % edition),
@@ -338,7 +338,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         for model in self.model_list:
             if not hasattr(model, 'enable_output_sensitivities'):
                 raise PybnfError(
-                    "Gradient-based fitting (fit_type = %s) requires the bngsim "
+                    "Gradient-based fitting (job_type = %s) requires the bngsim "
                     "backend's forward sensitivities, but model '%s' uses a backend "
                     "that does not provide them." % (
                         self._fit_type_label(), getattr(model, 'name', '?')),
@@ -355,13 +355,13 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         refusal would surface only mid-run, at the first sensitivity-bearing
         ``simulate()`` (caught and re-raised in ``BngsimModel.execute``). Fired here
         next to :meth:`_require_sensitivity_backend`, it gives the discrete-event
-        model the same clean pre-flight "use a metaheuristic fit_type" refusal the
+        model the same clean pre-flight "use a metaheuristic job_type" refusal the
         other gates give. Models whose backend exposes no event count
         (``has_discrete_events`` absent) pass through untouched."""
         for model in self.model_list:
             if getattr(model, 'has_discrete_events', False):
                 raise PybnfError(
-                    "Gradient-based fitting (fit_type = %s) requires smooth, "
+                    "Gradient-based fitting (job_type = %s) requires smooth, "
                     "differentiable dynamics, but model '%s' contains discrete "
                     "events (a state-dependent discrete jump). Forward output "
                     "sensitivities go stale across such a jump, so bngsim cannot "
@@ -451,7 +451,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         the evaluated PSet, so the ``d theta/d u`` scale factors are taken at the
         point actually simulated. Converts a :class:`GradientNotSupported` (an
         objective the assembly cannot differentiate) into a clear, fail-fast
-        :class:`PybnfError` pointing at a metaheuristic fit_type."""
+        :class:`PybnfError` pointing at a metaheuristic job_type."""
         free_params = [res.pset.get_param(v.name) for v in self.variables]
         experiments = []
         for model_name, by_suffix in res.simdata.items():
@@ -485,7 +485,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         """Hook for a curvature-consuming leaf to attach its Hessian to the assembled
         gradient. A **no-op on the base**, so the residual-form (``trf``) and scalar-gradient
         (``lbfgs``) leaves -- which never form a Hessian -- are byte-identical; the EFIM
-        trust-region leaf (``fit_type = gntr``, #481) receives the data-fit Hessian from its
+        trust-region leaf (``job_type = gntr``, #481) receives the data-fit Hessian from its
         combined :meth:`_assemble_objective_gradient` override, then uses this hook to add, for a
         constrained fit, :func:`~pybnf.gradient.assembly.assemble_constraint_hessian`. Called **inside**
         :meth:`gradient_at`'s :class:`GradientNotSupported` guard, so an unsupported-curvature
@@ -499,7 +499,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         scalar gradient and needs no Fisher Hessian, so it fits the very corners ``gntr``
         refuses."""
         return PybnfError(
-            "Gradient-based fitting (fit_type = %s) cannot differentiate this "
+            "Gradient-based fitting (job_type = %s) cannot differentiate this "
             "fit's objective: %s" % (self._fit_type_label(), exc),
             _FALLBACK_HINT)
 

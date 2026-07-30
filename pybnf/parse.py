@@ -44,7 +44,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # cross-parameter parallel-track cap (#467).
                'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
                'profile_likelihood_reopt_max_iterations', 'profile_likelihood_max_parallel',
-               # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the
+               # gradient optimizers (job_type = trf / lbfgs / gntr, #386/#481): the
                # int-valued tunables -- L-BFGS-B's curvature-history depth and the three
                # cycle budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
                'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations',
@@ -52,7 +52,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
                # per chain per generation (n_try = 1 is the classic single-try engine).
                'n_try',
-               # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the maximum number
+               # CMA-ES restart (job_type = cmaes, #498/ADR-0070): the maximum number
                # of IPOP / BIPOP restarts (0 = a single run), and the optional
                # per-run generation cap (#507/ADR-0085).
                'cmaes_restarts', 'cmaes_run_maxgen',
@@ -69,10 +69,10 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'rhat_threshold', 'snooker_prob', 'kalman_burnin_frac',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
-                 # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the IPOP / BIPOP
+                 # CMA-ES restart (job_type = cmaes, #498/ADR-0070): the IPOP / BIPOP
                  # geometric population-growth factor per restart (2.0 = doubling).
                  'cmaes_ipop_factor',
-                 # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the
+                 # gradient optimizers (job_type = trf / lbfgs / gntr, #386/#481): the
                  # float-valued tunables -- the trust-region-reflective / L-BFGS-B / EFIM
                  # optimality + step tolerances, L-BFGS-B's Armijo constant / backtrack
                  # factor, and GNTR's relative Levenberg ridge on the Fisher Hessian.
@@ -105,7 +105,7 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
               'outlier_method', 'refine_method', 'noise_location',
-              # CMA-ES restart schedule (fit_type = cmaes, #498/ADR-0070): ipop | bipop.
+              # CMA-ES restart schedule (job_type = cmaes, #498/ADR-0070): ipop | bipop.
               'cmaes_restart_strategy',
               # Global qualitative (BPSL) penalty-family override:
               # auto | hinge | probit | logit.

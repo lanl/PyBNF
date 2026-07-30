@@ -51,7 +51,7 @@ the offline oracle in ``tests/test_gradient_runner.py``.
 Scope (this cut -- the tractable configurations; the rest cleanly refuse to ``lbfgs``). Supports
 an estimated-sigma Gaussian (``chi_sq_dynamic``), a fixed-scale Laplace, a fixed-dispersion
 negative-binomial (MEAN), and a Gaussian fit with (static-hinge) constraints. Refuses -- with a
-:class:`~pybnf.printing.PybnfError` pointing at ``fit_type = lbfgs`` -- the coupled corners whose
+:class:`~pybnf.printing.PybnfError` pointing at ``job_type = lbfgs`` -- the coupled corners whose
 Fisher this cut does not assemble: a MEAN-on-log estimated scale, the count family's free
 dispersion or MEDIAN centering, the Student-t estimated-df 2x2 block, and an estimated constraint
 scale. Local multi-start is provided by :class:`GradientOptimizer` (``N`` concurrent starts,
@@ -157,9 +157,9 @@ class GNTRAlgorithm(GradientOptimizer):
         a MEAN-on-log estimated scale, the count family's free dispersion / MEDIAN centering, the
         Student-t 2-parameter block, an estimated constraint scale -- all fit under ``lbfgs``."""
         return PybnfError(
-            "Fisher/Gauss-Newton trust-region fitting (fit_type = gntr) cannot build the EFIM "
+            "Fisher/Gauss-Newton trust-region fitting (job_type = gntr) cannot build the EFIM "
             "Hessian for this fit's objective: %s" % exc,
-            "Use the gradient quasi-Newton fallback 'fit_type = lbfgs', which consumes the "
+            "Use the gradient quasi-Newton fallback 'job_type = lbfgs', which consumes the "
             "scalar gradient and needs no Fisher Hessian -- it handles the estimated noise "
             "scales, the Laplace / count families, and the constraint penalties whose curvature "
             "the EFIM trust-region step does not (yet) assemble.")

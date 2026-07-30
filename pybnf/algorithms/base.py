@@ -1477,7 +1477,7 @@ class Algorithm(ABC):
         from .samplers.base import BayesianAlgorithm
         lines = [
             '# Best-fit model emitted by PyBNF (ADR-0048).',
-            '# fit_type: %s' % self.config.config.get('fit_type', '?'),
+            '# job_type: %s' % self.config.config.get('fit_type', '?'),
             '# Parameter set: %s' % best_name,
             '# Objective (minimum recorded): %.10g' % best_obj,
         ]

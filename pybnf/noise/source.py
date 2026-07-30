@@ -494,7 +494,7 @@ class PredictionFormulaSigma(SigmaSource):
     ``least_squares_exact`` -- the σ-through-prediction term is not a square).
 
     **EFIM Fisher (ADR-0080, lifting the ADR-0079 deferral).** The expected-Fisher block
-    (``fit_type = gntr``) is now assembled too. In the natural ``(μ, σ)`` coordinates the Gaussian
+    (``job_type = gntr``) is now assembled too. In the natural ``(μ, σ)`` coordinates the Gaussian
     Fisher is block-diagonal (``E[∂²L/∂μ²] = 1/σ²``, ``E[∂²L/∂σ²] = 2/σ²``, cross term 0), so
     mapping to θ through the Jacobian rows ``∂μ/∂θ = s_i`` and ``∂σ/∂θ = g_i`` gives the per-point
     ``H_i = (1/σ²)outer(s_i, s_i) + (2/σ²)outer(g_i, g_i)``. The same :meth:`sigma_sensitivity`

@@ -773,7 +773,7 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             # rather than dereferencing the absent simdata (the #492 crash in the gradient
             # path; here the whole profile has no anchor).
             raise PybnfError(
-                "Profile likelihood (fit_type = %s) could not simulate its reference point "
+                "Profile likelihood (job_type = %s) could not simulate its reference point "
                 "(the %s), so there is no optimum to profile around." % (
                     self._fit_type_label(),
                     'supplied initial_value theta*' if self.phase == 'center'

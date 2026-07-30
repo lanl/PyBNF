@@ -299,6 +299,18 @@ the objection that a rename is "pure churn" does not apply here:
 This is the canonical use of the edition mechanism: an honest name in the new era without
 breaking a single legacy job or any internal code.
 
+**Messages and prose say `job_type` (2026-07-30).** "Surface-only" includes every string a user
+reads, not just the accepted key: error messages, warnings, console output, the best-fit artifact
+header (ADR-0048), and the narrative documentation all name the run selector `job_type`, whatever
+the internals call the slot they read it from. `fit_type` survives in user-facing text in exactly
+three places, each because the subject genuinely *is* the legacy key: the `fit_type` entry in
+`docs/config_keys.rst` (which documents it and points at `job_type`), the legacy-syntax refusal and
+the legacy no-selector default warning in `config.py` (a reader at edition 1 cannot use `job_type`,
+so telling them to would be wrong), and the legacy quickstart config example. Internal identifiers
+— `FIT_TYPE_REGISTRY`, `register_fit_type`, `config['fit_type']`, `Algorithm.fit_type` — keep their
+names as this addendum's scope note says, and developer-facing docs about the registry keep naming
+them.
+
 ### 4. The dividing line the rename illustrates: problem keys vs tool keys
 
 The rename clarifies *which* keys the new era touches. New-era modernization is for the

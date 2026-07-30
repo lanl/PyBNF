@@ -940,7 +940,7 @@ class BngsimSbmlModelNoTimeout(Model):
         gradient path reads this as its pre-flight differentiability gate
         (:meth:`GradientOptimizer._require_differentiable_dynamics`) to refuse a
         discrete-event model **up front** -- with an actionable "use a metaheuristic
-        fit_type" message -- instead of letting the fit start and fail at the first
+        job_type" message -- instead of letting the fit start and fail at the first
         sensitivity-bearing ``simulate()``. The net backend's property documents the
         same contract; this is its SBML twin.
 

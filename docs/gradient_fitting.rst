@@ -18,9 +18,9 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
 
    The gradient path is **edition-2 only** and requires a **deterministic ODE** simulation of a
    **reaction network** (a ``.bngl`` model that generates a network, run with ``method=>"ode"``).
-   These requirements are **enforced**, not merely documented: a gradient ``fit_type`` on a
+   These requirements are **enforced**, not merely documented: a gradient ``job_type`` on a
    non-edition-2 config, a non-bngsim model, or a model that bngsim cannot differentiate is
-   refused up front with an actionable message pointing back at a metaheuristic ``fit_type``. In
+   refused up front with an actionable message pointing back at a metaheuristic ``job_type``. In
    particular a model with **discrete events** (a state-dependent discrete jump in the dynamics)
    has no smooth forward sensitivity — bngsim refuses sensitivity requests on it — so it is
    refused at construction rather than failing mid-run; a non-ODE simulation *method* (SSA /
@@ -32,9 +32,9 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
 Running a gradient fit
 ----------------------
 
-Three optimizers consume the gradient, all opt-in via ``fit_type``:
+Three optimizers consume the gradient, all opt-in via ``job_type``:
 
-* ``fit_type = trf`` — a **Trust-Region-Reflective least-squares** optimizer
+* ``job_type = trf`` — a **Trust-Region-Reflective least-squares** optimizer
   (Branch–Coleman–Li, matching ``scipy.optimize.least_squares(method="trf")``). It
   consumes the residual vector + residual Jacobian and approximates the Hessian as
   :math:`J^{\mathsf T}J`, which is far better-conditioned on a least-squares problem than feeding a
@@ -48,14 +48,14 @@ Three optimizers consume the gradient, all opt-in via ``fit_type``:
   Student-t objective, no constraints); a fit whose objective is not an exact sum of squares is
   refused with a pointer to ``lbfgs``.
 
-* ``fit_type = lbfgs`` — a bounded limited-memory quasi-Newton optimizer (**L-BFGS-B**,
+* ``job_type = lbfgs`` — a bounded limited-memory quasi-Newton optimizer (**L-BFGS-B**,
   Byrd–Lu–Nocedal–Zhu). It consumes the **scalar** gradient, so it handles precisely the objectives
   ``trf`` refuses: an estimated noise scale — including a **prediction-dependent** scale
   (``sigma = prediction_formula …``, the combined additive+proportional error model, whose scale
   rides the same forward sensitivity as the residual) — the Laplace / count families, and active
   constraint penalties.
 
-* ``fit_type = gntr`` — a **general-objective Fisher/Gauss-Newton trust-region** optimizer. It gives
+* ``job_type = gntr`` — a **general-objective Fisher/Gauss-Newton trust-region** optimizer. It gives
   ``trf``'s trust-region step quality — the well-conditioned :math:`J^{\mathsf T}J`-style curvature —
   for the very objectives ``trf`` refuses and only ``lbfgs`` could handle. Its Hessian is the
   **expected-Fisher / Gauss-Newton information**
@@ -74,7 +74,7 @@ Three optimizers consume the gradient, all opt-in via ``fit_type``:
 
 All three run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
 scheduler job) rather than through a blocking ``scipy`` driver, so backup/resume work exactly as for
-every other ``fit_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``
+every other ``job_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``
 / ``gntr``), so a gradient step can polish a metaheuristic's best fit.
 
 **Local multi-start.** A gradient method is purely *local*: it descends into whatever basin its

@@ -67,7 +67,7 @@ Scope. TRF consumes the **exact least-squares residual** -- the Gaussian (any
 scale/location) and the Student-t (#459). A fit whose objective is not an exact sum of
 squares (an estimated noise scale, a Laplace / count family, active constraints;
 ``GradientResult.least_squares_exact == False``) has no faithful residual model, so this
-optimizer refuses it with a pointer to the L-BFGS-B path (``fit_type = lbfgs``, #386's
+optimizer refuses it with a pointer to the L-BFGS-B path (``job_type = lbfgs``, #386's
 fallback). Local multi-start is provided by :class:`GradientOptimizer` (the base runs
 ``N`` independent :class:`_TRFRunner` starts concurrently and keeps the global best).
 
@@ -631,10 +631,10 @@ class _TRFRunner(GradientRunner):
         silently optimizing the wrong surface."""
         if not grad.least_squares_exact:
             raise PybnfError(
-                "fit_type = trf needs an exact least-squares residual (a Gaussian or "
+                "job_type = trf needs an exact least-squares residual (a Gaussian or "
                 "Student-t objective with a fixed noise scale and no constraints), but "
                 "this fit's objective is not an exact sum of squares.",
-                "Use the gradient quasi-Newton fallback 'fit_type = lbfgs', which "
+                "Use the gradient quasi-Newton fallback 'job_type = lbfgs', which "
                 "consumes the scalar gradient and handles estimated noise scales, the "
                 "Laplace / count families, and constraint penalties.")
         return grad
