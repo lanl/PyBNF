@@ -437,9 +437,11 @@ def parse(s):
     # to apply (omitted => wildtype), ``preequilibrate:`` names the Condition to equilibrate
     # under first (unmeasured, to steady state -- ADR-0052 pre-equilibration #440),
     # ``model:`` resolves the base model (omittable when one
-    # model), ``type:`` overrides the data-driven type inference, ``method:`` the simulator,
+    # model), ``type:`` overrides the data-driven type inference (which reads an all-``inf``
+    # time column as a steady state -- ADR-0086), ``method:`` the simulator,
     # and ``t_end:`` a parameter_scan's fixed endpoint time (absent => steady state, the
-    # new-era scan default -- ADR-0046). Each labeled sub-field is a single pp.Group, combined
+    # new-era scan default -- ADR-0046) or a steady-state experiment's max-time bound. Each
+    # labeled sub-field is a single pp.Group, combined
     # with pp.Each (``&``) so they may appear in ANY order after the name; only ``data:`` is
     # required. ploop reads the groups by their label, so order does not matter. Output:
     # ``['experiment', <name>, <field group>, ...]``. Edition-gated (>= 2) in config.py.
@@ -460,7 +462,9 @@ def parse(s):
     exp_method_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('method') + colon + exp_field_token)
     # The optional ``t_end:`` field: a fixed simulation endpoint time. For a parameter_scan
     # (ADR-0046) it is the scan's measurement time (absent => steady state, PEtab time=inf,
-    # the new-era default). For a *constraint-only* experiment (``data:`` is .con/.prop only,
+    # the new-era default). For a *steady-state* experiment (a ``time = inf`` data grid,
+    # ADR-0086) it is instead the max-time BOUND on the relaxation, default 1e6 -- there is
+    # no readout time to give. For a *constraint-only* experiment (``data:`` is .con/.prop only,
     # so there is no measurement time grid to derive -- ADR-0028 addendum) it is the
     # time-course endpoint, the new-era home for the timing a legacy job kept in the model's
     # begin actions block. Ignored for a time course that has .exp data (its grid comes from
@@ -951,8 +955,10 @@ def ploop(ls):  # parse loop
                       "measurements and/or .con/.prop constraints) optionally with 'condition: c', " \
                       "'preequilibrate: c0' (equilibrate under c0 to steady state, unmeasured, before " \
                       "measuring -- ADR-0052), " \
-                      "'model: modelfile', 'type: time_course|parameter_scan', 'method: ode|ssa|pla|nf', " \
-                      "'t_end: <number>' (a parameter_scan's fixed endpoint, or a constraint-only " \
+                      "'model: modelfile', 'type: time_course|steady_state|parameter_scan', " \
+                      "'method: ode|ssa|pla|nf', " \
+                      "'t_end: <number>' (a parameter_scan's fixed endpoint, a steady_state's max-time " \
+                      "bound, or a constraint-only " \
                       "experiment's time-course endpoint), 't_start: <number>' / 'n_steps: <number>' " \
                       "(a constraint-only experiment's integration start / output resolution), or " \
                       "'measurement_params: file.tsv' in any order (requires edition >= 2)"

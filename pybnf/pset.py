@@ -1111,7 +1111,22 @@ class BNGLModel(Model):
     @staticmethod
     def _timecourse_line(action):
         """The BNGL ``simulate(...)`` line for a :class:`TimeCourse` (shared by the ordinary
-        and the pre-equilibration emission paths)."""
+        and the pre-equilibration emission paths).
+
+        A steady-state time course (ADR-0086, #521) emits ``steady_state=>1`` -- the same
+        early-stop-on-``||dx/dt||`` primitive the unmeasured pre-equilibration phase uses
+        (ADR-0052) -- with ``t_end`` as the max-time bound and a single output step, so the
+        final row is the equilibrium the datum at ``time = inf`` is scored against."""
+        # t_start renders as a bare int when integral (so the default 0 stays ``t_start=>0``),
+        # else full precision; shared by the steady-state and fixed-endpoint forms below.
+        _ts = float(action.t_start)
+        ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
+        if getattr(action, 'steady_state', 0):
+            _te = float(action.time)
+            te_str = str(int(_te)) if _te.is_integer() else repr(_te)
+            return (f'simulate({{method=>"{action.method}",steady_state=>1,t_start=>{ts_str},'
+                    f't_end=>{te_str},n_steps=>1,suffix=>"{action.suffix}",print_functions=>1'
+                    f'{_nf_action_opts(action)}}})')
         if action.explicit_points is not None:
             # New-era explicit output points (ADR-0028): emit BioNetGen sample_times
             # so the gdat lands on exactly the data's time points. Covers BNG2.pl
@@ -1128,11 +1143,7 @@ class BNGLModel(Model):
             sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
             return (f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],'
                     f'suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})')
-        # t_start renders as a bare int when integral (so the default 0 stays
-        # ``t_start=>0`` -- byte-identical to the pre-t_start emission), else full
-        # precision; a non-zero t_start shifts the integration window (ADR-0028).
-        _ts = float(action.t_start)
-        ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
+        # A non-zero t_start shifts the integration window (ADR-0028).
         return (f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},'
                 f'n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1'
                 f'{_nf_action_opts(action)}}})')
@@ -1526,6 +1537,42 @@ class SbmlModelNoTimeout(Model):
             elif mi.name in self.param_names:
                 setattr(runner, mi.name, mi.undo())
 
+    def _steady_state_data(self, act, runner, selection):
+        """The equilibrium of an SBML model as a baseline + steady-state :class:`~pybnf.data.Data`
+        (ADR-0086, #521) -- the RoadRunner peer of the BNGL ``steady_state=>1`` simulate.
+
+        RoadRunner's own steady-state solver is the primary route; when it does not
+        converge, fall back to integrating to ``act.time`` (the max-time bound) and take
+        the final row. That is the warn-and-score-last-value policy the bngsim
+        steady-state paths already use (ADR-0046): a point the solver cannot equilibrate
+        is still scored -- at the furthest relaxation reached -- rather than failing the
+        whole evaluation, so the optimizer can walk out of it.
+
+        Two rows, matching what every other backend's steady-state run emits (``n_steps=>1``:
+        the baseline the run starts from, then the state it settles in) so the output row
+        count is the one ``Action.output_length`` predicts. The final row is labelled
+        ``time = inf``: a steady state is the t -> infinity limit, the same label the
+        measurement carries in the ``.exp`` (and in PEtab), and the row
+        ``Objective._sim_row_for`` matches an infinite measurement time against.
+        """
+        headers = [s.strip('[]') for s in selection]
+        baseline = [float(runner.getValue(s)) for s in selection]
+        try:
+            runner.steadyState()
+        except Exception as exc:
+            logger.warning(
+                'SBML model %s: the RoadRunner steady-state solver did not converge for '
+                'action %s (%s); scoring the state reached by integrating to t=%s instead.',
+                self.name, act.suffix, exc, act.time)
+            runner.reset()
+            res_array = runner.simulate(act.t_start, act.time, steps=1, selections=selection)
+            equilibrium = list(np.asarray(res_array)[-1, :])
+        else:
+            equilibrium = [float(runner.getValue(s)) for s in selection]
+        baseline[0] = float(act.t_start)   # column 0 is 'time'
+        equilibrium[0] = float('inf')
+        return Data.from_columns(np.asarray([baseline, equilibrium], dtype=float), headers)
+
     def execute(self, folder, filename, timeout):
         runner = self._load_runner()
 
@@ -1549,6 +1596,10 @@ class SbmlModelNoTimeout(Model):
                     if self.integrator == 'euler':
                         runner.integrator.subdivision_steps = act.subdivisions
                 if isinstance(act, TimeCourse):
+                    # Set when this branch builds its own Data (rather than wrapping a
+                    # RoadRunner NamedArray below): the t=0-only observation and the
+                    # steady state both read model state directly.
+                    res = None
                     try:
                         if act.initial_state_only:
                             # A PEtab condition may legitimately measure only the initialized
@@ -1559,6 +1610,12 @@ class SbmlModelNoTimeout(Model):
                             values = [float(runner.getValue(s)) for s in selection]
                             res = Data.from_columns(
                                 np.asarray([values], dtype=float), headers)
+                            res_array = res.data
+                        elif act.steady_state:
+                            # A steady-state measurement (ADR-0086, #521): the datum is at
+                            # PEtab time=inf, so score the equilibrium rather than a point on
+                            # a time grid.
+                            res = self._steady_state_data(act, runner, selection)
                             res_array = res.data
                         elif act.explicit_points is not None:
                             # New-era explicit output points (ADR-0028): output at exactly
@@ -1573,13 +1630,14 @@ class SbmlModelNoTimeout(Model):
                     except RuntimeError:
                         # Rethrow simulation errors as something more specific to be caught
                         raise FailedSimulationError
-                    if not act.initial_state_only:
+                    built_own_data = res is not None
+                    if not built_own_data:
                         res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
                     if self.save_files:
                         np.savetxt(f'{folder}/{filename}_{act.suffix}{mut.suffix}.gdat', res_array,
                                    header=(' '.join(res.headers[i] for i in range(res.data.shape[1]))
-                                           if act.initial_state_only
+                                           if built_own_data
                                            else ' '.join(res_array.colnames)))
                 elif isinstance(act, ParamScan):
                     # Manually run parameter scan with several simulate commands
@@ -1689,12 +1747,12 @@ class Action:
 class TimeCourse(Action):
     """A time-course simulation action parsed from the PyBNF configuration file.
 
-    This supports a subset of BioNetGen's ``simulate`` arguments.  For BNGL
-    models, users should prefer writing actions directly in the BNGL file's
-    ``begin actions`` block, which supports the full set of BioNetGen arguments
-    (e.g., ``steady_state``, ``atol``, ``rtol``, ``continue``, ``stop_if``).
-    Config-file actions are primarily intended for SBML models, which have no
-    native action syntax.
+    This supports a subset of BioNetGen's ``simulate`` arguments (including
+    ``steady_state``, which every backend honors -- ADR-0086).  For BNGL models,
+    users should prefer writing actions directly in the BNGL file's ``begin
+    actions`` block, which supports the full set of BioNetGen arguments (e.g.,
+    ``atol``, ``rtol``, ``continue``, ``stop_if``).  Config-file actions are
+    primarily intended for SBML models, which have no native action syntax.
     """
 
     def __init__(self, d, explicit_points=None):
@@ -1715,7 +1773,7 @@ class TimeCourse(Action):
         # Available keys and default values
         num_keys = {'time', 'step', 't_start'}
         str_keys = {'model', 'suffix', 'method'}
-        int_keys = {'subdivisions'}
+        int_keys = {'subdivisions', 'steady_state'}
         # Default values
         self.time = None  # Required (or derived from explicit_points below): the t_end endpoint
         self.t_start = 0.  # Integration start time (BNGL t_start); 0 unless stated (ADR-0028)
@@ -1724,6 +1782,11 @@ class TimeCourse(Action):
         self.model = ''
         self.suffix = 'time_course'
         self.method = 'ode'
+        # Steady-state measurement (ADR-0086, #521): the observation is the t -> infinity
+        # limit (PEtab time=inf), not a point on a time grid, so the run relaxes to
+        # equilibrium and the FINAL row is what gets scored. 0 = an ordinary time course;
+        # the new-era loader sets 1 for a data grid whose only time is ``inf``.
+        self.steady_state = 0
 
 
         # Transfer all the keys in the dict to my attributes of the same name
@@ -1770,6 +1833,25 @@ class TimeCourse(Action):
             self.initial_state_only = pts == [0.0]
             if self.time is None:
                 self.time = pts[-1]
+
+        # A steady-state time course (ADR-0086, #521) has no output grid to derive: the
+        # measurement is the equilibrium the run relaxes to, so ``time`` is not a readout
+        # time the user must supply -- it is only the max-time BOUND on the relaxation
+        # (bngsim's own ``steady_state(max_time=1e6)`` bound, matching the steady-state
+        # parameter_scan of ADR-0046 and the unmeasured pre-equilibration phase of
+        # ADR-0052). One output step spans [t_start, t_end], so the run emits the baseline
+        # and the final (steady) row, whatever ``step`` would otherwise have said.
+        self.steady_state = int(self.steady_state)
+        if self.steady_state not in (0, 1):
+            raise PybnfError('For key "time_course", the value for "steady_state" must be 0 or 1')
+        if self.steady_state:
+            if self.explicit_points is not None:
+                raise PybnfError(
+                    'A steady-state time_course has no output time grid (its measurement is '
+                    'the t -> infinity limit), so it cannot also take explicit output points.')
+            if self.time is None:
+                self.time = 1e6
+            self.step = self.time - self.t_start
 
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')

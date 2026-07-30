@@ -107,6 +107,10 @@ _Avoid_: simulation (too general), trajectory (that is the fit's best-fit record
 An action that sweeps one model parameter across a range, producing output as a function of that parameter.
 _Avoid_: sweep, bare "scan"
 
+**Steady State**:
+The equilibrium a model relaxes to — the `t → ∞` limit of a Time Course, reached by integrating with an early stop on `‖dx/dt‖` (BNGL `steady_state=>1`) or by an algebraic solve, and bounded by a **max-time bound** (`t_end:`, default `1e6`) that is *not* a readout time. It appears in three places, all the same idea measured differently: an *unmeasured* equilibration phase before a measured one (**Pre-equilibration**, ADR-0052); the per-dose readout of a **Parameter Scan** (the ADR-0046 default); and — the plain case — a *measured* observation with no swept axis, written `time = inf` in the `.exp` and scored against the run's final row (ADR-0086). Deterministic (`ode`) only: a stochastic run has a stationary *distribution*, not a fixed point. PEtab spells all three `inf` (or `-inf` for a pre-equilibration period).
+_Avoid_: equilibrium simulation, long-time limit, "t=inf experiment" (that is the data's spelling, not the concept), stationary distribution (a stochastic notion, deliberately out of scope)
+
 **Suffix**:
 The label that pairs a model action's simulated output with the experimental data file it is compared to.
 _Avoid_: tag, key

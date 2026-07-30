@@ -66,7 +66,10 @@ a number inlines), an expression ``noiseFormula`` becoming a ``FormulaSigma`` (`
 imports too (ADR-0046): N Conditions each setting one swept parameter at a constant measurement
 time (``inf`` => steady state, or a finite ``t_end``) are reconstructed into a single swept-axis
 ``.exp`` (column 0 the swept parameter) + a ``parameter_scan`` ``experiment:`` (the inverse of
-the exporter's dose-response emission -- ``reconstruct_dose_responses``). Out of scope, each
+the exporter's dose-response emission -- ``reconstruct_dose_responses``). A ``time = inf``
+measurement with **no** swept axis (a single condition, e.g. Blasi) needs no reconstruction at
+all: the time is written verbatim into the ``.exp``, and the fitter reads an all-``inf`` time
+column as a steady-state experiment -- a relaxation to equilibrium (ADR-0086, #521). Out of scope, each
 mirroring an export-side boundary: a condition-table sympy layer; the five PEtab prior families
 PyBNF lacks; a dose-response that also carries a named condition or row-varying per-measurement
 placeholders. (One-sided truncation now maps to a half-bounded box -- ADR-0047, #432.)
@@ -212,6 +215,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     (ADR-0044). A **dose-response** (parameter_scan) problem -- N conditions each setting one
     swept parameter at a constant measurement time (``inf`` => steady state, ADR-0046) -- is
     reconstructed into a single swept-axis ``.exp`` + a ``parameter_scan`` experiment; a
+    **steady-state** measurement with no swept axis (``time = inf`` under a single condition)
+    imports as an ordinary experiment whose ``.exp`` time is ``inf``, which the fitter reads as a
+    relaxation to equilibrium (ADR-0086); a
     **pre-equilibrated dose-response** (ADR-0062, the preincubate -> wash -> dose-scan protocol) --
     N two-period experiments whose species ``setConcentration`` wash targets are aliased through
     the **mapping table** -- is reconstructed into a ``preequilibrate:`` + ``condition:``

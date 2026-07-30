@@ -99,24 +99,35 @@ Required Keys
       if any) is applied inline as a ``setParameter`` change: PyBNF runs the model to
       steady state under it, then applies the measurement condition and simulates the data
       grid from that equilibrated state. A pre-equilibration condition may use only
-      **absolute** (``=``) perturbations, and pre-equilibration applies to a **time-course**
-      experiment only (not a parameter scan). The conditions it names are consumed by the
+      **absolute** (``=``) perturbations. The conditions it names are consumed by the
       experiment, so they are not also run as standalone conditions.
     * **model:** names the base model by filename stem; omittable when the job declares a
       single model, required when it declares more than one.
-    * **type:** is **inferred** from the data's independent-variable header — a ``time``
-      column ⇒ a time course — and stated only when inference can't decide.
+    * **type:** is **inferred** from the data — a ``time`` column ⇒ a time course, a ``time``
+      column whose every value is ``inf`` ⇒ a **steady state**, any other independent
+      variable ⇒ a dose-response ``parameter_scan`` — and stated (``time_course`` /
+      ``steady_state`` / ``parameter_scan``) only to make the choice explicit.
+    * **t_end:** for a ``parameter_scan``, the fixed measurement time of each dose (omitted
+      ⇒ each dose runs to steady state). For a ``steady_state`` experiment it is instead the
+      **max-time bound** on the relaxation, default ``1e6``. Inert for a time course, whose
+      grid comes from the data.
     * **method:** the simulator, default ``ode``.
 
-  Requires ``edition >= 2``. **Currently only time-course experiments are supported**; a
-  parameter scan (a non-``time`` independent variable, or ``type: parameter_scan``) is not
-  yet expressible through this surface and raises a clear error — use a legacy
-  :ref:`param_scan <param_scan_key>` action for now.
+  Requires ``edition >= 2``.
+
+  **Steady-state measurements.** Data measured at equilibrium is written with ``time = inf``
+  in the ``.exp`` — PEtab's own steady-state time. PyBNF then relaxes the model to
+  equilibrium (early-stopping on ``||dx/dt||``, bounded by ``t_end:``) instead of integrating
+  to a fixed endpoint, and scores the datum against that final state. NFsim has no
+  steady-state solve, so ``method: nf`` is refused; and one experiment cannot mix ``inf``
+  with finite times (a steady state and a time course are two different simulations — give
+  each its own ``experiment:``). (ADR-0086)
 
   Examples:
 
     * ``experiment: egf_high, data: high_wt_r1.exp, high_wt_r2.exp`` (two replicates)
     * ``experiment: egf_high_dd, condition: dimer_dead, data: high_dd.exp``
+    * ``experiment: eq, data: equilibrium.exp`` (an ``.exp`` measured at ``time = inf``)
     * ``experiment: dose, preequilibrate: serum_starve, data: dose.exp`` (equilibrate under
       ``serum_starve``, then measure)
     * ``experiment: egf_high, model: egfr.bngl, data: high.exp`` (multi-model)
@@ -162,7 +173,9 @@ Required Keys
    the surface above. A dose-response (``parameter_scan``) experiment runs each dose to
    steady state by default (PEtab ``time = inf``), with an optional ``t_end:`` fixed
    endpoint; it exports to N steady-state Conditions/Experiments and imports back, closing
-   the dose-response round trip (#426). (ADR-0028, ADR-0046)
+   the dose-response round trip (#426). A plain **steady-state** experiment needs no
+   translation at all: its ``.exp`` time already *is* PEtab's ``inf``, so it exports and
+   imports as an ordinary measurement row. (ADR-0028, ADR-0046, ADR-0086)
 
 .. _fit_type:
 

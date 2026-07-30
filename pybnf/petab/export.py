@@ -656,10 +656,16 @@ def _experiment_type(name, data, explicit_type):
     variable (``time`` => time_course; otherwise the indvar names a swept parameter =>
     parameter_scan), unless ``type:`` states it. Mirrors
     ``config.py::_infer_experiment_type`` (a scan exports each dose as a steady-state
-    Condition/Experiment -- ADR-0046)."""
+    Condition/Experiment -- ADR-0046).
+
+    A ``steady_state`` experiment (ADR-0086, #521) exports on the **time-course route**:
+    its measurement time already IS ``inf`` in the ``.exp``, which is exactly PEtab's
+    steady-state time, so the rows need no special casing -- only the ``type:`` token has to
+    be accepted here (the fitter's inference and the exporter's differ only in that the
+    fitter must pick a simulation for it)."""
     if explicit_type is not None:
         t = explicit_type.lower()
-        if t in ('time_course', 'timecourse'):
+        if t in ('time_course', 'timecourse', 'steady_state', 'steadystate'):
             return 'time_course'
         if t in ('parameter_scan', 'param_scan', 'parameterscan'):
             return 'parameter_scan'

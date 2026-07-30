@@ -1048,9 +1048,18 @@ class BngsimSbmlModelNoTimeout(Model):
             raise ModelError(str(exc)) from exc
 
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
-                        seed=None, timeout=None, sample_times=None):
+                        seed=None, timeout=None, sample_times=None, steady_state=False,
+                        suffix=None):
         sim = self._make_simulator(engine_model, method)
         run_kwargs = {}
+        if steady_state:
+            # A steady-state measurement (ADR-0086, #521): relax to equilibrium
+            # (early-stop on ||dx/dt||) with ``end_time`` only the max-time bound, rather
+            # than integrating to a fixed endpoint. This is bngsim's own parity primitive
+            # -- the same one the BNGL ``simulate(steady_state=>1)`` path and the
+            # steady-state parameter_scan use -- so all three agree on what "the steady
+            # state" means, and it stays forward-sensitivity differentiable.
+            run_kwargs['steady_state'] = True
         if timeout is not None:
             try:
                 timeout_value = float(timeout)
@@ -1077,7 +1086,17 @@ class BngsimSbmlModelNoTimeout(Model):
                 sample_times=pts,
                 **run_kwargs,
             )
-        return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), **run_kwargs)
+        result = sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), **run_kwargs)
+        if steady_state and not int(
+                (getattr(result, 'solver_stats', None) or {}).get('steady_state_reached', 0)):
+            # Warn-and-score-last-value (ADR-0046): a point that will not equilibrate inside
+            # the bound is still scored -- at the furthest relaxation reached -- so the
+            # optimizer can walk out of it, but the user hears about it.
+            logger.warning(
+                'bngsim SBML model %s: action %s did not reach steady state within its '
+                't_end=%s bound; scoring the state reached there.',
+                self.name, suffix, end_time)
+        return result
 
     def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
         """Apply the stochastic_seed policy to one SBML stochastic action."""
@@ -1141,6 +1160,8 @@ class BngsimSbmlModelNoTimeout(Model):
                                 engine_model, act.time, act.stepnumber + 1,
                                 method=method, seed=seed_value, timeout=timeout,
                                 sample_times=act.explicit_points,
+                                steady_state=bool(act.steady_state),
+                                suffix=suffix_with_mut,
                             )
                             data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[suffix_with_mut] = data

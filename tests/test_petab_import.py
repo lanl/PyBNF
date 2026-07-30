@@ -573,6 +573,94 @@ class TestImportDoseResponseRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Steady state with NO swept axis (#521, ADR-0086): a PEtab problem measured only at
+# ``time = inf`` (Blasi_CellSystems2016's shape). Distinct from the dose-response above,
+# which is also at time=inf but reconstructs a swept axis from its N conditions; here
+# there is a single condition, so the measurement is a plain equilibrium observation and
+# the imported experiment is a steady-state relaxation, not a scan.
+# ---------------------------------------------------------------------------
+
+# Birth-death with an analytic equilibrium A_tot -> k_prod/k_deg = 1.5.
+_SS_MODEL = """begin model
+begin parameters
+  k_prod  3.0
+  k_deg   2.0
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 0
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  birth: 0 -> A()   k_prod
+  death: A() -> 0   k_deg
+end reaction rules
+end model
+"""
+
+_SS_CONF = ('edition = 2\njob_type = de\nobjective = sos\n'
+            'model: ss.bngl\n'
+            'experiment: eq, data: eq.exp\n'
+            'uniform_var = k_prod 0.1 10\n')
+
+_SS_EXP = '# time A_tot\ninf\t1.5\n'
+
+
+class TestImportSteadyStateRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(tmp_path_factory.mktemp('ss'), _SS_CONF,
+                          extra_files={'ss.bngl': _SS_MODEL, 'eq.exp': _SS_EXP},
+                          model_name='ss.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_export_writes_the_petab_steady_state_time(self, imported):
+        # PyBNF's `time = inf` .exp cell IS PEtab's steady-state measurement time, so the
+        # export is a straight pass-through -- no special casing on either side.
+        petab1, _, _, _ = imported
+        meas = _tsv_rows(petab1 / 'measurements.tsv')
+        assert [m['time'] for m in meas] == ['inf']
+
+    def test_reconstructed_exp_keeps_the_infinite_time(self, imported):
+        _, imported_dir, _, _ = imported
+        recon = Data(file_name=str(imported_dir / 'experiment1.exp'))
+        assert recon.indvar == 'time'
+        assert np.isposinf(recon['time'][0])
+        assert list(recon['A_tot']) == [1.5]
+
+    def test_imported_conf_loads_as_a_steady_state_relaxation(self, imported, monkeypatch):
+        # The keystone: the imported conf now LOADS (it raised OverflowError deriving a step
+        # count from t=inf before #521) and synthesizes a steady-state simulate rather than a
+        # time course or a scan.
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        c = Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        sim = next(a for a in c.models['ss'].actions if a.startswith('simulate'))
+        assert 'steady_state=>1' in sim and 'n_steps=>1' in sim
+        assert 'parameter_scan' not in ''.join(c.models['ss'].actions)
+
+    def test_explicit_type_steady_state_also_exports(self, tmp_path_factory):
+        # A hand-written conf may state `type: steady_state`; the exporter takes the same
+        # time-course route for it (the .exp time already IS PEtab's inf).
+        conf = _SS_CONF.replace('experiment: eq, data: eq.exp',
+                                'experiment: eq, type: steady_state, data: eq.exp')
+        petab1, _, petab2, _ = _roundtrip(
+            tmp_path_factory.mktemp('ss_explicit'), conf,
+            extra_files={'ss.bngl': _SS_MODEL, 'eq.exp': _SS_EXP}, model_name='ss.bngl')
+        assert [m['time'] for m in _tsv_rows(petab1 / 'measurements.tsv')] == ['inf']
+        _assert_problem_round_trips(petab1, petab2)
+
+
+# ---------------------------------------------------------------------------
 # Pre-equilibration: a PEtab v2 two-period Experiment (a leading time=-inf
 # steady-state period under the pre-equilibration condition + a time=0 measurement
 # period under the measurement condition) imports as a new-era `preequilibrate:`

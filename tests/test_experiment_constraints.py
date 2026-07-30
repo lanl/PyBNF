@@ -196,6 +196,13 @@ class TestConstraintOnly:
             _build(tmp_path, conf_lines=_BASE + [
                 "experiment: qual, type: parameter_scan, t_end: 10, data: c.prop"])
 
+    def test_constraint_only_steady_state_refused(self, tmp_path):
+        # Likewise a steady state (ADR-0086): its `time = inf` grid comes from .exp data,
+        # which a constraint-only experiment does not have.
+        with pytest.raises(PybnfError, match="steady_state"):
+            _build(tmp_path, conf_lines=_BASE + [
+                "experiment: qual, type: steady_state, t_end: 10, data: c.prop"])
+
     def test_constraint_only_inherits_condition(self, tmp_path):
         conf = _build(tmp_path, conf_lines=_BASE + [
             "condition: knockout, perturbations: kB = 0",

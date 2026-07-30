@@ -6,6 +6,23 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **Steady-state (`time = inf`) measurements now load and fit (#521, ADR-0086).** A PEtab problem
+  measured only at equilibrium imported fine but crashed at configuration load
+  (`OverflowError: cannot convert float infinity to integer`): the experiment was materialized as
+  an ordinary time course, which derives its step count from a (here infinite) endpoint. PyBNF's
+  only steady-state route was the dose-response `parameter_scan` of ADR-0046, which needs a swept
+  axis a plain equilibrium observation does not have. An `.exp` whose `time` column is all `inf`
+  is now recognized as a **steady-state experiment**: it emits
+  `simulate({...,steady_state=>1,n_steps=>1})` — the relaxation-with-early-stop primitive
+  pre-equilibration already used — and the objective scores the datum against the run's final
+  (equilibrium) row. `t_end:` bounds the relaxation (default `1e6`) instead of timing a readout,
+  and `type: steady_state` may state explicitly what the data implies. Supported on BNGL
+  (BNG2.pl/bngsim), bngsim SBML/Antimony, and RoadRunner (which uses its own steady-state solver,
+  falling back to the bounded integration); forward sensitivities are carried at the equilibrium,
+  so `trf`/`lbfgs`/`gntr` fit these problems. NFsim (`method: nf`) has no steady-state solve and is
+  refused, as is an experiment mixing `inf` with finite times. This unblocks
+  `Blasi_CellSystems2016`, the last unimported subset-I problem of the Grein et al. 2026 benchmark
+  collection.
 - **PEtab conditions measured only at `t = 0` now load and evaluate as initial-state
   observations (#510).** A data-derived ``TimeCourse`` previously required at least one positive
   output time, so one legitimate initial-state condition rejected the entire imported problem

@@ -464,8 +464,19 @@ class SummationObjective(ObjectiveFunction):
         its prediction from the exact sim row scoring used (ADR-0056). Extracted
         verbatim from ``evaluate``'s loop; ``show_warnings=False`` suppresses the
         rounding-mismatch warning when re-walking points whose scoring already
-        warned."""
+        warned.
+
+        A ``+inf`` independent variable is a **steady-state** measurement (ADR-0086, #521;
+        PEtab's ``time = inf``): it names the t -> infinity limit rather than a point on
+        the simulated grid, so it matches the LAST simulated row -- the equilibrium a
+        steady-state action relaxes to. Backend-agnostic on purpose: BNGL's
+        ``steady_state=>1`` gdat ends at whatever time the ``||dx/dt||`` early-stop fired,
+        so there is no finite time the datum could name. (This also keeps the
+        ``rounding == 1`` nearest-row search away from an all-``inf`` distance array, whose
+        argmin would silently pick row 0.)"""
         target = exp_data.data[rownum, 0]
+        if np.isposinf(target):
+            return sim_data.data.shape[0] - 1
         if self.rounding == 0:
             # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
             sim_row = np.argmax(np.isclose(sim_data[indvar], target, atol=0.))

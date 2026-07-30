@@ -1418,6 +1418,14 @@ class Configuration:
                     action = self._build_preequilibration_action(
                         name, model, base, method, points, action_type, fields,
                         consumed_conditions, indvar=stacked.indvar)
+                elif action_type == 'steady_state':
+                    # Steady-state measurement (ADR-0086, #521): the data's only time is
+                    # ``inf``, so there is no output grid -- the run relaxes to equilibrium
+                    # (BNGL ``steady_state=>1`` / bngsim's early-stop on ||dx/dt|| / the
+                    # RoadRunner steady-state solve) and the objective scores that final
+                    # state. ``t_end:`` bounds the relaxation (default 1e6); it is a
+                    # max-time bound here, not a readout time.
+                    action = self._steady_state_action(name, method, fields)
                 elif action_type == 'time_course':
                     action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
                     self._attach_nf_options(action, fields, method)
@@ -1533,6 +1541,33 @@ class Configuration:
         return perts
 
     @staticmethod
+    def _steady_state_action(name, method, fields):
+        """The measured ``TimeCourse`` for a steady-state experiment (ADR-0086, #521): a
+        relaxation to equilibrium whose final row is scored against the data's ``time =
+        inf`` row(s).
+
+        ``t_end:`` is the max-time BOUND on the relaxation (as it is for a steady-state
+        parameter_scan, ADR-0046), not a readout time; omitted, it defaults to bngsim's own
+        ``steady_state(max_time=1e6)`` bound.
+
+        Deterministic (``ode``) only, the same boundary the steady-state parameter_scan
+        draws: a stochastic trajectory has a stationary *distribution*, not a fixed point
+        that ``||dx/dt|| -> 0`` detects, and NFsim has no steady-state solve at all
+        (ADR-0052). Refuse rather than silently integrate to the bound."""
+        if method != 'ode':
+            raise PybnfError(
+                f"Experiment '{name}' measures a steady state (its data's time is inf), but "
+                f"its method is '{method}'. A steady state is a deterministic fixed point "
+                "(the relaxation early-stops on ||dx/dt||), so it needs 'method: ode' -- a "
+                "stochastic run has a stationary distribution, not a fixed point, and NFsim "
+                "has no steady-state solve. Use 'method: ode', or measure a finite time "
+                "course instead.")
+        tc = {'suffix': name, 'method': method, 'steady_state': 1}
+        if fields.get('t_end') is not None:
+            tc['time'] = fields['t_end']
+        return TimeCourse(tc)
+
+    @staticmethod
     def _attach_nf_options(action, fields, method):
         """Carry the optional NFsim options (``gml:``, ``complex:``) from an experiment's fields
         onto its synthesized action, for a ``method: nf`` experiment. No-op off the NF path, so
@@ -1563,11 +1598,11 @@ class Configuration:
         (``saveConcentrations`` + ``reset_conc=>1``), which bngsim honors natively
         (lanl/bngsim#11); ``t_end:`` fixes the scan's measurement time (e.g. a dissociation read
         at 20/60 min), or with none each dose runs to steady state (ADR-0046)."""
-        if action_type not in ('time_course', 'parameter_scan'):
+        if action_type not in ('time_course', 'parameter_scan', 'steady_state'):
             raise PybnfError(
                 f"Experiment '{name}' uses pre-equilibration (preequilibrate:) with unsupported "
-                f"type '{action_type}'. The measured phase must be a time_course or a "
-                "parameter_scan.")
+                f"type '{action_type}'. The measured phase must be a time_course, a "
+                "steady_state or a parameter_scan.")
         preequil_cond = fields['preequilibrate']
         equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
         consumed_conditions.setdefault(base, set()).add(preequil_cond)
@@ -1598,6 +1633,11 @@ class Configuration:
             else:
                 scan['steady_state'] = 1
             action = ParamScan(scan, explicit_points=points)
+        elif action_type == 'steady_state':
+            # The measured phase is itself a steady state (ADR-0086, #521): equilibrate,
+            # intervene, then relax to the NEW equilibrium and score that. ``t_end:`` bounds
+            # the measured relaxation (the equilibration phase keeps its own bound).
+            action = self._steady_state_action(name, method, fields)
         else:
             action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
         action.set_preequilibration(equil_perts, measure_perts, equil_fixed_time=equil_t_end)
@@ -1756,14 +1796,17 @@ class Configuration:
         config-action time course), and an optional ``n_steps:`` (the uniform output
         resolution over ``[t_start, t_end]``; default = the :class:`~pybnf.pset.TimeCourse`
         step of 1). A uniform-grid ``TimeCourse`` is returned (no ``explicit_points``); the
-        constraints (loaded separately) score against its output. ``type: parameter_scan`` has
-        no constraint-only form (a scan's swept axis comes from data) and is refused."""
+        constraints (loaded separately) score against its output. Neither
+        ``type: parameter_scan`` (a scan's swept axis comes from data) nor
+        ``type: steady_state`` (whose ``time = inf`` grid likewise comes from data, ADR-0086)
+        has a constraint-only form; both are refused."""
         action_type = (fields.get('type') or 'time_course').lower()
         if action_type not in ('time_course', 'timecourse'):
             raise PybnfError(
                 f"Experiment '{name}' has only constraint data (.con/.prop) and type "
                 f"'{fields['type']}'. A constraint-only experiment runs a time course to a "
-                "fixed endpoint; a parameter_scan's swept axis can only come from .exp data.")
+                "fixed endpoint; a parameter_scan's swept axis and a steady_state's "
+                "'time = inf' grid can only come from .exp data.")
         t_end = fields.get('t_end')
         if t_end is None:
             raise PybnfError(
@@ -1962,21 +2005,57 @@ class Configuration:
 
     def _infer_experiment_type(self, name, data, explicit_type):
         """Infer an experiment's simulation type from the data's independent variable
-        (``time`` => time_course; otherwise the indvar names a swept parameter =>
-        parameter_scan), unless ``type:`` states it. Returns ``'time_course'`` or
-        ``'parameter_scan'`` (a scan runs each dose to steady state by default -- ADR-0046)."""
+        (``time`` => time_course, or steady_state when every time is ``inf``; otherwise
+        the indvar names a swept parameter => parameter_scan), unless ``type:`` states it.
+        Returns ``'time_course'``, ``'steady_state'`` or ``'parameter_scan'`` (a scan runs
+        each dose to steady state by default -- ADR-0046).
+
+        A ``time`` column of ``inf`` is PEtab's steady-state measurement (ADR-0086, #521):
+        the datum is the t -> infinity limit, so the experiment relaxes to equilibrium
+        instead of integrating to an endpoint the (infinite) grid cannot supply."""
+        n_infinite, n_points = self._infinite_indvar_count(data)
         if explicit_type is not None:
             t = explicit_type.lower()
             if t in ('time_course', 'timecourse'):
                 return 'time_course'
             if t in ('parameter_scan', 'param_scan', 'parameterscan'):
                 return 'parameter_scan'
+            if t in ('steady_state', 'steadystate'):
+                if n_infinite != n_points:
+                    # A relaxation outputs no grid a finite measurement time could name, so
+                    # the two statements contradict: say so here rather than at scoring time.
+                    raise PybnfError(
+                        f"Experiment '{name}' declares 'type: steady_state', but its data is "
+                        f"not measured at steady state ({n_points - n_infinite} of "
+                        f"{n_points} row(s) carry a finite time). A steady-state measurement "
+                        "is written with 'time = inf' in the .exp.")
+                return 'steady_state'
             raise PybnfError(
                 f"Experiment '{name}' has type '{explicit_type}', which is not recognized. "
-                "Use 'time_course' or 'parameter_scan' (bifurcate is not supported).")
+                "Use 'time_course', 'steady_state' or 'parameter_scan' (bifurcate is not "
+                "supported).")
         if data.indvar is not None and data.indvar.lower() == 'time':
+            if n_infinite and n_infinite == n_points:
+                return 'steady_state'
+            if n_infinite:
+                # A steady state and a time course are two different simulations, so one
+                # experiment cannot carry both grids; split them into two experiments.
+                raise PybnfError(
+                    f"Experiment '{name}' mixes steady-state measurements (time = inf) with "
+                    f"{n_points - n_infinite} finite time(s). A steady state is a separate "
+                    "simulation from a time course, so give each its own 'experiment:' (and "
+                    "its own .exp).")
             return 'time_course'
         return 'parameter_scan'
+
+    @staticmethod
+    def _infinite_indvar_count(data):
+        """``(n_infinite, n_points)`` over the data's independent-variable column -- how many
+        rows are measured at ``+inf`` (a steady state, ADR-0086) out of how many."""
+        if data.indvar is None:
+            return 0, 0
+        values = np.asarray([float(x) for x in data[data.indvar]])
+        return int(np.count_nonzero(np.isposinf(values))), int(values.size)
 
     def _load_observables(self):
         """Apply new-era ``observable:`` column-header overrides (ADR-0028, Chunk 4).
