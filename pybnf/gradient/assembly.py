@@ -32,10 +32,11 @@ Native -> sampling space (once, ADR-0029)
 -----------------------------------------
 ``rho`` is scale-invariant; the Jacobian moves to the sampling space the optimizer
 walks by ``J -> J @ diag(d theta/d u)``, applied **once** at the end. ``d theta/d u``
-is one autodiff of each parameter's scale ``inverse_jax`` (``priors/scale.py``) -- no
-hand-written per-scale derivative. A LINEAR parameter has ``d theta/d u = 1`` and is
-short-circuited, so the common (all-linear) path needs no jax; only a log-scaled
-parameter pulls in the optional ``pybnf[jax]`` extra (the house pattern, ADR-0019).
+comes from each parameter's scale in closed form (``Scale.d_inverse``,
+``priors/scale.py``): ``1`` for LINEAR (short-circuited), ``ln(10)*10**u`` for log10,
+``exp(u)`` for ln. No autodiff, so no gradient fit built on the shipped scales needs
+the optional ``pybnf[jax]`` extra (ADR-0087, #524); a custom scale that supplies only
+an ``inverse_jax`` still falls back to ``jax.grad`` (the house pattern, ADR-0019).
 
 Estimated noise scale (layer D, #451)
 -------------------------------------
@@ -613,10 +614,10 @@ def _selector_for(sens, col_name):
 def _sampling_scale_factors(free_params):
     """The ``d theta/d u`` Jacobian-diagonal for the native -> sampling transform.
 
-    Identity (1.0) for every LINEAR parameter -- the common case, computed without
-    jax. For a log-scaled parameter, autodiff its scale's ``inverse_jax`` at the
-    current ``u = forward(theta)`` (``priors/scale.py``), so no per-scale derivative
-    is hand-written and the log10/ln bases stay bit-consistent with the sampler."""
+    Identity (1.0) for every LINEAR parameter -- short-circuited, so the all-linear
+    case never touches a scale. For a log-scaled parameter, the scale's own analytic
+    derivative at the current ``u = forward(theta)`` (``priors/scale.py``), which keeps
+    the log10/ln bases in one place and bit-consistent with the sampler."""
     factors = np.ones(len(free_params))
     for j, param in enumerate(free_params):
         if not param.log_space:
@@ -627,27 +628,41 @@ def _sampling_scale_factors(free_params):
 
 
 def _d_theta_d_u(free_param, u):
-    """``d theta/d u`` for one log-scaled parameter via autodiff of ``inverse_jax``."""
-    jax = _require_jax()
-    return float(jax.grad(free_param.from_sampling_space_jax)(float(u)))
+    """``d theta/d u`` for one log-scaled parameter -- the scale's analytic derivative
+    (``d_inverse``, ADR-0087), falling back to autodiff of ``inverse_jax``.
+
+    Every built-in scale's inverse is an exponential, so its derivative is closed form
+    (``ln(10)*10**u`` / ``exp(u)``) and this stays off jax. It used to ``jax.grad`` that
+    scalar power, which JIT-compiled an XLA kernel *per rebuild of the Jacobian* -- ~40 ms
+    the persistent cache then declined as too cheap to keep -- and made the optional
+    ``pybnf[jax]`` extra a hard requirement of most gradient fits, since ``loguniform_var``
+    is the usual way to declare a rate constant (#524). The autodiff route remains for a
+    custom :class:`~pybnf.priors.scale.Scale` that supplies only an ``inverse_jax``."""
+    try:
+        return float(free_param.d_from_sampling_space(float(u)))
+    except NotImplementedError:
+        jax = _require_jax()
+        return float(jax.grad(free_param.from_sampling_space_jax)(float(u)))
 
 
 def _require_jax():
     """Import ``jax`` lazily for the sampling-space transform, or raise a pointed error.
 
-    The native -> sampling Jacobian of a **log-scaled** parameter autodiffs the
-    scale's ``inverse_jax`` (ADR-0029/0059); ``jax`` is the optional ``pybnf[jax]``
-    extra (ADR-0019), so a missing install surfaces as a :class:`PybnfError` naming
-    the extra -- the house pattern (mirroring ``samplers/hmc._require_jax``) -- never
-    a bare ``ImportError``. An all-linear fit never reaches here."""
+    Reached only by a **custom** scale that defines an ``inverse_jax`` but no analytic
+    ``d_inverse`` (ADR-0087), whose native -> sampling Jacobian factor is autodiffed
+    instead (ADR-0029/0059); ``jax`` is the optional ``pybnf[jax]`` extra (ADR-0019), so
+    a missing install surfaces as a :class:`PybnfError` naming the extra -- the house
+    pattern (mirroring ``samplers/hmc._require_jax``) -- never a bare ``ImportError``. No
+    fit using only the built-in linear/log10/ln scales reaches here."""
     try:
         import jax
     except ImportError as e:
         raise PybnfError(
-            "Gradient assembly needs jax to transform a log-scaled parameter's "
-            "gradient into sampling space, which is the optional 'jax' extra. Install "
-            "it with `pip install pybnf[jax]` (or `uv pip install pybnf[jax]`). A fit "
-            "with only linear-scale parameters needs no extra."
+            "Gradient assembly needs jax to autodiff a custom parameter scale that "
+            "defines no analytic derivative (`d_inverse`), which is the optional 'jax' "
+            "extra. Install it with `pip install pybnf[jax]` (or `uv pip install "
+            "pybnf[jax]`), or give the scale a `d_inverse`. A fit using only the "
+            "built-in linear / log10 / ln scales needs no extra."
         ) from e
     return jax
 

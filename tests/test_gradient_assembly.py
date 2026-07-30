@@ -11,8 +11,9 @@ Three tiers:
   residual, the native-space Jacobian, the loss-agreement invariant ``1/2||rho||**2 ==
   objective.evaluate``, summation across experiments, the pinned/unbound zero columns, and
   the capability gate;
-* **sampling-space transform** (``priors/scale.py``, jax for the log scales) -- ``d theta/du``
-  is 1 for a linear parameter, ``ln(10)*theta`` for log10, ``theta`` for natural log; and
+* **sampling-space transform** (``priors/scale.py``, closed form, no jax) -- ``d theta/du``
+  is 1 for a linear parameter, ``ln(10)*theta`` for log10, ``theta`` for natural log, each
+  pinned against the ``jax.grad`` it replaced (ADR-0087); and
 * **FD acceptance gate** (real bngsim) -- central differences of PyBNF's *own* loss vs the
   assembled ``gradient`` on the analytic-decay net: ``k`` (parameter axis) + ``S0`` (initial-
   condition axis), wildtype + one ``k``-scaled condition, exercising both axes, the per-
@@ -31,7 +32,9 @@ from pybnf.gradient import (
     assemble_gaussian_gradient, GradientNotSupported,
     PARAM, IC, NONE, ExperimentRouting, ParamRoute, RouteContribution, route_experiment,
 )
+from pybnf.gradient import assembly
 from pybnf.gradient.assembly import _sampling_scale_factors
+from pybnf.priors.scale import Scale
 from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
 from pybnf.noise import (
     ConstantSigma, DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, Laplace,
@@ -1903,18 +1906,77 @@ def test_sampling_scale_factor_linear_is_identity_no_jax():
 
 def test_sampling_scale_factors_log_scales():
     """d theta/du = ln(10)*theta for a log10 parameter and theta for a natural-log one,
-    via autodiff of the scale's inverse_jax (needs the optional jax extra)."""
-    pytest.importorskip('jax')
+    from the scale's own analytic derivative -- exactly, in float64."""
     free = _free(('k', 'loguniform_var', 0.01, 100.0, 2.0),
                  ('m', 'lnuniform_var', 0.01, 100.0, 3.0))
     factors = _sampling_scale_factors(free)
-    np.testing.assert_allclose(factors, [np.log(10.0) * 2.0, 3.0], rtol=1e-6)
+    np.testing.assert_allclose(factors, [np.log(10.0) * 2.0, 3.0], rtol=1e-14)
+
+
+def test_sampling_scale_factors_log_scales_never_import_jax(monkeypatch):
+    """The log-scaled factor is closed-form algebra, so assembly must not reach the jax
+    route for it (#524): the built-in scales' d theta/du costs no XLA compile, and a
+    log-scaled gradient fit -- the common case, since ``loguniform_var`` is how a rate
+    constant is usually declared -- does not require the optional pybnf[jax] extra."""
+    def _no_jax():
+        raise AssertionError('_require_jax must not be reached for a built-in scale')
+    monkeypatch.setattr(assembly, '_require_jax', _no_jax)
+    free = _free(('k', 'loguniform_var', 0.01, 100.0, 2.0),
+                 ('m', 'lnuniform_var', 0.01, 100.0, 3.0))
+    np.testing.assert_allclose(_sampling_scale_factors(free), [np.log(10.0) * 2.0, 3.0],
+                               rtol=1e-14)
+
+
+@pytest.mark.parametrize('keyword,value', [('loguniform_var', 2.0), ('lnuniform_var', 3.0),
+                                           ('uniform_var', 4.0)])
+def test_analytic_d_theta_d_u_matches_autodiff(keyword, value):
+    """Pin the analytic derivative to the autodiff it replaced: for every built-in scale,
+    ``Scale.d_inverse`` agrees with ``jax.grad`` of the same scale's ``inverse_jax``.
+
+    jax defaults to float32, so the agreement is float32-tight, not exact -- the analytic
+    route is the more accurate of the two."""
+    jax = pytest.importorskip('jax')
+    lo, hi = (0.01, 100.0) if keyword != 'uniform_var' else (0.0, 100.0)
+    param, = _free(('k', keyword, lo, hi, value))
+    u = param.to_sampling_space(param.value)
+    autodiff = float(jax.grad(param.from_sampling_space_jax)(float(u)))
+    assert param.d_from_sampling_space(u) == pytest.approx(autodiff, rel=1e-6)
+
+
+def test_custom_scale_without_analytic_derivative_falls_back_to_autodiff():
+    """A custom Scale supplying only ``inverse_jax`` keeps working: assembly catches the
+    NotImplementedError from ``d_inverse`` and autodiffs, so the jax route stays a live
+    fallback rather than dead code (ADR-0087)."""
+    pytest.importorskip('jax')
+
+    class _Cbrt(Scale):
+        """theta = u**3 -- an invertible non-exponential scale with no d_inverse.
+
+        ``is_log`` marks it a non-identity transform (what ``_sampling_scale_factors``
+        keys on to ask for a factor at all), not a logarithm."""
+        is_log = True
+        name = 'cbrt'
+
+        def forward(self, theta):
+            return np.cbrt(theta)
+
+        def inverse(self, u):
+            return u ** 3
+
+        def inverse_jax(self, u):
+            return u ** 3
+
+    param, = _free(('k', 'loguniform_var', 0.01, 100.0, 8.0))
+    param._scale = _Cbrt()
+    with pytest.raises(NotImplementedError):
+        param.d_from_sampling_space(2.0)
+    # theta = 8 -> u = 2, d theta/du = 3 u**2 = 12.
+    np.testing.assert_allclose(_sampling_scale_factors([param]), [12.0], rtol=1e-6)
 
 
 def test_log_scale_multiplies_the_right_jacobian_column():
     """The native->sampling transform scales only the log-scaled parameter's column; the
     residual is unchanged (scale-invariant)."""
-    pytest.importorskip('jax')
     obj = ChiSquareObjective()
     pred = np.array([120.0, 80.0, 53.0, 36.0])
     obs = np.array([118.0, 82.0, 50.0, 38.0])
@@ -1977,9 +2039,6 @@ def test_fd_acceptance_gate(k_type):
     free parameters (``k`` on the parameter axis, ``S0`` on the initial-condition axis), so
     the test exercises both sensitivity axes, the per-condition factor, the cross-experiment
     sum, and -- for ``loguniform_var`` -- the native->sampling transform of ``k``'s column."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     from pybnf.objective import ChiSquareObjective
 
     obj = ChiSquareObjective()
@@ -2105,7 +2164,6 @@ def test_log_scaled_free_sigma_column_takes_the_sampling_factor():
     """A log10-scaled free sigma's scalar gradient column is multiplied by the same
     ``d sigma/d u = ln(10)*sigma`` transform as a model column -- the noise gradient shares
     the native->sampling map (covered without bngsim)."""
-    pytest.importorskip('jax')
     pred = np.array([100.0, 74.0, 55.0, 41.0])
     obs = np.array([100.0, 70.0, 60.0, 40.0])
     sigma = 5.0
@@ -2135,9 +2193,6 @@ def test_fd_acceptance_gate_estimated_sigma(k_type):
     exercises the retained ``+log sigma`` normalizer's scalar gradient column alongside the
     two model-parameter columns, the cross-experiment sum, and -- for ``loguniform_var`` --
     the native->sampling transform of k's column."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = _free_sigma_objective('noise_sd')
     free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
             FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
@@ -2439,9 +2494,6 @@ def test_fd_acceptance_gate_student_t(k_type):
     k's native->sampling transform. The estimated normalizers are not squares, so the fit is not
     ``least_squares_exact``. A heavy-tailed family has larger higher-order curvature than the
     Gaussian oracle, so this uses a looser FD tolerance."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = _student_t_objective(FreeParameterSigma('noise_sd'), FreeParameterSigma('nu_free'))
     free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
             FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
@@ -2485,9 +2537,6 @@ def test_fd_acceptance_gate_student_t_fixed_residual(k_type):
     and df (default 4) read from the data, so nothing rides the scalar normalizer path. A
     heavy-tailed family has larger higher-order curvature, so the FD tolerance is looser than the
     Gaussian oracle."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = _student_t_objective()                 # fixed sigma (_SD column), default df=4
     sigma = 6.0
     free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
@@ -2533,9 +2582,6 @@ def test_fd_acceptance_gate_neg_bin(k_type):
     axis), S0 (IC axis), r_free (the free dispersion, NONE-routed) -- the cross-experiment sum, and,
     for ``loguniform_var``, k's native->sampling transform. No least-squares residual. The count
     family has larger higher-order curvature than the Gaussian oracle, so a looser FD tolerance."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     r = 6.0
     obj = _neg_bin_objective(location=MEAN, dispersion_source=FreeParameterSigma('r_free'))
     free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
@@ -2924,9 +2970,8 @@ def test_constraint_estimated_scale_gradient_column():
     np.testing.assert_allclose(g[2], dF_ds)
 
     # Log10 scale parameter (the recommended positive-parameter declaration): the tied column carries
-    # the ln(10)*s chain factor, exactly like an estimated sigma on a log scale. The log-space
-    # transform autodiffs through jax (the optional pybnf[jax] extra), so skip this leg without it.
-    pytest.importorskip('jax')
+    # the ln(10)*s chain factor, exactly like an estimated sigma on a log scale (no jax -- the
+    # log-space factor is the scale's own analytic derivative, ADR-0087).
     log = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0),
                 ('s_q', 'loguniform_var', 0.1, 1000.0, s_val))
     g_log = assemble_constraint_gradient([cset], sdd, routings, log)
@@ -3013,9 +3058,6 @@ def test_fd_acceptance_gate_estimated_scale(model_kind):
     chain rule end-to-end on the real bngsim decay net. The scale never enters the data fit, so its
     whole gradient comes from the constraint's scalar column -- the estimated-noise pattern, applied
     to a qualitative constraint."""
-    # ``s_q`` is loguniform, so the scale column's log-space chain rule autodiffs through jax
-    # (the optional pybnf[jax] extra) -- same declaration as every other log-scale leg here.
-    pytest.importorskip('jax')
     obj = ChiSquareObjective()
     sigma = 5.0
     model_name = 'e2e_ode_decay'
@@ -3276,9 +3318,6 @@ def test_fd_acceptance_gate_preequilibration(k_type):
     seed the assembled k_prod column would be identically zero while the true gradient is
     ``(1/k_deg) exp(-k_deg t) ≠ 0``. ``k_deg`` exercises a seed term *and* a measurement-RHS term.
     The ``loguniform_var`` variant adds the native->sampling transform on both columns."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = ChiSquareObjective()
     free = [FreeParameter('k_prod', k_type, 0.01, 100.0, value=2.5),
             FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
@@ -3362,9 +3401,6 @@ def test_fd_acceptance_gate_newton_dose_response(k_type):
     also proves that mapping. Two experiments (wildtype + a ``k_deg*2`` condition) exercise the
     per-condition routing factor and the cross-experiment sum; the ``loguniform_var`` variant
     adds the native->sampling transform on the fitted column."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = ChiSquareObjective()
     free = [FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
     names = [p.name for p in free]
@@ -3445,9 +3481,6 @@ def test_fd_acceptance_gate_dose_response(k_type):
     experiments (wildtype + a ``k_deg*2`` condition) exercise the per-condition routing factor
     and the cross-experiment sum; the ``loguniform_var`` variant adds the native->sampling
     transform on the fitted column."""
-    if k_type == 'loguniform_var':
-        pytest.importorskip('jax')
-
     obj = ChiSquareObjective()
     free = [FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
     names = [p.name for p in free]

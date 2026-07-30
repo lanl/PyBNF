@@ -573,9 +573,9 @@ The sensitivities and the residual Jacobian are assembled in PyBNF's **native** 
 The transform into the **sampling** space the optimizer walks (the :math:`\theta\leftrightarrow u`
 map a ``log10`` / ``ln`` parameter scale defines) is applied exactly once at the end: the residual
 is scale-invariant, and each Jacobian column is multiplied by :math:`\mathrm{d}\theta/\mathrm{d}u`.
-A linear parameter contributes a factor of one (and needs no extra dependency); a log-scaled
-parameter's factor is obtained by autodiff of its scale, which requires the optional
-``pybnf[jax]`` extra (install with ``pip install pybnf[jax]``).
+Every scale supplies that factor in closed form — one for a linear parameter,
+:math:`\ln(10)\,\theta` for ``log10``, :math:`\theta` for ``ln`` — so gradient fitting needs no
+autodiff and no optional dependency, whatever scale the parameters are declared on.
 
 .. seealso::
 

@@ -2351,6 +2351,19 @@ class FreeParameter:
         ``exp10`` helper, which raises a configuration hint on overflow (#412)."""
         return self._scale.inverse(u)
 
+    def d_from_sampling_space(self, u):
+        """``d theta/d u`` at a sampling-space point ``u`` -- the analytic derivative of
+        :meth:`from_sampling_space` (``1`` for a linear parameter, ``ln(10)*10**u`` for a
+        log10 one, ``exp(u)`` for a natural-log one).
+
+        The public peer of ``Scale.d_inverse`` (ADR-0087), and the diagonal of the
+        native -> sampling Jacobian the gradient path applies once at the end of assembly
+        (ADR-0029): closed form, so an ordinary log-scaled gradient fit needs no autodiff
+        and hence no optional ``pybnf[jax]`` extra (#524). Raises ``NotImplementedError``
+        for a custom scale that defines no derivative, which the gradient assembly answers
+        by autodiffing :meth:`from_sampling_space_jax` instead."""
+        return self._scale.d_inverse(u)
+
     def from_sampling_space_jax(self, u):
         """JAX-traceable peer of :meth:`from_sampling_space` (the ``u -> theta`` map,
         ADR-0059).

@@ -17,7 +17,7 @@ from scipy import stats
 
 from .context import priors, pset
 
-from pybnf.priors import LINEAR, LOG10, TruncatedPrior, build_prior
+from pybnf.priors import LINEAR, LN, LOG10, Scale, TruncatedPrior, build_prior
 from pybnf.priors.normal import Normal
 from pybnf.priors.uniform import Uniform
 from pybnf.priors.laplace import Laplace
@@ -67,6 +67,35 @@ class TestScale:
     @pytest.mark.parametrize("theta", [0.001, 0.5, 1.0, 42.0, 1e5])
     def test_log10_round_trip(self, theta):
         np.testing.assert_allclose(LOG10.inverse(LOG10.forward(theta)), theta, rtol=1e-12)
+
+    @pytest.mark.parametrize("scale", [LINEAR, LOG10, LN])
+    @pytest.mark.parametrize("u", [-2.0, 0.0, 1.3])
+    def test_d_inverse_matches_central_differences(self, scale, u):
+        """Each scale's analytic ``d theta/du`` (ADR-0087) is the derivative of its own
+        ``inverse`` -- oracled against central differences, independently of jax."""
+        h = 1e-6
+        fd = (scale.inverse(u + h) - scale.inverse(u - h)) / (2 * h)
+        assert scale.d_inverse(u) == pytest.approx(fd, rel=1e-7)
+
+    @pytest.mark.parametrize("u", [-3.0, -0.5, 0.0, 1.7, 4.2])
+    def test_d_inverse_log_bases_agree_under_change_of_base(self, u):
+        """The two log scales are one transform in different bases (10**u == exp(u ln 10)),
+        so their derivatives must satisfy the chain rule between them at full float64
+        precision -- a machine-precision oracle the 1e-7 finite differences cannot give.
+        Catches the plausible slip of returning theta without the ln(10) factor."""
+        assert LOG10.d_inverse(u) == pytest.approx(np.log(10.0) * LN.d_inverse(u * np.log(10.0)),
+                                                   rel=1e-15)
+
+    def test_linear_d_inverse_is_exactly_one(self):
+        """The identity scale's factor is exact 1.0 -- the gradient path leaves a linear
+        parameter's Jacobian column bit-unchanged."""
+        assert LINEAR.d_inverse(3.7) == 1.0
+
+    def test_base_scale_d_inverse_raises(self):
+        """A custom scale that defines no derivative raises, which is the gradient
+        assembly's signal to fall back to autodiffing ``inverse_jax``."""
+        with pytest.raises(NotImplementedError):
+            Scale().d_inverse(1.0)
 
 
 # ---------------------------------------------------------------------------
