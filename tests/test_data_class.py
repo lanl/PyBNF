@@ -482,3 +482,112 @@ class TestStackScanSensitivities:
         # A single scalar-path (None) point makes the whole scan scalar-path -> no tensor.
         assert data.stack_scan_sensitivities(
             [self._point(1.0, 2.0), None, self._point(5.0, 6.0)]) is None
+
+
+class TestStackRaggedScanSensitivities:
+    """Dose points whose sensitivity column sets disagree (#525).
+
+    bngsim decides per ``Result`` which global functions it can differentiate, and PyBNF
+    requests only those, so one dose point of a scan can legitimately carry a different
+    selector list from its siblings'. Stacking must align by selector name and survive the
+    mismatch, or -- where no alignment is possible -- say which dose point and which shapes
+    are at fault instead of failing inside ``numpy.stack``.
+    """
+
+    @staticmethod
+    def _point(values, selectors=('observable:A', 'expression:f'),
+               param_names=('k1', 'k2'), n_times=2, ic=None):
+        # ``values[sel][p]`` is the LAST row's d(sel)/d(param p); earlier rows are decoys.
+        rows = [np.array([[-9.0] * len(param_names)] * len(selectors))
+                for _ in range(max(n_times - 1, 0))]
+        if n_times:
+            rows.append(np.array([[float(values[s][p]) for p in range(len(param_names))]
+                                  for s in selectors]))
+        d_param = (np.stack(rows, axis=0) if rows
+                   else np.zeros((0, len(selectors), len(param_names))))
+        d_ic = None
+        if ic is not None:
+            d_ic = np.stack([np.array([[float(ic[s])] for s in selectors])] * n_times,
+                            axis=0)
+        return data.OutputSensitivities(
+            selectors=list(selectors), param_names=list(param_names),
+            ic_species=['S()'] if ic is not None else [],
+            d_param=d_param, d_ic=d_ic)
+
+    def test_column_absent_at_one_dose_is_dropped_not_fatal(self, caplog):
+        # Point 1 lost 'expression:f' (the backend declined to differentiate it at that
+        # dose only). The scan keeps the column every point has, with each dose's own
+        # values -- the pre-#525 code raised ValueError from numpy.stack here.
+        stacked = data.stack_scan_sensitivities([
+            self._point({'observable:A': [1.0, 2.0], 'expression:f': [10.0, 20.0]}),
+            self._point({'observable:A': [3.0, 4.0]}, selectors=('observable:A',)),
+            self._point({'observable:A': [5.0, 6.0], 'expression:f': [50.0, 60.0]}),
+        ])
+        assert stacked.selectors == ['observable:A']
+        assert stacked.d_param.shape == (3, 1, 2)
+        npt.assert_array_equal(stacked.d_param[:, 0, :],
+                               [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        assert 'expression:f absent at dose point(s) 1' in caplog.text
+
+    def test_permuted_selector_order_aligns_by_name(self):
+        # Same columns, different order at point 1: aligning by name (not position) keeps
+        # each selector's own sensitivities -- position-stacking would swap A and f here.
+        stacked = data.stack_scan_sensitivities([
+            self._point({'observable:A': [1.0, 2.0], 'expression:f': [10.0, 20.0]}),
+            self._point({'expression:f': [30.0, 40.0], 'observable:A': [3.0, 4.0]},
+                        selectors=('expression:f', 'observable:A')),
+        ])
+        assert stacked.selectors == ['observable:A', 'expression:f']
+        npt.assert_array_equal(stacked.d_param[:, 0, :], [[1.0, 2.0], [3.0, 4.0]])
+        npt.assert_array_equal(stacked.d_param[:, 1, :], [[10.0, 20.0], [30.0, 40.0]])
+
+    def test_no_shared_column_returns_none(self):
+        # Nothing is uniform across the scan -> no tensor at all (the gradient path then
+        # reports one missing-tensor error for the experiment).
+        assert data.stack_scan_sensitivities([
+            self._point({'observable:A': [1.0, 2.0]}, selectors=('observable:A',)),
+            self._point({'expression:f': [3.0, 4.0]}, selectors=('expression:f',)),
+        ]) is None
+
+    def test_ic_axis_dropped_when_a_later_dose_lacks_it(self, caplog):
+        # An axis present at dose 0 but missing later is a uniform gap, not a crash: the
+        # parameter axis still stacks, the IC axis is dropped whole.
+        stacked = data.stack_scan_sensitivities([
+            self._point({'observable:A': [1.0, 2.0]}, selectors=('observable:A',),
+                        ic={'observable:A': 0.5}),
+            self._point({'observable:A': [3.0, 4.0]}, selectors=('observable:A',)),
+        ])
+        assert stacked.d_ic is None
+        npt.assert_array_equal(stacked.d_param[:, 0, :], [[1.0, 2.0], [3.0, 4.0]])
+        assert 'dose point 1 carries no d_ic tensor' in caplog.text
+
+    def test_disagreeing_param_axis_labels_name_the_dose_point(self):
+        with pytest.raises(printing.PybnfError) as exc:
+            data.stack_scan_sensitivities([
+                self._point({'observable:A': [1.0, 2.0]}, selectors=('observable:A',)),
+                self._point({'observable:A': [3.0, 4.0]}, selectors=('observable:A',),
+                            param_names=('k1', 'k3')),
+            ])
+        assert 'dose point 1' in str(exc.value)
+        assert "'k3'" in str(exc.value)
+
+    def test_tensor_shape_contradicting_its_own_labels_reports_shapes(self):
+        point = self._point({'observable:A': [1.0, 2.0]}, selectors=('observable:A',))
+        bad = data.OutputSensitivities(
+            selectors=['observable:A', 'expression:f'],   # claims 2 columns, tensor has 1
+            param_names=['k1', 'k2'], ic_species=[], d_param=point.d_param)
+        with pytest.raises(printing.PybnfError) as exc:
+            data.stack_scan_sensitivities([point, bad])
+        assert 'dose point 1' in str(exc.value)
+        assert '(2, 1, 2)' in str(exc.value)          # the actual tensor shape
+        assert 'expected (n_times, 2, 2)' in str(exc.value)
+
+    def test_no_integrated_rows_reports_the_dose_point(self):
+        with pytest.raises(printing.PybnfError) as exc:
+            data.stack_scan_sensitivities([
+                self._point({'observable:A': [1.0, 2.0]}, selectors=('observable:A',)),
+                self._point({'observable:A': [0.0, 0.0]}, selectors=('observable:A',),
+                            n_times=0),
+            ])
+        assert 'dose point 1' in str(exc.value)
+        assert 'no integrated rows' in str(exc.value)

@@ -472,12 +472,19 @@ class BngsimModel(NetModel):
                 # forward sensitivities for a model with discrete events) must
                 # surface as an actionable PyBNF-level message, not a raw
                 # backend traceback. The original is chained for diagnostics.
+                # Lead with the underlying error and keep the non-differentiable-
+                # model diagnosis explicitly conditional (#525): this wrapper also
+                # catches failures that are nothing to do with the model's
+                # constructs, and naming discrete events unconditionally sent a
+                # reporter looking at an event-free model.
                 raise PybnfError(
                     "Model %s: simulation failed while computing forward output "
-                    "sensitivities for gradient-based fitting. The model may use "
-                    "discrete events or otherwise non-differentiable dynamics that "
-                    "preclude forward sensitivities; run a gradient-free fit. "
-                    "Backend error: %s" % (self.name, exc)
+                    "sensitivities for gradient-based fitting: %s. If the model uses "
+                    "discrete events or other non-differentiable constructs, forward "
+                    "sensitivities are unavailable for it; otherwise the failure report "
+                    "written under FailedSimLogs/ names the failing action and parameter "
+                    "set. A gradient-free job_type (e.g. job_type = de) needs no "
+                    "sensitivities." % (self.name, exc)
                 ) from exc
             raise
 

@@ -74,23 +74,115 @@ def stack_scan_sensitivities(per_point):
     Returns ``None`` if ``per_point`` is empty or **any** point carries no tensor, so
     a scan strategy that cannot supply sensitivities at every dose point leaves
     :attr:`Data.output_sensitivities` ``None`` (scalar path preserved, and the
-    gradient path reports the gap once, uniformly). The selector / axis labels are
-    taken from the first point; every point shares them (same model, same
-    observables / requested parameters).
+    gradient path reports the gap once, uniformly).
+
+    Points are stacked **by selector, not by position** (#525): each point's rows are
+    addressed through its *own* selector list and the stack covers the selectors present
+    at every point (:func:`_common_scan_selectors`). A dose point whose column set
+    differs from its siblings' -- a global function the backend declined to differentiate
+    at that point only -- therefore costs that one column rather than aborting the fit,
+    and a *permuted* column order can no longer silently mis-label the tensor. An
+    irreconcilable point (differing axis labels, or a tensor whose shape does not match
+    its own labels) raises a :class:`~pybnf.printing.PybnfError` naming the dose index and
+    the shapes, since no alignment can rescue it.
     """
     if not per_point or any(p is None for p in per_point):
         return None
     first = per_point[0]
-    d_param = None
-    if first.d_param is not None:
-        d_param = np.stack([p.d_param[-1] for p in per_point], axis=0)
-    d_ic = None
-    if first.d_ic is not None:
-        d_ic = np.stack([p.d_ic[-1] for p in per_point], axis=0)
+    selectors = _common_scan_selectors(per_point)
+    if not selectors:
+        logger.warning(
+            "Parameter-scan forward sensitivities: no sensitivity column is present at "
+            "every dose point, so the scan carries no tensor; a gradient fit will report "
+            "the missing tensor for this experiment.")
+        return None
     return OutputSensitivities(
-        selectors=first.selectors, param_names=first.param_names,
-        ic_species=first.ic_species, d_param=d_param, d_ic=d_ic,
+        selectors=selectors, param_names=first.param_names,
+        ic_species=first.ic_species,
+        d_param=_stack_scan_axis(per_point, selectors, 'd_param', 'param_names'),
+        d_ic=_stack_scan_axis(per_point, selectors, 'd_ic', 'ic_species'),
     )
+
+
+def _common_scan_selectors(per_point):
+    """The sensitivity selectors present at **every** dose point, in the first point's order.
+
+    A scan's per-point tensors are expected to share one column set (same model, same
+    observables, same requested parameters), but a per-point backend verdict can drop a
+    column at one dose and not another -- bngsim decides per ``Result`` which global
+    functions it can differentiate, and PyBNF asks only for those
+    (``_differentiable_expression_names``). Stacking such ragged points down the dose axis
+    used to die inside ``numpy.stack`` with a bare "all input arrays must have the same
+    shape" (#525), aborting the whole gradient fit; taking the intersection instead keeps
+    every column that *is* uniform, and a dropped column that happens to be scored
+    surfaces downstream as the gradient path's own "no forward-sensitivity column for
+    scored observable" error, which names it.
+    """
+    seen = [set(p.selectors) for p in per_point]
+    common = set.intersection(*seen)
+    dropped = [s for s in dict.fromkeys(
+        sel for p in per_point for sel in p.selectors) if s not in common]
+    if dropped:
+        logger.warning(
+            "Parameter-scan forward sensitivities: %d sensitivity column(s) are absent "
+            "from some dose point and are dropped from the stacked scan tensor (%s). Each "
+            "dose point is an independent run whose differentiable-column set the backend "
+            "decides per run; a scored column dropped here is reported by name when the "
+            "gradient is assembled.",
+            len(dropped),
+            '; '.join('%s absent at dose point(s) %s'
+                      % (s, ', '.join(str(i) for i, cols in enumerate(seen)
+                                      if s not in cols))
+                      for s in dropped))
+    return [s for s in per_point[0].selectors if s in common]
+
+
+def _stack_scan_axis(per_point, selectors, tensor_attr, labels_attr):
+    """Stack one axis (``d_param`` / ``d_ic``) of the per-point tensors down the dose axis.
+
+    Each point contributes its **last integrated row**, restricted to ``selectors`` and
+    read through that point's own selector order, giving ``(n_doses, len(selectors),
+    n_axis)``. Returns ``None`` when the axis is absent from any point (a uniform gap: the
+    gradient path then reports the missing axis once, exactly as it does for a wholly
+    sensitivity-free scan). Raises :class:`~pybnf.printing.PybnfError`, naming the dose
+    index and the offending shapes, when a point's tensor cannot be reconciled at all --
+    disagreeing axis labels, a tensor whose selector/label extents contradict its own
+    labels, or an empty row axis with no final row to take.
+    """
+    labels = list(getattr(per_point[0], labels_attr))
+    rows = []
+    for i, point in enumerate(per_point):
+        tensor = getattr(point, tensor_attr)
+        if tensor is None:
+            if i:
+                logger.warning(
+                    "Parameter-scan forward sensitivities: dose point %d carries no %s "
+                    "tensor while point 0 does, so the scan drops that axis.",
+                    i, tensor_attr)
+            return None
+        point_labels = list(getattr(point, labels_attr))
+        if point_labels != labels:
+            raise PybnfError(
+                "Parameter-scan forward sensitivities: dose point %d labels its %s axis "
+                "%s, but dose point 0 labels it %s. Every dose point of one scan must "
+                "request the same sensitivity axis." % (
+                    i, tensor_attr, point_labels or '(none)', labels or '(none)'))
+        expected = (len(point.selectors), len(labels))
+        if tensor.ndim != 3 or tensor.shape[1:] != expected:
+            raise PybnfError(
+                "Parameter-scan forward sensitivities: dose point %d has a %s tensor of "
+                "shape %s, which does not match its own %d selector(s) x %d %s entry/ies "
+                "(expected (n_times, %d, %d))." % (
+                    i, tensor_attr, tensor.shape, expected[0], expected[1],
+                    labels_attr, expected[0], expected[1]))
+        if tensor.shape[0] == 0:
+            raise PybnfError(
+                "Parameter-scan forward sensitivities: dose point %d has a %s tensor with "
+                "no integrated rows (shape %s), so it has no final row to contribute to "
+                "the dose-response tensor." % (i, tensor_attr, tensor.shape))
+        cols = [point.selectors.index(s) for s in selectors]
+        rows.append(tensor[-1][cols, :])
+    return np.stack(rows, axis=0)
 
 
 @dataclass

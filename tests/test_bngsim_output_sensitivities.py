@@ -341,6 +341,46 @@ def test_scan_carries_dose_axis_sensitivity_tensor(steady_state):
     np.testing.assert_allclose(got, expected, rtol=1e-3, atol=1e-3)
 
 
+def test_scan_survives_a_dose_point_with_an_extra_sensitivity_column(monkeypatch, caplog):
+    """A dose point whose column set differs from its siblings' costs that column, not the
+    scan (#525).
+
+    Which global functions a point's sensitivity tensor covers is a per-``Result`` backend
+    verdict (``_differentiable_expression_names``), so one dose of a scan can legitimately
+    carry a different column list. Here the first point is given an extra synthetic column,
+    making the per-point tensors ``(n_times, 2, 1)`` and ``(n_times, 1, 1)`` -- the exact
+    ragged shape that used to die in ``numpy.stack`` ("all input arrays must have the same
+    shape"), aborting the fit. The scan must now stack over the column every point carries
+    and keep matching the closed-form ``-dose/k_deg**2``."""
+    real = bngsim_model.BngsimModel._extract_output_sensitivities.__func__
+    seen = []
+
+    def extra_column_on_first_point(cls, result, print_functions):
+        payload = real(cls, result, print_functions)
+        seen.append(payload)
+        if len(seen) == 1:            # the first dose point only
+            payload.selectors = payload.selectors + ['expression:only_here']
+            payload.d_param = np.concatenate(
+                [payload.d_param, np.zeros_like(payload.d_param[:, :1, :])], axis=1)
+        return payload
+
+    monkeypatch.setattr(bngsim_model.BngsimModel, '_extract_output_sensitivities',
+                        classmethod(extra_column_on_first_point))
+
+    model = _dose_response_model(_scan_action(SCAN_DOSES, steady_state=True))
+    data = model.execute('/tmp', 'dr_ragged', 120)['dr']
+
+    sens = data.output_sensitivities
+    assert sens is not None
+    assert sens.selectors == ['observable:Stot']        # the intersection, not the union
+    assert sens.d_param.shape == (len(SCAN_DOSES), 1, 1)
+    np.testing.assert_allclose(sens.slice_for('observable:Stot')[:, 0],
+                               -np.array(SCAN_DOSES) / SCAN_K_DEG ** 2,
+                               rtol=1e-3, atol=1e-3)
+    # And the drop is reported, naming the column and the dose points that lacked it.
+    assert 'expression:only_here absent at dose point(s) 1, 2, 3, 4' in caplog.text
+
+
 def test_scan_scalar_path_carries_no_sensitivities():
     """With the gradient path inactive, the scan Data has no sensitivity payload and the
     equilibrium value column is unchanged (scalar path byte-identical)."""
