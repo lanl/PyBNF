@@ -614,3 +614,35 @@ def test_fit_parameter_preequilibration_round_trips(washout, tmp_path):
     original = _score(_build_cfg(conf))
     reimported = _score(_build_cfg(imp / 'imported.conf'))
     assert reimported == pytest.approx(original)
+
+
+# --------------------------------------------------------------------------- #
+# demo_xml_v2 (Tier 0): the SBML install-check demo on the new-era surface -- the twin of
+# demo_bng_v2, and the job the Quick Start tells a new user to run. Backend-free: the
+# config build synthesizes the simulation from the experiment's data, which is the whole
+# claim the doc makes about the modern surface (declare the model, name an experiment,
+# bind free parameters by bare id -- no actions block, no `__FREE`, no data on the model
+# line). PEtab export is BNGL-only, so this example carries no round-trip leg.
+# --------------------------------------------------------------------------- #
+DEMO_XML_V2_CONF = EXAMPLES / 'demo' / 'demo_xml_v2.conf'
+
+
+def test_demo_xml_v2_builds_the_quickstart_sbml_job():
+    """``examples/demo/demo_xml_v2`` builds on the modern surface: an SBML model declared
+    with ``model:``, one ``experiment:`` supplying both the data and the simulation's time
+    grid, and the three polynomial coefficients bound as bare-id free parameters
+    (ADR-0028 / ADR-0034)."""
+    cfg = _build_cfg(DEMO_XML_V2_CONF)
+
+    assert cfg.config['fit_type'] == 'de'            # `job_type = de` normalized into the slot
+    assert cfg.config['objective'] == 'chi_sq'
+    assert set(cfg.models) == {'parabola'}           # parabola.xml, declared without data
+    assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3'}
+
+    # The experiment supplies the data, and its time column becomes the simulation grid.
+    exp = cfg.exp_data['parabola']['par1']
+    assert exp.indvar == 'time'
+    assert set(exp.cols) >= {'time', 'x', 'y'}       # the SBML species scored by name
+    (action,) = cfg.models['parabola'].actions             # one synthesized time course
+    assert action.suffix == 'par1'
+    assert action.explicit_points == [float(t) for t in range(21)]   # the data's grid

@@ -7,7 +7,7 @@ The PyBNF `GitHub repository <https://github.com/lanl/PyBNF>`__ ships a collecti
 
 New to PyBNF? Start with the :ref:`quickstart` and the :ref:`tutorial`; the tutorial teaches the modern (edition-2) configuration surface on small models with known answers. The gallery below collects the larger, real models.
 
-Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). Run each example from its own directory — for instance, ``cd examples/demo`` then ``pybnf -c demo_bng.conf`` — and results are written to an ``output/`` directory there. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
+Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). Run each example from its own directory — for instance, ``cd examples/demo`` then ``pybnf -c demo_bng_v2.conf`` — and results are written to an ``output/`` directory there. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
 
 The examples are described below. For an index of which examples demonstrate which PyBNF features, refer to `Index of examples by attribute`_
 
@@ -36,7 +36,7 @@ In the original study, the model was analyzed by Bayesian Metropolis Hastings MC
 
 demo
 ^^^^
-Fit a simple parabola implemented in either BNGL or SBML. Useful to validate that PyBNF and associated simulators are installed correctly. 
+Fit a simple parabola implemented in either BNGL or SBML. Useful to validate that PyBNF and associated simulators are installed correctly. Run ``demo_bng_v2.conf`` (BioNetGen) or ``demo_xml_v2.conf`` (SBML); ``demo_bng.conf`` and ``demo_xml.conf`` are the same two jobs on the legacy (edition-1) surface, kept for reference. 
 
 egfr_benchmark
 ^^^^^^^^^^^^^^
