@@ -72,20 +72,53 @@ class Cluster:
             logger.info(f'Creating a client by connecting to the scheduler node {scheduler_node}:8786')
             self.client = Client(f'{scheduler_node}:8786')
             self.local = False
-        elif config.config['parallel_count'] is not None:
-            logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
-            lc = LocalCluster(n_workers=config.config['parallel_count'], threads_per_worker=1)
-            self.client = Client(lc)
-            self.client.run(init_logging, log_prefix, debug, log_level_name)
-            self.local = True
         else:
-            logger.info('Creating a local client with default parallel count')
-            self.client = Client()
+            # One local branch, one thread policy (#526). `parallel_count` chooses how many
+            # worker *processes* there are; it never decides how many threads run inside one.
+            lc_kwargs = self.local_cluster_kwargs(config.config['parallel_count'])
+            if 'n_workers' in lc_kwargs:
+                logger.info('Creating a local client manually set to %i single-threaded workers'
+                            % lc_kwargs['n_workers'])
+            else:
+                logger.info('Creating a local client with one single-threaded worker per available core')
+            lc = LocalCluster(**lc_kwargs)
+            self.client = Client(lc)
             self.client.run(init_logging, log_prefix, debug, log_level_name)
             self.local = True
 
         # Required because with distributed v1.22.0, logger breaks after calling Client()
         reinit_logging(log_prefix, debug, log_level_name)
+
+    @staticmethod
+    def local_cluster_kwargs(parallel_count):
+        """
+        Build the ``LocalCluster`` keyword arguments for a local (non-cluster) run.
+
+        ``threads_per_worker`` is 1 unconditionally (#526). PyBNF's simulation backends hold
+        process-wide state that is not advertised as thread-safe -- a C++ engine plus code
+        generation with module-level caches -- so two worker threads in one process can race
+        (issue #525 caught exactly that: concurrent emissions through bngsim's cached
+        sympy->C printer intermittently reported ordinary quotients as non-differentiable,
+        which killed a `trf` fit). Every other client PyBNF builds is already single-threaded
+        per worker: both ``dask-ssh`` branches pass ``--nthreads 1``, and the manual-setup
+        documentation recommends the same. Only the local *default* used to let dask pick,
+        so a user who set nothing got the less safe configuration.
+
+        ``n_workers`` is left to dask when ``parallel_count`` is None: given one thread per
+        worker, dask sizes the pool at one worker per available core (``dask.system.CPU_COUNT``,
+        which honors CPU affinity and cgroup quotas), matching the ``dask-ssh`` default of
+        ``--nworkers <cores> --nthreads 1``. Total concurrency is therefore unchanged from the
+        old default -- the same number of jobs run at once, each in its own process.
+
+        :param parallel_count: Number of parallel jobs requested, or None for one per core
+        :type parallel_count: int or None
+        :return: kwargs for ``distributed.LocalCluster``
+        :rtype: dict
+        """
+        kwargs = {'threads_per_worker': 1}
+        if parallel_count is not None:
+            kwargs['n_workers'] = parallel_count
+        return kwargs
 
     @staticmethod
     def read_node_names(config):

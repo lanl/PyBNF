@@ -792,9 +792,11 @@ These keys specify what simulations should be performed with the models. For SBM
 Parallel Computing
 ------------------
 **parallel_count**
-  The number of jobs to run in parallel. This may be set for both local and cluster fitting runs. For cluster runs, this number is divided by the number of available nodes (and rounded up) to determine the number of parallel jobs per node. 
+  The number of jobs to run in parallel. This may be set for both local and cluster fitting runs. For cluster runs, this number is divided by the number of available nodes (and rounded up) to determine the number of parallel jobs per node.
 
-  Default: Use all available cores. On a cluster, the number of available cores per node is determined by running ``multiprocessing.cpu_count()`` from the scheduler node.
+  Each parallel job runs in its own **single-threaded worker process**, whether or not this key is set: the simulation backends hold process-wide state that is not thread-safe, so PyBNF never places two concurrently running jobs in one process. This key therefore sets a process count, not a thread count. Lowering it is the way to reduce the memory a run uses, since each worker process holds its own copy of the models.
+
+  Default: Use all available cores -- one single-threaded worker per core. Locally, the core count comes from Dask, which honors CPU affinity and cgroup quotas (so a run confined to 4 cores gets 4 workers, not the host's full count). On a cluster, the number of available cores per node is determined by running ``multiprocessing.cpu_count()`` from the scheduler node.
 
   Example:
   

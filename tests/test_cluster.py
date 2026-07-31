@@ -419,15 +419,18 @@ class TestInitNodeDispatch:
 class TestInitClientDispatch:
 
     def test_local_default_when_no_nodes_and_no_parallel_count(self, monkeypatch):
-        """No node config and parallel_count=None ⇒ a default local client:
-        Client() with no args, _dask_proc None, local True, and init_logging
-        pushed to workers via client.run."""
+        """No node config and parallel_count=None ⇒ a LocalCluster that pins
+        threads_per_worker=1 and leaves n_workers to dask (#526), wrapped in a
+        Client; _dask_proc None, local True, and init_logging pushed to workers
+        via client.run. Omitting n_workers is deliberate: given one thread per
+        worker, dask sizes the pool at one worker per available core, so total
+        concurrency matches the old bare Client() default."""
         rec = _patch_init(monkeypatch, read_returns=(None, None))
         c = _build(_cfg())
 
         assert c._dask_proc is None
-        assert rec.lc_calls == []
-        assert rec.client_calls == [((), {})]
+        assert rec.lc_calls == [((), {'threads_per_worker': 1})]
+        assert rec.client_calls == [((rec.last_lc,), {})]
         assert c.local is True
         # init_logging is broadcast to workers through client.run(...).
         assert len(rec.last_client.run_calls) == 1
@@ -446,6 +449,66 @@ class TestInitClientDispatch:
         assert rec.client_calls == [((rec.last_lc,), {})]
         assert c.local is True
         assert len(rec.last_client.run_calls) == 1
+
+    @pytest.mark.parametrize('parallel_count', [None, 1, 4, 36])
+    def test_every_local_client_is_single_threaded_per_worker(self, monkeypatch, parallel_count):
+        """#526: whether a locally-spawned worker runs one thread or several must
+        not depend on an unrelated key. Setting parallel_count chooses the number
+        of worker *processes*; every local client pins threads_per_worker=1,
+        because the simulation backends carry process-wide state that is not
+        thread-safe (#525's sympy->C printer race is one instance).
+
+        This is the oracle the old code failed: the parallel_count branch pinned
+        1, the default branch let dask pick (several threads per worker on any
+        machine with >4 cores)."""
+        rec = _patch_init(monkeypatch, read_returns=(None, None))
+        _build(_cfg(parallel_count=parallel_count))
+
+        (_, lc_kwargs), = rec.lc_calls
+        assert lc_kwargs['threads_per_worker'] == 1
+
+    def test_local_and_dask_ssh_defaults_agree_on_one_thread(self, monkeypatch):
+        """The two default paths -- local and dask-ssh -- must request the same
+        thread-per-worker policy, since the same non-thread-safe backends run on
+        both. Oracle: with nothing configured, dask-ssh asks for --nthreads 1 and
+        the local LocalCluster asks for threads_per_worker=1.
+
+        (The dask-ssh half runs first: _patch_init replaces setup_cluster with a
+        fake, so the real one has to be exercised before that.)"""
+        popen_calls = []
+        monkeypatch.setattr(cluster, 'Popen',
+                            lambda *a, **k: popen_calls.append((a, k)) or _FakeDaskProc())
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        monkeypatch.setattr(cluster, 'cpu_count', lambda: 7)
+        cluster.Cluster.setup_cluster('n1', '/out', parallel_count=None)
+        (ssh_args, _), = popen_calls
+        cmd = ssh_args[0]
+
+        rec = _patch_init(monkeypatch, read_returns=(None, None))
+        _build(_cfg())
+        (_, lc_kwargs), = rec.lc_calls
+
+        assert cmd[cmd.index('--nthreads') + 1] == '1'
+        assert lc_kwargs['threads_per_worker'] == 1
+
+
+class TestLocalClusterKwargs:
+    """The single place the local thread/worker policy is decided (#526)."""
+
+    def test_default_omits_n_workers_so_dask_sizes_by_core_count(self):
+        """parallel_count=None ⇒ only threads_per_worker is specified. n_workers
+        is deliberately left out rather than computed here: dask derives it from
+        dask.system.CPU_COUNT, which honors CPU affinity and cgroup quotas, so a
+        run inside a 2-core container gets 2 workers rather than the host's core
+        count."""
+        assert cluster.Cluster.local_cluster_kwargs(None) == {'threads_per_worker': 1}
+
+    @pytest.mark.parametrize('parallel_count', [1, 3, 40])
+    def test_explicit_count_becomes_n_workers_not_threads(self, parallel_count):
+        """parallel_count is a *process* count: it lands in n_workers and never
+        raises threads_per_worker above 1."""
+        assert cluster.Cluster.local_cluster_kwargs(parallel_count) == {
+            'n_workers': parallel_count, 'threads_per_worker': 1}
 
     def test_remote_clients_do_not_broadcast_init_logging(self, monkeypatch):
         """The scheduler_file / scheduler_node clients connect to an already-

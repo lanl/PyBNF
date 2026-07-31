@@ -332,6 +332,24 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Changed
+- **A local fit now runs one single-threaded worker per core, whether or not `parallel_count` is
+  set (#526, ADR-0089).** PyBNF built its local Dask client two different ways: with
+  `parallel_count` set it pinned one thread per worker process, and without it took Dask's bare
+  `Client()`, whose workers are multi-threaded on any machine with more than four cores — so
+  whether two jobs could run concurrently *inside one process* depended on an unrelated key. The
+  simulation backends hold process-wide state that is not thread-safe (both `dask-ssh` paths
+  already pass `--nthreads 1`, and a scored Newton scan is already routed sequentially for the
+  same reason), and issue #525 caught the consequence: with no `parallel_count`, concurrent
+  worker threads raced on bngsim's cached sympy→C printer and a `trf` fit aborted before its
+  first start, while `parallel_count = 4` — nothing else changed — completed every iteration.
+  A/B on that job (8 concurrent `trf` starts, no `parallel_count`, three runs per side): the old
+  default failed 3/3 times, each time losing the forward-sensitivity column of a different scored
+  observable; the new default completed 3/3 with no dropped column.
+  Both local branches are now one branch that always pins `threads_per_worker=1`;
+  `parallel_count` chooses the number of worker *processes* and nothing else. Total concurrency
+  is unchanged (a 6-core machine goes from 3 workers × 2 threads to 6 workers × 1 thread), but a
+  default run now uses more processes, so it holds more model copies — lower `parallel_count` to
+  reduce memory. Runs that already set `parallel_count`, and all cluster runs, are unaffected.
 - **`gntr` now assembles each scored forward-sensitivity row once per objective evaluation
   (#488).** Its scalar-gradient and expected-Fisher calculations previously repeated the same
   experiment/row/column walk and rebuilt `d(prediction)/d(theta)` independently. A shared scored-
