@@ -8,9 +8,8 @@ Implementation
 --------------
 A new algorithm can be written by creating a class that subclasses the Algorithm class and
 registering it with the ``@register_fit_type`` decorator (from ``pybnf.registry``), which
-names the ``fit_type`` / ``job_type`` code(s) that select it, its family (``optimizer``,
-``sampler``, or ``checker``), a display name, and its config schema (see `Adding configuration
-options`_)::
+names the ``job_type`` code(s) that select it, its family (``optimizer``, ``sampler``, or
+``checker``), a display name, and its config schema (see `Adding configuration options`_)::
 
     from pybnf.registry import register_fit_type
 
@@ -25,11 +24,19 @@ options`_)::
             # User defined support function
             ...
 
+Your algorithm is then selected with ``job_type = newalg``. The decorator, the registry it
+fills (``FIT_TYPE_REGISTRY``), and the config slot they are read from keep the older
+``fit_type`` spelling: the rename to ``job_type`` was deliberately confined to the
+configuration surface, since the key selects samplers and the model checker as well as
+fits, and renaming the internal symbols was out of its scope (ADR-0028). Read ``fit_type``
+in code as the internal name for the same thing a user writes as ``job_type`` — or, in a
+legacy (edition-1) config, as ``fit_type``.
+
 The new algorithm requires defining three methods, with the first being the ``__init__`` constructor method.  This
 method will likely take a Configuration object as its first argument.  The other two required methods that must be
 implemented are the ``start_run`` and ``got_result`` methods.
 
-The ``start_run`` method is called at the start of the fitting run. It must return a list of PSet instances, as the first batch of parameter sets
+The ``start_run`` method is called at the start of the run. It must return a list of PSet instances, as the first batch of parameter sets
 to be evaluated. The Algorithm superclass functions ``random_pset`` and ``random_latin_hypercube_psets`` may be useful::
 
     def start_run(self):
@@ -37,7 +44,7 @@ to be evaluated. The Algorithm superclass functions ``random_pset`` and ``random
 
 The ``got_result`` method is called each time an evaluation of a PSet is completed on a worker. It takes a Result instance 
 as an argument and returns either a list of new PSet instances for
-another round of parameter set evaluations, or the string "STOP" to terminate the fitting run.  Note that an empty list
+another round of parameter set evaluations, or the string "STOP" to terminate the run.  Note that an empty list
 is valid if the algorithm requires synchronization (and thus must wait for all jobs in the current iteration to
 finish). For example::
 
@@ -70,9 +77,9 @@ Adding configuration options
 
 An algorithm's user-settable options live in a **Pydantic config schema** — a class
 subclassing ``PyBNFConfigModel`` (or a family base such as ``MCMCFamilyConfig``), co-located
-with the algorithm class and wired to the fit type through the ``schema=`` argument of
+with the algorithm class and wired to the job type through the ``schema=`` argument of
 ``@register_fit_type``. The schema is the single source of truth for the method's option
-names, types, and defaults; each fit's effective config is narrowed to the global keys plus
+names, types, and defaults; each job's effective config is narrowed to the global keys plus
 its own schema's keys, so a method only ever sees the options it reads::
 
     from pybnf.config_schema import PyBNFConfigModel
