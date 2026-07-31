@@ -173,6 +173,10 @@ _Avoid_: joint likelihood (too general), correlated noise (only one of its coupl
 Which summary of a noise model's distribution the deterministic prediction is taken to be — conditional mean, median, or mode. PyBNF makes this an explicit, overridable choice (PEtab v2 hardcodes median); it only matters when the noise is asymmetric on the prediction's scale.
 _Avoid_: central tendency, link convention
 
+**Observation Domain**:
+The set of measured values a **Noise Model** can assign a probability to — the whole real line for the location-scale families, the non-negative counts for `neg_bin`. A measurement outside it is not a **scored point**: it is dropped from the pointwise likelihood exactly as a NaN observation is, so it is out of `n` for AIC/BIC and off the LOO/WAIC observation axis (ADR-0090). Distinct from the *cost* path, where such a point contributes nothing (a zero, not an exclusion) — the asymmetry is deliberate, because on a self-normalizing PMF a zero cost would otherwise read as a log-density of 0, i.e. probability 1. Distinct also from **Support**, which is the free-parameter/prior-side concept.
+_Avoid_: valid range, admissible values, support (reserved for the prior side)
+
 **Noise Parameter**:
 The dispersion or scale parameter of a noise model (a Gaussian's σ, a Laplace's b, a NegBinomial's r). Whether the noise parameter is itself estimated — rather than fixed — is what decides if the likelihood normalizer is retained or dropped as a parameter-independent constant.
 _Avoid_: error bar, sigma (when meaning the general concept), hyperparameter

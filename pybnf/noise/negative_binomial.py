@@ -98,12 +98,32 @@ class NegBinomial(NoiseModel):
     ``location.py``'s additive-offset abstraction -- it reuses the ``MEAN``/``MEDIAN``
     markers, not the ``offset`` math.
 
-    A negative observed count contributes nothing (the count-domain guard). A PMF is
-    self-normalizing, so there is no separable normalizer (``log_normalizer`` stays 0)
-    and the full ``-logpmf`` lives in ``data_fit``.
+    A negative observed count contributes nothing to the *cost* (the count-domain guard on
+    ``data_fit`` and every derivative) and is not a scored point at all for the *density*
+    (:meth:`observation_in_domain`, #523). A PMF is self-normalizing, so there is no
+    separable normalizer (``log_normalizer`` stays 0) and the full ``-logpmf`` lives in
+    ``data_fit``.
     """
 
     noise_params = ('dispersion',)
+
+    #: The count domain, for the objective's exclusion warning (#523).
+    observation_domain = 'a non-negative count'
+
+    def observation_in_domain(self, observation):
+        """A count is non-negative, so a **negative** observation is outside the negative
+        binomial's domain -- it has no probability under the family (#523).
+
+        Real surveillance data contains such values: a jurisdiction revising its cumulative
+        total downward produces a negative daily increment. The cost-path guards
+        (:meth:`data_fit` and the derivatives) score such a point as 0, which is right for
+        the fit -- it contributes nothing. It is emphatically *not* right for the density,
+        where a zero ``data_fit`` on a self-normalizing PMF reads as ``log p = 0``, a
+        probability of 1: better than the family assigns any real count, including one the
+        model predicts exactly. Saying the observation is out of domain routes it to the
+        same treatment as a NaN -- excluded from ``n`` for AIC/BIC and from the LOO/WAIC
+        observation axis -- instead of counted as a perfectly-fit point."""
+        return observation >= 0
 
     def __init__(self, location=MEDIAN):
         self.location = location

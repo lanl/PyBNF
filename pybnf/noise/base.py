@@ -60,12 +60,40 @@ class NoiseModel(ABC):
     #: source, keeping source construction out of the pure kernel (ADR-0011).
     noise_param_defaults = {}
 
+    #: A short description of the values this family CAN score -- the noun phrase the
+    #: objective puts in its exclusion warning when a measurement falls outside them
+    #: (#523), e.g. NegBinomial's ``'a non-negative count'``. ``None`` for a family whose
+    #: observation domain is the whole real line, which therefore never excludes anything.
+    observation_domain = None
+
     @abstractmethod
     def data_fit(self, prediction, observation, noise, extra=None):
         """The parameter-dependent negative-log-likelihood term for one point.
         ``noise`` is the family's primary scalar parameter; ``extra`` is a mapping of
         any secondary parameters (``{'df': nu}`` for student_t), ``None`` / empty for
         the single-parameter families, which ignore it (ADR-0058)."""
+
+    def observation_in_domain(self, observation):
+        """Whether this family can assign ``observation`` a probability at all -- whether
+        the value lies in its **observation domain** (#523). True for every observation by
+        default: the location-scale families are supported on the whole real line. The count
+        family overrides it, because a negative count has no negative-binomial probability.
+
+        This is a property of the *data alone* -- not of the prediction, the noise
+        parameters, or the draw -- so it partitions a data set once and identically for
+        every parameter set. That is what lets the objective treat an out-of-domain
+        observation the way it treats a NaN: as **not a scored point**
+        (:meth:`~pybnf.objective.LikelihoodObjective.evaluate_pointwise` drops it, keeping
+        it out of ``n`` for AIC/BIC and off the LOO/WAIC observation axis) while the
+        emitted observation set stays fixed across draws.
+
+        It deliberately does **not** gate the cost path: :meth:`data_fit` and the
+        derivatives keep their own guards returning 0 for such a point, because
+        contributing nothing to the objective is the right *fitting* behavior. That zero is
+        exactly why the density path needs this predicate -- ``log_density`` would otherwise
+        read it as ``log p = 0``, i.e. probability 1, a better per-point density than any
+        real observation can achieve."""
+        return True
 
     def log_normalizer(self, noise):
         """The single-parameter likelihood normalizer -- constant when ``noise`` is

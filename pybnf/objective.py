@@ -1032,10 +1032,12 @@ class LikelihoodObjective(SummationObjective):
         Mirrors ``evaluate_multiple``'s per-evaluation setup -- the ``{name: value}``
         map a ``FreeParameterSigma`` reads, and the measurement-model observation layer
         -- so the densities are scored against exactly the data ``evaluate`` saw. The
-        emitted observation set is fixed by the *experimental* data (a point is skipped
-        only on a NaN observation, never on anything draw-dependent), so every draw
-        yields the same ids in the same order -- the rectangular ``chain x draw x obs``
-        array the bridge needs."""
+        emitted observation set is fixed by the *experimental* data -- a point is skipped
+        on exactly two conditions, a **NaN** observation (missing data) and an observation
+        **outside its noise family's observation domain** (a negative count under
+        ``neg_bin``, #523), both properties of the data alone and never of the draw -- so
+        every draw yields the same ids in the same order, the rectangular
+        ``chain x draw x obs`` array the bridge needs."""
         self._pset_values = {p.name: p.value for p in pset}
         ids, values = [], []
         with np.errstate(all='ignore'):
@@ -1057,7 +1059,13 @@ class LikelihoodObjective(SummationObjective):
         (``_prediction``), same per-observable ``(family, sources)`` spec; it sums
         nothing and instead records the unweighted ``family.log_density`` per point.
         Columns are walked in sorted order so the obs axis is deterministic across
-        draws."""
+        draws.
+
+        Skips a point on the two data-only conditions: a NaN observation (missing data) and
+        an observation outside its family's ``observation_in_domain`` (#523) -- a negative
+        count, which the count family's cost-path guard scores as 0 and whose density would
+        therefore read as a perfect ``log p = 0``. Both are properties of the experimental
+        data, so the emitted point set is the same for every draw."""
         indvar = min(exp_data.cols, key=exp_data.cols.get)
         comparable = set(sim_data.cols) | set(self._per_measurement_models)
         compare_cols = set(exp_data.cols).intersection(comparable)
@@ -1065,6 +1073,7 @@ class LikelihoodObjective(SummationObjective):
         # The pointwise density scores the *scaled* prediction, exactly as evaluate does
         # (ADR-0066), so LOO/WAIC see the same fit; an unscaled fit leaves this empty.
         self._scale_factors = self._analytic_scale_factors(sim_data, exp_data, indvar, compare_cols, data_key)
+        out_of_domain = {}
         for rownum in range(exp_data.data.shape[0]):
             sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
             indvar_val = exp_data.data[rownum, exp_data.cols[indvar]]
@@ -1073,10 +1082,37 @@ class LikelihoodObjective(SummationObjective):
                 if np.isnan(observation):
                     continue
                 family, sources = self._spec_for(col_name)
+                if not family.observation_in_domain(observation):
+                    out_of_domain[col_name] = out_of_domain.get(col_name, 0) + 1
+                    continue
                 prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
                 primary, extra = self._noise_values(family, sources, self, sim_data, sim_row, exp_data, rownum, col_name)
                 values.append(family.log_density(prediction, observation, primary, extra))
                 ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, indvar_val))
+        self._warn_out_of_domain(prefix, out_of_domain)
+
+    def _warn_out_of_domain(self, prefix, out_of_domain):
+        """Report the measurements this suffix dropped as out of their noise family's
+        observation domain -- once per observable, with the count (#523).
+
+        Without it the exclusion is invisible: the fit already silently contributes nothing
+        for such a point (the family's cost-path guard), and now the likelihood report
+        silently scores one fewer point, so ``n`` in ``information_criteria.txt`` and the
+        LOO/WAIC observation axis would both shrink with nothing saying why. Deduplicated
+        through the shared ``warned`` set because ``evaluate_pointwise`` runs once per
+        recorded draw, while the count -- a property of the experimental data -- is the same
+        every time."""
+        for col_name, count in sorted(out_of_domain.items()):
+            key = 'out-of-domain:%s/%s' % (prefix, col_name)
+            if key in self.warned:
+                continue
+            self.warned.add(key)
+            family, _sources = self._spec_for(col_name)
+            print1("Warning: excluded %d measurement(s) of '%s' in %s from the likelihood: this "
+                   "observable's noise model scores only %s. They contribute nothing to the "
+                   "objective, are not counted in n for AIC/BIC, and are off the LOO/WAIC "
+                   "observation axis."
+                   % (count, col_name, prefix, family.observation_domain))
 
     def aligned_prediction_data(self, sim_data_dict, exp_data_dict, pset):
         """Aligned ``(prediction, observation, variance)`` for the Kalman proposal
@@ -1084,7 +1120,8 @@ class LikelihoodObjective(SummationObjective):
 
         Walks the same scored points as :meth:`evaluate_pointwise` in the same
         deterministic order (``_pointwise_suffix``'s model -> suffix -> row ->
-        ``sorted(compare_cols)`` walk, skipping only NaN observations), so ``prediction``
+        ``sorted(compare_cols)`` walk, with the same two data-only skips -- a NaN
+        observation and one outside its family's observation domain), so ``prediction``
         (the model output ``f(theta)``), ``observation`` (the data ``d``), and
         ``variance`` (the Gaussian ``sigma**2``, the ``R`` diagonal) are index-aligned and
         stable across draws. Returns three ``np.ndarray`` s, or ``None`` unless **every**
@@ -1125,6 +1162,12 @@ class LikelihoodObjective(SummationObjective):
                 if np.isnan(observation):
                     continue
                 family, sources = self._spec_for(col_name)
+                # The second of _pointwise_suffix's two data-only skips (#523), kept here so
+                # the two walks stay point-for-point aligned by construction. Inert today --
+                # the gate below admits only a Gaussian, whose domain is the whole real
+                # line -- and load-bearing the moment that gate widens.
+                if not family.observation_in_domain(observation):
+                    continue
                 # Kalman's R = diag(sigma**2) is the Gaussian measurement covariance, so
                 # only an ordinary additive-error Gaussian (linear scale) has a well-defined
                 # variance here; a log-scale or non-Gaussian family has no such R.

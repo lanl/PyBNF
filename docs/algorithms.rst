@@ -827,6 +827,15 @@ where :math:`k` is the number of free parameters and :math:`n` the number of dat
 points. Ranking competing models by AIC is the basis of the model-selection
 tutorial lesson.
 
+:math:`n` counts the **scored** measurements. A measurement is not scored when its
+value is ``nan`` (missing data) or when it lies outside its noise model's
+*observation domain* -- today only a negative count under ``neg_bin``, which has no
+negative-binomial probability but does occur in real surveillance data (a downward
+revision of a cumulative total makes a negative daily increment). Such measurements
+contribute nothing to the objective, are left out of :math:`n` and :math:`\ln L`, and
+are off the LOO/WAIC observation axis; the fit reports how many it excluded, per
+observable.
+
 **ArviZ / LOO / WAIC.** A completed MCMC run can be exported as an ArviZ
 ``InferenceData`` object by setting
 :ref:`output_inference_data <output_inference_data>` ``= 1`` (needs the optional

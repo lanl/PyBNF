@@ -560,8 +560,9 @@ class TestEvaluatePointwise:
         assert not np.allclose(va, vb)
 
     def test_nan_observation_is_skipped(self):
-        """A NaN observation is missing data -- not an observation -- so it is dropped, the
-        only point-skipping rule (draw-independent, so the obs count stays constant)."""
+        """A NaN observation is missing data -- not an observation -- so it is dropped. One of
+        the two point-skipping rules, both draw-independent so the obs count stays constant
+        (the other is an out-of-domain observation, #523)."""
         exp_nan = _mkdata(['# x  obs1  obs3  obs1_SD  obs3_SD\n',
                            ' 0 3 5 0.1 0.3\n', ' 1 nan 6 0.1 0.1\n', ' 2 4 10 0.3 1.0\n'])
         ids, vals = objective.ChiSquareObjective().evaluate_pointwise(
@@ -629,6 +630,106 @@ class TestInformationCriteria:
                     objective.NormSumOfSquaresObjective(),
                     objective.DirectPassObjective()):
             assert objective.likelihood_information_criteria(obj, simd, expd, pset, 2) is None
+
+
+class TestOutOfDomainObservation:
+    """An observation outside its noise family's **observation domain** -- a negative count
+    under ``neg_bin`` -- is not a scored point (#523).
+
+    The family's cost-path guard scores such a point as 0, which is right for the fit
+    (it contributes nothing). On a self-normalizing PMF that same 0 makes ``log_density``
+    exactly ``log p = 0``, a probability of *one*, so the density path must exclude the
+    point rather than read the guard's zero as a perfect fit.
+    """
+
+    R = 9.0
+    # Row 1 is a downward revision of a cumulative total: a negative daily increment.
+    EXP_WITH_NEG = ['# x  obs1\n', ' 0 3\n', ' 1 -5\n', ' 2 8\n']
+    EXP_WITHOUT = ['# x  obs1\n', ' 0 3\n', ' 2 8\n']
+    SIM = ['# x  obs1\n', ' 0 2.0\n', ' 1 4.0\n', ' 2 10.0\n']
+
+    def _objective(self):
+        return objective.NegBinLikelihood(self.R, 0)
+
+    def _dicts(self, exp_lines):
+        return ({'m': {'s': _mkdata(self.SIM)}}, {'m': {'s': _mkdata(exp_lines)}},
+                [_Param('a', 1.0)])
+
+    def test_negative_count_would_score_as_a_perfect_probability(self):
+        """The defect being fixed, stated as an oracle on the pure kernel: the count
+        family's zero ``data_fit`` for a negative observation is a ``log p = 0``, which
+        beats the density of an exactly-predicted count."""
+        nb = noise.NegBinomial(location=noise.MEAN)
+        npt.assert_allclose(nb.log_density(3000.0, -5948.0, self.R), 0.0)
+        assert nb.log_density(3000.0, 3000.0, self.R) < 0.0   # a perfect prediction scores worse
+
+    def test_domain_predicate_per_family(self):
+        """The count family bounds its domain below at zero; a location-scale family is
+        supported on the whole real line, so it excludes nothing."""
+        nb = noise.NegBinomial()
+        assert nb.observation_in_domain(0.0) and nb.observation_in_domain(7.0)
+        assert not nb.observation_in_domain(-1e-9)
+        for family in (noise.Gaussian(), noise.Laplace(), noise.StudentT()):
+            assert family.observation_in_domain(-5.0)
+            assert family.observation_domain is None
+
+    def test_excluded_from_the_pointwise_densities(self):
+        """``evaluate_pointwise`` drops the point exactly as it drops a NaN: it is off the
+        ids axis, and no density is the tell-tale 0.0."""
+        simd, expd, pset = self._dicts(self.EXP_WITH_NEG)
+        ids, vals = self._objective().evaluate_pointwise(simd, expd, pset)
+        assert ids == ['m/s/obs1@x=0', 'm/s/obs1@x=2']
+        assert np.all(vals < 0.0)
+
+    def test_information_criteria_match_deleting_the_row(self):
+        """The whole fix in one oracle: scoring data containing a negative count is
+        identical -- ``n``, lnL, AIC/BIC -- to scoring the same data with that row deleted.
+        Before the fix ``n`` was 3 and lnL was inflated by the point's ``log p = 0``."""
+        with_neg = objective.likelihood_information_criteria(
+            self._objective(), *self._dicts(self.EXP_WITH_NEG), 2)
+        without = objective.likelihood_information_criteria(
+            self._objective(), *self._dicts(self.EXP_WITHOUT), 2)
+        assert with_neg.n == without.n == 2
+        npt.assert_allclose(with_neg.log_likelihood, without.log_likelihood)
+        npt.assert_allclose(with_neg.aic, without.aic)
+        npt.assert_allclose(with_neg.bic, without.bic)
+        # And it really is the sum of the two in-domain scipy densities.
+        oracle = sum(stats.nbinom.logpmf(o, self.R, self.R / (self.R + p))
+                     for p, o in [(2.0, 3), (10.0, 8)])
+        npt.assert_allclose(with_neg.log_likelihood, oracle)
+
+    def test_warns_once_per_observable_with_the_count(self, capsys):
+        """The exclusion is reported -- otherwise ``n`` silently shrinks -- and only once,
+        though ``evaluate_pointwise`` runs per recorded draw."""
+        obj = self._objective()
+        simd, expd, pset = self._dicts(['# x  obs1\n', ' 0 3\n', ' 1 -5\n', ' 2 -8\n'])
+        for _ in range(3):
+            obj.evaluate_pointwise(simd, expd, pset)
+        out = capsys.readouterr().out
+        assert out.count('excluded') == 1
+        assert "excluded 2 measurement(s) of 'obs1' in m/s" in out
+        assert 'a non-negative count' in out
+
+    def test_cost_path_is_unchanged(self):
+        """The fit itself is untouched: the point still contributes nothing to the
+        objective (that is the correct fitting behavior), so ``evaluate`` is byte-identical
+        to the same data with the row deleted -- the guard, not an exclusion."""
+        obj = self._objective()
+        sim = _mkdata(self.SIM)
+        with_neg = obj.evaluate(sim, _mkdata(self.EXP_WITH_NEG))
+        without = obj.evaluate(_mkdata(['# x  obs1\n', ' 0 2.0\n', ' 2 10.0\n']),
+                               _mkdata(self.EXP_WITHOUT))
+        npt.assert_allclose(with_neg, without)
+
+    def test_a_gaussian_still_scores_a_negative_observation(self):
+        """Only a family that declares a bounded domain excludes anything: a negative
+        measurement is an ordinary Gaussian observation and stays on the axis."""
+        exp = _mkdata(['# x  obs1  obs1_SD\n', ' 0 3 0.5\n', ' 1 -5 0.5\n'])
+        sim = _mkdata(['# x  obs1\n', ' 0 3.1\n', ' 1 -4.5\n'])
+        ids, vals = objective.ChiSquareObjective().evaluate_pointwise(
+            {'m': {'s': sim}}, {'m': {'s': exp}}, [_Param('a', 1.0)])
+        assert len(ids) == 2
+        npt.assert_allclose(vals[1], stats.norm.logpdf(-5, loc=-4.5, scale=0.5))
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,21 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A negative count is no longer scored as a perfect fit, nor counted in `n` (#523, ADR-0090).**
+  The `neg_bin` family has a negative observation contribute nothing to the objective — right for
+  the fit, since a negative count has no negative-binomial probability, and real surveillance data
+  contains them (a downward revision of a cumulative total makes a negative daily increment). But a
+  negative-binomial PMF is self-normalizing, so that zero cost became `log p = 0` — probability
+  **one** — in the pointwise log-density, a better per-point density than the family assigns any
+  real count, including one the model predicts exactly. Those points were also counted as scored
+  points, entering `n` for AIC/BIC and the LOO/WAIC observation axis. An observation outside its
+  noise family's **observation domain** is now excluded exactly as a NaN observation already was:
+  off the observation axis, out of `n`, and reported once per observable with a count
+  (`excluded 4 measurement(s) of 'cases' in ...: this observable's noise model scores only a
+  non-negative count`). Scoring data containing negative counts now matches scoring the same data
+  with those rows deleted. The **cost** path is deliberately unchanged — such a point still
+  contributes nothing to the objective and to the gradient — and every family whose support is the
+  whole real line (`normal`, `lognormal`, `lnnormal`, `laplace`, `student_t`) is byte-identical.
 - **Steady-state (`time = inf`) measurements now load and fit (#521, ADR-0086).** A PEtab problem
   measured only at equilibrium imported fine but crashed at configuration load
   (`OverflowError: cannot convert float infinity to integer`): the experiment was materialized as
