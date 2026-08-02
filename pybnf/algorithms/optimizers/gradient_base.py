@@ -547,7 +547,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                     self.config.constraints, res.simdata, routings, free_params)
                 grad.gradient = grad.gradient + cgrad
                 grad.least_squares_exact = False
-            self._attach_curvature(grad, res, experiments, free_params)
+            self._attach_curvature(grad, res, experiments, free_params, routings)
         except GradientNotSupported as e:
             raise self._unsupported_gradient_error(e) from e
         return grad
@@ -574,7 +574,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         """
         return assemble_gaussian_gradient(self.objective, experiments, free_params)
 
-    def _attach_curvature(self, grad, res, experiments, free_params):
+    def _attach_curvature(self, grad, res, experiments, free_params, routings):
         """Hook for a curvature-consuming leaf to attach its Hessian to the assembled
         gradient. A **no-op on the base**, so the residual-form (``trf``) and scalar-gradient
         (``lbfgs``) leaves -- which never form a Hessian -- are byte-identical; the EFIM
@@ -583,7 +583,10 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         constrained fit, :func:`~pybnf.gradient.assembly.assemble_constraint_hessian`. Called **inside**
         :meth:`gradient_at`'s :class:`GradientNotSupported` guard, so an unsupported-curvature
         corner (a MEDIAN-count Fisher, a MEAN-on-log estimated scale, an estimated constraint
-        scale, ...) converts to the same fail-fast :class:`PybnfError`."""
+        scale, ...) converts to the same fail-fast :class:`PybnfError`. ``routings`` are the
+        per-experiment routings **at this point** (:meth:`_routings_at`), the same objects the
+        objective assembly saw, so a point-dependent chain-rule factor (#530) reaches the
+        constraint block too."""
 
     def _unsupported_gradient_error(self, exc):
         """Wrap a :class:`GradientNotSupported` as the leaf's fail-fast :class:`PybnfError`

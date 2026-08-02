@@ -139,7 +139,7 @@ class GNTRAlgorithm(GradientOptimizer):
         """Build the scalar/residual gradient and data-fit EFIM in one point walk (#488)."""
         return assemble_gradient_and_fisher_hessian(self.objective, experiments, free_params)
 
-    def _attach_curvature(self, grad, res, experiments, free_params):
+    def _attach_curvature(self, grad, res, experiments, free_params, routings):
         """Add constraint curvature to the already-attached data-fit EFIM (#481/#488).
 
         :meth:`_assemble_objective_gradient` builds the objective gradient and data-fit Hessian
@@ -149,7 +149,7 @@ class GNTRAlgorithm(GradientOptimizer):
         refuses cleanly to ``lbfgs`` (:meth:`_unsupported_gradient_error`)."""
         if self.config.constraints:
             grad.hessian = grad.hessian + assemble_constraint_hessian(
-                self.config.constraints, res.simdata, self._routings, free_params)
+                self.config.constraints, res.simdata, routings, free_params)
 
     def _unsupported_gradient_error(self, exc):
         """Point the refusal at ``lbfgs`` (which consumes the scalar gradient and needs no Fisher
