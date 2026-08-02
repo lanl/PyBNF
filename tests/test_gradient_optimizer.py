@@ -955,6 +955,85 @@ def test_gradient_multistart_collapses_to_one_start_for_a_refiner(tmp_path, monk
 # the synchronous fake client), so it is a fixed inequality, not a flaky race.
 
 
+def _poison_one_starts_gradient(monkeypatch, idx=0):
+    """Make every gradient assembled for start ``idx`` come back non-finite, as a point
+    whose ODE solve completes while its forward sensitivities diverge does (#528).
+
+    Wraps two seams of :class:`GradientOptimizer`: ``_advance`` (which the base calls with
+    the owning start's index, after routing the Result back by PSet name) records whose
+    evaluation is in flight, and ``gradient_at`` NaNs out the assembled gradient for that one
+    start. Every other start sees the real assembly. Patched on the **class**, not the
+    instance, so the algorithm still pickles for its mid-run backup (ADR-0007)."""
+    from pybnf.algorithms.optimizers.gradient_base import GradientOptimizer
+
+    real_advance, real_gradient_at = GradientOptimizer._advance, GradientOptimizer.gradient_at
+    in_flight = {}
+
+    def advance(self, start_idx, runner, res):
+        in_flight['idx'] = start_idx
+        return real_advance(self, start_idx, runner, res)
+
+    def gradient_at(self, res):
+        grad = real_gradient_at(self, res)
+        if in_flight.get('idx') == idx:
+            grad.gradient = np.full_like(np.asarray(grad.gradient, dtype=float), np.nan)
+            if getattr(grad, 'jacobian', None) is not None:
+                grad.jacobian = np.full_like(np.asarray(grad.jacobian, dtype=float), np.nan)
+        return grad
+
+    monkeypatch.setattr(GradientOptimizer, '_advance', advance)
+    monkeypatch.setattr(GradientOptimizer, 'gradient_at', gradient_at)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+@pytest.mark.parametrize('grad_fit', ['trf', 'lbfgs', 'gntr'])
+def test_multistart_survives_a_start_whose_gradient_is_not_finite(tmp_path, monkeypatch,
+                                                                  grad_fit):
+    """The reported failure, end to end (#528). One start of a multi-start fit reaches a
+    point that scores fine but whose sensitivities are not finite. That start has nothing to
+    descend from and stops; the whole *fit* must not. Before the fix that one start aborted
+    the run for everyone: ``trf``/``gntr`` fed the non-finite model to LAPACK
+    (``LinAlgError: SVD did not converge``, the reported traceback) and ``lbfgs`` proposed the
+    NaN point its NaN direction pointed at (``OutOfBoundsException``), both unwinding out
+    through ``got_result`` -- on the reported problem, nineteen healthy starts discarded
+    because of one.
+
+    Here start 0's assembled gradient is poisoned at every point it visits, and the fit is
+    still expected to run every start to termination and recover the truth from the others.
+    Multi-start exists precisely so that a bad start is survivable."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', grad_fit, objective='chi_sq', random_seed=1234,
+        population_size=4, max_iterations=100)
+
+    alg = H.build(conf, grad_fit)
+    _poison_one_starts_gradient(monkeypatch, idx=0)
+    H.drive(alg)
+
+    # The fit completed: every start terminated, and the poisoned one says why.
+    assert alg.active == 0 and len(alg.runners) == 4
+    assert all(r.stop_reason for r in alg.runners), \
+        'every start should run to termination, got %s' % [r.stop_reason for r in alg.runners]
+    assert 'not finite' in alg.runners[0].stop_reason, \
+        'the poisoned start should name its unusable model, got %r' \
+        % alg.runners[0].stop_reason
+    # ... and the surviving starts still recovered the truth.
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.02, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+    assert alg.trajectory.best_score() < 1e-3, \
+        'best objective %g not ~0' % alg.trajectory.best_score()
+
+
 def _run_decay_fit(tmp_dir, fit_type, **overrides):
     """Build + drive a decay fit in its own ``output_dir`` and report what the
     convergence-vs-baseline comparison turns on: ``(evaluations, best_score, params)``.

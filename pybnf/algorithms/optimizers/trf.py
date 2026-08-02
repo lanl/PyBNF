@@ -429,6 +429,17 @@ def _select_step(x, J_h, diag_h, g_h, p, p_h, d, Delta, lower, upper, theta):
         return ag, ag_h, -ag_value
 
 
+class _UnusableModel(Exception):
+    """Internal signal (never user-visible as an exception): the local model at the current
+    point cannot be turned into a step -- the scaled matrices overflowed, or LAPACK failed to
+    factorize them. Raised from deep in the step math (:meth:`_TRFRunner._build_scaling`,
+    :meth:`~pybnf.algorithms.optimizers.gntr._GNTRRunner._set_model`) and caught in
+    :meth:`_TRFRunner.got`, the state machine's single entry point, which converts it to a
+    clean per-start termination (:meth:`GradientRunner._failed_model`). This is what keeps a
+    LAPACK failure inside *one* start instead of unwinding through ``got_result`` and taking
+    the whole multi-start fit with it (#528)."""
+
+
 class _TRFRunner(GradientRunner):
     """One Trust-Region-Reflective start: the picklable step machine, in sampling space
     ``u``.
@@ -443,6 +454,9 @@ class _TRFRunner(GradientRunner):
     the orchestrator (:class:`TRFAlgorithm` / :class:`GradientOptimizer`) supplies the
     assembled :class:`GradientResult` and does the reporting, and this runner requires it
     to be an **exact** least-squares residual (:meth:`_require_exact`)."""
+
+    #: What this runner steps from, for the terminated-start message (#528).
+    _model_label = 'least-squares residual model'
 
     def __init__(self, u0, lower, upper, max_iterations, *, grad_tol, step_tol):
         super().__init__(u0, lower, upper, max_iterations)
@@ -475,10 +489,16 @@ class _TRFRunner(GradientRunner):
         return 'trust radius %g' % self.Delta
 
     def got(self, u_point, score, grad):
-        if self.phase == 'init':
-            return self._after_init(u_point, score, grad)
-        if self.phase == 'step':
-            return self._after_step(u_point, score, grad)
+        # The one place an _UnusableModel raised by the step math is caught: a point whose
+        # scaled matrices overflow or defeat LAPACK ends *this* start, it does not unwind
+        # out through got_result and abort the whole multi-start fit (#528).
+        try:
+            if self.phase == 'init':
+                return self._after_init(u_point, score, grad)
+            if self.phase == 'step':
+                return self._after_step(u_point, score, grad)
+        except _UnusableModel as exc:
+            return self._failed_model(str(exc))
         raise RuntimeError(f'Internal error in _TRFRunner: phase {self.phase!r}')
 
     # --- state machine ----------------------------------------------------- #
@@ -494,6 +514,13 @@ class _TRFRunner(GradientRunner):
         self.point = np.array(u_point, dtype=float)
         self.fval = score
         self.cost = score
+        if not self._model_is_usable(gr):
+            # The start point scored, but its derivatives are not finite: there is no local
+            # surface to build a trust region on, and no earlier iterate to fall back to
+            # (#528). End this start, keeping the rest of the multi-start alive.
+            return self._failed_model(
+                'the %s at the start point is not finite (the point scored, but its '
+                'derivatives did not)' % self._model_label)
         self._set_model(gr)
         if not self.n:
             self.stop_reason = 'no free parameters to optimize'
@@ -515,9 +542,14 @@ class _TRFRunner(GradientRunner):
         f_new = score
         step_h_norm = self.step_h_norm
 
-        if not np.isfinite(f_new):
+        if not np.isfinite(f_new) or not self._model_is_usable(grad):
             # A non-finite trial gives the trust region its signal to shrink and re-solve
-            # (no accept), exactly like scipy's `Delta = 0.25*step_h_norm; continue`.
+            # (no accept), exactly like scipy's `Delta = 0.25*step_h_norm; continue`. A trial
+            # that scored finitely but whose *model* is not finite -- a stiff point whose
+            # sensitivities diverged where the objective did not -- is rejected the same way:
+            # accepting it would move the iterate onto a point with no usable curvature, and
+            # the previous point's cached SVD is still there to re-solve a shorter step from
+            # (#528). The search backs off toward the region where the model behaves.
             self.Delta = 0.25 * step_h_norm
             return self._reject_or_budget()
 
@@ -572,7 +604,15 @@ class _TRFRunner(GradientRunner):
     def _build_scaling(self):
         """Cache the Coleman–Li scaling (``d = √v``, ``diag_h = g·dv``, ``g_h = d·g``,
         ``J_h = J·d``) and the SVD of the augmented Jacobian ``[J_h; diag(√diag_h)]`` for
-        the current point (``x_scale = 1``, dense `exact` path of scipy's TRF)."""
+        the current point (``x_scale = 1``, dense `exact` path of scipy's TRF).
+
+        Both guards below exist because ``np.linalg.svd`` is the point where an unusable model
+        stops being a numerical curiosity and becomes an exception: LAPACK's ``gesdd`` does not
+        converge on non-finite input and (rarely) can fail on a finite but pathological matrix,
+        and either raises ``LinAlgError``. Unguarded, that unwinds all the way out of
+        ``got_result`` and aborts a whole multi-start fit over one bad start (#528), so it is
+        converted here into an :class:`_UnusableModel` that :meth:`got` turns into a clean
+        termination of *this* start."""
         x, g, r, J = self.point, self.g, self.r, self.J
         m, n = self.m, self.n
         v, dv = _cl_scaling_vector(x, g, self._u_lower, self._u_upper)
@@ -583,9 +623,19 @@ class _TRFRunner(GradientRunner):
         j_aug = np.zeros((m + n, n))
         j_aug[:m] = J_h
         j_aug[m:] = np.diag(np.sqrt(diag_h))
-        u, s, vt = np.linalg.svd(j_aug, full_matrices=False)
         f_aug = np.zeros(m + n)
         f_aug[:m] = r
+        if not self._all_finite(j_aug, f_aug):
+            # The incoming model was checked for finiteness on arrival, so reaching here means
+            # the Coleman–Li scaling itself overflowed (a huge Jacobian times a wide box).
+            raise _UnusableModel('the scaled %s at this point overflowed to a non-finite '
+                                 'value' % self._model_label)
+        try:
+            u, s, vt = np.linalg.svd(j_aug, full_matrices=False)
+        except np.linalg.LinAlgError:
+            raise _UnusableModel(
+                'the trust-region subproblem at this point could not be factorized (LAPACK '
+                'failed to decompose the augmented Jacobian)')
         self._d = d
         self._diag_h = diag_h
         self._g_h = d * g
@@ -622,6 +672,13 @@ class _TRFRunner(GradientRunner):
         self.r = grad.residual
         self.g = self.J.T @ self.r
         self.m = self.J.shape[0]
+
+    def _model_is_usable(self, grad):
+        """TRF steps from the residual model, so those are the arrays that must be finite:
+        the residual ``r`` and its Jacobian ``J`` (the gradient ``g = Jᵀr`` and the whole
+        Coleman–Li scaling are derived from them). Overrides the base's scalar-gradient check
+        (#528)."""
+        return grad is not None and self._all_finite(grad.residual, grad.jacobian)
 
     def _require_exact(self, grad):
         """Require an **exact** least-squares residual from the assembled gradient. TRF

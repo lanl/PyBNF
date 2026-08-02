@@ -163,6 +163,11 @@ class _LBFGSRunner(GradientRunner):
     #: steepest descent and, failing that, the run stops at the (stalled) minimum.
     _MAX_LINE_EVALS = 30
 
+    #: What this runner steps from, for the terminated-start message (#528). The base's
+    #: :meth:`~pybnf.algorithms.optimizers.gradient_base.GradientRunner._model_is_usable`
+    #: checks exactly that scalar gradient, so this leaf needs no override.
+    _model_label = 'gradient'
+
     def __init__(self, u0, lower, upper, max_iterations, *,
                  grad_tol, step_tol, history, c1, backtrack):
         super().__init__(u0, lower, upper, max_iterations)
@@ -203,6 +208,14 @@ class _LBFGSRunner(GradientRunner):
         self.point = np.array(u_point, dtype=float)
         self.fval = score
         self.grad = grad.gradient
+        if not self._model_is_usable(grad):
+            # The start point scored, but its gradient is not finite. Every direction built
+            # from it -- L-BFGS-B or steepest descent -- is NaN, so the line search proposes a
+            # NaN trial point, which dies as the whole fit's `OutOfBoundsException` the moment
+            # the orchestrator builds a PSet from it. End this start instead (#528).
+            return self._failed_model(
+                'the %s at the start point is not finite (the point scored, but its '
+                'derivatives did not)' % self._model_label)
         if not self.n:
             # No free coordinates to optimize (e.g. a reduced-dimension profile-likelihood
             # re-optimization that fixed the sole free parameter) -- trivially converged.
@@ -253,8 +266,14 @@ class _LBFGSRunner(GradientRunner):
         # correctly; reduces to α·gᵀd when no bound is active. The strict f_new <
         # f_base guard rejects the degenerate case where projection flips the
         # displacement out of descent.
+        # A trial that passes Armijo but returns a non-finite gradient is backtracked like any
+        # other unusable trial: stepping onto it would fold a NaN curvature pair into the
+        # limited-memory history and make every later direction (and so every later proposed
+        # point) NaN, where shrinking α simply moves the trial back toward the (well-behaved)
+        # current iterate (#528).
         armijo_rhs = self.ls_fbase + self.c1 * float(self.ls_grad @ disp)
-        if np.isfinite(f_new) and f_new <= armijo_rhs and f_new < self.ls_fbase:
+        if (np.isfinite(f_new) and f_new <= armijo_rhs and f_new < self.ls_fbase
+                and self._model_is_usable(grad)):
             return self._accept(grad, trial_point, f_new, disp)
         self.ls_evals += 1
         self.ls_alpha *= self.backtrack

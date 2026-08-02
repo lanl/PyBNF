@@ -1179,3 +1179,46 @@ def test_track_stops_cleanly_at_a_non_integrable_slice():
     # Every point strictly before the wall was a normal, successful, finite re-optimization.
     for _fu, cost, _theta, _nfev, success in track.points[:-1]:
         assert np.isfinite(cost) and success is True
+
+
+def test_track_stops_at_a_slice_whose_derivatives_are_not_finite():
+    """The sibling wall (#528): the slice *does* integrate and score, but its derivatives are
+    not finite, so the inner re-optimization has no local model to descend and terminates
+    without taking a step. The track must not record that un-optimized start value as this
+    grid point's profile — it is an upper bound on the profile, not the profile, and entering
+    it as one inflates that point's Δχ², which can fabricate a threshold crossing and report a
+    confidence interval narrower than the data supports. Instead the point is recorded
+    unsuccessful at the ``inf`` penalty (dropped by the finite filter in CI extraction) and the
+    direction stops there, saying which of the two walls it hit."""
+    A = np.array([[1.0, 0.2], [0.1, 1.0], [0.4, 0.3], [0.0, 0.7]])
+    y = np.array([1.0, 2.0, 0.5, 1.5])
+    theta_star, f_min, _ = _linear_gaussian(A, y)
+    names = ['p0', 'p1']
+    nan_beyond = float(theta_star[0]) + 0.5   # derivatives diverge beyond 0.5 from theta*
+    track = _ProfileTrack(
+        0, 1, theta_star, theta_star - 10.0, theta_star + 10.0,
+        np.array([theta_star[1]]), f_min, step=0.05, min_step=1e-3, max_step=0.5,
+        dchi2_target=0.4, threshold=1e9,      # a threshold the finite profile never crosses
+        max_points=400, reopt_max_iterations=100, grad_tol=1e-10, step_tol=1e-12)
+    u = track.start()
+    guard = 0
+    while u is not None:
+        guard += 1
+        assert guard < 10000, 'profile track did not terminate'
+        r = A @ u - y
+        jac = A.copy()
+        if u[track.param_idx] > nan_beyond:      # scores fine; sensitivities diverge
+            # In a FREE column: the reduction drops the fixed parameter's column, so a NaN
+            # confined to it never reaches the inner re-optimization's model.
+            jac[0, track.free_idx[0]] = np.nan
+        full = GradientResult(residual=r, jacobian=jac, gradient=jac.T @ r,
+                              param_names=names, least_squares_exact=True)
+        reduced = ProfileLikelihoodAlgorithm._reduce_gradient(full, track.free_idx)
+        u = track.got(u[track.free_idx], 0.5 * float(r @ r), reduced)
+    assert 'no usable local model' in track.stop_reason
+    assert 'simulation failed' not in track.stop_reason     # it simulated; it just cannot fit
+    assert not np.isfinite(track.points[-1][1])   # the wall point contributes no profile value
+    assert track.points[-1][4] is False           # ... and is marked unsuccessful
+    assert len(track.points) < 400                # stopped at the wall, not at max_points
+    for _fu, cost, _theta, _nfev, success in track.points[:-1]:
+        assert np.isfinite(cost) and success is True

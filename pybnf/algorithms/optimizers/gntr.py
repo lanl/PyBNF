@@ -67,7 +67,7 @@ from typing import ClassVar
 import numpy as np
 
 from .gradient_base import GradientOptimizer
-from .trf import _TRFRunner
+from .trf import _TRFRunner, _UnusableModel
 from ...config_schema import PyBNFConfigModel
 from ...gradient import assemble_constraint_hessian, assemble_gradient_and_fisher_hessian
 from ...printing import PybnfError
@@ -180,12 +180,29 @@ class _GNTRRunner(_TRFRunner):
     accept/reject + trust-radius state machine, the convergence tests, picklability -- is
     inherited unchanged. See the module docstring for why the reduction is exact."""
 
+    #: What this runner steps from, for the terminated-start message (#528).
+    _model_label = 'Fisher model (gradient + EFIM Hessian)'
+
     def __init__(self, u0, lower, upper, max_iterations, *, grad_tol, step_tol, ridge):
         super().__init__(u0, lower, upper, max_iterations, grad_tol=grad_tol, step_tol=step_tol)
         self.ridge = ridge
 
     def progress_detail(self):
         return 'trust radius %g (EFIM)' % self.Delta
+
+    def _model_is_usable(self, grad):
+        """GNTR steps from ``(gradient, EFIM Hessian)``, not from a residual model, so both of
+        those are what must be finite -- overriding both the base's gradient-only check and
+        ``trf``'s residual/Jacobian one (the pseudo residual model is *derived* here, in
+        :meth:`_set_model`, so checking it would be checking the symptom). A **missing**
+        Hessian is deliberately not this predicate's business: that is an internal wiring
+        error :meth:`_set_model` raises loudly, not a bad point to be skipped over (#528)."""
+        if grad is None:
+            return False
+        hessian = getattr(grad, 'hessian', None)
+        if hessian is None:
+            return True                      # -> _set_model raises the wiring error
+        return self._all_finite(grad.gradient, hessian)
 
     def _require_exact(self, grad):
         """Accept any assembled gradient: the EFIM Hessian is the curvature model, not an exact
@@ -225,7 +242,14 @@ class _GNTRRunner(_TRFRunner):
         if lam <= 0.0:
             lam = self.ridge
         hessian = 0.5 * (hessian + hessian.T) + lam * np.eye(n)
-        w, q = np.linalg.eigh(hessian)
+        try:
+            w, q = np.linalg.eigh(hessian)
+        except np.linalg.LinAlgError:
+            # A finite but pathological Hessian LAPACK cannot diagonalize. Terminating this
+            # start beats unwinding out through got_result and aborting the fit (#528); the
+            # non-finite case never reaches here (_model_is_usable rejects it upstream).
+            raise _UnusableModel('the EFIM Hessian at this point could not be diagonalized '
+                                 '(LAPACK failed to converge)')
         # Positive definite after the ridge; the floor only mops up eigen roundoff.
         w = np.clip(w, lam * 1e-12, None)
         sqrt_w = np.sqrt(w)

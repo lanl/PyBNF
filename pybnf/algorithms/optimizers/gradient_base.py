@@ -91,6 +91,11 @@ class GradientRunner:
     :attr:`stop_reason` / :meth:`progress_detail` for reporting.
     """
 
+    #: How a leaf names the local model it steps from, quoted in the :meth:`_failed_model`
+    #: stop reason (``trf``: the residual model; ``gntr``: the Fisher model; ``lbfgs``: the
+    #: gradient) so a terminated start says which object was unusable (#528).
+    _model_label = 'local model'
+
     def __init__(self, u0, lower, upper, max_iterations):
         self.point = np.array(u0, dtype=float)   # current iterate (u-space)
         self._u_lower = lower                    # reflecting box (constant per fit)
@@ -102,6 +107,11 @@ class GradientRunner:
         self.fval = None            # objective F(point)
         self.grad = None            # scalar gradient dF/du at point (u-space)
         self.stop_reason = None     # set to a human string when got() returns DONE
+        # Why this start produced no fit, for a consumer that has to say so in its own words
+        # (the profile-likelihood track): None if it ran normally, 'simulation' if its start
+        # point did not evaluate (_failed_start), 'model' if it evaluated but its derivatives
+        # were unusable (_failed_model). Both leave ``fval`` at the inf penalty (#492/#528).
+        self.failure = None
 
     def start(self):
         """The first ``u``-point to evaluate (the start point)."""
@@ -115,8 +125,63 @@ class GradientRunner:
         mid-search its ``isfinite(score)`` guard already rejects the trial without
         dereferencing the gradient (the fit backs off); at the start point (``phase ==
         'init'``, ``grad is None``) it must terminate via :meth:`_failed_start`. See
-        :meth:`GradientOptimizer._advance` (#492)."""
+        :meth:`GradientOptimizer._advance` (#492).
+
+        A point that *did* evaluate can still hand back an unusable **model**
+        (:meth:`_model_is_usable`); a leaf handles that the same two ways -- back off
+        mid-search, :meth:`_failed_model` at the start point (#528)."""
         raise NotImplementedError
+
+    @staticmethod
+    def _all_finite(*arrays):
+        """True when every supplied array is present and entirely finite."""
+        return all(a is not None and bool(np.all(np.isfinite(a))) for a in arrays)
+
+    def _model_is_usable(self, grad):
+        """Whether the local model assembled at an evaluated point is one this method can
+        actually step from -- i.e. every array the leaf reads off it is finite (#528).
+
+        A point can score finitely and still hand back non-finite *derivatives*: a stiff
+        parameter set whose ODE solve completes while its forward sensitivities diverge, an
+        overflow in the chain rule, a vanishing prediction in a denominator. There is no step
+        to take from such a model, and taking one anyway does not degrade gracefully -- it
+        aborts the **whole** fit, not just the start that met the bad point. LAPACK refuses to
+        factorize a non-finite matrix (``LinAlgError: SVD did not converge`` out of the
+        trust-region subproblem, the reported crash of #528), and a quasi-Newton direction
+        built from a NaN gradient is itself NaN, so the next proposed point is NaN and dies as
+        an ``OutOfBoundsException`` when the orchestrator builds its PSet. Either exception
+        unwinds through ``got_result`` and out of the run loop, discarding every *other*
+        concurrent start's progress with it.
+
+        This base implementation checks the scalar gradient every assembled
+        :class:`~pybnf.gradient.assembly.GradientResult` carries (what ``lbfgs`` consumes); a
+        leaf whose model is built from other fields -- ``trf``'s residual + Jacobian,
+        ``gntr``'s Fisher Hessian -- overrides to check those instead."""
+        return grad is not None and self._all_finite(grad.gradient)
+
+    def _failed_model(self, detail):
+        """Terminate this start: the start point evaluated and scored, but the local model
+        assembled there is not one this method can descend from (:meth:`_model_is_usable`),
+        and at the start point there is no earlier iterate to back off to. The sibling of
+        :meth:`_failed_start`, which handles the point that did not evaluate at all (#528).
+
+        ``fval`` is set to the same ``inf`` penalty :meth:`_failed_start` records even though
+        this point *did* score. What the start-point score is not is a **fit**: no step was
+        ever taken from it. Reporting it as this start's objective would let a consumer read
+        an unoptimized value as an optimized one -- concretely, the profile-likelihood grid
+        point in :meth:`ProfileLikelihoodAlgorithm._profile_got`, where an un-minimized upper
+        bound entered as the profile inflates that point's Δχ², which can fabricate a
+        threshold crossing and report a confidence interval narrower than the data supports.
+        :attr:`failure` records *which* of the two failures this was, so a consumer that has
+        to explain the stop can say the accurate thing rather than "simulation failed".
+
+        Only this start stops; concurrent multi-start keeps every other start running, and
+        the trajectory (which holds every evaluated point, including this one, at its real
+        score) keeps the global best."""
+        self.fval = float('inf')
+        self.failure = 'model'
+        self.stop_reason = '%s; no usable local model to descend from' % detail
+        return DONE
 
     def _failed_start(self):
         """Terminate this start: its start point did not simulate (a non-integrable point --
@@ -131,6 +196,7 @@ class GradientRunner:
         grid point in :meth:`ProfileLikelihoodAlgorithm._profile_got`) sees a non-finite value
         rather than the ``None`` a never-evaluated runner starts with."""
         self.fval = float('inf')
+        self.failure = 'simulation'
         self.stop_reason = ('start point failed to simulate (a non-integrable point); '
                             'no objective/gradient to descend from')
         return DONE

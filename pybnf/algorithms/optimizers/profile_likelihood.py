@@ -538,13 +538,20 @@ class _ProfileTrack:
         self._adapt(increment)
         self.prev_dchi2 = dchi2
         if not np.isfinite(dchi2):
-            # No integrable point at this fixed value: the slice is non-integrable (a failed
-            # simulation, #492) -- the outward boundary of the explorable region in this
-            # direction. Stop here rather than marching further into the non-integrable region;
-            # the inf-cost point is dropped by the finite filter in CI extraction, so this side
-            # reports as not cleanly crossed (open / practically non-identifiable), the honest
-            # reading when the model stops integrating before a threshold crossing.
-            self.stop_reason = 'reached a non-integrable point (simulation failed)'
+            # No re-optimized objective at this fixed value -- the outward boundary of the
+            # region this direction can be profiled over. Stop here rather than marching
+            # further into it; the inf-cost point is dropped by the finite filter in CI
+            # extraction, so this side reports as not cleanly crossed (open / practically
+            # non-identifiable), the honest reading when the profile cannot be continued to a
+            # threshold crossing. Two distinct walls end a track this way, and the runner says
+            # which (``failure``): the slice does not integrate at all (a failed simulation,
+            # #492), or it integrates and scores but its derivatives do not, leaving the inner
+            # re-optimization no local model to descend (#528).
+            self.stop_reason = (
+                'reached a point the inner re-optimization has no usable local model at (the '
+                'slice scored, but its derivatives did not)'
+                if getattr(self.inner, 'failure', None) == 'model'
+                else 'reached a non-integrable point (simulation failed)')
             return None
         if dchi2 >= self.threshold:
             self.stop_reason = 'crossed Delta chi2 threshold'

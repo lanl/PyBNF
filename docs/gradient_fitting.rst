@@ -94,6 +94,23 @@ to a standalone box-start fit: when the optimizer runs as a **refiner** (an expl
 injected) it always runs a single start, since the job there is to polish the one best fit, not to
 re-scatter. ``max_iterations`` is the per-start iteration budget.
 
+**A bad start is survivable.** Stiff corners of a parameter box can defeat the solver, and a fit is
+expected to walk into them: a point may fail to integrate at all, or integrate while its forward
+sensitivities diverge, leaving a finite objective with a non-finite gradient. Neither ends the fit.
+The affected start stops where it is — the log records why, e.g.::
+
+    GNTR start 13/20 stopping: start point failed to simulate (a non-integrable point); no
+        objective/gradient to descend from
+    GNTR start 7/20 stopping: the Fisher model (gradient + EFIM Hessian) at the start point is
+        not finite (the point scored, but its derivatives did not); no usable local model to
+        descend from
+
+— while every other start keeps running and the global best is taken across the survivors. Mid-search
+the same conditions are gentler still: the trial is simply rejected (the trust region shrinks, or the
+line search backtracks) and that start continues from its current iterate. A run in which some starts
+stopped this way still reports a fit; if *every* start stops this way, the box is likely placed where
+the model cannot be integrated.
+
 **Convergence tuning.** Both optimizers stop when a first-order optimality (gradient) tolerance or a
 step tolerance is met, or the per-start iteration budget is exhausted:
 
@@ -211,6 +228,14 @@ The **classification** summarizes the profile shape (Raue *et al.* 2009):
   property of the model + observables, not the data volume; it is resolved by adding an observable
   that breaks the degeneracy, fixing one of the confounded parameters, or reparameterizing to the
   identifiable combination.
+
+A direction can also stop at a **wall**: a fixed value beyond which the model no longer integrates,
+or one where it integrates and scores but its sensitivities do not, leaving the inner
+re-optimization nothing to descend. Either way that grid point contributes no profile value (it is
+recorded unsuccessful and dropped from the CI, rather than entered as an un-optimized upper bound
+that could fabricate a threshold crossing), the direction stops at the wall, and the ``stops`` note
+says which wall it was. Such a side reads as *not cleanly crossed* — the honest result when the
+profile cannot be continued far enough to cross the threshold.
 
 Every per-point profile record rides PyBNF's ordinary backup/resume, so a run can be resumed or
 extended without recomputing a finished profile.

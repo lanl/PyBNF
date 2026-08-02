@@ -6,6 +6,27 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A gradient start that reaches a point it cannot differentiate no longer takes the whole
+  multi-start fit down with it (#528, ADR-0092).** A stiff parameter point can score finitely while
+  its forward sensitivities diverge, leaving a finite objective with a non-finite gradient. That
+  model went straight into the trust-region factorization, where LAPACK refuses it
+  (`Sorry, an unknown error occurred: numpy.linalg.LinAlgError: SVD did not converge`) and the
+  exception unwound out of the run loop — 19 healthy starts of a 20-start `gntr` fit discarded
+  because of one, which inverts the reason multi-start exists. (`lbfgs` aborted the same fit by a
+  different route: its NaN direction proposed a NaN point, rejected as
+  `OutOfBoundsException: Free parameter k cannot be assigned the value nan`.) An unusable local
+  model is now treated exactly as a failed simulation already was: **mid-search the trial is
+  rejected** — the trust region shrinks, or the line search backtracks — and that start carries on
+  from its current iterate; **at the start point that one start stops**, saying which model was
+  unusable (`the Fisher model (gradient + EFIM Hessian) at the start point is not finite (the point
+  scored, but its derivatives did not)`), while every other start keeps running and the global best
+  is taken across the survivors. The two LAPACK calls in the step math (`svd`, `eigh`) are wrapped
+  as well, so a factorization that fails on finite-but-pathological input routes the same way.
+  `profile_likelihood`, which drives the same runners, was a third casualty of the same missing
+  guard: a slice whose derivatives diverge now ends that one direction at a wall it names, with the
+  un-optimizable grid point contributing no profile value — rather than entering an un-minimized
+  upper bound as if it were the profile, which would inflate that point's Δχ² and could close the
+  confidence interval too narrowly. A fit whose models are all finite is unchanged.
 - **A negative count is no longer scored as a perfect fit, nor counted in `n` (#523, ADR-0090).**
   The `neg_bin` family has a negative observation contribute nothing to the objective — right for
   the fit, since a negative count has no negative-binomial probability, and real surveillance data

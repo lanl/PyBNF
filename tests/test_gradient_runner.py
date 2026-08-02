@@ -435,6 +435,7 @@ def test_runner_terminates_the_start_when_the_start_point_fails_to_simulate(leaf
     nxt = runner.got(u0, float('inf'), None)
     assert nxt is DONE
     assert 'start point failed to simulate' in runner.stop_reason
+    assert runner.failure == 'simulation'      # distinguishable from an unusable model (#528)
 
 
 def _drive_failing_first_trial(runner, evaluate, max_evals=4000):
@@ -539,3 +540,217 @@ def test_advance_backs_off_a_failed_mid_search_trial_and_dispatches_a_retry():
     out = harness._advance(0, runner, res)
     assert isinstance(out, list) and len(out) == 1   # a (shorter) retry was dispatched
     assert len(harness.dispatched) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Non-finite-model robustness (#528). A point can *score* finitely and still hand back
+# non-finite derivatives -- a stiff parameter set whose ODE solve completes while its
+# forward sensitivities diverge (a CVODE `flag=-3` on the sensitivity system), an overflow
+# in the chain rule. That model is unusable, and unguarded it took down not the start that
+# met it but the whole fit: LAPACK will not factorize a non-finite matrix (`LinAlgError: SVD
+# did not converge` from the trust-region subproblem), and a quasi-Newton direction built
+# from a NaN gradient is itself NaN, so the next proposed point is a NaN PSet
+# (`OutOfBoundsException`). Either unwound out through got_result -- 19 healthy starts
+# discarded because of one. Each leaf must instead treat an unusable model the way it already
+# treats a failed simulation: back off mid-search, terminate just this start at the start
+# point.
+# --------------------------------------------------------------------------- #
+_USTAR = np.array([1.0, -0.5, 2.0])
+
+
+def _evaluators(leaf, ustar=_USTAR):
+    """``(evaluate, spoil)`` for one leaf: ``evaluate(u)`` is the ordinary analytic
+    ``(score, _Grad)`` of the shared quadratic; ``spoil(u)`` returns the SAME finite score
+    with one non-finite entry in the model the leaf actually steps from -- the residual
+    Jacobian for ``trf``, the EFIM gradient for ``gntr`` (the reported shape: a finite
+    Hessian, a NaN gradient), the scalar gradient for ``lbfgs``."""
+    r_and_jac, f_and_grad = _ls_problem(ustar)
+    f_g_h = _ls_efim(ustar)
+
+    def evaluate(u):
+        if leaf == 'trf':
+            r, jac = r_and_jac(u)
+            return 0.5 * float(r @ r), _Grad(jac.T @ r, residual=r, jacobian=jac,
+                                             least_squares_exact=True)
+        if leaf == 'gntr':
+            score, g, h = f_g_h(u)
+            return score, _Grad(g, hessian=h, least_squares_exact=False)
+        score, g = f_and_grad(u)
+        return score, _Grad(g)
+
+    def spoil(u):
+        score, grad = evaluate(u)
+        if leaf == 'trf':
+            jac = np.array(grad.jacobian, dtype=float)
+            jac[1, 1] = np.nan
+            return score, _Grad(jac.T @ grad.residual, residual=grad.residual, jacobian=jac,
+                                least_squares_exact=True)
+        bad = np.array(grad.gradient, dtype=float)
+        bad[1] = np.nan
+        return score, _Grad(bad, hessian=grad.hessian,
+                            least_squares_exact=grad.least_squares_exact)
+
+    return evaluate, spoil
+
+
+@pytest.mark.parametrize('leaf', ['lbfgs', 'trf', 'gntr'])
+def test_runner_terminates_the_start_when_the_start_points_model_is_not_finite(leaf):
+    """The reported crash (#528), at the runner: the START point scores finitely but its
+    derivatives are not finite. There is no local surface to descend and no earlier iterate
+    to fall back to, so the runner ends *this* start with a stop_reason naming the unusable
+    model -- rather than letting the NaN into the step math, where it aborts the whole
+    multi-start fit (``LinAlgError`` from the trust-region factorization, or the NaN point
+    L-BFGS-B goes on to propose).
+
+    The start reports the ``inf`` penalty, not the start point's own score: the point was
+    scored but never *fitted*, and a consumer that reads a terminated runner's objective (the
+    profile-likelihood grid point) must not take an unoptimized value for an optimized one.
+    ``failure`` says which of the two failures it was, so such a consumer can name it."""
+    _, spoil = _evaluators(leaf)
+    runner = _runner_factories()[leaf](_U0)
+    u0 = runner.start()
+    score, grad = spoil(u0)
+    assert np.isfinite(score), 'the fixture must score finitely; only the model is bad'
+    nxt = runner.got(u0, score, grad)
+    assert nxt is DONE
+    assert 'not finite' in runner.stop_reason
+    assert 'no usable local model' in runner.stop_reason
+    assert not np.isfinite(runner.fval)    # scored, but not fitted
+    assert runner.failure == 'model'       # ... and not a failed simulation
+
+
+def _first_accepted_trial_index(runner, evaluate, max_evals=4000):
+    """The evaluation index at which the clean search first *moves its iterate* -- accepts a
+    trial. That is where injecting an unusable model bites: a trial the trust region or the
+    line search would reject on its score alone never reaches the model at all."""
+    u = runner.start()
+    point = None
+    for i in range(max_evals):
+        score, grad = evaluate(u)
+        nxt = runner.got(u, score, grad)
+        if point is not None and not np.array_equal(runner.point, point):
+            return i
+        point = np.array(runner.point, dtype=float)
+        assert nxt is not DONE, 'the clean search ended without ever accepting a trial'
+        u = nxt
+    raise AssertionError('runner did not terminate within %d evaluations' % max_evals)
+
+
+def _drive_unusable_accepted_trial(runner, evaluate, spoil, spoil_at, max_evals=4000):
+    """Drive a runner whose trial at index ``spoil_at`` (the one the clean search accepts)
+    scores finitely but returns a non-finite model, with every other point evaluating
+    normally. Returns the converged runner; asserts it did not terminate at that trial, and
+    that no point it proposes is itself non-finite (a NaN model that leaks into the step
+    machine produces NaN trial points, which the orchestrator dispatches to the cluster as
+    NaN PSets)."""
+    u = runner.start()
+    for i in range(max_evals):
+        score, grad = spoil(u) if i == spoil_at else evaluate(u)
+        nxt = runner.got(u, score, grad)
+        if nxt is DONE:
+            assert i > spoil_at, 'the runner ended the start instead of backing off'
+            return runner
+        assert np.all(np.isfinite(nxt)), 'the runner proposed a non-finite point'
+        u = nxt
+    raise AssertionError('runner did not terminate within %d evaluations' % max_evals)
+
+
+@pytest.mark.parametrize('leaf', ['lbfgs', 'trf', 'gntr'])
+def test_runner_backs_off_a_mid_search_trial_whose_model_is_not_finite(leaf):
+    """Mid-search the runner has somewhere to back off *to* -- the current iterate, whose
+    model is fine -- so an unusable trial is rejected rather than ending the start: the trust
+    region shrinks (``trf``/``gntr``) or the line search backtracks (``lbfgs``), and the
+    search still reaches the same minimum. The trial is rejected even though its objective
+    *improved* (it is the very trial the clean search accepts): stepping onto it would move
+    the iterate to a point with no usable curvature and, for L-BFGS-B, fold a NaN pair into
+    the limited-memory history, making every direction afterwards NaN."""
+    evaluate, spoil = _evaluators(leaf)
+    factory = _runner_factories()[leaf]
+    spoil_at = _first_accepted_trial_index(factory(_U0), evaluate)
+    runner = _drive_unusable_accepted_trial(factory(_U0), evaluate, spoil, spoil_at)
+    assert np.allclose(runner.point, _USTAR, atol=1e-4)
+
+
+@pytest.mark.parametrize('leaf', ['trf', 'gntr'])
+def test_trust_region_start_terminates_when_lapack_cannot_factorize(leaf, monkeypatch):
+    """Belt and braces for the same crash: ``gesdd`` can fail to converge on a *finite* but
+    pathological matrix too, independently of any NaN, and it reports that the only way
+    LAPACK can -- ``LinAlgError``. The augmented-Jacobian SVD is the one place in the step
+    math that can raise it, so the runner converts it into the same clean per-start
+    termination instead of letting it unwind into ``got_result`` (#528)."""
+    def gesdd_fails(*args, **kwargs):
+        raise np.linalg.LinAlgError('SVD did not converge')
+
+    monkeypatch.setattr(np.linalg, 'svd', gesdd_fails)
+    evaluate, _ = _evaluators(leaf)
+    runner = _runner_factories()[leaf](_U0)
+    u0 = runner.start()
+    score, grad = evaluate(u0)
+    assert runner.got(u0, score, grad) is DONE
+    assert 'could not be factorized' in runner.stop_reason
+
+
+def test_gntr_start_terminates_when_lapack_cannot_diagonalize_the_hessian(monkeypatch):
+    """``gntr`` reaches LAPACK one step earlier than ``trf``: it eigen-decomposes the EFIM
+    Hessian into its pseudo-Jacobian before any scaling happens, so ``eigh`` is a second
+    place a per-start failure could have aborted the fit (#528)."""
+    def eigh_fails(*args, **kwargs):
+        raise np.linalg.LinAlgError('Eigenvalues did not converge')
+
+    monkeypatch.setattr(np.linalg, 'eigh', eigh_fails)
+    evaluate, _ = _evaluators('gntr')
+    runner = _runner_factories()['gntr'](_U0)
+    u0 = runner.start()
+    score, grad = evaluate(u0)
+    assert runner.got(u0, score, grad) is DONE
+    assert 'could not be diagonalized' in runner.stop_reason
+
+
+def test_gntr_terminates_the_start_on_a_non_finite_hessian_without_reaching_lapack():
+    """A NaN in the EFIM Hessian itself (rather than in the gradient) is caught by the
+    finiteness gate *before* the eigen-decomposition -- ``eigh`` on a non-finite matrix
+    raises ``LinAlgError: Eigenvalues did not converge``, the same class of whole-fit abort
+    as the reported SVD failure (#528)."""
+    runner = _runner_factories()['gntr'](_U0)
+    u0 = runner.start()
+    hessian = _D.T @ _D
+    hessian = hessian.copy()
+    hessian[0, 2] = hessian[2, 0] = np.nan
+    nxt = runner.got(u0, 7.0, _Grad(np.array([1.0, 1.0, 1.0]), hessian=hessian,
+                                    least_squares_exact=False))
+    assert nxt is DONE
+    assert 'Fisher model' in runner.stop_reason and 'not finite' in runner.stop_reason
+
+
+def test_gntr_start_still_fails_loudly_when_no_hessian_was_attached(monkeypatch):
+    """The finiteness gate must not swallow the *internal wiring* error: a gntr runner driven
+    without an EFIM Hessian is a bug in how the fit was assembled, not a bad point to skip
+    over, so it still raises rather than quietly ending the start (#528 guarding #481)."""
+    runner = _runner_factories()['gntr'](_U0)
+    u0 = runner.start()
+    with pytest.raises(Exception, match='requires an assembled EFIM Hessian'):
+        runner.got(u0, 7.0, _Grad(np.array([1.0, 1.0, 1.0]), least_squares_exact=False))
+
+
+class _NonFiniteGradientHarness(_AdvanceHarness):
+    """The real ``_advance`` over a result that *did* simulate (``simdata`` present, a finite
+    score) but whose assembled gradient is not finite -- the #528 arrival path."""
+
+    def gradient_at(self, res):
+        return _Grad(np.array([1.0, np.nan, 0.5]))
+
+
+def test_advance_terminates_a_start_whose_assembled_gradient_is_not_finite():
+    """End-to-end at the orchestration seam of the reported traceback
+    (``got_result`` -> ``_advance`` -> ``got`` -> ... -> ``np.linalg.svd``): a scored point
+    with a non-finite gradient now returns :data:`DONE` from ``_advance``, so the base ends
+    that one start and the other concurrent starts keep running -- instead of an uncaught
+    ``LinAlgError`` propagating out of the run loop (#528)."""
+    harness = _NonFiniteGradientHarness()
+    runner = _runner_factories()['lbfgs'](_U0)
+    runner.start()
+    res = SimpleNamespace(pset=_U0, simdata={'model': 'simdata'}, score=7.0)
+    out = harness._advance(0, runner, res)
+    assert out is DONE
+    assert 'not finite' in runner.stop_reason
+    assert harness.dispatched == []            # the start terminated; nothing dispatched
