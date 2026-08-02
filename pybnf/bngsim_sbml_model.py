@@ -227,29 +227,40 @@ class BngsimSbmlModelNoTimeout(Model):
             BngsimSbmlModelNoTimeout._collect_ast_names(node.getChild(i), out)
 
     def _compute_initial_dependency_names(self, sbml_model):
-        """Analyze which species initials depend on which parameters/species.
+        """Analyze which initial values depend on which parameters/species.
 
         Sets ``self._initial_expr_species`` (the species whose initial value is
-        fixed at load time by an ``initialAssignment``) and returns the set of
-        parameter/species names that those initials depend on -- transitively,
-        following ``assignmentRule``-defined intermediates. When a changed name
-        is in this set, those initials must be recomputed for the evaluation
-        (see :meth:`_recompute_species_initials`); an empty set means parameter
-        values can never change a species initial, so the fast cached-clone
-        path is exact. Returns ``None`` if the model has an ``algebraicRule``
-        (whose effect on initials we do not analyze, so we conservatively force
-        a full reload). See issue #415.
+        fixed at load time by an ``initialAssignment``) and
+        ``self._initial_expr_params`` (the *parameters* an ``initialAssignment``
+        derives the same way), and returns the set of parameter/species names
+        those assignments depend on -- transitively, following
+        ``assignmentRule``-defined intermediates. When a changed name is in this
+        set, the assignments must be recomputed for the evaluation (see
+        :meth:`_recompute_initial_assignments`); an empty set means parameter
+        values can never change an initial value, so the fast cached-clone path
+        is exact. Returns ``None`` if the model has an ``algebraicRule`` (whose
+        effect on initials we do not analyze, so we conservatively force a full
+        reload). See issue #415.
 
-        Only ``initialAssignment``-on-species seed the dependency: a species
-        governed by an ``assignmentRule`` is recomputed *dynamically* by bngsim
-        under ``set_param`` (verified), so it needs no special handling.
+        A parameter with an ``initialAssignment`` is a **derived constant** --
+        SBML re-evaluates it whenever one of its dependencies changes, exactly
+        as it does a species initial (``beta_N = R0_*gamma_/N_`` in
+        Bertozzi_PNAS2020). bngsim evaluates it once at load and ``set_param``
+        does not propagate to it, so it must be recomputed here too; leaving it
+        at its load-time value silently simulated a different model than the
+        reload path did (#531). A parameter an ``assignmentRule`` or
+        ``rateRule`` governs is excluded -- bngsim recomputes *those*
+        dynamically, so an initial override would fight the rule.
         """
         self._initial_expr_species = set()
+        self._initial_expr_params = set()
         # symbol -> referenced names, for every expression that *defines* a
         # symbol's value. assignmentRules are included only so the transitive
         # walk can resolve a parameter that an initialAssignment reads through.
         expr_refs = {}
-        ia_species = {}  # species symbol -> initialAssignment refs (the seed)
+        ia_seeds = {}  # species/parameter symbol -> initialAssignment refs (the seed)
+        ia_species = set()
+        ia_params = set()
         for i in range(sbml_model.getNumInitialAssignments()):
             ia = sbml_model.getInitialAssignment(i)
             refs = set()
@@ -257,27 +268,36 @@ class BngsimSbmlModelNoTimeout(Model):
             symbol = ia.getSymbol()
             expr_refs.setdefault(symbol, set()).update(refs)
             if symbol in self._species_name_set:
-                ia_species[symbol] = refs
+                ia_seeds[symbol] = refs
+                ia_species.add(symbol)
+            elif symbol in self._global_param_names:
+                ia_seeds[symbol] = refs
+                ia_params.add(symbol)
+        ruled = set()
         for i in range(sbml_model.getNumRules()):
             rule = sbml_model.getRule(i)
             if rule.isAlgebraic():
                 # An algebraic rule constrains values implicitly; we do not
                 # solve it, so force the correctness-preserving reload path.
                 return None
+            variable = rule.getVariable() if hasattr(rule, 'getVariable') else None
+            if variable:
+                ruled.add(variable)
             if rule.isAssignment():
                 refs = set()
                 self._collect_ast_names(rule.getMath(), refs)
-                expr_refs.setdefault(rule.getVariable(), set()).update(refs)
+                expr_refs.setdefault(variable, set()).update(refs)
             # Rate rules define d/dt, not the initial value -> ignored here.
 
-        self._initial_expr_species = set(ia_species)
+        self._initial_expr_species = ia_species
+        self._initial_expr_params = ia_params - ruled
 
-        # Seed from initialAssignment-on-species, then expand through any
-        # referenced symbol that is itself expression-defined (e.g. a species
-        # initial that reads a parameter set by an assignmentRule).
+        # Seed from every initialAssignment, then expand through any referenced
+        # symbol that is itself expression-defined (e.g. a species initial that
+        # reads a parameter set by an assignmentRule).
         dep = set()
         worklist = []
-        for refs in ia_species.values():
+        for refs in ia_seeds.values():
             dep.update(refs)
             worklist.extend(refs)
         seen = set(worklist)
@@ -599,7 +619,8 @@ class BngsimSbmlModelNoTimeout(Model):
                 touched_species = True
         return touched_species
 
-    def _prepare_engine_model(self, mut=None, scan_override=None, ic_overrides=None):
+    def _prepare_engine_model(self, mut=None, scan_override=None, ic_overrides=None,
+                              param_overrides=None):
         """Clone the cached engine template and apply per-evaluation values.
 
         The fast-path analogue of ``_build_sbml_doc`` + reload: param_set,
@@ -607,9 +628,11 @@ class BngsimSbmlModelNoTimeout(Model):
         set_param/set_concentration on a cheap clone of the cached model,
         skipping the libSBML reparse + Jacobian re-derivation. ``ic_overrides``
         (species name -> initial concentration) sets the recomputed initial
-        values of species whose initials are parameter-driven; it is applied
-        last so those values win over a direct param_set/scan assignment, and
-        is baked in via save_concentrations. See issue #415.
+        values of species whose initials are parameter-driven, and
+        ``param_overrides`` the recomputed values of the derived parameters an
+        initialAssignment fixes (#531); both are applied last so they win over a
+        direct param_set/scan assignment, exactly as libSBML's own
+        initialAssignment expansion does on the reload path. See issue #415.
         """
         engine_model = self._get_engine_template().clone()
         touched_species = self._apply_param_set_engine(engine_model)
@@ -619,6 +642,9 @@ class BngsimSbmlModelNoTimeout(Model):
             scan_name, scan_value = scan_override
             if self._set_engine_value_if_present(engine_model, scan_name, scan_value):
                 touched_species = True
+        if param_overrides:
+            for param_name, value in param_overrides.items():
+                engine_model.set_param(param_name, float(value))
         if ic_overrides:
             for species_name, ic in ic_overrides.items():
                 self._set_engine_value_if_present(engine_model, species_name, ic)
@@ -628,26 +654,31 @@ class BngsimSbmlModelNoTimeout(Model):
         engine_model.reset()
         return engine_model
 
-    def _recompute_species_initials(self, mut=None, scan_override=None):
-        """Recompute the parameter-driven species initials for this evaluation.
+    def _recompute_initial_assignments(self, mut=None, scan_override=None):
+        """Recompute the parameter-driven initial values for this evaluation.
 
         Builds the SBML doc with this evaluation's parameter/species/scan
         changes applied, evaluates its initialAssignments in place via libSBML
-        (which resolves assignmentRule intermediates), and returns a
-        ``{species: initial_concentration}`` mapping for the species whose
-        initials are fixed at load by an initialAssignment. This reproduces the
-        initials a full reload would bake in, without re-deriving the Jacobian.
-        See issue #415.
+        (which resolves assignmentRule intermediates), and returns
+        ``(species_overrides, param_overrides)`` for the species initials and
+        the **derived parameters** an initialAssignment fixes at load. This
+        reproduces the values a full reload would bake in, without re-deriving
+        the Jacobian. See issues #415 and #531.
         """
         doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
         sbml_model = doc.getModel()
         libsbml.SBMLTransforms.expandInitialAssignments(sbml_model)
-        overrides = {}
+        species_overrides = {}
         for species_name in self._initial_expr_species:
             ic = self._get_model_value_if_present(sbml_model, species_name)
             if ic is not None:
-                overrides[species_name] = ic
-        return overrides
+                species_overrides[species_name] = ic
+        param_overrides = {}
+        for param_name in self._initial_expr_params:
+            value = self._get_model_value_if_present(sbml_model, param_name)
+            if value is not None:
+                param_overrides[param_name] = value
+        return species_overrides, param_overrides
 
     def _engine_model_for_action(self, mut=None, scan_override=None):
         """Build the engine model for one action by reusing the cached engine
@@ -664,16 +695,17 @@ class BngsimSbmlModelNoTimeout(Model):
         if self._needs_structural_reload(mut=mut, scan_param=scan_param):
             doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
             return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
-        ic_overrides = None
+        ic_overrides = param_overrides = None
         if self._changes_touch_initials(mut=mut, scan_param=scan_param):
             if not _HAS_EXPAND_INITIAL_ASSIGNMENTS:
                 # No in-place initial evaluation available -> reload to stay correct.
                 doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
                 return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
-            ic_overrides = self._recompute_species_initials(
+            ic_overrides, param_overrides = self._recompute_initial_assignments(
                 mut=mut, scan_override=scan_override)
         return self._prepare_engine_model(
-            mut=mut, scan_override=scan_override, ic_overrides=ic_overrides)
+            mut=mut, scan_override=scan_override, ic_overrides=ic_overrides,
+            param_overrides=param_overrides)
 
     def model_text(self, mut=None):
         logger.info('Generating model text for %s', self.name)

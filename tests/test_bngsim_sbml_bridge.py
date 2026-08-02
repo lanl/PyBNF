@@ -896,6 +896,82 @@ def test_chained_assignment_rule_initial_recomputed(tmp_path, _clear_engine_cach
         npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
 
 
+_DERIVED_PARAM_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="derived_param">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="10" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="P" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="R0" value="2" constant="true"/>
+      <parameter id="N" value="4" constant="true"/>
+      <parameter id="beta" value="0" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="beta">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><apply><divide/><ci>R0</ci><ci>N</ci></apply></math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="r1" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="P" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>beta</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@pytest.mark.bngsim_sbml
+def test_derived_parameter_initial_assignment_tracks_its_dependency(tmp_path, _clear_engine_cache):
+    """A *parameter* fixed by an initialAssignment (``beta = R0/N``) is a derived
+    constant: changing R0 must change beta, exactly as a full reload does.
+
+    bngsim evaluates the assignment once at load and ``set_param`` does not
+    propagate to it, so before #531 the fast cached-clone path silently kept the
+    load-time beta -- simulating a different model than the reload path for every
+    fitted or condition-set dependency (Bertozzi_PNAS2020's
+    ``beta_N = R0_*gamma_/N_``)."""
+    xml_path = str(tmp_path / 'derived.xml')
+    Path(xml_path).write_text(_DERIVED_PARAM_SBML)
+    action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
+
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert probe._initial_expr_params == {'beta'}
+    assert probe._initial_dep_names == {'R0', 'N'}
+    assert probe._needs_structural_reload() is False
+
+    for r0 in (2.0, 6.0):
+        ps = pset.PSet([pset.FreeParameter('R0', 'uniform_var', 1., 20., r0)])
+        fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        assert fast_model._changes_touch_initials() is True
+        fast = fast_model.execute(str(tmp_path), f'derived_{int(r0)}', 5)['time_course']
+
+        ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        ))
+        ref = ref_model.execute(str(tmp_path), f'derived_ref_{int(r0)}', 5)['time_course']
+        npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
+
+    # ...and the decay rate really did track R0 (beta = R0/N: 0.5 vs 1.5).
+    def _final_s(r0):
+        ps = pset.PSet([pset.FreeParameter('R0', 'uniform_var', 1., 20., r0)])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        return float(model.execute(str(tmp_path), f'derived_s_{int(r0)}', 5)['time_course']['S'][-1])
+
+    npt.assert_allclose(_final_s(2.0), 10.0 * np.exp(-0.5 * 5.0), rtol=1e-4)
+    npt.assert_allclose(_final_s(6.0), 10.0 * np.exp(-1.5 * 5.0), rtol=1e-4)
+
+
 @pytest.mark.bngsim_sbml
 def test_recompute_falls_back_to_reload_without_libsbml_transform(tmp_path, _clear_engine_cache, monkeypatch):
     """If libSBML's expandInitialAssignments is unavailable, the parameter-driven
