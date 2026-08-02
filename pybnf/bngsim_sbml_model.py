@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .data import Data, OutputSensitivities, stack_scan_sensitivities
+from .gradient import derivative
+from .gradient.routing import IC, PARAM, SeedTerm
 from .printing import PybnfError
 from .pset import (
     FailedSimulationError,
@@ -207,11 +209,18 @@ class BngsimSbmlModelNoTimeout(Model):
             doc.getModel().getParameter(i).getId()
             for i in range(doc.getModel().getNumParameters())
         )
+        # The nominal parameter table: the environment a point-dependent seed derivative
+        # (#530) is evaluated in, before the fit vector and the condition override it.
+        self._nominal_param_values = {
+            doc.getModel().getParameter(i).getId():
+                float(doc.getModel().getParameter(i).getValue())
+            for i in range(doc.getModel().getNumParameters())
+        }
         self.global_param_names = self._global_param_names
         self.param_names = self._species_name_set.union(set(self._global_param_names))
         self._initial_dep_names = self._compute_initial_dependency_names(doc.getModel())
-        self._species_unit_factor, self._unsafe_volume = self._compute_species_unit_factors(
-            doc.getModel())
+        (self._species_unit_factor, self._species_assignment_to_concentration,
+         self._unsafe_volume) = self._compute_species_unit_factors(doc.getModel())
         self._ic_seed_map = self._compute_ic_seed_map(doc.getModel())
 
     @staticmethod
@@ -311,52 +320,107 @@ class BngsimSbmlModelNoTimeout(Model):
         return dep
 
     def _compute_ic_seed_map(self, sbml_model):
-        """Map a model parameter to the species whose initial value it *bares*.
+        """Map a model parameter to the initial values it seeds, with their derivatives.
 
-        A **bare** ``initialAssignment`` ``species = <param>`` (a single ``ci`` naming a global
-        parameter, on a concentration-based / unit-factor-1 species) has ``d(IC)/d(param) = 1``,
-        so the gradient router can route a free parameter a condition assigns to that parameter
-        (a per-condition estimated initial condition, ADR-0076, #511) straight onto the species'
-        initial-condition sensitivity axis. Such a parameter maps to its species.
+        An ``initialAssignment`` makes one entity's starting value a function of others:
+        ``I_ = I0_``, ``S_ = N_ - I0_``, ``beta_N = R0_*gamma_/N_``. A free parameter a
+        condition assigns to one of those *inputs* (a per-condition estimated initial
+        condition, ADR-0076) therefore reaches the trajectory through the assigned entity's own
+        sensitivity column, scaled by ``d(entity)/d(param)``. Each parameter maps to the tuple
+        of :class:`~pybnf.gradient.routing.SeedTerm`\\ s carrying those columns and derivatives
+        (#530); #511 could only express a derivative of exactly ``1``.
 
-        A parameter that seeds a species initial value through a **non-bare** expression
-        (``2*init``, ``a+b``), or on an amount species whose value needs a non-unit
-        concentration factor, or that bares more than one species, maps to ``None`` -- present
-        but non-routable: its ``d(IC)/d(param)`` is not a plain ``1``, so the router refuses
-        (``classify_condition_target``) rather than emitting a wrong/silently-zero column.
+        A species term also folds in the unit conversion between the assignment (which sets an
+        *amount* for a ``hasOnlySubstanceUnits`` species and a *concentration* otherwise) and
+        the PyBNF species value the sensitivity tensor is already expressed in
+        (:meth:`_extract_output_sensitivities`) -- the compartment volume, where the two
+        disagree.
+
+        A parameter maps to ``None`` -- present but non-routable, so the router refuses rather
+        than emit a wrong column -- when any initial value it feeds lies outside the arithmetic
+        grammar (:mod:`pybnf.gradient.derivative`), is reached through an ``assignmentRule`` or
+        a second ``initialAssignment`` (a chain this does not compose), sits on a species whose
+        compartment volume is not a load-time constant, or has a derivative reading something
+        other than a global parameter (which the per-point environment cannot supply).
         """
+        if self._initial_dep_names is None:
+            # An algebraicRule constrains initial values implicitly and is not solved here, so
+            # no seed derivative read off the assignments alone can be trusted.
+            return {}
         param_set = set(self._global_param_names)
-        bare = {}      # param -> set(species) it bares
-        nonbare = set()  # params a species IA references non-baruely (force a refuse)
+        seeded = {sbml_model.getInitialAssignment(i).getSymbol()
+                  for i in range(sbml_model.getNumInitialAssignments())}
+        opaque = set(seeded) | self._ruled_symbols(sbml_model)
+        terms = {}     # param -> [SeedTerm]
+        blocked = set()  # params whose seeding cannot be differentiated
         for i in range(sbml_model.getNumInitialAssignments()):
             ia = sbml_model.getInitialAssignment(i)
             symbol = ia.getSymbol()
-            if symbol not in self._species_name_set:
+            is_species = symbol in self._species_name_set
+            if not is_species and symbol not in self._initial_expr_params:
+                continue  # a rule-governed or non-parameter target: bngsim owns its value
+            refs = set()
+            self._collect_ast_names(ia.getMath(), refs)
+            inputs = {r for r in refs if r in param_set}
+            try:
+                tree = derivative.from_sbml_ast(ia.getMath(), libsbml)
+                scale = self._ia_species_scale(symbol) if is_species else 1.0
+            except (derivative.NotDifferentiable, PybnfError):
+                blocked.update(inputs)
                 continue
-            math = ia.getMath()
-            is_bare = (
-                math is not None
-                and math.getType() == libsbml.AST_NAME
-                and math.getNumChildren() == 0
-                and math.getName() in param_set
-                and self._species_unit_factor.get(symbol, 1.0) == 1.0
-            )
-            if is_bare:
-                bare.setdefault(math.getName(), set()).add(symbol)
-            else:
-                refs = set()
-                self._collect_ast_names(math, refs)
-                nonbare.update(r for r in refs if r in param_set)
-        seed_map = {}
-        for param, species in bare.items():
-            seed_map[param] = next(iter(species)) if len(species) == 1 else None
-        for param in nonbare:
-            seed_map[param] = None  # a non-bare use forces a refuse, even if also bare elsewhere
+            if refs & opaque:
+                # The assignment reads a symbol another assignment or a rule defines: the
+                # chain rule through it is not composed here.
+                blocked.update(inputs)
+                continue
+            axis, key = (IC, symbol) if is_species else (PARAM, symbol)
+            for param in sorted(inputs):
+                try:
+                    node = derivative.mul(derivative.num(scale),
+                                          derivative.differentiate(tree, param))
+                except derivative.NotDifferentiable:
+                    blocked.add(param)
+                    continue
+                if not derivative.symbols(node) <= param_set:
+                    # The per-point environment supplies parameter values only.
+                    blocked.add(param)
+                    continue
+                if not derivative.is_constant(node) or node[1] != 0.0:
+                    terms.setdefault(param, []).append(SeedTerm(axis, key, node))
+        seed_map = {param: tuple(seeds) for param, seeds in terms.items()}
+        for param in blocked:
+            seed_map[param] = None  # one non-routable use blocks the parameter outright
         return seed_map
+
+    @staticmethod
+    def _ruled_symbols(sbml_model):
+        """Symbols an assignment/rate rule defines -- opaque to the seed differentiation."""
+        ruled = set()
+        for i in range(sbml_model.getNumRules()):
+            rule = sbml_model.getRule(i)
+            variable = rule.getVariable() if hasattr(rule, 'getVariable') else None
+            if variable:
+                ruled.add(variable)
+        return ruled
+
+    def _ia_species_scale(self, species):
+        """``d(PyBNF species value)/d(initialAssignment value)`` for one species.
+
+        The assignment sets an amount for a ``hasOnlySubstanceUnits`` species and a
+        concentration otherwise; the sensitivity tensor is in PyBNF species-value units
+        (``_species_unit_factor``). Where the two agree this is ``1``; where they disagree it
+        is the compartment volume (or its reciprocal). Raises when the volume is not a
+        load-time constant, since the factor would then move with the fit.
+        """
+        if self._unsafe_volume:
+            raise PybnfError('compartment volume is not a load-time constant')
+        assignment_to_conc = self._species_assignment_to_concentration[species]
+        return assignment_to_conc / self._species_unit_factor[species]
 
     def _compute_species_unit_factors(self, sbml_model):
         """Per-species factor converting a PyBNF species value to a bngsim
-        concentration, plus a flag for volumes we cannot safely convert.
+        concentration, the factor converting an ``initialAssignment``'s value to
+        that same concentration, and a flag for volumes we cannot safely convert.
 
         bngsim works in concentrations internally. A concentration-based species
         value is already a concentration (factor 1.0); an amount-based species
@@ -367,6 +431,13 @@ class BngsimSbmlModelNoTimeout(Model):
         is not a load-time constant (non-constant, or set by an
         initialAssignment/rule), the factor would itself be parameter-dependent;
         we flag that and fall back to a full reload. See issue #415.
+
+        The second map answers a different question, for the gradient router (#530): an
+        ``initialAssignment`` on a ``hasOnlySubstanceUnits`` species sets an *amount* and on
+        any other species a *concentration*, which is not always the unit the PyBNF species
+        value carries. Its factor converts the assignment's value to a concentration, so
+        composing it with the reciprocal of the first map gives ``d(PyBNF value)/d(assignment
+        value)``.
         """
         ruled = set()
         for i in range(sbml_model.getNumInitialAssignments()):
@@ -378,16 +449,11 @@ class BngsimSbmlModelNoTimeout(Model):
                 ruled.add(var)
 
         factors = {}
+        assignment_factors = {}
         unsafe = False
         for i in range(sbml_model.getNumSpecies()):
             sp = sbml_model.getSpecies(i)
             name = sp.getId()
-            amount_based = sp.isSetInitialAmount() or (
-                not sp.isSetInitialConcentration() and sp.getHasOnlySubstanceUnits()
-            )
-            if not amount_based:
-                factors[name] = 1.0
-                continue
             comp_id = sp.getCompartment()
             comp = sbml_model.getCompartment(comp_id)
             vol = comp.getSize() if (comp is not None and comp.isSetSize()) else 1.0
@@ -396,12 +462,21 @@ class BngsimSbmlModelNoTimeout(Model):
                 comp_constant and comp_id not in ruled
                 and vol == vol and vol > 0  # finite and positive
             )
+            assignment_factors[name] = (
+                1.0 / float(vol) if (sp.getHasOnlySubstanceUnits() and volume_is_constant)
+                else 1.0)
+            amount_based = sp.isSetInitialAmount() or (
+                not sp.isSetInitialConcentration() and sp.getHasOnlySubstanceUnits()
+            )
+            if not amount_based:
+                factors[name] = 1.0
+                continue
             if volume_is_constant:
                 factors[name] = 1.0 / float(vol)
             else:
                 factors[name] = 1.0  # unused: the flag forces a reload
                 unsafe = True
-        return factors, unsafe
+        return factors, assignment_factors, unsafe
 
     def _changed_names(self, mut=None, scan_param=None):
         """The parameter/species names this evaluation changes."""
@@ -760,7 +835,8 @@ class BngsimSbmlModelNoTimeout(Model):
         headers = ['time'] + list(result.species_names)
         data = self._data_with_headers(arr, headers)
         if self._sensitivity_request is not None and getattr(
-                result, 'has_sensitivities', False):
+                result, 'has_sensitivities', False) or getattr(
+                result, 'has_sensitivities_ic', False):
             data.output_sensitivities = self._extract_output_sensitivities(result)
         return data
 
@@ -893,7 +969,8 @@ class BngsimSbmlModelNoTimeout(Model):
         (:func:`pybnf.data.stack_scan_sensitivities`). Each dose point is an independent,
         reset-to-seed ODE run, so ``∂species/∂θ`` at its end-of-run row is well-posed."""
         if self._sensitivity_request is None or not getattr(
-                result, 'has_sensitivities', False):
+                result, 'has_sensitivities', False) or getattr(
+                result, 'has_sensitivities_ic', False):
             return None
         return self._extract_output_sensitivities(result)
 
@@ -986,27 +1063,28 @@ class BngsimSbmlModelNoTimeout(Model):
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 
-        Returns ``(param_ids, species_initializers, ic_seed_map)``:
+        Returns ``(param_values, species_initializers, ic_seed_map)``:
 
-        * ``param_ids`` -- the model's global ``parameter`` ids, the kinetic ids a free
-          parameter binds to via ``set_param`` and thus routes to
-          ``Simulator(sensitivity_params=)``;
+        * ``param_values`` -- the model's global ``parameter`` ids mapped to their nominal
+          values: the kinetic ids a free parameter binds to via ``set_param`` and thus routes to
+          ``Simulator(sensitivity_params=)``, plus the environment a point-dependent seed
+          derivative is evaluated in (#530);
         * ``species_initializers`` -- ``(species, initial-expr)`` pairs in the shape
           :func:`pybnf.gradient.routing.classify_free_param` expects. A free parameter named
           for a species sets that species' initial value (via ``set_concentration``, the
           bind-by-id convention, ADR-0034), so each species' bare initializer expression *is*
           its own name; such a free parameter routes to the initial-condition axis keyed by the
           species (an IC parameter is absent from the ODE RHS, so its parameter axis is zero);
-        * ``ic_seed_map`` -- ``{model parameter -> species}`` for a bare ``initialAssignment``
-          ``species = <param>`` (:meth:`_compute_ic_seed_map`), so the router can route a free
-          parameter a condition assigns to that parameter onto the species' IC axis (a
-          per-condition estimated initial condition, ADR-0076, #511); a non-routable seed maps
-          to ``None``.
+        * ``ic_seed_map`` -- ``{model parameter -> SeedTerms}``, the initial values each
+          parameter seeds and the ``d(entity)/d(parameter)`` of each
+          (:meth:`_compute_ic_seed_map`), so the router can route a free parameter a condition
+          assigns to that parameter onto those columns (a per-condition estimated initial
+          condition, ADR-0076, #511/#530); a non-routable seed maps to ``None``.
 
         This is the only model coupling :mod:`pybnf.gradient.routing` needs, so the routing core
         stays backend-agnostic. No simulation -- all three are known at load time.
         """
-        return (list(self._global_param_names),
+        return (dict(self._nominal_param_values),
                 [(s, s) for s in self._species_names],
                 dict(self._ic_seed_map))
 

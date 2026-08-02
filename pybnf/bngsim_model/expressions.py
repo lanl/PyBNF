@@ -12,6 +12,8 @@ import re
 
 import numpy as np
 
+from ..gradient import derivative
+from ..gradient.routing import IC, SeedTerm
 from ..printing import PybnfError
 from ..pset import FreeParameter, PSet
 
@@ -173,34 +175,44 @@ def _parse_net_species_initializers(net_lines):
 
 
 def _net_species_ic_seed_map(species_initializers, param_names):
-    """Map a model parameter to the species whose initial value it *bares* in a .net species
-    block, for the gradient router's per-condition estimated initial condition composition
-    (ADR-0076, #511).
+    """Map a model parameter to the species initial values it seeds in a .net species block,
+    with each ``d(IC)/d(param)``, for the gradient router's per-condition estimated initial
+    condition composition (ADR-0076, #511/#530).
 
-    A **bare** initializer ``species <- <param>`` (the whole expression is a single parameter
-    id) has ``d(IC)/d(param) = 1``, so a free parameter a condition assigns to that parameter
-    routes straight onto the species' initial-condition sensitivity axis. Such a parameter maps
-    to its species. A parameter referenced by a **non-bare** initializer expression (``2*p``,
-    ``a+b``), or that bares more than one species, maps to ``None`` -- present but non-routable
-    (its ``d(IC)/d(param)`` is not a plain ``1``), so the router refuses rather than emitting a
-    wrong column.
+    A free parameter a condition assigns to a seeding parameter reaches the trajectory through
+    the seeded species' initial-condition sensitivity axis, scaled by that derivative: ``1`` for
+    the bare ``species <- p``, ``2`` for ``2*p``, ``-1`` for ``total - p``, and one term per
+    species when the parameter seeds several. A parameter whose seeding lies outside the
+    arithmetic grammar (:mod:`pybnf.gradient.derivative`) maps to ``None`` -- present but
+    non-routable -- so the router refuses rather than emitting a wrong column.
     """
     param_set = set(param_names)
-    bare = {}      # param -> set(species) it bares
-    nonbare = set()  # params a non-bare initializer references (force a refuse)
-    ident = re.compile(r'^[A-Za-z_]\w*$')
     token = re.compile(r'[A-Za-z_]\w*')
+    terms = {}
+    blocked = set()
     for species, expr in species_initializers:
-        e = expr.strip()
-        if ident.match(e) and e in param_set:
-            bare.setdefault(e, set()).add(species)
-        else:
-            nonbare.update(t for t in token.findall(e) if t in param_set)
-    seed_map = {}
-    for param, species in bare.items():
-        seed_map[param] = next(iter(species)) if len(species) == 1 else None
-    for param in nonbare:
-        seed_map[param] = None  # a non-bare use forces a refuse, even if also bare elsewhere
+        inputs = sorted({t for t in token.findall(expr) if t in param_set})
+        if not inputs:
+            continue
+        try:
+            tree = derivative.from_python_expression(expr)
+        except derivative.NotDifferentiable:
+            blocked.update(inputs)
+            continue
+        for param in inputs:
+            try:
+                node = derivative.differentiate(tree, param)
+            except derivative.NotDifferentiable:
+                blocked.add(param)
+                continue
+            if not derivative.symbols(node) <= param_set:
+                blocked.add(param)  # the per-point environment supplies parameter values only
+                continue
+            if not derivative.is_constant(node) or node[1] != 0.0:
+                terms.setdefault(param, []).append(SeedTerm(IC, species, node))
+    seed_map = {param: tuple(seeds) for param, seeds in terms.items()}
+    for param in blocked:
+        seed_map[param] = None  # one non-routable use blocks the parameter outright
     return seed_map
 
 

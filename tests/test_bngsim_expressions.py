@@ -11,6 +11,7 @@ import math
 import pytest
 
 from pybnf.bngsim_model import expressions
+from pybnf.gradient.routing import IC, SeedTerm
 
 
 # ----------------------------------------------------------------- _eval_numeric
@@ -145,28 +146,48 @@ def test_parse_net_species_initializers():
 
 
 def test_net_species_ic_seed_map_bare_param_seed():
-    """A bare initializer ``species <- <param>`` maps that parameter to its species (routable,
-    d(IC)/d(param) = 1), so a condition assigning the parameter to a free parameter can route it
+    """A bare initializer ``species <- <param>`` maps that parameter to its species with the
+    unit derivative, so a condition assigning the parameter to a free parameter can route it
     onto the species IC axis (ADR-0076, #511)."""
     inits = [('A()', 'initA'), ('B()', 'initB')]
     assert expressions._net_species_ic_seed_map(inits, ['initA', 'initB', 'k']) == {
-        'initA': 'A()', 'initB': 'B()'}
+        'initA': (SeedTerm(IC, 'A()', ('num', 1.0)),),
+        'initB': (SeedTerm(IC, 'B()', ('num', 1.0)),)}
 
 
-def test_net_species_ic_seed_map_non_bare_and_numeric_are_not_routable():
-    """A numeric initializer seeds nothing; a non-bare expression maps its referenced parameters
-    to None (present-but-non-routable), so the router refuses rather than emitting a
-    parameter-dependent factor."""
+def test_net_species_ic_seed_map_carries_the_non_unit_seed_derivative():
+    """A numeric initializer seeds nothing; a non-bare expression carries its own
+    ``d(IC)/d(param)`` -- 3.0 for ``3.0*Vo``, 1 for each side of ``k+kf`` (#530)."""
     inits = [('A()', '100'), ('B()', '3.0*Vo'), ('C()', 'k+kf')]
-    seed = expressions._net_species_ic_seed_map(inits, ['Vo', 'k', 'kf'])
-    assert seed == {'Vo': None, 'k': None, 'kf': None}
+    assert expressions._net_species_ic_seed_map(inits, ['Vo', 'k', 'kf']) == {
+        'Vo': (SeedTerm(IC, 'B()', ('num', 3.0)),),
+        'k': (SeedTerm(IC, 'C()', ('num', 1.0)),),
+        'kf': (SeedTerm(IC, 'C()', ('num', 1.0)),)}
 
 
-def test_net_species_ic_seed_map_multi_species_seed_is_not_routable():
-    """A parameter that bares more than one species maps to None: routing it to a single IC axis
-    would drop the other species' contribution."""
-    inits = [('A()', 'init'), ('B()', 'init')]
-    assert expressions._net_species_ic_seed_map(inits, ['init']) == {'init': None}
+def test_net_species_ic_seed_map_multi_species_seed_sums_over_species():
+    """A parameter that seeds more than one species gets one term per species: its route is
+    their sum, not whichever the map happened to keep (#530)."""
+    inits = [('A()', 'init'), ('B()', 'total - init')]
+    assert expressions._net_species_ic_seed_map(inits, ['init', 'total']) == {
+        'init': (SeedTerm(IC, 'A()', ('num', 1.0)), SeedTerm(IC, 'B()', ('num', -1.0))),
+        'total': (SeedTerm(IC, 'B()', ('num', 1.0)),)}
+
+
+def test_net_species_ic_seed_map_point_dependent_seed_keeps_its_expression():
+    """A seed derivative that reads another symbol (``d(scale*init)/d(init) = scale``) is
+    carried symbolically, for evaluation at each fit point (#530)."""
+    inits = [('A()', 'scale*init')]
+    seed = expressions._net_species_ic_seed_map(inits, ['scale', 'init'])
+    assert seed['init'] == (SeedTerm(IC, 'A()', ('sym', 'scale')),)
+    assert seed['scale'] == (SeedTerm(IC, 'A()', ('sym', 'init')),)
+
+
+def test_net_species_ic_seed_map_outside_the_grammar_is_not_routable():
+    """An initializer the arithmetic grammar cannot differentiate maps its parameters to None
+    -- present but non-routable -- so the router refuses rather than guessing a factor."""
+    inits = [('A()', 'exp(kf)')]
+    assert expressions._net_species_ic_seed_map(inits, ['kf']) == {'kf': None}
 
 
 # ---------------------------------------------------------- model expression eval

@@ -50,25 +50,38 @@ Reached through a condition (a per-condition estimated initial condition, ADR-00
 -----------------------------------------------------------------------------------
 A free parameter that binds no model id of its own can still reach the model through a
 ``condition`` that sets a model entity to *its* value -- ``target = free_param``
-(``is_param_ref``). The referenced free parameter then gains a :class:`RouteContribution` on the
-target's own sensitivity column (:func:`classify_condition_target`): :data:`IC` when ``target``
-seeds a species initial value (chain-rule factor ``d(IC)/d(target) = 1`` for a bare
-``initialAssignment``), :data:`PARAM` for an ordinary global (e.g. a shared rate multiplier).
-Because one free parameter may be assigned to *several* targets in one condition, a route is a
-**sum** over its contributions (:class:`ParamRoute`).
+(``is_param_ref``). The referenced free parameter then gains a :class:`RouteContribution` on
+every sensitivity column ``target`` reaches (:func:`classify_condition_target`): :data:`PARAM`
+on ``target`` itself for an ordinary global (e.g. a shared rate multiplier), plus one term per
+entity whose **initial value** ``target`` seeds -- a species initial condition (:data:`IC`) or
+a parameter an ``initialAssignment`` derives (:data:`PARAM`). Because one free parameter may be
+assigned to *several* targets in one condition, and one target may seed *several* entities, a
+route is a **sum** over its contributions (:class:`ParamRoute`).
 
-Cut-1 scope
------------
-IC routing matches a *bare* initializer (``species <- p`` directly, or ``target = p`` where
-``target`` bares a species IC). A parameter that both appears in the ODE RHS and seeds an
-initial value, or a species seeded by a non-trivial expression (``2*p``), is a later layer --
-:func:`classify_condition_target` raises :class:`GradientNotSupported` for the non-bare seed
-rather than emitting a parameter-dependent factor, keeping the clean param/ic split honest.
+The seed derivative is not assumed to be 1 (#530)
+-------------------------------------------------
+Each seeding term carries its own ``d(entity)/d(target)``, differentiated symbolically from the
+model's initial-value expression by :mod:`pybnf.gradient.derivative`: ``1`` for the bare
+``species = p``, ``-1`` for ``S_ = N_ - I0_``, ``2`` for ``2*p``, and a compartment-unit factor
+where the species' value and its assignment disagree on amount vs concentration. A derivative
+that is not a bare number -- ``d(beta_N)/d(R0_) = gamma_/N_`` -- is **point-dependent**: it is
+carried symbolically and evaluated at each evaluated PSet by
+:meth:`ExperimentRouting.at_point`.
+
+Scope
+-----
+The seed grammar is arithmetic (``+ - * / **``, numbers, symbols). An initial value reached
+through a function call, an ``assignmentRule``, or a second ``initialAssignment`` is a chain
+this routing does not compose: :func:`classify_condition_target` raises
+:class:`GradientNotSupported` rather than emit a wrong or silently-zero column. Bind-by-id
+routing of a free parameter that *itself* seeds several species remains single-column
+(:func:`classify_free_param`).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..printing import PybnfError
+from . import derivative
 from .errors import GradientNotSupported
 
 
@@ -80,6 +93,22 @@ NONE = 'none'
 
 
 @dataclass(frozen=True)
+class SeedTerm:
+    """One ``(sensitivity column, d(column entity)/d(model parameter))`` seeding term.
+
+    A model parameter a ``condition:`` sets may not appear in the ODE right-hand side at
+    all: it can *seed* other entities' initial values -- a species initial condition
+    (:data:`IC`), or another parameter an ``initialAssignment`` derives (:data:`PARAM`,
+    ``beta_N = R0_*gamma_/N_``). ``node`` is the symbolic ``d(entity)/d(parameter)`` tree
+    (:mod:`pybnf.gradient.derivative`); it is a plain number for the common linear seed and
+    an expression over model symbols otherwise, evaluated per fit point (#530).
+    """
+    target: str
+    key: object
+    node: tuple
+
+
+@dataclass(frozen=True)
 class RouteContribution:
     """One ``(native sensitivity column -> free parameter)`` term of a route.
 
@@ -88,10 +117,22 @@ class RouteContribution:
     is the request key the tensor is read by: the parameter id for :data:`PARAM`, the *species*
     for :data:`IC`, ``None`` for :data:`NONE`. ``factor`` is the chain-rule derivative folded
     into this term (#449 multiplies it into the Jacobian column); a zero factor drops it.
+
+    ``node`` carries the symbolic derivative when the factor is **point-dependent** -- a seed
+    whose ``d(entity)/d(target)`` reads other model symbols (#530). ``factor`` then holds its
+    value at the routing's build point and :meth:`ExperimentRouting.at_point` refreshes it
+    before each assembly; such a term is always requested, since a factor that merely happens
+    to vanish at the build point must not drop the column the fit later needs.
     """
     target: str
     key: object  # str (param id / species) for param/ic; None for none
     factor: float
+    node: tuple = None
+
+    @property
+    def requested(self):
+        """Whether this term needs its native sensitivity column computed."""
+        return self.target != NONE and (self.node is not None or self.factor != 0.0)
 
 
 @dataclass(frozen=True)
@@ -142,8 +183,14 @@ class ParamRoute:
 class ExperimentRouting:
     """The per-experiment routing object: ``{free_param -> ParamRoute}`` plus the derived
     ``sensitivity_params`` / ``sensitivity_ic`` request lists handed to #447's gradient path.
+
+    ``nominal_values`` (the model's ``{parameter id: value}`` table) and ``condition`` are
+    retained only so :meth:`at_point` can rebuild the environment a **point-dependent** seed
+    factor is evaluated in (#530); a routing whose factors are all constants ignores them.
     """
     routes: dict  # free_param -> ParamRoute, in declared free-parameter order
+    nominal_values: dict = field(default_factory=dict)
+    condition: object = None
 
     @property
     def sensitivity_params(self):
@@ -163,9 +210,75 @@ class ExperimentRouting:
         keys = []
         for route in self.routes.values():
             for c in route.contributions:
-                if c.target == target and c.factor != 0.0 and c.key not in keys:
+                if c.target == target and c.requested and c.key not in keys:
                     keys.append(c.key)
         return keys
+
+    @property
+    def is_point_dependent(self):
+        """Whether any chain-rule factor must be re-evaluated at the fit point (#530)."""
+        return any(c.node is not None
+                   for route in self.routes.values() for c in route.contributions)
+
+    def at_point(self, param_values):
+        """This routing with every point-dependent factor evaluated at ``param_values``.
+
+        A seed derivative that reads other model symbols (``d(beta_N)/d(R0_) = gamma_/N_``)
+        is only a number once the fit vector is known, so the assembly asks for the routing
+        *at the evaluated PSet*. The environment is the model's nominal parameter table
+        overridden by the free parameters that bind a model id, then by this experiment's
+        condition -- the same order the apply paths use (ADR-0076). A routing with no
+        point-dependent factor returns **itself**, so every pre-#530 fit is untouched.
+        """
+        if not self.is_point_dependent:
+            return self
+        env = _environment(self.nominal_values, self.condition, param_values)
+        routes = {}
+        for name, route in self.routes.items():
+            contribs = tuple(
+                c if c.node is None
+                else RouteContribution(c.target, c.key,
+                                       _evaluate_factor(c.node, env, name), c.node)
+                for c in route.contributions)
+            routes[name] = ParamRoute(free_param=name, contributions=contribs)
+        return ExperimentRouting(routes=routes, nominal_values=self.nominal_values,
+                                 condition=self.condition)
+
+
+def _evaluate_factor(node, env, free_param):
+    """Evaluate a seed derivative at one point, refusing rather than guessing."""
+    try:
+        return derivative.evaluate(node, env)
+    except (derivative.NotDifferentiable, ArithmeticError, TypeError, ValueError) as e:
+        raise GradientNotSupported(
+            f"The chain-rule factor d(seeded value)/d(condition target) for free parameter "
+            f"'{free_param}' -- '{derivative.render(node)}' -- could not be evaluated at this "
+            f"fit point ({e}). Use a gradient-free optimizer or sampler for this fit.") from e
+
+
+def _environment(nominal_values, condition, param_values):
+    """``{model symbol: value}`` for one experiment at one fit point.
+
+    The model's nominal parameter table, overridden by the free parameters that bind a model
+    id (ADR-0034), then by the experiment's ``condition:`` -- a perturbation resolving its own
+    parameter references against the fit vector, exactly as the apply paths do (ADR-0076). A
+    species perturbation (ADR-0062) is skipped: it moves a state, not a symbol a seed
+    derivative reads.
+    """
+    env = dict(nominal_values or {})
+    values = dict(param_values or {})
+    for name, value in values.items():
+        if name in env:
+            env[name] = value
+    if condition is None:
+        return env
+    for mut in condition:
+        if getattr(mut, 'is_species', False) or mut.name not in env:
+            continue
+        if getattr(mut, 'is_param_ref', False) and mut.value not in values:
+            continue  # no fit vector in hand (the build-point routing); keep the nominal
+        env[mut.name] = mut.mutate(env[mut.name], values)
+    return env
 
 
 def condition_factor(free_param, condition):
@@ -221,69 +334,99 @@ def classify_free_param(free_param, param_ids, species_initializers):
 
 
 def classify_condition_target(target, param_ids, species_names, ic_seed_map):
-    """Classify the model entity a param-ref condition sets: return ``(axis, key, factor)``.
+    """Classify the model entity a param-ref condition sets: return a list of
+    ``(axis, key, node)`` seeding terms.
 
     ``target`` is the model id a ``condition`` assignment ``target = free_param`` sets (a
-    per-condition estimated initial condition, ADR-0076). A model parameter that seeds a
-    species' initial value routes to the :data:`IC` axis keyed by that species (checked first --
-    an IC seed is *also* a ``begin parameters`` id, but only its IC axis is non-zero); a species
-    set directly routes to :data:`IC` on itself; any other model parameter routes to
-    :data:`PARAM`. ``factor`` is ``d(model entity)/d(model parameter)`` -- ``1`` for a bare seed
-    or a direct set.
+    per-condition estimated initial condition, ADR-0076). It reaches the trajectory two ways,
+    and a target can do **both** at once:
 
-    ``ic_seed_map`` maps a model parameter to the species whose initial value it *bares* (a bare
-    ``initialAssignment`` ``species = <param>``); the value ``None`` marks a parameter that
-    seeds a species IC through a **non-bare** expression (a parameter-dependent
-    ``d(IC)/d(param)`` this bind-by-id routing does not model). Raises
-    :class:`GradientNotSupported` for that non-bare seed and for a target that binds no
-    sensitivity entity at all -- keeping a gradient/EFIM fit honest rather than emitting a
-    silently-zero column.
+    * by *being* a model quantity the ODE reads -- a species set directly (:data:`IC` on
+      itself) or an ordinary global (:data:`PARAM` on itself), factor ``1``; and
+    * by **seeding** other entities' initial values (``ic_seed_map``) -- one or more species
+      initial conditions (``I_ = I0_``, ``S_ = N_ - I0_``), and/or a parameter an
+      ``initialAssignment`` derives from it (``beta_N = R0_*gamma_/N_``). Each such term
+      carries its own ``d(entity)/d(target)`` derivative (#530).
+
+    A pure initial-value seed -- a parameter that only seeds species ICs -- deliberately gets
+    **no** :data:`PARAM` term of its own: it is absent from the ODE right-hand side, so that
+    axis is identically zero and requesting it would only cost a sensitivity vector.
+
+    ``ic_seed_map`` maps a model parameter to its tuple of :class:`SeedTerm`\\ s, or to
+    ``None`` for a seed this routing cannot differentiate (an expression outside the
+    arithmetic grammar, or one reaching an initial value through a rule / another assignment).
+    That, and a target binding no sensitivity entity at all, raise
+    :class:`GradientNotSupported` -- keeping a gradient/EFIM fit honest rather than emitting a
+    silently-wrong column.
     """
-    if target in ic_seed_map:
-        species = ic_seed_map[target]
-        if species is None:
-            raise GradientNotSupported(
-                f"Condition sets '{target}', which seeds a species initial value whose "
-                f"d(IC)/d('{target}') is not a plain 1 -- a non-bare initialAssignment "
-                f"expression, an amount species needing a non-unit concentration factor, or a "
-                f"parameter seeding several species. The gradient path does not yet route this "
-                f"per-condition estimated initial condition (ADR-0076). Use a gradient-free "
-                f"optimizer or sampler for this fit.")
-        return (IC, species, 1.0)
+    seeds = _seed_terms(target, ic_seed_map)
+    terms = [(s.target, s.key, s.node) for s in seeds]
     if target in species_names:
-        return (IC, target, 1.0)
-    if target in param_ids:
-        return (PARAM, target, 1.0)
+        terms.append((IC, target, derivative.ONE))
+    elif target in param_ids and not _seeds_only_initial_conditions(seeds):
+        terms.append((PARAM, target, derivative.ONE))
+    if terms:
+        return terms
     raise GradientNotSupported(
         f"Condition sets '{target}' to the value of a free parameter, but '{target}' is "
         f"neither a model parameter nor a species initial value the sensitivity request can "
         f"bind; the gradient path cannot route it. Use a gradient-free optimizer or sampler.")
 
 
-def route_experiment(free_params, param_ids, species_initializers, condition=None,
+def _seed_terms(target, ic_seed_map):
+    """``target``'s :class:`SeedTerm`\\ s, refusing a seed that cannot be differentiated."""
+    if target not in ic_seed_map:
+        return ()
+    seeds = ic_seed_map[target]
+    if seeds is None:
+        raise GradientNotSupported(
+            f"Condition sets '{target}', which seeds another entity's initial value through an "
+            f"expression the gradient path cannot differentiate -- one outside its arithmetic "
+            f"grammar (a function call, a piecewise), or one reaching the initial value through "
+            f"an assignmentRule or a second initialAssignment. Routing this per-condition "
+            f"estimated initial condition (ADR-0076) would need a chain rule PyBNF does not "
+            f"compose (#530). Use a gradient-free optimizer or sampler for this fit.")
+    if isinstance(seeds, str):
+        # Backward-compatible shorthand: the bare ``{param -> species}`` seed map of #511.
+        return (SeedTerm(IC, seeds, derivative.ONE),)
+    return tuple(seeds)
+
+
+def _seeds_only_initial_conditions(seeds):
+    return bool(seeds) and all(s.target == IC for s in seeds)
+
+
+def route_experiment(free_params, param_values, species_initializers, condition=None,
                      ic_seed_map=None):
     """Build the :class:`ExperimentRouting` for one experiment (pure -- no model, no sim).
 
     ``free_params`` is the ordered free-parameter id list (the config's declared variables);
-    ``param_ids`` the model's ``begin parameters`` namespace; ``species_initializers`` the
-    ``(species, initial-expr)`` pairs; ``condition`` the experiment's
-    :class:`pybnf.pset.MutationSet` (``None`` for the wildtype experiment); ``ic_seed_map`` the
-    ``{model parameter -> species}`` bare-``initialAssignment`` map (:func:`classify_condition_target`).
+    ``param_values`` the model's ``begin parameters`` namespace -- an ``{id: nominal value}``
+    mapping (any plain iterable of ids also works, but then a point-dependent seed factor has
+    no environment to read and refuses); ``species_initializers`` the ``(species,
+    initial-expr)`` pairs; ``condition`` the experiment's :class:`pybnf.pset.MutationSet`
+    (``None`` for the wildtype experiment); ``ic_seed_map`` the ``{model parameter ->
+    SeedTerms}`` initial-value seed map (:func:`classify_condition_target`).
 
     A parameter-reference perturbation (a per-condition estimated initial condition, ADR-0076)
     ``target = free_param`` **composes** the chain rule: the referenced free parameter reaches
-    the trajectory through the condition target's own sensitivity column, so it gains a
-    :class:`RouteContribution` on that column (:data:`IC` when the target seeds a species IC,
-    :data:`PARAM` for an ordinary global). One free parameter a condition assigns to several
-    targets at once (a shared rate multiplier) accumulates one contribution per target -- its
-    derivative is their sum. A target whose ``d(IC)/d(param)`` is not a bare ``1`` (a non-bare
-    initialAssignment), or that binds no sensitivity entity, raises
-    :class:`GradientNotSupported` rather than emitting a silently-zero column.
+    the trajectory through every column the condition target reaches, so it gains one
+    :class:`RouteContribution` per column -- the target's own axis, plus one per entity whose
+    initial value the target seeds, each carrying its own ``d(entity)/d(target)`` derivative
+    (#530). One free parameter a condition assigns to several targets at once (a shared rate
+    multiplier) accumulates the contributions of all of them; a route's derivative is the
+    **sum** over its contributions.
+
+    A seed the arithmetic grammar cannot differentiate, a non-``=`` parameter reference, and a
+    target that binds no sensitivity entity all raise :class:`GradientNotSupported` rather than
+    emit a silently-wrong column.
     """
-    param_ids = set(param_ids)
+    nominal_values = dict(param_values) if isinstance(param_values, dict) else {}
+    param_ids = set(param_values)
     ic_seed_map = ic_seed_map or {}
     free_param_set = set(free_params)
     species_names = {species for species, _ in species_initializers}
+    env = _environment(nominal_values, condition, None)
 
     # Contributions a condition's parameter-reference perturbations add to the *referenced* free
     # parameter: it reaches the model through the condition target's own sensitivity column.
@@ -302,10 +445,12 @@ def route_experiment(free_params, param_ids, species_initializers, condition=Non
                     f"non-'=' parameter reference; the gradient path routes only an '=' "
                     f"per-condition estimated initial condition (ADR-0076). Use a gradient-free "
                     f"optimizer or sampler for this fit.")
-            axis, key, factor = classify_condition_target(
-                mut.name, param_ids, species_names, ic_seed_map)
-            ref_contribs.setdefault(free_param, []).append(
-                RouteContribution(axis, key, factor))
+            for axis, key, node in classify_condition_target(
+                    mut.name, param_ids, species_names, ic_seed_map):
+                constant = derivative.is_constant(node)
+                ref_contribs.setdefault(free_param, []).append(RouteContribution(
+                    axis, key, _evaluate_factor(node, env, free_param),
+                    None if constant else node))
 
     routes = {}
     for name in free_params:
@@ -320,22 +465,23 @@ def route_experiment(free_params, param_ids, species_initializers, condition=Non
             # experiment): a single NONE contribution, dropped by the request lists and assembly.
             contribs.append(RouteContribution(NONE, None, condition_factor(name, condition)))
         routes[name] = ParamRoute(free_param=name, contributions=tuple(contribs))
-    return ExperimentRouting(routes=routes)
+    return ExperimentRouting(routes=routes, nominal_values=nominal_values,
+                             condition=condition)
 
 
 def route_for_model(model, free_params, condition=None):
     """:func:`route_experiment` against a live model's bind-by-id namespaces.
 
-    Reads the model's ``begin parameters`` ids, ``(species, initial-expr)`` pairs, and the
-    bare-``initialAssignment`` seed map through
+    Reads the model's ``begin parameters`` table (id -> nominal value), ``(species,
+    initial-expr)`` pairs, and the initial-value seed map through
     :meth:`BngsimModel.sensitivity_entity_namespace` (the only model coupling), so the routing
     core stays backend-agnostic. ``condition`` may be a :class:`pybnf.pset.MutationSet`, a
     condition *name* resolved against ``model.mutants``, or ``None`` for the wildtype
     experiment.
     """
-    param_ids, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
+    param_values, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
     condition = _resolve_condition(model, condition)
-    return route_experiment(free_params, param_ids, species_initializers, condition,
+    return route_experiment(free_params, param_values, species_initializers, condition,
                             ic_seed_map=ic_seed_map)
 
 

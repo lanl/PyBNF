@@ -41,7 +41,12 @@ import pytest
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
 from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS
 from pybnf.data import Data
-from pybnf.gradient import assemble_gaussian_gradient, route_experiment, route_for_model
+from pybnf.gradient import (
+    IC, PARAM, RouteContribution, SeedTerm,
+    assemble_gaussian_gradient, route_experiment, route_for_model,
+)
+from pybnf.gradient import derivative
+from pybnf.gradient.derivative import ONE
 from pybnf.objective import ChiSquareObjective
 from pybnf.printing import PybnfError
 from pybnf.pset import (
@@ -272,6 +277,67 @@ def _exp_from_species(sim, sigma):
     return Data.from_columns(np.column_stack([t, obs, sd]), ['time', 'S', 'S_SD'])
 
 
+def _assert_fd_matches(tmp_path, xml, tag, *, cond, free, model_params, truth, column,
+                       sigma, expect_route=None, rtol=2e-3, atol=2e-3):
+    """Central differences of ``loss(u)`` vs the assembled ``gradient(u)`` for free parameters
+    that reach the model only through ``cond`` (a per-condition estimated initial condition).
+
+    ``model_params(theta)`` maps the free-parameter values to the model parameter values the
+    condition would set, so the forward runs need no mutant machinery; the routing itself is
+    still built from ``cond`` against the live model, which is what is under test.
+    """
+    action = TimeCourse({'time': '10', 'step': '1'})
+
+    def run(values, route=None):
+        ps = PSet([FreeParameter(k, 'uniform_var', 0.0, 1e12, value=v)
+                   for k, v in values.items()])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml, xml, pset=ps, actions=(action,))
+        if route is not None:
+            model.enable_output_sensitivities(
+                params=route.sensitivity_params, ic=route.sensitivity_ic)
+        return model.execute(str(tmp_path), tag, 0)['time_course']
+
+    base = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=PSet([]), actions=(action,))
+    names = [p.name for p in free]
+    route = route_for_model(base, names, cond)
+    if expect_route is not None:
+        expect_route(route)
+
+    sim_truth = run(truth)
+    t = sim_truth.data[:, sim_truth.cols['time']]
+    obs = sim_truth.data[:, sim_truth.cols[column]]
+    exp = Data.from_columns(
+        np.column_stack([t, obs, np.full(len(obs), sigma, float)]),
+        ['time', column, '%s_SD' % column])
+    obj = ChiSquareObjective()
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return obj.evaluate(run(model_params(theta)), exp)
+
+    u0 = np.array([p.to_sampling_space(p.value) for p in free])
+    h = 1e-6
+    grad_fd = np.array([
+        (loss_at(_bump(u0, j, h)) - loss_at(_bump(u0, j, -h))) / (2.0 * h)
+        for j in range(len(free))])
+
+    theta0 = {p.name: p.value for p in free}
+    point = route.at_point(theta0)
+    sim = run(model_params(theta0), route=point)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, point)], free)
+    assert res.param_names == names
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=rtol, atol=atol)
+    return route
+
+
+def _bump(u0, j, h):
+    u = u0.copy()
+    u[j] += h
+    return u
+
+
 @_needs_output_sens
 def test_sbml_fd_acceptance_gate(tmp_path):
     """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay
@@ -380,7 +446,7 @@ def test_sbml_ic_seed_map_exposes_bare_initial_assignment(tmp_path):
         str(xml), str(xml), pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
     param_ids, species, ic_seed_map = model.sensitivity_entity_namespace()
     assert set(param_ids) == {'S0', 'k1', 'k2', 'kmult1', 'kmult2'}
-    assert ic_seed_map == {'S0': 'S'}
+    assert ic_seed_map == {'S0': (SeedTerm(IC, 'S', ONE),)}
 
 
 @_needs_output_sens
@@ -479,11 +545,10 @@ _NONBARE_SEED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 @_needs_output_sens
-def test_sbml_non_bare_initial_assignment_seed_is_refused(tmp_path):
-    """A **non-bare** initialAssignment ``S = 2*S0`` has a parameter-dependent d(IC)/d(S0), so
-    S0 is exposed as non-routable (``{'S0': None}``) and routing a per-condition estimated
-    initial condition through it refuses rather than emitting a wrong factor (ADR-0076, #511)."""
-    from pybnf.gradient import GradientNotSupported
+def test_sbml_non_bare_initial_assignment_seed_carries_its_derivative(tmp_path):
+    """A **non-bare** initialAssignment ``S = 2*S0`` has ``d(IC)/d(S0) = 2``: the seed is
+    routable and carries that factor rather than refusing (ADR-0076, #530). #511 could only
+    express a derivative of 1, so this shape lost the gradient path entirely."""
     xml_path = Path(tmp_path) / 'nonbare.xml'
     xml_path.write_text(_NONBARE_SEED_SBML)
     xml = str(xml_path)
@@ -491,9 +556,32 @@ def test_sbml_non_bare_initial_assignment_seed_is_refused(tmp_path):
     model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
     _, _, ic_seed_map = model.sensitivity_entity_namespace()
+    assert ic_seed_map == {'S0': (SeedTerm(IC, 'S', ('num', 2.0)),)}
+    cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
+    route = route_for_model(model, ['s0_free'], cond)
+    assert route.routes['s0_free'].contributions == (RouteContribution(IC, 'S', 2.0),)
+
+
+_UNDIFFERENTIABLE_SEED_SBML = _NONBARE_SEED_SBML.replace(
+    '<apply><times/><cn>2</cn><ci>S0</ci></apply>',
+    '<apply><exp/><ci>S0</ci></apply>')
+
+
+@_needs_output_sens
+def test_sbml_seed_outside_the_arithmetic_grammar_is_refused(tmp_path):
+    """``S = exp(S0)`` is outside the seed grammar, so S0 stays non-routable and the
+    per-condition estimated initial condition refuses rather than guessing (#530)."""
+    from pybnf.gradient import GradientNotSupported
+    xml_path = Path(tmp_path) / 'undiff.xml'
+    xml_path.write_text(_UNDIFFERENTIABLE_SEED_SBML)
+    xml = str(xml_path)
+    ps = PSet([FreeParameter('k', 'uniform_var', 0.0, 1e6, value=0.3)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    _, _, ic_seed_map = model.sensitivity_entity_namespace()
     assert ic_seed_map == {'S0': None}
     cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
-    with pytest.raises(GradientNotSupported, match='non-bare'):
+    with pytest.raises(GradientNotSupported, match='cannot differentiate'):
         route_for_model(model, ['s0_free'], cond)
 
 
@@ -522,25 +610,141 @@ _AMOUNT_SEED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 @_needs_output_sens
-def test_sbml_amount_species_with_non_unit_volume_seed_is_refused(tmp_path):
-    """A **bare** initialAssignment is still non-routable when the species is amount-based in a
-    non-unit compartment: the PyBNF species value is an amount but bngsim's IC axis is a
-    concentration, so d(IC)/d(S0) is 1/size, not 1. The seed is exposed as non-routable and the
-    per-condition estimated initial condition refuses (ADR-0076, #511)."""
-    from pybnf.gradient import GradientNotSupported
+def test_sbml_amount_species_seed_folds_the_unit_conversion(tmp_path):
+    """A bare initialAssignment on an amount species in a size-2 compartment.
+
+    The assignment sets an *amount* (``hasOnlySubstanceUnits``) and the sensitivity tensor is
+    already in PyBNF species-value units -- also an amount here -- so the two volume factors
+    cancel and ``d(value)/d(S0)`` is 1 after all. #511 read only the raw unit factor (0.5) and
+    refused this seed outright; #530 composes both halves, and the FD oracle below is what
+    settles which is right."""
     xml_path = Path(tmp_path) / 'amount.xml'
     xml_path.write_text(_AMOUNT_SEED_SBML)
     xml = str(xml_path)
     ps = PSet([FreeParameter('k', 'uniform_var', 0.0, 1e6, value=0.3)])
     model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml, xml, pset=ps, actions=(TimeCourse({'time': '10', 'step': '1'}),))
-    # size-2 compartment on an amount species -> unit factor 0.5, so S0 is NOT a unit-slope seed.
-    assert model._species_unit_factor['S'] == 0.5
+    assert model._species_unit_factor['S'] == 0.5              # PyBNF value -> concentration
+    assert model._species_assignment_to_concentration['S'] == 0.5   # assignment -> concentration
     _, _, ic_seed_map = model.sensitivity_entity_namespace()
-    assert ic_seed_map == {'S0': None}
+    assert ic_seed_map == {'S0': (SeedTerm(IC, 'S', ONE),)}
     cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
-    with pytest.raises(GradientNotSupported, match='not a plain 1'):
-        route_for_model(model, ['s0_free'], cond)
+    route = route_for_model(model, ['s0_free'], cond)
+    assert route.routes['s0_free'].contributions == (RouteContribution(IC, 'S', 1.0),)
+
+
+# The Bertozzi_PNAS2020 shape, minimised: one estimated parameter I0 seeds TWO species
+# initials with opposite signs (I = I0, S = N - I0), and a derived parameter beta = R0*g/N
+# -- fixed by an initialAssignment, not by the ODE -- carries R0 and g into the rate law.
+_SEIR_LIKE_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="seir_like">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="I" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="S" compartment="c" initialConcentration="99" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="R" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="N" value="100" constant="true"/>
+      <parameter id="I0" value="1" constant="true"/>
+      <parameter id="R0" value="2" constant="true"/>
+      <parameter id="g" value="0.2" constant="true"/>
+      <parameter id="beta" value="0" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="I"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>I0</ci></math></initialAssignment>
+      <initialAssignment symbol="S"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><minus/><ci>N</ci><ci>I0</ci></apply></math></initialAssignment>
+      <initialAssignment symbol="beta"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><divide/><apply><times/><ci>R0</ci><ci>g</ci></apply><ci>N</ci></apply></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="infect" reversible="false" fast="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+          <speciesReference species="I" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <listOfProducts><speciesReference species="I" stoichiometry="2" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>beta</ci><ci>I</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="recover" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="I" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="R" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>g</ci><ci>I</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_seed_map_spans_several_species_and_a_derived_parameter(tmp_path):
+    """The seed map for the Bertozzi shape.
+
+    ``I0`` seeds two species with opposite derivatives (+1 on ``I``, -1 on ``S``); ``R0`` and
+    ``g`` seed the *parameter* ``beta``, whose derivatives are point-dependent expressions.
+    ``N`` seeds all three. Under #511 every one of these was a flat refusal (#530)."""
+    xml_path = Path(tmp_path) / 'seir.xml'
+    xml_path.write_text(_SEIR_LIKE_SBML)
+    xml = str(xml_path)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=PSet([]), actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    _, _, seeds = model.sensitivity_entity_namespace()
+    assert seeds['I0'] == (SeedTerm(IC, 'I', ONE), SeedTerm(IC, 'S', ('num', -1.0)))
+    assert seeds['N'][0] == SeedTerm(IC, 'S', ONE)
+    # beta's inputs carry point-dependent derivatives, checked by value at a probe point.
+    env = {'R0': 3.0, 'g': 0.4, 'N': 50.0}
+    for name, expected in (('R0', 0.4 / 50.0), ('g', 3.0 / 50.0)):
+        (term,) = [s for s in seeds[name] if s.key == 'beta']
+        assert term.target == PARAM
+        assert derivative.evaluate(term.node, env) == pytest.approx(expected)
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_multi_species_seed_and_derived_parameter(tmp_path):
+    """FD oracle for the Bertozzi shape: three free parameters reaching the model *only*
+    through a condition -- one summing two opposite-signed species IC columns, two chaining
+    through a derived parameter with a point-dependent factor (#530).
+
+    ``g`` is the sharp case: it is both a rate constant the ODE reads directly *and* an input
+    to ``beta``, so its column is the sum of its own parameter axis and ``beta``'s scaled by
+    ``R0/N``. Dropping either half leaves a gradient that still looks plausible."""
+    xml_path = Path(tmp_path) / 'seir.xml'
+    xml_path.write_text(_SEIR_LIKE_SBML)
+
+    def _check(route):
+        assert route.is_point_dependent
+        assert set(route.sensitivity_ic) == {'I', 'S'}
+        assert 'beta' in route.sensitivity_params
+        assert len(route.routes['g_free'].contributions) == 2   # beta chain + g's own axis
+
+    _assert_fd_matches(
+        tmp_path, str(xml_path), 'seirfd',
+        cond=MutationSet([
+            Mutation('I0', '=', 'i0_free', is_param_ref=True),
+            Mutation('R0', '=', 'r0_free', is_param_ref=True),
+            Mutation('g', '=', 'g_free', is_param_ref=True),
+        ], 'c'),
+        free=[FreeParameter('i0_free', 'uniform_var', 0.1, 50.0, value=3.0),
+              FreeParameter('r0_free', 'uniform_var', 0.5, 8.0, value=2.5),
+              FreeParameter('g_free', 'uniform_var', 0.01, 2.0, value=0.25)],
+        model_params=lambda theta: {'N': 100.0, 'I0': theta['i0_free'],
+                                    'R0': theta['r0_free'], 'g': theta['g_free']},
+        truth={'N': 100.0, 'I0': 1.0, 'R0': 2.0, 'g': 0.2},
+        column='I', sigma=1.0, expect_route=_check)
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_amount_species_seed(tmp_path):
+    """FD oracle for the case above: the assembled gradient of a free parameter routed through
+    an amount-species seed in a size-2 compartment must match central differences (#530)."""
+    xml_path = Path(tmp_path) / 'amount.xml'
+    xml_path.write_text(_AMOUNT_SEED_SBML)
+    _assert_fd_matches(
+        tmp_path, str(xml_path), 'amountfd',
+        cond=MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c'),
+        free=[FreeParameter('s0_free', 'uniform_var', 1.0, 1e4, value=120.0)],
+        model_params=lambda theta: {'S0': theta['s0_free'], 'k': 0.3},
+        truth={'S0': 100.0, 'k': 0.3}, column='S', sigma=2.0)
 
 
 # --- setup regression guard (default CI, no full fit) -------------------------- #

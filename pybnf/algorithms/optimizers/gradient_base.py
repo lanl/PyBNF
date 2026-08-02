@@ -521,28 +521,49 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
 
         The free-parameter list (column order + current values) is read straight off
         the evaluated PSet, so the ``d theta/d u`` scale factors are taken at the
-        point actually simulated. Converts a :class:`GradientNotSupported` (an
+        point actually simulated -- and, for the same reason, each routing is taken
+        ``at_point``: a chain-rule factor that reads other model symbols
+        (``d(beta_N)/d(R0_) = gamma_/N_``, #530) is only a number once the fit vector
+        is known. A routing whose factors are all constants returns itself, so every
+        other fit is untouched. Converts a :class:`GradientNotSupported` (an
         objective the assembly cannot differentiate) into a clear, fail-fast
         :class:`PybnfError` pointing at a metaheuristic job_type."""
         free_params = [res.pset.get_param(v.name) for v in self.variables]
+        try:
+            routings = self._routings_at(res.pset)
+        except GradientNotSupported as e:
+            raise self._unsupported_gradient_error(e) from e
         experiments = []
         for model_name, by_suffix in res.simdata.items():
             model_exp = self.exp_data.get(model_name, {})
             for suffix, sim_data in by_suffix.items():
                 if suffix in model_exp:
                     experiments.append(
-                        (sim_data, model_exp[suffix], self._routings[(model_name, suffix)]))
+                        (sim_data, model_exp[suffix], routings[(model_name, suffix)]))
         try:
             grad = self._assemble_objective_gradient(experiments, free_params)
             if self.config.constraints:
                 cgrad = assemble_constraint_gradient(
-                    self.config.constraints, res.simdata, self._routings, free_params)
+                    self.config.constraints, res.simdata, routings, free_params)
                 grad.gradient = grad.gradient + cgrad
                 grad.least_squares_exact = False
             self._attach_curvature(grad, res, experiments, free_params)
         except GradientNotSupported as e:
             raise self._unsupported_gradient_error(e) from e
         return grad
+
+    def _routings_at(self, evaluated_pset):
+        """The prebuilt routings with every point-dependent chain-rule factor resolved.
+
+        The sensitivity *request* is fixed for the whole fit, but a seed derivative may
+        read other model symbols and so is only a number at an evaluated point (#530).
+        Returns ``self._routings`` itself when nothing is point-dependent -- the common
+        case, and byte-identical to the pre-#530 path."""
+        if not any(r.is_point_dependent for r in self._routings.values()):
+            return self._routings
+        values = {p.name: p.value for p in evaluated_pset}
+        return {key: routing.at_point(values)
+                for key, routing in self._routings.items()}
 
     def _assemble_objective_gradient(self, experiments, free_params):
         """Assemble the data-fit objective derivatives needed by this optimizer leaf.

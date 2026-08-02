@@ -41,6 +41,7 @@ from .expressions import (
     _build_mutant_param_set,
     _parse_net_species_initializers,
     _net_species_ic_seed_map,
+    _model_param_values,
 )
 from .scan import (
     _with_sim_timeout,
@@ -344,27 +345,29 @@ class BngsimModel(NetModel):
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 
-        Returns ``(param_ids, species_initializers, ic_seed_map)``:
+        Returns ``(param_values, species_initializers, ic_seed_map)``:
 
-        * ``param_ids`` -- the model's ``begin parameters`` namespace (the engine's
-          ``param_names``), the kinetic/global ids a free parameter binds to via ``set_param``
-          and thus routes to ``Simulator(sensitivity_params=)``;
+        * ``param_values`` -- the model's ``begin parameters`` namespace mapped to its current
+          values (the engine's ``param_names``): the kinetic/global ids a free parameter binds
+          to via ``set_param`` and thus routes to ``Simulator(sensitivity_params=)``, plus the
+          environment a point-dependent seed derivative is evaluated in (#530);
         * ``species_initializers`` -- the ``(species, initial-expr)`` pairs
           (``_parse_net_species_initializers``); a free parameter that is a species' bare
           initial-value expression binds to ``Simulator(sensitivity_ic=)`` keyed by the
           species (an IC parameter is absent from the ODE RHS, so the parameter axis is zero);
-        * ``ic_seed_map`` -- ``{model parameter -> species}`` for a bare species initializer
+        * ``ic_seed_map`` -- ``{model parameter -> SeedTerms}``, the species initial values
+          each parameter seeds and the ``d(IC)/d(parameter)`` of each
           (``_net_species_ic_seed_map``), so the router can route a free parameter a condition
-          assigns to that parameter onto the species' IC axis (a per-condition estimated initial
-          condition, ADR-0076, #511); a non-routable seed maps to ``None``.
+          assigns to that parameter onto those IC axes (a per-condition estimated initial
+          condition, ADR-0076, #511/#530); a non-routable seed maps to ``None``.
 
         This is the only model coupling :mod:`pybnf.gradient.routing` needs, so the routing
         core stays backend-agnostic. No simulation -- all three are known at build time.
         """
-        param_ids = list(self._engine_model.param_names)
+        param_values = _model_param_values(self._engine_model)
         species_initializers = list(self._net_species_initializers)
-        return (param_ids, species_initializers,
-                _net_species_ic_seed_map(species_initializers, param_ids))
+        return (param_values, species_initializers,
+                _net_species_ic_seed_map(species_initializers, param_values))
 
     def _sensitivity_request_kwargs(self, method):
         """Simulator kwargs requesting forward sensitivities on the gradient path.
@@ -1915,7 +1918,8 @@ class BngsimModel(NetModel):
         """
         data = self._build_data(result, print_functions=print_functions)
         if self._sensitivity_request is not None and getattr(
-                result, 'has_sensitivities', False):
+                result, 'has_sensitivities', False) or getattr(
+                result, 'has_sensitivities_ic', False):
             data.output_sensitivities = self._extract_output_sensitivities(
                 result, print_functions)
         return data
@@ -2039,7 +2043,8 @@ class BngsimModel(NetModel):
         Reuses :meth:`_extract_output_sensitivities` so the scan tensor's selectors /
         axis labels are byte-identical to the time-course path's."""
         if self._sensitivity_request is None or not getattr(
-                result, 'has_sensitivities', False):
+                result, 'has_sensitivities', False) or getattr(
+                result, 'has_sensitivities_ic', False):
             return None
         return self._extract_output_sensitivities(result, print_functions)
 

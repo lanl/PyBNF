@@ -19,9 +19,11 @@ import pytest
 
 from pybnf.gradient import routing as R
 from pybnf.gradient.routing import (
-    PARAM, IC, NONE, RouteContribution, ParamRoute,
+    PARAM, IC, NONE, RouteContribution, ParamRoute, SeedTerm,
     classify_free_param, classify_condition_target, condition_factor, route_experiment,
 )
+from pybnf.gradient.derivative import ONE
+from pybnf import pset
 from pybnf.pset import Mutation, MutationSet
 from pybnf.printing import PybnfError
 
@@ -164,20 +166,40 @@ IC_SEED_MAP = {'S0': 'S()'}
 
 
 def test_classify_condition_target_ic_seed():
-    """A condition target that bares a species IC routes to the IC axis, factor 1."""
-    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == (IC, 'S()', 1.0)
+    """A condition target that bares a species IC routes to the IC axis, derivative 1 -- and to
+    no parameter axis of its own: a pure IC seed is absent from the ODE right-hand side."""
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == [
+        (IC, 'S()', ONE)]
 
 
 def test_classify_condition_target_param():
     """A condition target that is an ordinary global routes to the parameter axis, factor 1."""
-    assert classify_condition_target('k', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == (PARAM, 'k', 1.0)
+    assert classify_condition_target('k', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == [
+        (PARAM, 'k', ONE)]
 
 
-def test_classify_condition_target_non_bare_seed_refuses():
-    """A parameter that seeds a species IC non-baruely (map value None) refuses rather than
-    emitting a parameter-dependent factor."""
+def test_classify_condition_target_seeds_several_entities():
+    """A target that seeds several initial values contributes one term per seeded entity, each
+    with its own derivative -- ``I_ = I0_`` and ``S_ = N_ - I0_`` (#530)."""
+    seed_map = {'I0_': (SeedTerm(IC, 'I_', ONE), SeedTerm(IC, 'S_', ('num', -1.0)))}
+    assert classify_condition_target('I0_', {'I0_'}, {'I_', 'S_'}, seed_map) == [
+        (IC, 'I_', ONE), (IC, 'S_', ('num', -1.0))]
+
+
+def test_classify_condition_target_seeding_a_derived_parameter_keeps_its_own_axis():
+    """A target that seeds a *parameter* an initialAssignment derives keeps its own parameter
+    axis too: ``gamma_`` is both a rate constant and an input to ``beta_N = R0_*gamma_/N_``,
+    so both columns carry its derivative (#530)."""
+    seed_map = {'gamma_': (SeedTerm(PARAM, 'beta_N', ('sym', 'R0_')),)}
+    assert classify_condition_target('gamma_', {'gamma_', 'beta_N'}, set(), seed_map) == [
+        (PARAM, 'beta_N', ('sym', 'R0_')), (PARAM, 'gamma_', ONE)]
+
+
+def test_classify_condition_target_undifferentiable_seed_refuses():
+    """A seed the arithmetic grammar cannot differentiate (map value None) refuses rather than
+    emitting a guessed factor."""
     from pybnf.gradient import GradientNotSupported
-    with pytest.raises(GradientNotSupported, match='non-bare'):
+    with pytest.raises(GradientNotSupported, match='cannot differentiate'):
         classify_condition_target('S0', {'S0', 'k'}, {'S()'}, {'S0': None})
 
 
@@ -221,12 +243,50 @@ def test_route_experiment_param_ref_multi_target_sums():
         _ = r.routes['m'].target
 
 
-def test_route_experiment_param_ref_non_bare_seed_refuses():
-    """A per-condition estimated IC through a non-bare seed (map value None) refuses."""
+def test_route_experiment_param_ref_undifferentiable_seed_refuses():
+    """A per-condition estimated IC through a seed the grammar cannot differentiate refuses."""
     from pybnf.gradient import GradientNotSupported
-    with pytest.raises(GradientNotSupported, match='non-bare'):
+    with pytest.raises(GradientNotSupported, match='cannot differentiate'):
         route_experiment(['S0_A'], DECAY_PARAMS, DECAY_SPECIES,
                          _pref(('S0', '=', 'S0_A')), ic_seed_map={'S0': None})
+
+
+def test_route_experiment_param_ref_non_unit_seed_sums_over_species():
+    """The referenced free parameter picks up one contribution per seeded species with that
+    species' own derivative, so its Jacobian column is their sum (#530)."""
+    seed_map = {'S0': (SeedTerm(IC, 'S()', ONE), SeedTerm(IC, 'T()', ('num', -1.0)))}
+    r = route_experiment(['S0_A'], DECAY_PARAMS, DECAY_SPECIES,
+                         _pref(('S0', '=', 'S0_A')), ic_seed_map=seed_map)
+    assert r.routes['S0_A'].contributions == (
+        RouteContribution(IC, 'S()', 1.0), RouteContribution(IC, 'T()', -1.0))
+    assert r.sensitivity_ic == ['S()', 'T()']
+    assert r.is_point_dependent is False
+
+
+def test_route_experiment_point_dependent_seed_is_resolved_at_the_fit_point():
+    """A seed derivative that reads other model symbols is carried symbolically and evaluated
+    per point: ``d(beta)/d(R0) = gamma/N`` with ``gamma`` set by the same condition (#530)."""
+    seed_map = {'R0': (SeedTerm(PARAM, 'beta', ('/', ('sym', 'gamma'), ('sym', 'N'))),)}
+    cond = pset.MutationSet([
+        pset.Mutation('R0', '=', 'R0_A', is_param_ref=True),
+        pset.Mutation('gamma', '=', 'g_A', is_param_ref=True),
+        pset.Mutation('N', '=', 400.0),
+    ], 'c')
+    r = route_experiment(['R0_A', 'g_A'], {'R0': 1.0, 'gamma': 0.1, 'N': 1.0, 'beta': 0.0},
+                         DECAY_SPECIES, cond, ic_seed_map=seed_map)
+    assert r.is_point_dependent is True
+    # The seeded column is requested even though the build-point factor could vanish; the
+    # targets keep their own axes too (zero for R0, which the RHS never reads -- but the
+    # router cannot know that, and a zero column is wasteful, never wrong).
+    assert r.sensitivity_params == ['beta', 'R0', 'gamma']
+    resolved = r.at_point({'R0_A': 3.0, 'g_A': 0.2})
+    assert resolved.routes['R0_A'].contributions == (
+        RouteContribution(PARAM, 'beta', 0.2 / 400.0,
+                          ('/', ('sym', 'gamma'), ('sym', 'N'))),
+        RouteContribution(PARAM, 'R0', 1.0))
+    # ...and a routing with no symbolic factor is returned unchanged, object-identical.
+    plain = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, None)
+    assert plain.at_point({'k': 1.0}) is plain
 
 
 def test_route_experiment_param_ref_non_equals_refuses():
@@ -338,9 +398,10 @@ def test_sensitivity_entity_namespace(decay_model):
     param_ids, species, ic_seed_map = decay_model.sensitivity_entity_namespace()
     assert set(param_ids) == {'S0', 'k'}
     assert species == [('S()', 'S0')]
-    # S0 bares species S()'s initial value, so a condition setting S0 to a free parameter can
-    # route that free parameter onto the S() IC axis (ADR-0076, #511).
-    assert ic_seed_map == {'S0': 'S()'}
+    assert param_ids == {'S0': 100.0, 'k': 0.3}   # id -> nominal value (#530)
+    # S0 seeds species S()'s initial value with derivative 1, so a condition setting S0 to a
+    # free parameter can route that free parameter onto the S() IC axis (ADR-0076, #511).
+    assert ic_seed_map == {'S0': (SeedTerm(IC, 'S()', ONE),)}
 
 
 @pytest.mark.bngsim
