@@ -292,6 +292,15 @@ class GlobalConfig(PyBNFConfigModel):
     max_failed_simulations: int = 100
     wall_time_gen: int = 3600
     wall_time_sim: Optional[int] = None   # chosen when loading models
+    # The fit's TOTAL wall-clock budget in seconds (#529, ADR-0093) -- the peer of the
+    # two per-unit-of-work limits above, which bound one simulation and one network
+    # generation but never the run. 0 (the default) = unbounded, byte-identical to
+    # pre-#529. When set, the run loop stops launching work once the budget is spent
+    # and runs the NORMAL end-of-fit path against the best point found so far, so a
+    # budgeted result is scoreable exactly like a converged one; the stop reason is
+    # logged, printed, and written to Results/stop_reason.txt. Cross-edition,
+    # cross-fit_type (every fit that drives the shared run loop); see pybnf/budget.py.
+    wall_time_fit: int = 0
     normalization: Any = None
     # Model-scoped network-generation options for edition-2 synthesis (#473). When the
     # edition-2 surface strips the model's ``begin actions`` block, pybnf synthesizes a

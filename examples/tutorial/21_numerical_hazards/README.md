@@ -82,6 +82,11 @@ bounds.
   long as a per-candidate bound on a hazardous model.)
 - **`max_failed_simulations`** is the safety valve for a fit where nothing works:
   it aborts with a clear message instead of looping forever.
+- Both guards bound *one unit of work*. To bound the **whole fit** — a hazardous model
+  can be slow without ever failing — set **`wall_time_fit`** (seconds). When the budget
+  runs out PyBNF stops launching work and writes its normal end-of-fit results for the
+  best parameter set found so far, plus a `Results/stop_reason.txt` saying why; killing
+  the process instead leaves no results at all.
 
 ## The data & test
 

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # will allow test files to import the data module:
 #     from .context import data
 
+import pybnf.budget as budget
 import pybnf.pset as pset
 import pybnf.priors as priors
 import pybnf.petab as petab

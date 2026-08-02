@@ -31,6 +31,7 @@ from ..bngsim_model import (
 )
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import ObjectiveCalculator, likelihood_information_criteria
+from ..budget import format_duration
 
 from abc import ABC, abstractmethod
 import logging
@@ -103,6 +104,18 @@ class Algorithm(ABC):
     # a method that needs simdata back must opt out of it. The same base-class
     # flag pattern as _is_simplex, so run() never references a leaf subclass.
     requires_master_scoring = False
+
+    #: The fit's total wall-clock budget (``wall_time_fit``, #529/ADR-0093), or None for
+    #: an unbounded fit. Set by ``pybnf.main()`` on the algorithm it is about to run --
+    #: and passed on to a refiner / reused across bootstrap replicates -- so one deadline
+    #: bounds the whole run rather than each phase separately. A **class** attribute so an
+    #: algorithm unpickled by ``--resume`` (which deliberately does not carry the stale
+    #: deadline; see :meth:`should_pickle`) still reads a well-defined None.
+    budget = None
+
+    #: Why the last :meth:`run` stopped, when that reason must not be mistaken for
+    #: convergence (today: the wall-time budget). None for an ordinary run.
+    stop_reason = None
 
     def __init__(self, config):
         """
@@ -297,10 +310,15 @@ class Algorithm(ABC):
         Checks to see if key 'k' should be included in pickling.  Currently allows all entries in instance dictionary
         except for 'trajectory'
 
+        'budget' is excluded too: a wall-clock deadline is meaningless once restored into
+        a later process, and a resumed run is a new run of its own -- ``main()`` builds it
+        a fresh budget from the same ``wall_time_fit``, so ``--resume`` grants another full
+        budget rather than inheriting an already-expired one (#529).
+
         :param k:
         :return:
         """
-        return k not in set(['trajectory', 'calc_future', 'models_future'])
+        return k not in set(['trajectory', 'calc_future', 'models_future', 'budget'])
 
     def __getstate__(self):
         return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
@@ -1104,13 +1122,23 @@ class Algorithm(ABC):
         return response
 
     def run(self, client, resume=None, debug=False):
-        """Main loop for executing the algorithm"""
+        """Main loop for executing the algorithm.
 
+        Submits work, drains completions through :meth:`_drain_job_pool`, and then runs
+        the end-of-fit path -- final parameter sets, best-fit simulations, information
+        criteria, the inference-data sidecar, the backup rename, the sim-dir teardown.
+        That path is reached the same way however the loop ended: on the algorithm's own
+        stop criterion, on an exhausted job pool, or on the wall-time budget
+        (``wall_time_fit``, #529). A budgeted run is a *finished* run whose search was
+        cut short, so it writes exactly what a converged one writes; only
+        :attr:`stop_reason` differs (ADR-0093).
+        """
+
+        self.stop_reason = None
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
         backup_every = self.get_backup_every()
-        sim_count = 0
 
         logger.debug('Generating initial parameter sets')
         if resume:
@@ -1151,19 +1179,73 @@ class Algorithm(ABC):
         # values onto the Job. See core._ResolvedFuture.
         [self.models_future] = client.scatter([self.model_list], broadcast=True)
 
-        jobs = []
         pending = dict()  # Maps pending futures to tuple (PSet, job_id).
-        for p in psets:
-            jobs += self.make_job(p)
-        jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
-        logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = []
-        for job in jobs:
-            f = client.submit(core.run_job, job, True, self.failed_logs_dir,
-                              models=self.models_future, calc=self.calc_future)
-            futures.append(f)
-            pending[f] = (job.params, job.job_id)
-        pool = core.as_completed(futures, with_results=True, raise_errors=False)
+        if self._budget_spent():
+            # The budget was already gone before a single job was submitted (model
+            # loading / network generation ate it). Launch nothing -- an expired budget
+            # means "stop launching new work" -- and go straight to the finalize path,
+            # which reports whatever this run has (nothing, on a fresh fit).
+            self.stop_reason = self._wall_time_stop_reason(0)
+        else:
+            jobs = []
+            for p in psets:
+                jobs += self.make_job(p)
+            jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
+            logger.info('Submitting initial set of %d Jobs' % len(jobs))
+            futures = []
+            for job in jobs:
+                f = client.submit(core.run_job, job, True, self.failed_logs_dir,
+                                  models=self.models_future, calc=self.calc_future)
+                futures.append(f)
+                pending[f] = (job.params, job.job_id)
+            # With a wall-time budget, bound the blocking wait for the next completion by
+            # what is left of it, so the deadline lands on time even while every worker is
+            # mid-simulation: as_completed then raises TimeoutError out of next() instead
+            # of blocking until a simulation happens to finish (#529). Without a budget the
+            # call is exactly the historical one.
+            pool_kwargs = {'timeout': self.budget.remaining()} if self.budget is not None else {}
+            pool = core.as_completed(futures, with_results=True, raise_errors=False, **pool_kwargs)
+            self._drain_job_pool(client, pool, pending, backup_every, debug)
+
+        logger.info("Cancelling %d pending jobs" % len(pending))
+        client.cancel(list(pending.keys()))
+        self._announce_stop_reason()
+
+        # Write the final parameter sets, then copy the best simulations into the results
+        # folder. A run that stopped before any result came back (an expired budget, an
+        # immediately exhausted pool) has no parameter sets at all, so there is nothing to
+        # write, copy, re-simulate, or score -- say so rather than raising out of an
+        # otherwise-finished run.
+        if len(self.trajectory) == 0:
+            logger.warning('No parameter set completed, so there is no best fit to report')
+            print1('No simulation completed, so there is no best fit to report.')
+        else:
+            self.output_results('final')
+            best_name = self.trajectory.best_fit_name()
+            best_pset = self.trajectory.best_fit()
+            self._copy_best_fit_sims(best_pset, best_name)
+            self._rerun_best_fit_to_save_data(best_pset)
+            self._emit_best_fit_bngl(best_pset, best_name)
+            self._emit_information_criteria(self._compute_information_criteria(best_pset))
+            self._emit_inference_data()
+        self._finalize_backup_pickle()
+        self._teardown_sim_dir()
+
+        logger.info("Fitting complete")
+
+    def _drain_job_pool(self, client, pool, pending, backup_every, debug):
+        """Drain completed jobs until the run stops, resubmitting what the algorithm asks
+        for. Mutates ``pending`` (the in-flight future -> (PSet, job_id) map) and returns
+        the number of results consumed.
+
+        :meth:`run`'s inner loop, extracted so its three exits -- the algorithm's own
+        ``'STOP'``, an exhausted pool, and the wall-time budget (#529) -- are one unit
+        that can be exercised without the surrounding setup. A budget exit records
+        :attr:`stop_reason` and leaves the pending futures for ``run`` to cancel, exactly
+        as a ``'STOP'`` exit does: the difference between a budgeted stop and a converged
+        one is the reason, not the artifacts.
+        """
+        sim_count = 0
         backed_up = True
         while True:
             if sim_count % backup_every == 0 and not backed_up:
@@ -1176,6 +1258,11 @@ class Algorithm(ABC):
                                'This can happen when all proposed parameter sets in a generation '
                                'are out of bounds. Ending run.')
                 print1('Warning: job pool exhausted (all proposals may have been out of bounds). Ending run.')
+                break
+            except TimeoutError:
+                # The budget ran out while every worker was still busy; the in-flight
+                # simulations are abandoned (run() cancels them next).
+                self.stop_reason = self._wall_time_stop_reason(sim_count)
                 break
             res = result_from_completed(f, res, pending[f][0], pending[f][1])
             del pending[f]
@@ -1190,6 +1277,11 @@ class Algorithm(ABC):
             decision = self._record_result_and_decide(res)
             if decision == 'STOP':
                 break
+            # The completed result is recorded first (it is already paid for), then the
+            # budget decides whether anything new may be launched.
+            if self._budget_spent():
+                self.stop_reason = self._wall_time_stop_reason(sim_count)
+                break
             # Submit the next round of jobs the algorithm asked for.
             new_futures = []
             for ps in decision:
@@ -1202,23 +1294,46 @@ class Algorithm(ABC):
                     new_futures.append(new_f)
             logger.debug('Submitting %d new Jobs' % len(new_futures))
             pool.update(new_futures)
+        return sim_count
 
-        logger.info("Cancelling %d pending jobs" % len(pending))
-        client.cancel(list(pending.keys()))
-        self.output_results('final')
+    def _budget_spent(self):
+        """Whether this fit's total wall-clock budget (``wall_time_fit``) is gone.
+        Always False when no budget was configured (the default)."""
+        return self.budget is not None and self.budget.expired()
 
-        # Copy the best simulations into the results folder
-        best_name = self.trajectory.best_fit_name()
-        best_pset = self.trajectory.best_fit()
-        self._copy_best_fit_sims(best_pset, best_name)
-        self._rerun_best_fit_to_save_data(best_pset)
-        self._emit_best_fit_bngl(best_pset, best_name)
-        self._emit_information_criteria(self._compute_information_criteria(best_pset))
-        self._emit_inference_data()
-        self._finalize_backup_pickle()
-        self._teardown_sim_dir()
+    def _wall_time_stop_reason(self, sim_count):
+        """The one-line reason a wall-time budget stop is reported under (#529).
 
-        logger.info("Fitting complete")
+        Deliberately in universal terms -- elapsed time, simulations completed, best
+        objective so far -- because there is no iteration counter shared by every fit
+        type (a generation, a start, and a chain step are all "one iteration" to
+        different algorithms).
+        """
+        best = self.trajectory.best_score() if len(self.trajectory) else None
+        return ('Wall-time budget reached: stopped after %s (wall_time_fit = %d s) and %d completed '
+                'simulation(s), with a best objective of %s.'
+                % (format_duration(self.budget.elapsed()), int(self.budget.limit), sim_count,
+                   ('%.10g' % best) if best is not None else 'n/a (no completed simulation)'))
+
+    def _announce_stop_reason(self):
+        """Log, print, and record why a run stopped, when it stopped for a reason the
+        user must not mistake for convergence (today: the wall-time budget, #529).
+
+        The durable half is ``Results/stop_reason.txt``: a budgeted run writes the same
+        artifacts a converged one writes, so the *presence* of this file -- and nothing
+        in the scoreable outputs -- is what tells a downstream consumer the fit hit its
+        deadline instead of its stop criterion. A no-op for an ordinary run.
+        """
+        if not self.stop_reason:
+            return
+        logger.info(self.stop_reason)
+        print1(self.stop_reason)
+        path = str(Path(self.res_dir) / 'stop_reason.txt')
+        try:
+            with open(path, 'w') as f:
+                f.write(self.stop_reason + '\n')
+        except Exception:
+            logger.exception('Failed to write stop_reason.txt')
 
     def _copy_best_fit_sims(self, best_pset, best_name):
         """Copy the best-fit parameter set's simulation outputs into Results/.

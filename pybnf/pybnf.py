@@ -2,6 +2,7 @@
 
 
 from . import __version__
+from .budget import FitBudget, format_duration
 from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
@@ -291,6 +292,13 @@ def _refine_best_fit(config, alg, cluster, debug):
     logger = logging.getLogger(__name__)
     if config.config['refine'] != 1:
         return
+    if alg.budget is not None and alg.budget.expired():
+        # A refine is new work, and the budget's whole contract is that no new work
+        # starts once it is spent (#529). The fit itself has already finalized, so the
+        # run's outputs are complete -- just unpolished.
+        logger.info('Wall-time budget spent; skipping the refine of the best fit')
+        print1('Wall-time budget spent, so the best fit was not refined.')
+        return
     logger.debug('Refinement requested for best fit parameter set')
     method = config.config['refine_method']
     entry = FIT_TYPE_REGISTRY[method]   # validated by Configuration._check_refine_method
@@ -307,6 +315,7 @@ def _refine_best_fit(config, alg, cluster, debug):
     refiner = refiner_cls(config, refine=True)
     refiner.model_list = alg.model_list  # Reuse already-generated networks
     refiner.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+    refiner.budget = alg.budget  # One deadline for the whole run, not one per phase
     if alg.bootstrap_number is not None:
         # During bootstrapping the replicate's fit wrote to per-replicate working dirs
         # (Simulations-boot{N} etc.) that alg.reset(bootstrap=N) (re)creates for every
@@ -382,6 +391,16 @@ def _run_bootstrapping(config, alg, cluster, debug):
     # Run bootstrapping
     consec_failed_bootstrap_runs = 0
     while completed_bootstrap_runs < num_to_bootstrap:
+        if alg.budget is not None and alg.budget.expired():
+            # A replicate is a whole fit's worth of new work; the budget bounds the run,
+            # not each replicate (#529). Stop with the replicates already accepted --
+            # bootstrapped_parameter_sets.txt was appended to as each one finished, so
+            # what is on disk is a complete record of them.
+            logger.info('Wall-time budget spent after %d of %d bootstrap replicates',
+                        completed_bootstrap_runs, num_to_bootstrap)
+            print0('Wall-time budget spent; stopping after %d of %d bootstrap replicates.'
+                   % (completed_bootstrap_runs, num_to_bootstrap))
+            return
         # A rejected replicate is retried with a *fresh* resample: bumping the retry
         # count advances the RNG sub-stream reset() derives. Without it, reset() keys
         # the seed only on the (unchanged) replicate number, so every retry regenerates
@@ -525,6 +544,20 @@ def main():
             _prepare_run_directories(config, cmdline_args)
             pending = None
             alg = _create_algorithm(config)
+
+        # The fit's total wall-clock budget (wall_time_fit, #529/ADR-0093), or None when
+        # unbounded (the default). Built from the process start time so configuration
+        # loading and network generation are charged to it -- the budget bounds the run
+        # the way an external `timeout` around this process would have -- and attached to
+        # the algorithm, which stops its run loop and finalizes when the budget is spent.
+        # The same object is handed to the refiner and reused across bootstrap replicates,
+        # so one deadline bounds the whole run rather than each phase separately.
+        alg.budget = FitBudget.from_config(config, started_at=start_time)
+        if alg.budget is not None:
+            logger.info('Total wall-time budget for this fit: %d s (%s remaining)',
+                        alg.budget.limit, format_duration(alg.budget.remaining()))
+            print1('Wall-time budget for this fit: %s (wall_time_fit = %d s).'
+                   % (format_duration(alg.budget.limit), alg.budget.limit))
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:

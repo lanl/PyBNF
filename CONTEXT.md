@@ -224,6 +224,10 @@ _Avoid_: snooker move, snooker step
 One round of an algorithm's main loop and the unit in which a fit's budget is counted (`max_iterations`). Population-based algorithms also call a round a "generation".
 _Avoid_: step, epoch
 
+**Wall-Time Budget** (`wall_time_fit`):
+The total wall-clock seconds a **Fit** may run — the run-level peer of the per-unit-of-work limits `wall_time_sim` (one simulation) and `wall_time_gen` (one network generation). Distinct from `max_iterations`, which counts **Iterations** and is not convertible to wall time without knowing per-iteration cost. When it expires the run loop stops launching work, abandons what is in flight, and **finalizes**: the *same* end-of-fit path a converged run takes, against the best point so far, so a budgeted result is scoreable exactly like a completed one. Only the stop reason differs, and it is written to `Results/stop_reason.txt` — beside the results, never inside them. One budget bounds the whole run (the **Refine** and each **Bootstrap** replicate are new work and do not begin once it is spent), and its clock starts at process start, so configuration loading and network generation are inside it (ADR-0093, #529). Implemented as a `FitBudget` object (`pybnf/budget.py`); unbounded is the *absence* of one, not an infinite limit.
+_Avoid_: timeout (that is `wall_time_sim`'s per-simulation limit), deadline (informal), time limit, iteration budget
+
 **Model Check** (`fit_type = check`):
 A first-class checking method — statistical model checking: evaluates the objective value and constraint satisfaction for given parameters without searching parameter space. Registers in the `checker` family, a peer of optimization algorithms and Bayesian samplers (not a utility afterthought).
 _Avoid_: dry run, validation, utility run

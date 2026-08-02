@@ -36,7 +36,7 @@ import pickle
 import numpy as np
 import pytest
 
-from .context import algorithms, pset, printing
+from .context import algorithms, budget as budget_mod, pset, printing
 from pybnf.pset import Trajectory, FailedSimulationError
 
 
@@ -73,10 +73,19 @@ class _FakeClient:
 
 class _FakeAsCompleted:
     """Synchronous as_completed: yields (future, future.result()) and supports
-    update() so the loop can enqueue resubmitted futures."""
+    update() so the loop can enqueue resubmitted futures.
 
-    def __init__(self, futures, with_results=False, raise_errors=True):
+    ``timeout`` is the wall-time-budget seam (#529): the real ``as_completed``
+    raises ``TimeoutError`` out of ``__next__`` once it elapses, which is how the
+    budget lands on time even while every worker is mid-simulation. This fake only
+    *records* it (the last value is exposed on the class) — the raising behavior is
+    exercised by ``_TimingOutAsCompleted`` below."""
+
+    last_timeout = None
+
+    def __init__(self, futures, with_results=False, raise_errors=True, timeout=None):
         assert with_results and not raise_errors  # the contract run() depends on
+        _FakeAsCompleted.last_timeout = timeout
         self._queue = list(futures)
 
     def __iter__(self):
@@ -975,3 +984,207 @@ def test_resume_uses_provided_psets_and_skips_start_run(tmp_path, monkeypatch):
     # FIFO drain hits resume0 first, whose value 7.0 is its score, then STOP.
     assert len(algo.seen) == 1
     np.testing.assert_allclose(algo.seen[0].score, 7.0)
+
+
+# --------------------------------------------------------------------------- #
+# Wall-time budget (#529, ADR-0093)
+#
+# The contract: when `wall_time_fit` runs out the loop stops launching work and
+# the run FINALIZES anyway — the same end-of-fit path a converged run takes, so a
+# budgeted result is scoreable exactly like a completed one. Only the stop
+# *reason* differs, and that is recorded (log, console, Results/stop_reason.txt).
+#
+# The clock is injected, so nothing here sleeps.
+# --------------------------------------------------------------------------- #
+class _TimingOutAsCompleted(_FakeAsCompleted):
+    """as_completed that raises TimeoutError instead of yielding its Nth result —
+    the real one's behavior when the budget elapses while every worker is still
+    busy and nothing has completed."""
+
+    timeout_after = 0
+
+    def __next__(self):
+        if self._served >= type(self).timeout_after:
+            raise TimeoutError()
+        self._served += 1
+        return super().__next__()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._served = 0
+
+
+def _budgeted(algo, limit, elapsed=0.0):
+    """Give ``algo`` a wall-time budget on a hand-driven clock; returns the clock."""
+    clock = _TestClock()
+    algo.budget = budget_mod.FitBudget(limit, elapsed=elapsed, clock=clock)
+    return clock
+
+
+class _TestClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_budget_stops_the_loop_after_the_result_in_hand_and_finalizes(tmp_path, monkeypatch):
+    """The budget expires while the first result is being processed. That result is
+    still recorded (it was already paid for), nothing new is launched, and the run
+    finalizes: sorted_params_final.txt and a best fit exist, exactly as on a
+    converged run."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)],
+            [_pset('iter1run0', 1.0), _pset('iter1run1', 2.0)]]
+    algo = _make_algorithm(tmp_path, gens)
+    clock = _budgeted(algo, 100.0)
+    original_got_result = algo.got_result
+
+    def spend_the_budget(res):
+        clock.t = 1000.0  # the deadline passes while this result is in hand
+        return original_got_result(res)
+
+    algo.got_result = spend_the_budget
+    client = _FakeClient()
+
+    algo.run(client)
+
+    # Only the initial generation was ever submitted — no new work after expiry.
+    assert len(client.submitted) == 2
+    assert len(algo.seen) == 1                      # the one result in hand was recorded
+    np.testing.assert_allclose(algo.trajectory.best_score(), 10.0)
+    # ... and the normal end-of-fit artifacts were still written.
+    assert os.path.isfile(algo.res_dir + '/sorted_params_final.txt')
+
+
+def test_budget_stop_records_its_reason(tmp_path, monkeypatch):
+    """A budgeted run must not be silently mistaken for a converged one: the reason
+    is logged, printed, and left on disk as Results/stop_reason.txt (whose presence
+    is what downstream tooling can key on, since every scoreable artifact is
+    deliberately identical to a converged run's)."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    algo = _make_algorithm(tmp_path, [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]])
+    clock = _budgeted(algo, 60.0)
+    algo.got_result = lambda res: (setattr(clock, 't', 61.0), [])[1]
+
+    algo.run(_FakeClient())
+
+    assert 'Wall-time budget reached' in algo.stop_reason
+    assert 'wall_time_fit = 60 s' in algo.stop_reason
+    assert '0:01:01' in algo.stop_reason              # elapsed, in the run-time line's units
+    assert '1 completed simulation' in algo.stop_reason
+    with open(algo.res_dir + '/stop_reason.txt') as fh:
+        assert fh.read().strip() == algo.stop_reason
+
+
+def test_an_unbudgeted_run_never_stops_early_and_asks_for_no_timeout(tmp_path, monkeypatch):
+    """The default (wall_time_fit = 0 -> no FitBudget) is byte-identical to the
+    historical loop: no timeout is handed to as_completed, and no stop reason is
+    recorded or written."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)],
+            [_pset('iter1run0', 1.0), _pset('iter1run1', 2.0)]]
+    algo = _make_algorithm(tmp_path, gens)
+    client = _FakeClient()
+
+    algo.run(client)
+
+    assert algo.budget is None
+    assert _FakeAsCompleted.last_timeout is None
+    assert len(client.submitted) == 4                 # ran to its own STOP
+    assert algo.stop_reason is None
+    assert not os.path.exists(algo.res_dir + '/stop_reason.txt')
+
+
+def test_a_budgeted_run_bounds_the_wait_for_the_next_completion(tmp_path, monkeypatch):
+    """The remaining budget is handed to as_completed as its timeout, so an expiry
+    lands on time even when every worker is mid-simulation (otherwise the loop would
+    block in next() until some simulation happened to finish)."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    algo = _make_algorithm(tmp_path, [[_pset('iter0run0', 10.0)]])
+    _budgeted(algo, 100.0, elapsed=25.0)
+
+    algo.run(_FakeClient())
+
+    np.testing.assert_allclose(_FakeAsCompleted.last_timeout, 75.0)
+
+
+def test_budget_expiring_with_every_worker_busy_stops_and_finalizes(tmp_path, monkeypatch):
+    """No result ever comes back before the deadline: as_completed raises
+    TimeoutError, the in-flight jobs are abandoned (cancelled), and the run still
+    finalizes -- with an explicit 'no best fit' report rather than a crash on the
+    empty trajectory."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _TimingOutAsCompleted)
+    monkeypatch.setattr(_TimingOutAsCompleted, 'timeout_after', 0)
+    algo = _make_algorithm(tmp_path, [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]])
+    _budgeted(algo, 60.0)
+    client = _FakeClient()
+
+    algo.run(client)
+
+    assert len(client.submitted) == 2                 # the initial jobs went out
+    assert len(algo.seen) == 0                        # none came back
+    assert len(algo.trajectory) == 0
+    assert 'Wall-time budget reached' in algo.stop_reason
+    assert 'no completed simulation' in algo.stop_reason
+    assert os.path.isfile(algo.res_dir + '/stop_reason.txt')
+    # Nothing was scored, so there are no parameter sets to write -- the run reports
+    # that instead of emitting an empty (unloadable) sorted_params file.
+    assert not os.path.exists(algo.res_dir + '/sorted_params_final.txt')
+
+
+def test_a_budget_already_spent_before_the_first_job_launches_nothing(tmp_path, monkeypatch):
+    """Setup (configuration loading, network generation) can eat the whole budget.
+    An expired budget means no new work, so not one job is submitted -- the run goes
+    straight to the finalize path."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    algo = _make_algorithm(tmp_path, [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]])
+    _budgeted(algo, 60.0, elapsed=60.0)               # spent before run() is entered
+    client = _FakeClient()
+
+    algo.run(client)
+
+    assert client.submitted == []
+    assert 'Wall-time budget reached' in algo.stop_reason
+    assert os.path.isfile(algo.res_dir + '/stop_reason.txt')
+
+
+def test_the_budget_is_not_carried_into_a_pickled_backup(tmp_path):
+    """A wall-clock deadline is meaningless once restored in a later process, so it
+    is excluded from the pickle; a resumed algorithm reads the class default (None)
+    until main() builds it a fresh budget."""
+    algo = _bare_backup_algo(tmp_path)
+    _budgeted(algo, 60.0)
+
+    algo.backup()
+    with open(str(tmp_path) + '/alg_backup.bp', 'rb') as fh:
+        loaded, _pending = pickle.load(fh)
+
+    assert 'budget' not in loaded.__dict__
+    assert loaded.budget is None
+
+
+_END_OF_FIT_PATH = ['_copy_best_fit_sims', '_rerun_best_fit_to_save_data', '_emit_best_fit_bngl',
+                    '_compute_information_criteria', '_emit_information_criteria',
+                    '_emit_inference_data', '_finalize_backup_pickle', '_teardown_sim_dir']
+
+
+def test_a_budgeted_stop_runs_the_whole_end_of_fit_path(tmp_path, monkeypatch):
+    """The point of the budget (#529): a deadline-stopped run is *finalized*, not
+    abandoned. Every step of the end-of-fit path runs, in order — including the
+    information-criteria step whose absence is what made an externally killed run
+    unscoreable. Nothing in that path is conditional on why the loop ended."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    called = []
+    for name in _END_OF_FIT_PATH:
+        monkeypatch.setattr(algorithms.Algorithm, name,
+                            (lambda n: lambda self, *a, **k: called.append(n))(name))
+    algo = _make_algorithm(tmp_path, [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]])
+    clock = _budgeted(algo, 60.0)
+    algo.got_result = lambda res: (setattr(clock, 't', 61.0), [])[1]
+
+    algo.run(_FakeClient())
+
+    assert algo.stop_reason is not None
+    assert called == _END_OF_FIT_PATH

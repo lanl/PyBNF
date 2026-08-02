@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 # point (a ``PerMeasurementModel``, ADR-0045), not a constant pre-materialized column.
 _MEASUREMENT_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 
+# The fit types that do NOT drive the shared simulation run loop, and so cannot honor the
+# total wall-clock budget (``wall_time_fit``, ADR-0093): ``hmc`` runs blackjax NUTS in
+# process over an analytical target, with no per-simulation point for the budget to stop
+# at. Naming the budget for one of these is refused, not silently ignored (#529).
+_NO_WALL_TIME_FIT = frozenset({'hmc'})
+
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
 
@@ -259,6 +265,7 @@ class Configuration:
         # uniformly there; non-MCMC methods inherit a no-op.
         self.config = self._build_config(d)
         self._check_random_seed()
+        self._check_wall_time_fit()
         self._check_edition()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
@@ -469,6 +476,32 @@ class Configuration:
                              "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
         self.config['random_seed'] = int(seed)
 
+    def _check_wall_time_fit(self):
+        """Validate the fit's total wall-clock budget (``wall_time_fit``, ADR-0093).
+
+        A non-negative integer number of seconds; 0 (the default) means unbounded.
+        The budget is honored by every fit that drives the shared run loop -- it is
+        the loop that stops launching work and finalizes -- so a fit type that runs
+        its own loop instead is **refused** here rather than silently ignoring the
+        key: ``hmc`` samples in process through blackjax, with no per-simulation
+        dispatch point for the budget to stop at.
+        """
+        limit = self.config.get('wall_time_fit', 0)
+        if isinstance(limit, (bool, np.bool_)) or not isinstance(limit, (int, np.integer)) or limit < 0:
+            raise PybnfError(f'Invalid wall_time_fit {limit}',
+                             "Config key 'wall_time_fit' must be a non-negative integer number of seconds "
+                             "(0, the default, means no total time limit).")
+        self.config['wall_time_fit'] = int(limit)
+        if limit and self.config['fit_type'] in _NO_WALL_TIME_FIT:
+            raise PybnfError(
+                f"wall_time_fit is not honored by fit_type {self.config['fit_type']}",
+                f"Config key 'wall_time_fit' is not honored by job_type = "
+                f"{self.config['fit_type']}: that job runs its own in-process sampling loop "
+                f"instead of the simulation run loop the budget stops, so a deadline set here "
+                f"would never fire.",
+                hint='Bound this job with its own budget keys (num_warmup / num_samples / '
+                     'num_parallel), or remove wall_time_fit.')
+
     @staticmethod
     def _resolve_model_declarations(d):
         """Edition-gate the new-era ``model:`` declaration syntax (ADR-0028, Chunk 1).
@@ -629,13 +662,14 @@ class Configuration:
     @staticmethod
     def _strip_uncheckable_keys(conf_dict):
         """Remove the keys ``job_type = check`` cannot honor so they do not crash
-        downstream: ``refine`` and ``bootstrap`` (model checking runs neither). The
-        unused-key *warnings* for check now come from the unified
-        :meth:`check_unused_keys`; this keeps only the crash-prevention deletion the
-        old ``check_unused_keys_model_checking`` also did. Mutates and returns
-        ``conf_dict``.
+        downstream: ``refine`` and ``bootstrap`` (model checking runs neither), and
+        ``wall_time_fit`` (a check is one evaluation of given parameters, not a
+        search, so there is no run to budget). The unused-key *warnings* for check now
+        come from the unified :meth:`check_unused_keys`; this keeps only the
+        crash-prevention deletion the old ``check_unused_keys_model_checking`` also
+        did. Mutates and returns ``conf_dict``.
         """
-        for k in ('refine', 'bootstrap'):
+        for k in ('refine', 'bootstrap', 'wall_time_fit'):
             conf_dict.pop(k, None)
         return conf_dict
 

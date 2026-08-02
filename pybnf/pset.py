@@ -2897,6 +2897,16 @@ class Trajectory:
                 print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
                        'problem.')
 
+    def __len__(self):
+        """The number of parameter sets recorded so far.
+
+        ``best_fit`` / ``best_fit_name`` / ``best_score`` all take the ``max`` of the
+        underlying heap, so they are only defined on a non-empty Trajectory; this is how
+        a caller asks whether there is a best fit at all -- e.g. a run that stopped
+        before its first result came back (#529).
+        """
+        return len(self._trajectory)
+
     def best_fit(self):
         """
         Finds the best fit parameter set

@@ -1264,6 +1264,36 @@ Algorithm Options
   
     * ``wall_time_sim = 600``
 
+**wall_time_fit**
+  Total wall-clock budget (in seconds) for the whole fit -- the peer of ``wall_time_sim``
+  and ``wall_time_gen``, which bound one simulation and one network generation but never
+  the run itself. When the budget runs out, PyBNF stops launching new work, abandons what
+  is still in flight, and then runs the **normal** end-of-fit path against the best
+  parameter set found so far: ``sorted_params_final.txt``, the best-fit simulations,
+  ``information_criteria.txt``, and the rest. A budgeted result is therefore scoreable
+  exactly like a completed one -- only the stop *reason* differs, and that is logged,
+  printed, and written to ``Results/stop_reason.txt``.
+
+  The clock starts when PyBNF starts, so configuration loading and network generation are
+  inside the budget; pair it with ``parallel_count`` to reproduce a "N cores for T hours"
+  compute allocation. It bounds the run, not each phase: no ``refine`` and no further
+  bootstrap replicate begins once the budget is spent. Two things are deliberately outside
+  it -- one in-flight simulation may overrun the deadline by up to ``wall_time_sim`` before
+  it is abandoned, and finalizing re-simulates the best fit once to report it.
+
+  A fit stopped this way is *not* a converged fit; check ``Results/stop_reason.txt`` before
+  reading its results as a completed search.
+
+  Not available for ``job_type = hmc`` (which samples in process, with no simulation loop
+  for the budget to stop) -- naming it there is an error rather than a silent no-op.
+
+  Default: 0 (no limit)
+
+  Examples:
+
+    * ``wall_time_fit = 10800``   (3 hours)
+    * ``wall_time_fit = 600``
+
 **max_failed_simulations**
   Maximum number of simulation failures allowed before any successful simulation completes. If this many jobs fail (crash, not timeout) before the first success, PyBNF aborts. Increase this value if your model has a high failure rate at many parameter sets but can still succeed at others.
 

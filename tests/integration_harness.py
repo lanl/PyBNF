@@ -80,9 +80,13 @@ class FakeClient:
 
 class FakeAsCompleted:
     """Synchronous ``as_completed``: yields ``(future, future.result())`` and
-    supports ``update()`` so the run loop can enqueue resubmissions."""
+    supports ``update()`` so the run loop can enqueue resubmissions.
 
-    def __init__(self, futures, with_results=False, raise_errors=True):
+    ``timeout`` is accepted (and ignored: everything here completes inline) because
+    a fit under a wall-time budget hands the real ``as_completed`` its remaining
+    seconds (#529)."""
+
+    def __init__(self, futures, with_results=False, raise_errors=True, timeout=None):
         assert with_results and not raise_errors  # the contract run() relies on
         self._queue = list(futures)
 

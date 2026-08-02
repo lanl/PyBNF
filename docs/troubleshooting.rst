@@ -57,6 +57,8 @@ PyBNF enforces a maximum run time for simulations, with a default value of 1 hou
 
 A time limit is also enforced for network generation in BNGL models. The default value is 1 hour, and this can be modified with the ``wall_time_gen`` key.
 
+Both of these bound one *unit of work*, not the fit. To bound the fit as a whole -- for a fixed compute allocation, or so a run that is not converging still leaves usable results -- set ``wall_time_fit`` (seconds). When it expires PyBNF stops launching work and writes its normal end-of-fit results for the best parameter set found so far, plus a ``Results/stop_reason.txt`` saying why it stopped. Killing the process externally instead leaves no such results.
+
 .. note::
 
    For models simulated with the bngsim backend, ``wall_time_sim`` is honored

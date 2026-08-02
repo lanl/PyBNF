@@ -141,6 +141,24 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **A total wall-clock budget for a fit, `wall_time_fit`, that finalizes on expiry (#529,
+  ADR-0093).** PyBNF's time limits were all per unit of work — `wall_time_sim` bounds one
+  simulation, `wall_time_gen` one network generation — and nothing bounded a *run*: the only native
+  budget was `max_iterations` × `population_size`, which is not convertible to wall time without
+  knowing per-iteration cost in advance. The new global key sets the seconds a whole fit may run
+  (`wall_time_fit = 10800`; `0`, the default, is unbounded). On expiry the run stops launching work,
+  abandons what is in flight, and runs the **normal** end-of-fit path against the best point found
+  so far — `sorted_params_final.txt`, the best-fit simulations, `information_criteria.txt`, the
+  ArviZ sidecar, the backup rename — so a budgeted result is scoreable exactly like a converged one.
+  Only the stop *reason* differs, and it is logged, printed, and written to
+  `Results/stop_reason.txt` (whose presence is the signal; no existing file's format changes). The
+  clock starts when PyBNF starts, so configuration loading and network generation count against it,
+  and one budget bounds the whole run: no `refine` and no further bootstrap replicate begins once it
+  is spent. This makes PyBNF runnable under wall-time-budgeted optimizer benchmarks (Grein et al.
+  2026), where the previous alternative — killing the process — lost the artifacts scoring needs.
+  Two overruns are deliberate and documented: one in-flight simulation may run up to `wall_time_sim`
+  past the deadline before it is abandoned, and finalizing re-simulates the best fit once. Refused
+  (rather than silently ignored) for `job_type = hmc`, which runs its own in-process sampling loop.
 - **Published-source organization and two curated real-world jobs.** The real-world gallery now
   uses `Author-Year/job_slug` paths aligned with the BNGL-Models job corpus. The former flat
   Kozer EGFR, Monine TLBR, Gupta FcεRI, and Mitra receptor jobs retain their tested edition-2

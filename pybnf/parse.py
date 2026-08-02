@@ -29,7 +29,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'smoothing', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
-               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
+               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen',
+               # The fit's total wall-clock budget in seconds (#529): 0 = unbounded.
+               'wall_time_fit', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'embed_best_fit_data',
                'smooth_plot_points', 'output_inference_data',

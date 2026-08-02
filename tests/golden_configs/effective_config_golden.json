@@ -348,6 +348,10 @@
     2
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -776,6 +780,10 @@
    [
     "verbosity",
     2
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -1216,6 +1224,10 @@
     2
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -1608,6 +1620,10 @@
    [
     "verbosity",
     2
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -2150,6 +2166,10 @@
    [
     "verbosity",
     2
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -2702,6 +2722,10 @@
     2
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -3208,6 +3232,10 @@
     2
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -3636,6 +3664,10 @@
    [
     "verbosity",
     2
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -4076,6 +4108,10 @@
     2
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -4391,6 +4427,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -4769,6 +4809,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -5054,6 +5098,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -5309,6 +5357,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -5612,6 +5664,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -5926,6 +5982,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -6251,6 +6311,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -6602,6 +6666,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -6951,6 +7019,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -7286,6 +7358,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -7656,6 +7732,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -7979,6 +8059,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -8306,6 +8390,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -8629,6 +8717,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -8956,6 +9048,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -9265,6 +9361,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -9569,6 +9669,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -9901,6 +10005,10 @@
    [
     "v_stop",
     0.0
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -10269,6 +10377,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -10629,6 +10741,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -10938,6 +11054,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
@@ -11261,6 +11381,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -11579,6 +11703,10 @@
     ]
    ],
    [
+    "wall_time_fit",
+    0
+   ],
+   [
     "wall_time_gen",
     3600
    ],
@@ -11878,6 +12006,10 @@
      "$map",
      []
     ]
+   ],
+   [
+    "wall_time_fit",
+    0
    ],
    [
     "wall_time_gen",
