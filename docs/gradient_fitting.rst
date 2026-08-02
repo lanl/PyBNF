@@ -567,6 +567,18 @@ The gradient path is opt-in and gated on the simulator backend. Enabling it does
    is a species' initial value is requested on the *initial-condition* axis. A per-experiment
    condition (a ``condition:`` perturbation) contributes the exact chain-rule factor for that
    experiment, and a parameter pinned by the condition is dropped from the request.
+
+   A free parameter may also bind **no** model id and reach the model only through a condition
+   that sets an entity to its value — ``condition: cA, perturbations: I0_ = I0_CA``, the usual way
+   to fit a per-condition initial condition. Its column is then the sum over everything that
+   target reaches: the target's own sensitivity axis, plus one term for every initial value the
+   target *seeds*, each scaled by that seeding's derivative. Both are exact, and neither is
+   assumed to be 1 — a target that seeds two species with opposite signs
+   (``I_ = I0_``, ``S_ = N_ - I0_``) contributes both, and a target that feeds a parameter another
+   quantity is derived from (``beta_N = R0_*gamma_/N_``) contributes that parameter's axis scaled
+   by a factor re-evaluated at every fit point. A seeding expression outside the arithmetic
+   grammar (a function call), or one reached through an assignment rule, is refused with a
+   message naming the target rather than silently contributing a wrong column.
 #. **Solve.** Each simulation then integrates the model **and** its sensitivities, attaching the
    native :math:`\partial g/\partial\theta` tensor to the simulated data for the assembly to read.
 

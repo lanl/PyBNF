@@ -195,15 +195,14 @@ class ExperimentRouting:
     @property
     def sensitivity_params(self):
         """``sensitivity_params=`` for the experiment's Simulator: every parameter-axis column
-        any free parameter reaches with a non-zero factor (a pinned ``=`` column is dropped),
-        de-duplicated in declared free-parameter order."""
+        any free parameter reaches (a pinned ``=`` column, whose factor is a constant zero, is
+        dropped), de-duplicated in declared free-parameter order."""
         return self._request_keys(PARAM)
 
     @property
     def sensitivity_ic(self):
         """``sensitivity_ic=`` for the experiment's Simulator: every species initial-condition
-        column any free parameter reaches with a non-zero factor, de-duplicated in declared
-        free-parameter order."""
+        column any free parameter reaches, de-duplicated in declared free-parameter order."""
         return self._request_keys(IC)
 
     def _request_keys(self, target):
