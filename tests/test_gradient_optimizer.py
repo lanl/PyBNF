@@ -304,6 +304,57 @@ def test_bngsim_model_has_discrete_events_reads_engine_event_count():
     assert smooth.has_discrete_events is False
 
 
+def test_every_gradient_refusal_names_its_own_cause_on_stdout():
+    """Which of the four refusals fired is readable from the printed message alone (#527).
+
+    ``pybnf.pybnf`` prints ``e.message`` and logs ``e.log_message``. Each gate used to pass its
+    diagnosis as the *log* message and the shared metaheuristic fallback as the *user* message,
+    which replaces rather than appends -- so all four printed one identical sentence naming no
+    cause, and the reason (an edition-1 config vs. an unsupported backend vs. a discrete-event
+    model vs. an undifferentiable objective -- a two-line config fix vs. a known upstream gap)
+    was readable only by opening the log file. The oracle here: every refusal's printed message
+    is a superset of its logged diagnosis plus the fallback, and the four are pairwise distinct.
+
+    Backend-free -- each gate reads only ``fit_type`` and ``model_list``, so a headless
+    optimizer exercises it without a config or a simulator (the edition gate fires before
+    ``super().__init__`` touches either, as in the gate tests above)."""
+    import types
+    from pybnf.algorithms.optimizers.gradient_base import _FALLBACK_HINT
+    from pybnf.algorithms.optimizers.trf import TRFAlgorithm
+    from pybnf.gradient.errors import GradientNotSupported
+
+    def _headless(models):
+        alg = object.__new__(TRFAlgorithm)
+        alg.fit_type, alg.model_list = 'trf', models
+        return alg
+
+    with pytest.raises(PybnfError) as exc:
+        TRFAlgorithm(types.SimpleNamespace(config={'edition': None}))
+    edition = exc.value
+
+    with pytest.raises(PybnfError) as exc:
+        # No enable_output_sensitivities hook -- a RoadRunner/legacy-BNGL model.
+        _headless([types.SimpleNamespace(name='m')])._require_sensitivity_backend()
+    backend = exc.value
+
+    with pytest.raises(PybnfError) as exc:
+        _headless([types.SimpleNamespace(name='m', has_discrete_events=True)]) \
+            ._require_differentiable_dynamics()
+    events = exc.value
+
+    # The per-evaluation refusal (an objective the assembly cannot differentiate) is built,
+    # not raised, by the same helper the assembly guard raises through.
+    objective = _headless([])._unsupported_gradient_error(
+        GradientNotSupported('the Laplace family has no residual form'))
+
+    refusals = (edition, backend, events, objective)
+    for e, cause in zip(refusals, ('edition', 'sensitiv', 'discrete event', 'Laplace')):
+        assert cause.lower() in e.message.lower(), e.message   # the cause reaches stdout
+        assert e.log_message in e.message                      # losing nothing the log has
+        assert _FALLBACK_HINT in e.message                     # with the remedy appended
+    assert len({e.message for e in refusals}) == 4             # ... and they read differently
+
+
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
@@ -311,9 +362,9 @@ def test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs(tmp_path, mon
     """TRF models the objective as an exact sum of squares (``½‖r‖²``). An objective
     that is not an exact sum of squares -- here an **estimated** noise scale
     (``chi_sq_dynamic``'s free ``sigma__FREE``, whose retained ``+log σ`` normalizer is
-    not a square) -- is refused with a message pointing at the L-BFGS-B fallback, the
-    optimizer that consumes the scalar gradient. This is the TRF/L-BFGS boundary the
-    ``least_squares_exact`` flag draws (#385/#386)."""
+    not a square) -- is refused with a message that says so and *then* points at the
+    L-BFGS-B fallback, the optimizer that consumes the scalar gradient. This is the
+    TRF/L-BFGS boundary the ``least_squares_exact`` flag draws (#385/#386)."""
     H.require_bng2pl()
     H.install(monkeypatch)
     model = _decay_model(tmp_path)
@@ -325,8 +376,11 @@ def test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs(tmp_path, mon
         'decay', 'trf', objective='chi_sq_dynamic', random_seed=1234,
         population_size=1, max_iterations=10)
     alg = H.build(conf, 'trf')
-    with pytest.raises(PybnfError, match='(?i)lbfgs'):
+    with pytest.raises(PybnfError) as exc:
         H.drive(alg)
+    # Both halves reach stdout (#527): why trf refused, then what to run instead.
+    assert 'exact sum of squares' in exc.value.message
+    assert 'lbfgs' in exc.value.message.lower()
 
 
 # --------------------------------------------------------------------------- #

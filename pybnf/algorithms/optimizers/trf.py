@@ -634,9 +634,9 @@ class _TRFRunner(GradientRunner):
                 "job_type = trf needs an exact least-squares residual (a Gaussian or "
                 "Student-t objective with a fixed noise scale and no constraints), but "
                 "this fit's objective is not an exact sum of squares.",
-                "Use the gradient quasi-Newton fallback 'job_type = lbfgs', which "
-                "consumes the scalar gradient and handles estimated noise scales, the "
-                "Laplace / count families, and constraint penalties.")
+                hint="Use the gradient quasi-Newton fallback 'job_type = lbfgs', which "
+                     "consumes the scalar gradient and handles estimated noise scales, the "
+                     "Laplace / count families, and constraint penalties.")
         return grad
 
     # --- convergence ------------------------------------------------------- #

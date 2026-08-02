@@ -159,10 +159,10 @@ class GNTRAlgorithm(GradientOptimizer):
         return PybnfError(
             "Fisher/Gauss-Newton trust-region fitting (job_type = gntr) cannot build the EFIM "
             "Hessian for this fit's objective: %s" % exc,
-            "Use the gradient quasi-Newton fallback 'job_type = lbfgs', which consumes the "
-            "scalar gradient and needs no Fisher Hessian -- it handles the estimated noise "
-            "scales, the Laplace / count families, and the constraint penalties whose curvature "
-            "the EFIM trust-region step does not (yet) assemble.")
+            hint="Use the gradient quasi-Newton fallback 'job_type = lbfgs', which consumes the "
+                 "scalar gradient and needs no Fisher Hessian -- it handles the estimated noise "
+                 "scales, the Laplace / count families, and the constraint penalties whose "
+                 "curvature the EFIM trust-region step does not (yet) assemble.")
 
 
 class _GNTRRunner(_TRFRunner):

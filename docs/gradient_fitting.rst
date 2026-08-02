@@ -20,7 +20,8 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
    **reaction network** (a ``.bngl`` model that generates a network, run with ``method=>"ode"``).
    These requirements are **enforced**, not merely documented: a gradient ``job_type`` on a
    non-edition-2 config, a non-bngsim model, or a model that bngsim cannot differentiate is
-   refused up front with an actionable message pointing back at a metaheuristic ``job_type``. In
+   refused up front with a message that names **which** requirement is unmet, then points back at
+   a metaheuristic ``job_type`` on an indented ``->`` line beneath it. In
    particular a model with **discrete events** (a state-dependent discrete jump in the dynamics)
    has no smooth forward sensitivity — bngsim refuses sensitivity requests on it — so it is
    refused at construction rather than failing mid-run; a non-ODE simulation *method* (SSA /

@@ -14,9 +14,10 @@ What this base provides
 * **The edition + capability gate** (:meth:`_gate_gradient_supported`). Gradient
   fitting consumes the edition-2 surface (bind-by-id routing ADR-0034, the
   ``noise_model`` / measurement layer) and bngsim's forward sensitivities, so the
-  fit is refused -- with a clear message pointing at a metaheuristic ``fit_type`` --
-  on a legacy (edition < 2) config, a non-bngsim model, or a bngsim build without
-  the ``output_sensitivities`` feature. Never a silent finite-difference fallback.
+  fit is refused on a legacy (edition < 2) config, a non-bngsim model, or a bngsim
+  build without the ``output_sensitivities`` feature -- with a message that names the
+  condition that fired and *then* points at a metaheuristic ``job_type`` (#527).
+  Never a silent finite-difference fallback.
 * **The gradient path activation** (:meth:`_setup_gradient_path`). Builds each
   experiment's :class:`~pybnf.gradient.routing.ExperimentRouting` **once** (it
   depends only on model structure, conditions, and free-parameter ids -- never on
@@ -140,13 +141,15 @@ class GradientRunner:
 
 
 # The one-line suggestion every gradient-path refusal ends with, so a user whose
-# model/config cannot be differentiated is pointed straight at a working fit_type
+# model/config cannot be differentiated is pointed straight at a working job_type
 # rather than left to guess. Gradient fitting is strictly opt-in (job_type = trf /
-# lbfgs); a metaheuristic always works on the same config.
+# lbfgs); a metaheuristic always works on the same config. Passed as PybnfError's
+# ``hint=``, never as its ``user_message``: the hint is a *suffix* to the specific
+# diagnosis, not a substitute for it (#527) -- four unrelated conditions refuse here,
+# and which one fired is the whole of what the user needs to know.
 _FALLBACK_HINT = (
-    "Gradient-based fitting is not available for this fit; use a metaheuristic "
-    "job_type instead (e.g. job_type = de, the default, or pso / ss / cmaes), "
-    "which needs no gradient."
+    "Use a metaheuristic job_type instead (e.g. job_type = de, the default, or "
+    "pso / ss / cmaes), which needs no gradient."
 )
 
 
@@ -329,9 +332,10 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                 "config surface, but this fit is %s." % (
                     self._fit_type_label(),
                     "edition 1 (legacy)" if not edition else "edition %d" % edition),
-                "Opt into edition 2 ('edition = 2') and declare the fit on the "
-                "new-era surface (experiment: / data: / noise_model, bind-by-id "
-                "parameters). " + _FALLBACK_HINT)
+                hint=["Opt into edition 2 ('edition = 2') and declare the fit on the "
+                      "new-era surface (experiment: / data: / noise_model, bind-by-id "
+                      "parameters).",
+                      _FALLBACK_HINT])
 
     def _require_sensitivity_backend(self):
         """Refuse a model whose backend has no forward-sensitivity hooks."""
@@ -342,7 +346,9 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                     "backend's forward sensitivities, but model '%s' uses a backend "
                     "that does not provide them." % (
                         self._fit_type_label(), getattr(model, 'name', '?')),
-                    _FALLBACK_HINT)
+                    hint=["Simulate the model through bngsim (an SBML model needs "
+                          "'sbml_backend = bngsim'), which provides them.",
+                          _FALLBACK_HINT])
 
     def _require_differentiable_dynamics(self):
         """Refuse a discrete-event model before the run (#461).
@@ -367,7 +373,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                     "sensitivities go stale across such a jump, so bngsim cannot "
                     "supply the gradient there." % (
                         self._fit_type_label(), getattr(model, 'name', '?')),
-                    _FALLBACK_HINT)
+                    hint=_FALLBACK_HINT)
 
     def _fit_type_label(self):
         """The fit_type code for messages (the leaf's registered name, best-effort)."""
@@ -494,14 +500,14 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
 
     def _unsupported_gradient_error(self, exc):
         """Wrap a :class:`GradientNotSupported` as the leaf's fail-fast :class:`PybnfError`
-        with an actionable fallback hint. The base points at a metaheuristic ``fit_type``;
+        with an actionable fallback hint. The base points at a metaheuristic ``job_type``;
         the EFIM leaf (``gntr``) overrides the hint to point at ``lbfgs`` -- which consumes the
         scalar gradient and needs no Fisher Hessian, so it fits the very corners ``gntr``
         refuses."""
         return PybnfError(
             "Gradient-based fitting (job_type = %s) cannot differentiate this "
             "fit's objective: %s" % (self._fit_type_label(), exc),
-            _FALLBACK_HINT)
+            hint=_FALLBACK_HINT)
 
     # --- u-space box ------------------------------------------------------- #
     def _u_bounds(self):

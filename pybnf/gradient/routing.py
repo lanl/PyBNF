@@ -384,5 +384,5 @@ def _resolve_condition(model, condition):
         known = ', '.join(sorted(getattr(m, 'suffix', '') for m in model.mutants)) or '(none)'
         raise PybnfError(
             f"Condition '{condition}' is not defined on model '{getattr(model, 'name', '?')}'.",
-            f"Define it with a 'condition:' line. Known conditions: {known}.")
+            hint=f"Define it with a 'condition:' line. Known conditions: {known}.")
     return mut

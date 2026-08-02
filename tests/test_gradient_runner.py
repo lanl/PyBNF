@@ -256,14 +256,18 @@ def test_gntr_refusal_points_at_lbfgs_not_a_metaheuristic():
     """A corner whose EFIM Hessian ``gntr`` cannot assemble (a MEDIAN count, a MEAN-on-log
     estimated scale, an estimated constraint scale) must refuse toward ``lbfgs`` -- which
     consumes the scalar gradient and fits it -- not toward a metaheuristic (the base's default
-    hint). The leaf overrides ``_unsupported_gradient_error`` to redirect the pointer."""
+    hint). The leaf overrides ``_unsupported_gradient_error`` to redirect the pointer, which it
+    appends to the diagnosis rather than printing in place of it (#527), so the message names
+    both the corner that refused and the job_type that fits it."""
     from pybnf.algorithms.optimizers.gntr import GNTRAlgorithm
     from pybnf.gradient import GradientNotSupported
     from pybnf.printing import PybnfError
     err = GNTRAlgorithm._unsupported_gradient_error(
         object(), GradientNotSupported('a MEDIAN-centered negative-binomial ...'))
     assert isinstance(err, PybnfError)
-    assert 'lbfgs' in str(err).lower()
+    assert 'lbfgs' in err.message.lower()
+    assert 'MEDIAN-centered negative-binomial' in err.message
+    assert 'metaheuristic' not in err.message.lower()
 
 
 def test_gntr_runner_fails_fast_without_an_attached_hessian():
