@@ -302,8 +302,8 @@ def _resolve_profile_idxs(variables, names):
         raise PybnfError(
             "profile_likelihood_params names %s, which %s not a declared free parameter."
             % (', '.join(unknown), 'is' if len(unknown) == 1 else 'are'),
-            "List only free-parameter ids to profile (or omit the key to profile all of: "
-            "%s)." % ', '.join(v.name for v in variables))
+            hint="List only free-parameter ids to profile (or omit the key to profile all of: "
+                 "%s)." % ', '.join(v.name for v in variables))
     return [i for i, v in enumerate(variables) if v.name in wanted]
 
 
@@ -670,8 +670,8 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 "(to lay the profile grid and detect a bound-limited CI), but "
                 "%s %s unbounded." % (
                     ', '.join(unbounded), 'is' if len(unbounded) == 1 else 'are'),
-                "Declare each parameter with a bounded prior (uniform / loguniform, or a "
-                "prior with 'lower:'/'upper:' bounds).")
+                hint="Declare each parameter with a bounded prior (uniform / loguniform, or a "
+                     "prior with 'lower:'/'upper:' bounds).")
 
     def _init_profile_state(self):
         """(Re)initialize the phase machine + profiling bookkeeping -- all plain
@@ -774,13 +774,13 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             # path; here the whole profile has no anchor).
             raise PybnfError(
                 "Profile likelihood (job_type = %s) could not simulate its reference point "
-                "(the %s), so there is no optimum to profile around." % (
+                "(the %s) -- the point is non-integrable at these parameters -- so there "
+                "is no optimum to profile around." % (
                     self._fit_type_label(),
                     'supplied initial_value theta*' if self.phase == 'center'
                     else 'box center'),
-                "The point is non-integrable at these parameters. Supply an initial_value "
-                "optimum that simulates, or tighten the parameter bounds so the reference "
-                "point integrates.")
+                hint="Supply an initial_value optimum that simulates, or tighten the "
+                     "parameter bounds so the reference point integrates.")
         exact = self.gradient_at(res).least_squares_exact
         self._runner_kind = 'trf' if exact else 'lbfgs'
         if exact:

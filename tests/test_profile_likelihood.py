@@ -127,8 +127,36 @@ def test_resolve_profile_idxs_selects_all_or_a_named_subset():
     assert _resolve_profile_idxs(variables, []) == [0, 1, 2]
     # Subset is returned in variables order, not the order it was named.
     assert _resolve_profile_idxs(variables, ['c', 'a']) == [0, 2]
-    with pytest.raises(PybnfError):
+    with pytest.raises(PybnfError) as exc:
         _resolve_profile_idxs(variables, ['a', 'zzz'])
+    # The name that was rejected reaches the user, not only the log file (#527): the hint
+    # listing the valid ids is appended to that diagnosis, not printed in place of it.
+    assert 'zzz' in exc.value.message
+    assert 'a, b, c' in exc.value.message      # ... and the hint still lists the valid ids
+
+
+def test_the_refusal_of_an_unbounded_parameter_names_it():
+    """Profiling needs a bounded box for every parameter -- one to lay the grid in, and one to
+    recognize a bound-limited CI against. The refusal names **which** parameters are unbounded
+    on the user-facing message and then suggests the fix (#527); before, the user saw only
+    'Declare each parameter with a bounded prior' and had to open the log to learn which of
+    their parameters was at fault.
+
+    The gate reads only ``self.variables``, so a headless stand-in exercises it without a
+    config or a model."""
+    import types
+    from pybnf.printing import PybnfError
+
+    def _var(name, bounded):
+        return types.SimpleNamespace(name=name, has_bounded_support=bounded)
+
+    stub = types.SimpleNamespace(variables=[_var('k', True), _var('S0', False)])
+    with pytest.raises(PybnfError) as exc:
+        ProfileLikelihoodAlgorithm._require_bounded_parameters(stub)
+
+    assert 'S0 is unbounded' in exc.value.message       # the offending parameter, and only it
+    assert 'bounded prior' in exc.value.message         # with the remedy appended
+    assert exc.value.log_message in exc.value.message   # losing nothing the log has
 
 
 # --------------------------------------------------------------------------- #
