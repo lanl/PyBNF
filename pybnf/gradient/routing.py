@@ -358,18 +358,51 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map):
     :class:`GradientNotSupported` -- keeping a gradient/EFIM fit honest rather than emitting a
     silently-wrong column.
     """
-    seeds = _seed_terms(target, ic_seed_map)
-    terms = [(s.target, s.key, s.node) for s in seeds]
-    if target in species_names:
-        terms.append((IC, target, derivative.ONE))
-    elif target in param_ids and not _seeds_only_initial_conditions(seeds):
-        terms.append((PARAM, target, derivative.ONE))
+    terms = classify_bound_id(target, param_ids, species_names, ic_seed_map)
     if terms:
         return terms
     raise GradientNotSupported(
         f"Condition sets '{target}' to the value of a free parameter, but '{target}' is "
         f"neither a model parameter nor a species initial value the sensitivity request can "
         f"bind; the gradient path cannot route it. Use a gradient-free optimizer or sampler.")
+
+
+def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initializers=()):
+    """Every sensitivity column a model id reaches: ``[(axis, key, node), ...]``, possibly empty.
+
+    The shared core of "what does this id move?", used for **both** a condition target and a
+    free parameter bound by id (ADR-0034) -- they are the same question, and answering them
+    differently is what left a bind-by-id seed with a silently-zero column (#534). An id
+    reaches the trajectory by *being* a quantity the ODE reads (its own axis) and by **seeding**
+    other entities' initial values (``ic_seed_map``), and it may do both.
+
+    A **pure initial-value seed** -- an id that only seeds species ICs -- deliberately gets no
+    axis of its own: it is absent from the ODE right-hand side, so that axis is identically zero
+    and requesting it would only cost a sensitivity vector. This is the IC-precedence rule
+    :func:`classify_free_param` applies to a bare initializer, generalized to any seed.
+
+    ``species_initializers`` is the backend-independent fallback for an id the seed map does not
+    mention: a *bare* initializer (``species <- p``) is a unit seed, which is how
+    :func:`classify_free_param` has always recognised an initial-condition parameter, and is what
+    a caller that supplies no ``ic_seed_map`` at all still relies on.
+
+    Empty when the id binds nothing at all (a free sigma); the caller decides whether that is a
+    :data:`NONE` route or a refusal.
+    """
+    seeds = _seed_terms(name, ic_seed_map)
+    if not seeds and name not in ic_seed_map and name not in species_names:
+        # A *parameter* that bares a species initializer. Excluding a species here matters: the
+        # SBML backend reports each species as its own initializer (``[(s, s)]``), so without the
+        # guard a free parameter named for a species would collect this term and its own IC term
+        # below -- the same column twice.
+        seeds = tuple(SeedTerm(IC, species, derivative.ONE)
+                      for species, expr in species_initializers if expr.strip() == name)
+    terms = [(s.target, s.key, s.node) for s in seeds]
+    if name in species_names:
+        terms.append((IC, name, derivative.ONE))
+    elif name in param_ids and not _seeds_only_initial_conditions(seeds):
+        terms.append((PARAM, name, derivative.ONE))
+    return terms
 
 
 def _seed_terms(target, ic_seed_map):
@@ -454,10 +487,19 @@ def route_experiment(free_params, param_values, species_initializers, condition=
     routes = {}
     for name in free_params:
         contribs = []
-        base_target, base_key = classify_free_param(name, param_ids, species_initializers)
-        if base_target != NONE:
-            contribs.append(
-                RouteContribution(base_target, base_key, condition_factor(name, condition)))
+        # A free parameter bound by id reaches every column that id reaches -- its own axis and
+        # whatever initial values it seeds (#534) -- each scaled by this experiment's local
+        # derivative for the id (ADR-0028). Folding that scale into the derivative tree keeps a
+        # point-dependent seed correct under `at_point`, and collapses a pinned ('=') id to a
+        # constant zero exactly as before.
+        scale = derivative.num(condition_factor(name, condition))
+        for axis, key, node in classify_bound_id(
+                name, param_ids, species_names, ic_seed_map, species_initializers):
+            scaled = derivative.mul(scale, node)
+            constant = derivative.is_constant(scaled)
+            contribs.append(RouteContribution(
+                axis, key, _evaluate_factor(scaled, env, name),
+                None if constant else scaled))
         contribs.extend(ref_contribs.get(name, []))
         if not contribs:
             # No model column at all (a free sigma, or a free parameter pinned out of every

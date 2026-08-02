@@ -733,6 +733,68 @@ def test_sbml_fd_oracle_multi_species_seed_and_derived_parameter(tmp_path):
         column='I', sigma=1.0, expect_route=_check)
 
 
+# A COPASI-style alias: the rate law reads `k_used`, which an initialAssignment derives from
+# `k_src`, and `k_src` -- the FITTED id -- appears in no rate law at all. Laske_PLOSComputBiol2019
+# is this shape 27 times over.
+_ALIASED_PARAM_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="aliased_param">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_src" value="0.3" constant="true"/>
+      <parameter id="k_used" value="0" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="k_used"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k_src</ci></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k_used</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_bind_by_id_free_param_also_routes_what_it_seeds(tmp_path):
+    """A free parameter bound **by id** reaches the columns it seeds, not just its own (#534).
+
+    `k_src` is a model parameter, so bind-by-id classification gave it the `k_src` parameter axis
+    and stopped there -- an axis that is identically zero, because no rate law reads `k_src`. The
+    result was a silently-zero gradient column, the failure mode ADR-0095 exists to prevent."""
+    xml_path = Path(tmp_path) / 'aliased.xml'
+    xml_path.write_text(_ALIASED_PARAM_SBML)
+    xml = str(xml_path)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=PSet([]), actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    _, _, seeds = model.sensitivity_entity_namespace()
+    assert seeds == {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)}
+
+    route = route_for_model(model, ['k_src'], None)
+    assert route.routes['k_src'].contributions == (
+        RouteContribution(PARAM, 'k_used', 1.0),      # the column that actually moves
+        RouteContribution(PARAM, 'k_src', 1.0))       # its own, identically zero, axis
+    assert 'k_used' in route.sensitivity_params
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_bind_by_id_seeded_parameter(tmp_path):
+    """FD oracle for the case above: before #534 the assembled gradient was exactly 0 while
+    central differences were not, at every step size."""
+    xml_path = Path(tmp_path) / 'aliased.xml'
+    xml_path.write_text(_ALIASED_PARAM_SBML)
+    _assert_fd_matches(
+        tmp_path, str(xml_path), 'aliasfd', cond=None,
+        free=[FreeParameter('k_src', 'uniform_var', 0.01, 3.0, value=0.45)],
+        model_params=lambda theta: {'k_src': theta['k_src']},
+        truth={'k_src': 0.3}, column='S', sigma=2.0)
+
+
 @_needs_output_sens
 def test_sbml_fd_oracle_amount_species_seed(tmp_path):
     """FD oracle for the case above: the assembled gradient of a free parameter routed through

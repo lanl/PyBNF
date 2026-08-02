@@ -195,6 +195,43 @@ def test_classify_condition_target_seeding_a_derived_parameter_keeps_its_own_axi
         (PARAM, 'beta_N', ('sym', 'R0_')), (PARAM, 'gamma_', ONE)]
 
 
+def test_classify_bound_id_is_the_shared_core_for_a_free_parameter_and_a_target():
+    """A free parameter bound by id and a condition target ask the same question -- what columns
+    does this id move? -- so they share one classifier (#534). Answering them differently is what
+    left a bind-by-id seed with a silently-zero column."""
+    seed_map = {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)}
+    param_ids, species = {'k_src', 'k_used'}, set()
+    # The seeded column AND the id's own axis (zero here, but the router cannot know that).
+    assert R.classify_bound_id('k_src', param_ids, species, seed_map) == [
+        (PARAM, 'k_used', ONE), (PARAM, 'k_src', ONE)]
+    # A plain parameter that seeds nothing is unchanged: one column, its own.
+    assert R.classify_bound_id('k_used', param_ids, species, seed_map) == [(PARAM, 'k_used', ONE)]
+    # An id that binds nothing is empty -- the caller decides between a NONE route and a refusal.
+    assert R.classify_bound_id('sigma', param_ids, species, seed_map) == []
+
+
+def test_classify_bound_id_falls_back_to_a_bare_initializer_without_a_seed_map():
+    """With no ``ic_seed_map`` the bare initializer is still recognised, which is what every
+    caller that predates the seed map relies on -- and a species is not double-counted through
+    the SBML backend's ``[(s, s)]`` self-initializer convention."""
+    assert R.classify_bound_id('S0', {'S0'}, {'S()'}, {}, [('S()', 'S0')]) == [(IC, 'S()', ONE)]
+    assert R.classify_bound_id('S', {'k'}, {'S'}, {}, [('S', 'S')]) == [(IC, 'S', ONE)]
+
+
+def test_route_experiment_bind_by_id_seed_scales_with_the_condition_factor():
+    """A condition that scales the id scales everything it seeds, and a pinned id drops every
+    one of its columns from the request."""
+    seed_map = {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)}
+    params = {'k_src': 0.3, 'k_used': 0.0}
+    scaled = route_experiment(['k_src'], params, [], _cond(('k_src', '*', 4.0)),
+                              ic_seed_map=seed_map)
+    assert scaled.routes['k_src'].contributions == (
+        RouteContribution(PARAM, 'k_used', 4.0), RouteContribution(PARAM, 'k_src', 4.0))
+    pinned = route_experiment(['k_src'], params, [], _cond(('k_src', '=', 0.5)),
+                              ic_seed_map=seed_map)
+    assert pinned.sensitivity_params == []
+
+
 def test_classify_condition_target_undifferentiable_seed_refuses():
     """A seed the arithmetic grammar cannot differentiate (map value None) refuses rather than
     emitting a guessed factor."""
