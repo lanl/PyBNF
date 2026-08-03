@@ -572,6 +572,54 @@ def test_lbfgs_fits_row_varying_per_measurement_noise_scale(tmp_path, monkeypatc
         'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
 
 
+def _write_arbitrary_unit_decay_exp(path, *, factor, n=21, t_end=10.0, sd=0.05):
+    """A zero-noise decay ``.exp`` in **arbitrary units**: the model's own solution times a
+    whole-series ``factor`` no parameter can produce. ``Stot_SD`` is a log10-scale standard
+    deviation (the lognormal family's fixed σ). Only ``k`` is identifiable from such data --
+    the analytic scale absorbs the amplitude by construction."""
+    t = np.linspace(0.0, t_end, n)
+    obs = factor * TRUE_S0 * np.exp(-TRUE_K * t)
+    lines = ['#\ttime\tStot\tStot_SD']
+    lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    Path(path).write_text('\n'.join(lines) + '\n')
+    return str(path)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+@pytest.mark.parametrize('fit_type', ['trf', 'lbfgs', 'gntr'])
+def test_gradient_fits_an_analytically_scaled_column(tmp_path, monkeypatch, fit_type):
+    """A fit whose experiment analytically scales a column now runs on a **gradient** job type
+    (#533). ``normalization Stot = floor 0.03, scale`` under ``objective = lognormal`` -- the
+    ADR-0066 chain for arbitrary-unit data -- used to refuse on every gradient leaf, because the
+    profiled ``c*``'s derivative was deferred; with the product rule threaded, the fit runs and
+    recovers the rate from data that is a factor of 7 off the model's own units. Run on all three
+    leaves: the residual (``trf``), scalar (``lbfgs``), and EFIM (``gntr``) consumers each read the
+    same scaled ``prediction_sensitivity``.
+
+    The amplitude is deliberately *not* recoverable here -- that is what ``scale`` means: ``c*``
+    absorbs any whole-series factor, so ``S0`` is unidentifiable and only ``k`` is fit."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_arbitrary_unit_decay_exp(tmp_path / 'decay_au.exp', factor=7.0)
+    conf = H.make_newera_config(
+        tmp_path, model, exp, {'k': ('uniform_var', 1e-2, 3.0)},
+        'decay', fit_type, objective='lognormal', random_seed=1234,
+        population_size=1, max_iterations=100,
+        **{'normalization Stot': 'floor 0.03, scale'})
+    # Both primitives really are live on this fit (the chain compiled to its two seams).
+    assert conf.config['analytic_scale'] and conf.config['normalization']
+
+    alg = H.build(conf, fit_type)
+    H.drive(alg)   # must NOT raise -- this is the path #533 tracked as refused
+
+    rec = H.best_params(alg, ('k',))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+
+
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')

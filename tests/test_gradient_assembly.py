@@ -920,13 +920,15 @@ def test_normalization_peak_closed_form():
     assert obj is not None
 
 
-@pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit'])
+@pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit', ('floor', 0.03)],
+                         ids=['peak', 'init', 'zero', 'unit', 'floor'])
 def test_normalization_chain_rule_matches_finite_difference(method):
     """Every normalization method's threaded derivative ``∂(normalize(raw))/∂θ`` matches a
     central finite difference of PyBNF's own ``Data.normalize`` applied to the raw column
     perturbed along its sensitivity -- an implementation-independent oracle (the analytic chain
     rule vs the actual reduction). Covers the row-coupling each method introduces: ``peak``/
-    ``init`` (one reference row), ``unit`` (baseline + max), and ``zero`` (every row, through σ)."""
+    ``init`` (one reference row), ``unit`` (baseline + max), ``zero`` (every row, through σ),
+    and ``floor`` (the additive max-fraction offset, ADR-0066/#533)."""
     raw = np.array([2.0, 9.0, 5.0, 3.0])
     dk = np.array([0.5, -2.0, 1.3, -0.7])
     sigma = 1.0
@@ -948,35 +950,212 @@ def test_normalization_chain_rule_matches_finite_difference(method):
     np.testing.assert_allclose(res.jacobian[:, 0], fd / sigma, rtol=1e-5, atol=1e-7)
 
 
-def test_floor_normalization_gradient_is_deferred():
-    """Floor normalization (ADR-0066, #479) has a DEFERRED gradient: a ``method='floor'`` record
-    must raise ``GradientNotSupported`` rather than be silently threaded through the peak/init
-    quotient rule (a wrong sensitivity). The fit then falls back to a gradient-free step."""
+def test_floor_normalization_closed_form():
+    """A floor (ADR-0066, #533) is additive and separable: ``x' = x + rho*max(x)``, so its
+    threaded derivative is ``∂x'_i/∂θ = s_i + rho*s_argmax`` -- every row picks up the *same*
+    max-row term (unlike peak's quotient, whose reference term is weighted by ``n_i``)."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    rho, sigma = 0.03, 1.0
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize(('floor', rho))              # records method='floor', ref_row=argmax
+    assert sim.normalization['Stot'].method == 'floor'
+    exp = _exp(np.zeros(4), sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    expected = dk + rho * dk[int(np.argmax(raw))]
+    np.testing.assert_allclose(res.jacobian[:, 0], expected / sigma)
+
+
+def test_chained_data_normalizations_refuse():
+    """Only the LAST ``Data``-level transform of a chain is recorded (the sidecar is keyed by
+    column) and every rule reads the *raw* sensitivities, so a two-transform chain
+    (``floor 0.03, peak``) cannot be composed from what is retained -- refused rather than
+    threading peak's rule alone over an already-floored column (#533)."""
     raw = np.array([2.0, 9.0, 5.0, 3.0])
     sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
-    sim.normalize(('floor', 0.03))             # records method='floor'
-    assert sim.normalization['Stot'].method == 'floor'
+    sim.normalize([(('floor', 0.03), ['Stot']), ('peak', ['Stot'])])
+    assert sim.normalization['Stot'].method == 'peak' and sim.normalization['Stot'].chained
     exp = _exp(np.zeros(4), 1.0)
     routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
-    with pytest.raises(GradientNotSupported, match='[Ff]loor'):
+    with pytest.raises(GradientNotSupported, match='chain'):
         assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
 
 
-def test_analytic_scale_gradient_is_deferred():
-    """Analytic per-series scaling (ADR-0066, #479) has a deferred gradient too: a scaled column
-    raises ``GradientNotSupported`` in ``prediction_sensitivity`` (its optimal scale depends on θ
-    through the whole series -- an implicit-function derivative not yet implemented)."""
+def _scaled_objective(obj, cols=('Stot',), data_key='expt'):
+    """``obj`` with ``cols`` declared for analytic per-series scaling in experiment
+    ``data_key`` -- what ``config._attach_analytic_scale`` builds from ``normalization = scale``."""
+    obj._analytic_scale = {data_key: frozenset(cols)}
+    return obj
+
+
+def _fd_scaled_loss_gradient(obj, raw, dk, exp, data_key, h=1e-6, normalize=None):
+    """A central finite difference of PyBNF's **own reported objective** along the sensitivity
+    direction: ``d(evaluate)/dk`` with the simulated column moved as ``raw + eps*dk``. The
+    strongest available oracle for a scaled fit -- ``evaluate`` re-profiles ``c*`` at each
+    perturbed point, so the difference includes the whole ``∂c*/∂θ`` coupling."""
+    def loss(eps):
+        sim = _sim_with_sensitivities(raw + eps * dk, d_param=dk)
+        if normalize is not None:
+            sim.normalize(normalize)
+        return obj.evaluate(sim, exp, data_key=data_key)
+    return (loss(h) - loss(-h)) / (2.0 * h)
+
+
+def test_analytic_scale_gradient_matches_finite_difference_linear():
+    """Analytic per-series scaling (ADR-0066) is differentiable (#533): for a *linear* family the
+    profiled ``c* = Σ w s d / Σ w s²`` moves with θ, so ``∂pred_i/∂θ = c*·∂s_i/∂θ + s_i·∂c*/∂θ``.
+    The assembled scalar gradient matches a finite difference of ``evaluate`` itself.
+
+    The dropped term would be invisible to a c*-free FD: the profiling is σ-unweighted, so with a
+    per-point σ column ``∂Obj/∂c* != 0`` and the coupling genuinely moves the gradient."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    obs = np.array([2.4, 10.1, 5.6, 3.1])
+    sigma = np.array([0.5, 2.0, 1.0, 0.8])     # per-point sigma -> profiling != argmin_c Obj
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = _scaled_objective(ChiSquareObjective())
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing, 'expt')], free)
+
+    np.testing.assert_allclose(res.gradient[0], _fd_scaled_loss_gradient(obj, raw, dk, exp, 'expt'),
+                               rtol=1e-6, atol=1e-9)
+    # The residual form still models the whole (fixed-sigma Gaussian) data fit exactly.
+    assert res.least_squares_exact
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual,
+                               obj.evaluate(sim, exp, data_key='expt'))
+
+
+def test_analytic_scale_gradient_matches_finite_difference_log():
+    """The *log* family profiles the geometric-mean ratio ``c* = exp(Σ w (ln d − ln s)/Σ w)``
+    instead, whose derivative is ``−c*·Σ w (∂s_i/∂θ)/s_i / Σ w`` -- a different closed form on the
+    same seam (ADR-0066, #533), checked against a finite difference of ``evaluate``."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    obs = np.array([2.4, 10.1, 5.6, 3.1])
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    exp = _exp(obs, np.array([0.2, 0.5, 0.3, 0.25]))
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = _scaled_objective(_logscale_objective())
+    assert obj._scale_mode('Stot') == 'log'
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing, 'expt')], free)
+
+    np.testing.assert_allclose(res.gradient[0], _fd_scaled_loss_gradient(obj, raw, dk, exp, 'expt'),
+                               rtol=1e-6, atol=1e-9)
+
+
+def test_floor_then_analytic_scale_composes():
+    """The motivating chain (ADR-0066): ``normalization <obs> = floor 0.03, scale`` under
+    ``objective = lognormal`` -- the floor rides the ``Data`` seam (recorded, its own additive
+    rule) and the scale the scoring seam (profiled from the *floored* series), so the assembled
+    gradient composes both against a finite difference of the same two-stage scoring."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    obs = np.array([2.4, 10.1, 5.6, 3.1])
+    floor = ('floor', 0.03)
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize(floor)
+    exp = _exp(obs, np.array([0.2, 0.5, 0.3, 0.25]))
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = _scaled_objective(_logscale_objective())
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing, 'expt')], free)
+
+    np.testing.assert_allclose(
+        res.gradient[0], _fd_scaled_loss_gradient(obj, raw, dk, exp, 'expt', normalize=floor),
+        rtol=1e-6, atol=1e-9)
+
+
+def test_analytic_scale_fisher_hessian_assembles():
+    """The EFIM path (``gntr``) reads the same ``prediction_sensitivity``, so a scaled column's
+    Fisher block is the scaled sensitivity's outer product -- it assembles (finite, PSD) rather
+    than refusing, and matches the Gauss-Newton ``J^T J`` of the assembled Jacobian (#533)."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    obs = np.array([2.4, 10.1, 5.6, 3.1])
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    exp = _exp(obs, 0.5)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = _scaled_objective(ChiSquareObjective())
+    experiments = [(sim, exp, routing, 'expt')]
+
+    H = assemble_fisher_hessian(obj, experiments, free)
+    res = assemble_gaussian_gradient(obj, experiments, free)
+
+    assert np.all(np.isfinite(H)) and H[0, 0] > 0.0
+    np.testing.assert_allclose(H, res.jacobian.T @ res.jacobian)
+
+
+def test_analytic_scale_without_a_data_key_refuses():
+    """The profiled scale is per experiment, so a caller that supplies no ``data_key`` cannot say
+    which columns *this* experiment scales -- refused (``GradientNotSupported`` -> a gradient-free
+    step) rather than silently differentiating an unscaled prediction (#533)."""
     raw = np.array([2.0, 9.0, 5.0, 3.0])
     sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
     exp = _exp(np.zeros(4), 1.0)
     routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
-    obj = ChiSquareObjective()
-    obj._analytic_scale = {'expt': frozenset({'Stot'})}
+    obj = _scaled_objective(ChiSquareObjective())
     assert obj._scaled_columns == frozenset({'Stot'})
     with pytest.raises(GradientNotSupported, match='scal'):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_column_scaled_in_another_experiment_is_plain_here():
+    """``scale`` is resolved per (experiment, observable), so a column scaled in experiment A is
+    an ordinary column in experiment B: B's Jacobian is the plain sensitivity, not A's factor
+    (#533 -- the reason the data_key travels with the experiment)."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    sigma = 2.0
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    exp = _exp(np.array([2.4, 10.1, 5.6, 3.1]), sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = _scaled_objective(ChiSquareObjective(), data_key='other')
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing, 'expt')], free)
+
+    np.testing.assert_allclose(res.jacobian[:, 0], dk / sigma)
+
+
+@pytest.mark.parametrize('objective_factory, mode', [(ChiSquareObjective, 'linear'),
+                                                     (_logscale_objective, 'log')])
+def test_analytic_scale_factor_derivative_matches_finite_difference(objective_factory, mode):
+    """The series-wide term on its own: ``analytic_scale_sensitivity``'s ``∂c*/∂θ`` against a
+    central difference of the profiled ``c*`` itself, for both profiling forms (#533). Isolates
+    the new closed form from everything the assembly composes it with."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    exp = _exp(np.array([2.4, 10.1, 5.6, 3.1]), 1.0)
+    obj = _scaled_objective(objective_factory())
+    assert obj._scale_mode('Stot') == mode
+    index = {'k': 0}
+
+    def c_star(eps):
+        sim = _sim_with_sensitivities(raw + eps * dk, d_param=dk)
+        return obj._analytic_scale_factors(sim, exp, 'time', {'Stot'}, 'expt')['Stot']
+
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    terms = obj.analytic_scale_sensitivity(
+        sim, exp, 'time', {'Stot'}, 'expt', lambda col, row: np.array([dk[row]]), index)
+    c, dc = terms['Stot']
+
+    h = 1e-6
+    np.testing.assert_allclose(c, c_star(0.0))
+    np.testing.assert_allclose(dc[0], (c_star(h) - c_star(-h)) / (2.0 * h), rtol=1e-6)
 
 
 def test_capability_gate_now_accepts_trajectory_transforms():
@@ -2157,6 +2336,66 @@ def test_fd_acceptance_gate_logscale(scale):
     # points (which span many decades) give the objective much larger higher-order curvature
     # than the linear oracle -- the central difference's O(h^2) truncation error is
     # correspondingly larger, so this FD oracle uses a looser tolerance than the LINEAR one.
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_floor_and_analytic_scale():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay net
+    under the **whole ADR-0066 chain** -- ``objective = lognormal`` + ``normalization Stot =
+    floor 0.03, scale`` (#533, the Jaruszewicz-Błońska 2023 recipe the primitives were built for).
+
+    Both primitives are live at once: the floor rides the ``Data`` seam (applied to sim and data
+    alike, its own additive rule threaded through ``raw_sens``) and the analytic scale the scoring
+    seam (``c*`` profiled from the *floored* series, its series-wide ``∂c*/∂θ`` folded into every
+    point of the column by the product rule). The data is deliberately at a **different overall
+    scale** than the model (``x2.5``) -- the situation ``scale`` exists for -- so ``c*`` is far
+    from 1 and its derivative genuinely carries the gradient. Two free params (k parameter axis +
+    S0 IC axis), two experiments (wildtype + a ``k*4`` condition), each with its own profiled
+    scale."""
+    obj = _logscale_objective()
+    obj._analytic_scale = {'wt': frozenset({'Stot'}), 'hi': frozenset({'Stot'})}
+    floor = ('floor', 0.03)
+    sigma = 0.3
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    data_scale = 2.5   # arbitrary-unit data: a whole-series factor the fit must not be charged for
+
+    def _exp_scaled(k_eff):
+        gen = _decay_run(k_eff, s0_true, False)
+        gen.data[:, gen.cols['Stot']] *= data_scale
+        gen.normalize(floor)      # the symmetric half of the chain: the data is floored too
+        return _exp_decay(gen, sigma)
+
+    exp_wt, exp_hi = _exp_scaled(k_true), _exp_scaled(k_factor * k_true)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=DECAY_RHS)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=DECAY_RHS)
+
+    def _sim(k_eff, s0, sens):
+        sim = _decay_run(k_eff, s0, sens)
+        sim.normalize(floor)
+        return sim
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return (obj.evaluate(_sim(theta['k'], theta['S0'], False), exp_wt, data_key='wt')
+                + obj.evaluate(_sim(k_factor * theta['k'], theta['S0'], False), exp_hi,
+                               data_key='hi'))
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _sim(free[0].value, free[1].value, True)
+    sim_hi = _sim(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt, 'wt'), (sim_hi, exp_hi, route_hi, 'hi')], free)
+
+    # The profiled scale really is doing work here (the data is 2.5x the model's own units).
+    assert 2.0 < obj._scale_factors['Stot'] < 3.0
+    assert res.least_squares_exact is True
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
 
 

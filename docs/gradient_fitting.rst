@@ -422,7 +422,8 @@ own derivative so it stays exact.
   enters :math:`\partial\hat p/\partial\theta`, so it has a real residual-Jacobian column (a square),
   and the residual form stays exact.
 
-* **Normalization** (``normalization`` — ``init`` / ``peak`` / ``zero`` / ``unit``): the predicted
+* **Normalization** (``normalization`` — ``init`` / ``peak`` / ``zero`` / ``unit`` / ``floor``):
+  the predicted
   column is rescaled by a normalizer :math:`N(\theta)` read off the moving trajectory (its peak,
   initial value, z-score, or unit range), so :math:`\partial(\hat y_i/N)/\partial\theta` is a
   quotient/chain rule that **couples rows** — e.g. for ``peak``,
@@ -430,9 +431,38 @@ own derivative so it stays exact.
   n_i\,\partial\hat y_p/\partial\theta)/N` with :math:`p` the peak row and :math:`n_i` the
   normalized value. The transform is applied at the data level (it overwrites the raw column), so
   the few facts the chain rule needs — the divisor and its reference row(s) — are recorded when the
-  column is normalized; ``zero`` couples *every* row through the standard deviation. All four are
+  column is normalized; ``zero`` couples *every* row through the standard deviation, and ``floor``
+  (:math:`\hat y_i + \rho\max\hat y`) is additive, so every row picks up the same
+  :math:`\rho\,\partial\hat y_p/\partial\theta` term. All five are
   threaded, and any combination of these transforms composes (normalization is applied first, then
-  the cumulative/per-measurement transform on top, exactly as scoring does).
+  the cumulative/per-measurement transform on top, exactly as scoring does). The one exception is a
+  **chain of two or more of these** on one column (``floor 0.03, peak``): only the last transform's
+  facts are recorded, so the gradient path refuses it rather than compose it wrongly. A chain
+  ending in ``scale`` is fine — ``scale`` is not a data-level transform.
+
+* **Analytic per-series scale** (``normalization <obs> = scale``): the scored value is
+  :math:`c^{*}(\theta)\,\hat y_i(\theta)`, where :math:`c^{*}` is profiled out of the *whole*
+  matched series at scoring time, so its sensitivity is a product rule whose second term is shared
+  by every point of the column:
+
+  .. math::
+
+     \frac{\partial(c^{*}\hat y_i)}{\partial\theta}
+       = c^{*}\frac{\partial \hat y_i}{\partial\theta} + \hat y_i\frac{\partial c^{*}}{\partial\theta},
+     \qquad
+     \frac{\partial c^{*}}{\partial\theta} =
+     \begin{cases}
+       -\,c^{*}\displaystyle\sum_i w_i \frac{\partial \hat y_i/\partial\theta}{\hat y_i}\Big/\sum_i w_i
+         & \text{(log family)}\\[2ex]
+       \displaystyle\sum_i w_i\,(y_i - 2c^{*}\hat y_i)\,\frac{\partial \hat y_i}{\partial\theta}
+         \Big/ \sum_i w_i \hat y_i^{2} & \text{(linear family)}
+     \end{cases}
+
+  — the closed-form derivative of the profiling condition itself, summed over exactly the points
+  the profiling includes. This term does **not** drop out by the envelope theorem: the profiling is
+  σ-unweighted (and family-aware only in the log/linear split), so :math:`c^{*}` is not in general
+  the objective's own minimizer over the scale. The profiled scale is resolved per experiment, so a
+  column scaled in one experiment is an ordinary column in another.
 
 
 Constraint penalties
@@ -551,8 +581,9 @@ today — a **Gaussian, Laplace, or Student-t noise family** with the prediction
 log; see *Log / lognormal noise scale* above), with each noise parameter either **fixed** (read
 from the data / a constant) or estimated as a **single free parameter** (see *Estimated σ* and
 *Asymmetric and non-Gaussian families* above), the prediction formed through any of the
-per-observable **trajectory transforms** (cumulative→incident, a per-measurement scale/offset, or
-normalization; see *Trajectory transforms and normalization* above), and observables materialized
+per-observable **trajectory transforms** (cumulative→incident, a per-measurement scale/offset,
+normalization — floor included — or an analytic per-series scale; see *Trajectory transforms and
+normalization* above), and observables materialized
 through a **measurement-model layer** (the SBML/Antimony / ``observableFormula`` path; see
 *Measurement-model layer* above). Any other configuration raises a clear ``GradientNotSupported``
 naming what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong

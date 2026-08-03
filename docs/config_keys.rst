@@ -1126,10 +1126,13 @@ Algorithm Options
   Normalization has no PEtab v2 representation (peak / initial-value / z-score / floor scaling
   is a whole-trajectory reduction, and ``scale`` is an analytic per-series optimum, neither a
   pointwise observable formula), so a job that uses it **cannot be exported to PEtab** -- the
-  exporter refuses it rather than silently scoring the raw, un-normalized columns. ``floor``
-  and ``scale`` currently have a **deferred gradient** as well: a gradient-based fit
-  (:ref:`gradient fitting <gradient_fitting>`) that hits one falls back to a gradient-free
-  step, so pair them with an evolutionary algorithm (``de``, ``am``, ...).
+  exporter refuses it rather than silently scoring the raw, un-normalized columns. Every
+  transform here, ``floor`` and ``scale`` included, *is* differentiable, so a
+  :ref:`gradient-based fit <gradient_fitting>` (``trf`` / ``lbfgs`` / ``gntr``) can run on a
+  normalized or analytically scaled column. The one exception is a chain of two or more
+  **data-level** transforms on the same column (``floor 0.03, peak``), which the gradient path
+  refuses; ``floor 0.03, scale`` is fine, since ``scale`` is applied at scoring time rather than to
+  the column.
 
   Default: No normalization
 

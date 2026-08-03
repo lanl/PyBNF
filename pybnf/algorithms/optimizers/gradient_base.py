@@ -538,8 +538,11 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             model_exp = self.exp_data.get(model_name, {})
             for suffix, sim_data in by_suffix.items():
                 if suffix in model_exp:
+                    # The suffix travels with the experiment as its ``data_key`` -- the same key
+                    # ``evaluate`` resolves a per-series analytic scale against (ADR-0066, #533),
+                    # so the gradient profiles the scale over exactly the series scoring does.
                     experiments.append(
-                        (sim_data, model_exp[suffix], routings[(model_name, suffix)]))
+                        (sim_data, model_exp[suffix], routings[(model_name, suffix)], suffix))
         try:
             grad = self._assemble_objective_gradient(experiments, free_params)
             if self.config.constraints:

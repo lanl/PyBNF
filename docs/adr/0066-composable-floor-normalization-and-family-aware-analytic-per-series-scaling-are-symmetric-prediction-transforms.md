@@ -1,6 +1,9 @@
 # Composable floor normalization and family-aware analytic per-series scaling: two per-series prediction primitives that let a log/relative objective be spelled with standard tokens (issue #479)
 
-**Status: Accepted → implemented (2026-07-16).** Adds two composable, per-series
+**Status: Accepted → implemented (2026-07-16); the deferred gradients below are closed by
+ADR-0099 (#533), which implements both — the floor's additive rule and the profiled scale's
+series-wide derivative — so a floored / analytically scaled column is a gradient target.**
+Adds two composable, per-series
 normalization primitives so the sum-of-squared-log-differences-of-geometric-mean-
 normalized-trajectories objective common to arbitrary-unit systems-biology data
 (fluorescence, blots) is expressible with standard tokens instead of a bespoke

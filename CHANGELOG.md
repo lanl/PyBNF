@@ -169,6 +169,25 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **A floored or analytically scaled observable is now a gradient target (#533, ADR-0099).** The
+  two ADR-0066 normalization primitives shipped with deliberately deferred gradients, so a fit
+  whose experiment declared either — `normalization <obs> = floor 0.03, scale`, the chain
+  arbitrary-unit fluorescence / blot data is fit with — was unavailable to **every** gradient
+  `job_type`, refusing with *"Analytic per-series scaling ('scale', #479) on column '…' is not
+  differentiable on the gradient path"*. Both are now threaded. The **floor** (`x' = x + ρ·max x`)
+  is additive, so every row picks up the same `ρ·s_argmax` term. The **analytic scale** is the one
+  transform that is not per-point — its `c*` is profiled out of the whole matched series — so the
+  scored value `c*(θ)·ŷ_i(θ)` differentiates by the product rule, with `∂c*/∂θ` the closed-form
+  derivative of the profiling condition itself (the geometric-mean ratio for a log family, the
+  least-squares optimum for a linear one), computed once per experiment and shared by every point of
+  the column. That term does **not** drop out by the envelope theorem: the profiling is
+  σ-unweighted, so `c*` is not in general the objective's own minimizer over the scale. A scaled
+  fixed-σ Gaussian fit stays an exact least-squares model, so `trf`, `lbfgs`, and `gntr` all consume
+  it; the profiled scale is resolved per experiment, so a column scaled in one experiment stays an
+  ordinary column in another. One boundary is now stated rather than silently mis-differentiated: a
+  chain of two or more *data-level* transforms on one column (`floor 0.03, peak`) keeps only the
+  last one's facts, so the gradient path refuses it by name — `floor 0.03, scale` is unaffected,
+  since `scale` is applied at scoring time rather than to the column.
 - **A total wall-clock budget for a fit, `wall_time_fit`, that finalizes on expiry (#529,
   ADR-0093).** PyBNF's time limits were all per unit of work — `wall_time_sim` bounds one
   simulation, `wall_time_gen` one network generation — and nothing bounded a *run*: the only native

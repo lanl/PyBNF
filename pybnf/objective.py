@@ -165,8 +165,8 @@ class ObjectiveFunction:
     _analytic_scale = {}
 
     #: Per-``evaluate`` cache of the profiled scale factor per scored column, applied in
-    #: ``_prediction``. Reset at the top of every ``evaluate`` (and left empty while the factors
-    #: themselves are being profiled, so the profiling reads unscaled predictions); the empty
+    #: ``_prediction``. Reset at the top of every ``evaluate``; the profiling itself reads
+    #: ``_base_prediction`` (the unscaled value), so it never sees a stale factor. The empty
     #: default means no column is scaled, so a job without ``scale`` is byte-identical.
     _scale_factors = {}
 
@@ -526,17 +526,29 @@ class SummationObjective(ObjectiveFunction):
         A per-series analytic scale (ADR-0066, #479) multiplies whatever this seam produces: the
         factor is ``1.0`` for every unscaled column (so a plain job is byte-identical) and the
         profiled ``c*`` for a column declared ``scale`` (computed in :meth:`_analytic_scale_factors`
-        before the scoring loop)."""
-        scale = self._scale_factors.get(col_name, 1.0)
+        before the scoring loop; the gradient assembly sets the same map per experiment before
+        reading a residual back through here, #533)."""
+        return (self._scale_factors.get(col_name, 1.0)
+                * self._base_prediction(sim_data, sim_row, col_name, exp_data, exp_row))
+
+    def _base_prediction(self, sim_data, sim_row, col_name, exp_data=None, exp_row=None):
+        """The **unscaled** prediction for one matched point -- :meth:`_prediction` without the
+        per-series analytic scale (ADR-0066).
+
+        Split out because the scale is profiled *from* this value: the profiling walk
+        (:meth:`_analytic_scale_terms`) must read predictions that carry no scale yet, and the
+        gradient's product rule ``∂(c* s_i)/∂θ = c*·∂s_i/∂θ + s_i·∂c*/∂θ`` needs the same ``s_i``
+        (#533). Every transform branch (per-measurement model, cumulative->incident, plain cell)
+        lives here, so ``_prediction`` is exactly ``c* * _base_prediction``."""
         model = self._per_measurement_models.get(col_name)
         if model is not None:
-            return scale * model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
+            return model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
         if sim_row != 0 and self._is_cumulative(col_name):
             # A cumulative count's effective prediction is the per-interval increment;
             # row 0 has no predecessor and keeps its raw value (ADR-0051).
             col = sim_data.cols[col_name]
-            return scale * (sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col])
-        return scale * sim_data.data[sim_row, sim_data.cols[col_name]]
+            return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
+        return sim_data.data[sim_row, sim_data.cols[col_name]]
 
     def _scale_mode(self, col_name):
         """Whether analytic per-series scaling for one column is profiled in ``'linear'`` or
@@ -554,26 +566,69 @@ class SummationObjective(ObjectiveFunction):
         (Weber 2011 / hierarchical optimization). ``w`` is the point's fit weight.
 
         Returns ``{col: c*}`` -- empty when no column of this experiment is scaled, so scoring is
-        byte-identical to an unscaled fit. Reads *unscaled* predictions (it empties
-        ``_scale_factors`` first), skipping any point with a NaN/inf prediction, a NaN observation,
-        or -- in log space -- a non-positive prediction/observation."""
+        byte-identical to an unscaled fit. Reads *unscaled* predictions
+        (:meth:`_base_prediction`), skipping any point with a NaN/inf prediction, a NaN
+        observation, or -- in log space -- a non-positive prediction/observation."""
+        return {col: c for col, (c, _dc)
+                in self._analytic_scale_terms(sim_data, exp_data, indvar, compare_cols,
+                                              data_key).items()}
+
+    def analytic_scale_sensitivity(self, sim_data, exp_data, indvar, compare_cols, data_key,
+                                   raw_sens, index):
+        """``{col: (c*, ∂c*/∂θ)}`` for every analytically scaled column of one experiment --
+        the gradient twin of :meth:`_analytic_scale_factors` (ADR-0066, #533).
+
+        The profiled scale is a function of the *whole* series, so its derivative is a single
+        series-wide vector shared by every point of that column. Differentiating the profiling
+        condition in closed form (an implicit-function derivative that happens to be explicit,
+        because ``c*`` is written out rather than solved for) gives, with ``s_i`` the unscaled
+        prediction, ``g_i = ∂s_i/∂θ``, ``d_i`` the observation and ``w_i`` the point's weight,
+        summed over exactly the points the profiling includes:
+
+        * **log** family (``c* = exp(Σ w (ln d − ln s)/Σ w)``, the geometric-mean ratio)::
+
+              ∂c*/∂θ = −c* · Σ_i w_i g_i/s_i / Σ_i w_i
+
+        * **linear** family (``c* = N/D``, ``N = Σ w s d``, ``D = Σ w s²``)::
+
+              ∂c*/∂θ = Σ_i w_i (d_i − 2 c* s_i) g_i / D
+
+        The profiling criterion is *not* in general the objective's own minimizer over ``c``
+        (it is unweighted by σ and family-agnostic beyond the log/linear split), so this term
+        does **not** vanish by the envelope theorem -- it is a real part of ``∂pred/∂θ``.
+
+        Returns ``{}`` when this experiment scales nothing, so an unscaled fit never walks the
+        series. ``raw_sens``/``index`` are the assembly's forward-sensitivity accessor and
+        free-parameter column map."""
+        return self._analytic_scale_terms(sim_data, exp_data, indvar, compare_cols, data_key,
+                                          raw_sens=raw_sens, index=index)
+
+    def _analytic_scale_terms(self, sim_data, exp_data, indvar, compare_cols, data_key,
+                              raw_sens=None, index=None):
+        """The one profiling walk behind :meth:`_analytic_scale_factors` (scoring) and
+        :meth:`analytic_scale_sensitivity` (gradient), so the two can never include different
+        points. Returns ``{col: (c*, ∂c*/∂θ or None)}``; the derivative is accumulated only when
+        a ``raw_sens`` accessor is supplied (scoring passes none and pays nothing)."""
         scaled = self._analytic_scale.get(data_key) if data_key is not None else None
         if not scaled:
             return {}
-        self._scale_factors = {}   # profile against unscaled predictions
-        factors = {}
+        differentiate = raw_sens is not None
+        n_param = len(index) if index is not None else 0
+        terms = {}
         for col_name in compare_cols:
             if col_name not in scaled:
                 continue
             col = exp_data.cols[col_name]
             log_mode = self._scale_mode(col_name) == 'log'
             num = den = 0.0
+            d_num = np.zeros(n_param)
+            d_den = np.zeros(n_param)
             for rownum in range(exp_data.data.shape[0]):
                 d = exp_data.data[rownum, col]
                 if np.isnan(d):
                     continue
                 sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
-                s = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
+                s = self._base_prediction(sim_data, sim_row, col_name, exp_data, rownum)
                 if np.isnan(s) or np.isinf(s):
                     continue
                 w = exp_data.weights[rownum, col]
@@ -585,9 +640,23 @@ class SummationObjective(ObjectiveFunction):
                 else:
                     num += w * s * d
                     den += w * s * s
+                if differentiate:
+                    g = self._base_prediction_sensitivity(
+                        sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
+                    if log_mode:
+                        d_num -= (w / s) * g      # ∂/∂θ of Σ w (ln d − ln s); den is θ-free
+                    else:
+                        d_num += (w * d) * g      # ∂/∂θ of Σ w s d
+                        d_den += (2.0 * w * s) * g  # ∂/∂θ of Σ w s²
             if den > 0.0:
-                factors[col_name] = float(np.exp(num / den)) if log_mode else float(num / den)
-        return factors
+                if log_mode:
+                    c = float(np.exp(num / den))
+                    dc = (c / den) * d_num if differentiate else None
+                else:
+                    c = float(num / den)
+                    dc = (d_num - c * d_den) / den if differentiate else None
+                terms[col_name] = (c, dc)
+        return terms
 
     def _is_cumulative(self, col_name):
         """Whether this column's prediction is a cumulative count to be differenced to its
@@ -599,7 +668,8 @@ class SummationObjective(ObjectiveFunction):
         (the strict-superset guarantee ADR-0021 left for this follow-up)."""
         return col_name in self._cumulative_cols
 
-    def prediction_sensitivity(self, sim_data, sim_row, col_name, exp_data, exp_row, raw_sens, index):
+    def prediction_sensitivity(self, sim_data, sim_row, col_name, exp_data, exp_row, raw_sens, index,
+                               scale_terms=None):
         """``∂pred/∂θ`` (a native-space ``(n_param,)`` vector) for one matched point -- the
         gradient seam mirroring :meth:`_prediction` (#453/#385), branch for branch.
 
@@ -624,17 +694,36 @@ class SummationObjective(ObjectiveFunction):
         :meth:`_prediction`; both default off, so a plain job returns the raw observable's
         sensitivity unchanged.
 
-        Analytic per-series scaling (ADR-0066, #479) has a *deliberately deferred* gradient: its
-        profiled ``c*`` depends on θ through the whole series (an implicit-function derivative not
-        yet implemented), so a scaled column raises :class:`GradientNotSupported` here and the fit
-        falls back to a gradient-free step (ADR-0475). The much simpler floor gradient is deferred
-        the same way in :mod:`pybnf.gradient.assembly`."""
-        if col_name in self._scaled_columns:
-            from .gradient.errors import GradientNotSupported
-            raise GradientNotSupported(
-                "Analytic per-series scaling ('scale', #479) on column '%s' is not differentiable "
-                "on the gradient path (its optimal scale depends on theta through the whole "
-                "series); use a gradient-free step." % col_name)
+        * **Analytic per-series scale** (ADR-0066, #479/#533): the scored value is ``c*(θ)·s_i(θ)``
+          with ``c*`` profiled from the whole series, so its sensitivity is the product rule
+          ``c*·∂s_i/∂θ + s_i·∂c*/∂θ`` -- the series-wide term from
+          :meth:`analytic_scale_sensitivity`, the per-point term from the branches above (which
+          read the *unscaled* prediction, exactly as the profiling does). ``scale_terms`` is that
+          experiment's ``{col: (c*, ∂c*/∂θ)}`` map; a column absent from it is unscaled *in this
+          experiment* and collapses to the plain branch. ``scale_terms=None`` means the caller
+          did not resolve the series at all (it supplied no ``data_key``), which is a refusal
+          rather than a silently unscaled derivative."""
+        base = self._base_prediction_sensitivity(
+            sim_data, sim_row, col_name, exp_data, exp_row, raw_sens, index)
+        if scale_terms is None:
+            if col_name in self._scaled_columns:
+                from .gradient.errors import GradientNotSupported
+                raise GradientNotSupported(
+                    "Analytic per-series scaling ('scale', ADR-0066) on column '%s' needs the "
+                    "experiment's profiled scale, but the caller supplied no data_key to resolve "
+                    "it against; pass the scored experiment's data key to the gradient assembly."
+                    % col_name)
+            return base
+        term = scale_terms.get(col_name)
+        if term is None:
+            return base
+        c, dc = term
+        return c * base + self._base_prediction(sim_data, sim_row, col_name, exp_data, exp_row) * dc
+
+    def _base_prediction_sensitivity(self, sim_data, sim_row, col_name, exp_data, exp_row,
+                                     raw_sens, index):
+        """``∂(unscaled prediction)/∂θ`` -- :meth:`prediction_sensitivity` without the analytic
+        scale, the exact gradient twin of :meth:`_base_prediction` (branch for branch)."""
         model = self._per_measurement_models.get(col_name)
         if model is not None:
             return model.prediction_sensitivity(
@@ -646,7 +735,8 @@ class SummationObjective(ObjectiveFunction):
     @property
     def _scaled_columns(self):
         """The flat set of all columns any experiment analytically scales (ADR-0066), for the
-        gradient guard (which sees no data_key). Empty -> byte-identical, no guard fires."""
+        gradient guard that fires when a caller resolved no ``data_key`` (and so cannot say which
+        of them this experiment scales). Empty -> byte-identical, no guard fires."""
         return frozenset().union(*self._analytic_scale.values()) if self._analytic_scale else frozenset()
 
     def _check_columns(self, exp_cols, compare_cols):

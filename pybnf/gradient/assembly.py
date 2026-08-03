@@ -72,7 +72,7 @@ Trajectory transforms + normalization (layer F, #453)
 -----------------------------------------------------
 ``_prediction`` may form the scored value from the raw observable through a per-observable
 transform: a **cumulative -> incident** difference (ADR-0051), a **per-measurement** scale/
-offset formula (ADR-0045), or an upstream ``Data``-level **normalization** (ADR-0053). Each
+offset formula (ADR-0045), or an upstream ``Data``-level **normalization** (ADR-0053/0066). Each
 makes ``∂pred/∂θ`` differ from the raw observable sensitivity, so the assembly reads a
 ``raw_sens(col, row)`` accessor (the #447 tensor, routing-factor-folded, with normalization's
 own quotient/chain rule threaded in -- ``_normalized_sensitivity``) and hands it to the
@@ -82,6 +82,20 @@ measurement formula chains its symbolic gradient through each referenced column'
 plus any estimated placeholder it names -- which, unlike a free σ, *does* enter ``∂pred/∂θ`` and
 so lands in the residual-Jacobian). A plain column collapses to the raw sensitivity, so the
 no-transform path is byte-identical.
+
+The two ADR-0066 primitives close the same way (#533). A **floor** (``x' = x + rho*max(x)``) is
+additive and separable, so ``∂x'_i/∂θ = s_i + rho*s_argmax`` -- one more term in
+``_normalized_sensitivity``. An **analytic per-series scale** is the one transform that is not
+per-point: its ``c*`` is profiled from the whole matched (sim, data) series, so the scored value
+is ``c*(θ)·s_i(θ)`` and its sensitivity is the product rule ``c*·∂s_i/∂θ + s_i·∂c*/∂θ``. The
+series-wide ``∂c*/∂θ`` is the closed-form derivative of the profiling condition
+(:meth:`~pybnf.objective.SummationObjective.analytic_scale_sensitivity`) -- a geometric-mean
+ratio for a log family, the least-squares optimum for a linear one -- computed once per
+experiment here and shared by every point of the column. It does **not** vanish by the envelope
+theorem: the profiling criterion is family-aware but σ-unweighted, so it is not in general the
+objective's own minimizer over ``c``. Resolving which columns *this* experiment scales needs the
+experiment's ``data_key``, which travels as the optional 4th element of each ``experiments``
+item; without it a scaled column is refused rather than silently differentiated unscaled.
 
 Asymmetric / non-Gaussian families (layer G, #454; least-squares residual #459)
 -------------------------------------------------------------------------------
@@ -209,10 +223,14 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     Student-t / negative-binomial family, MEDIAN or MEAN, any noise scale, noise fixed or single
     free parameters -- raising :class:`GradientNotSupported` otherwise). ``experiments`` is an
     iterable of
-    ``(sim_data, exp_data, routing)`` triples -- one per scored model/condition; each
+    ``(sim_data, exp_data, routing[, data_key])`` items -- one per scored model/condition; each
     ``sim_data`` must carry the #447 ``output_sensitivities`` payload (the gradient
     path active), and ``routing`` is that experiment's
-    :class:`~pybnf.gradient.routing.ExperimentRouting`. ``free_params`` is the ordered
+    :class:`~pybnf.gradient.routing.ExperimentRouting`. The optional 4th element is that
+    experiment's ``data_key`` (the suffix ``evaluate`` scores it under), needed only to resolve an
+    analytic per-series ``scale`` (ADR-0066, #533): omitting it is byte-identical for every other
+    fit, and refuses a scaled column rather than differentiating it unscaled. ``free_params`` is
+    the ordered
     list of :class:`~pybnf.pset.FreeParameter` defining the ``u``-vector: it fixes the
     column order of the Jacobian and the entries of the scalar gradient, and supplies
     each parameter's scale (current value -> ``d theta/d u``).
@@ -264,10 +282,10 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     data_fit_gradient = np.zeros(n_param)
     hessian = np.zeros((n_param, n_param)) if include_fisher else None
     least_squares_exact = True
-    for sim_data, exp_data, routing in experiments:
+    for sim_data, exp_data, routing, *rest in experiments:
         if _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
                                   rho_rows, jac_rows, noise_gradient, data_fit_gradient,
-                                  hessian=hessian):
+                                  hessian=hessian, data_key=rest[0] if rest else None):
             least_squares_exact = False
 
     rho = np.asarray(rho_rows, dtype=float)
@@ -291,7 +309,8 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
 
 
 def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
-                           rho_rows, jac_rows, noise_gradient, data_fit_gradient, hessian=None):
+                           rho_rows, jac_rows, noise_gradient, data_fit_gradient, hessian=None,
+                           data_key=None):
     """Append one experiment's per-point residual and native-space Jacobian rows (for a
     least-squares column -- Gaussian or Student-t, #459), accumulate any estimated-noise gradient
     columns into ``noise_gradient``, and accumulate a no-residual family's scalar data-fit gradient
@@ -307,7 +326,7 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
     inexact = False
     quantity = "gradient and Hessian" if hessian is not None else "gradient"
     for point in _iter_scored_points(
-            objective, sim_data, exp_data, routing, index, n_param, quantity):
+            objective, sim_data, exp_data, routing, index, n_param, quantity, data_key):
         if _accumulate_gradient_point(
                 objective, sim_data, exp_data, index, point, rho_rows, jac_rows,
                 noise_gradient, data_fit_gradient):
@@ -317,7 +336,8 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
     return inexact
 
 
-def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, quantity):
+def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, quantity,
+                        data_key=None):
     """Yield each scored point and its native-space prediction sensitivity once (#488).
 
     This is the point-selection scaffold shared by the gradient-only, Fisher-only, and combined
@@ -326,6 +346,11 @@ def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, 
     live here. Each item is ``(sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens)``;
     ``raw_sens`` travels with the point because estimated-noise gradient and Fisher blocks use the
     same accessor when differentiating their scale sources.
+
+    ``data_key`` is the experiment's scoring key (the ``evaluate`` ``data_key`` -- the suffix),
+    needed only to resolve a per-series **analytic scale** (ADR-0066, #533): its profiled ``c*``
+    and ``∂c*/∂θ`` are properties of the whole series, so they are computed once here and handed
+    to every point of the column. A fit that scales nothing walks no extra points.
     """
     sens = sim_data.output_sensitivities
     if sens is None:
@@ -344,6 +369,22 @@ def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, 
     # experiment; the combined gradient/Fisher path then reuses it for both consumers.
     raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
 
+    # The per-series analytic scale's (c*, ∂c*/∂θ) for each column this experiment scales
+    # (ADR-0066, #533) -- one profiling walk, shared by every point of the column, exactly the
+    # points ``evaluate`` profiles from. ``{}`` for an unscaled experiment (the common case), and
+    # ``None`` when the caller supplied no data_key, which ``prediction_sensitivity`` refuses
+    # rather than silently differentiating an unscaled prediction.
+    scale_terms = (objective.analytic_scale_sensitivity(
+        sim_data, exp_data, indvar, compare_cols, data_key, raw_sens, index)
+        if data_key is not None else None)
+    if scale_terms is not None:
+        # Point the objective's own scoring seam at THIS experiment's factors, exactly as
+        # ``evaluate`` does at the top of its loop: the residual / data-fit / Fisher consumers
+        # below read the prediction through ``_prediction``, which multiplies by them. Without
+        # this the residual would carry whichever experiment was scored last. ``{}`` for an
+        # unscaled experiment, which is what an unscaled fit already holds.
+        objective._scale_factors = {col: c for col, (c, _dc) in scale_terms.items()}
+
     for rownum in range(exp_data.data.shape[0]):
         sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
         for col_name in sorted(compare_cols):
@@ -352,10 +393,11 @@ def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, 
                 continue
             weight = exp_data.weights[rownum, exp_data.cols[col_name]]
             # ∂pred/∂θ through the objective's transform seam (plain / cumulative / per-
-            # measurement; #453), so every consumer differentiates exactly what is scored. A
-            # pinned parameter and a model-unbound nuisance carry 0 in raw_sens.
+            # measurement / analytic scale; #453/#533), so every consumer differentiates exactly
+            # what is scored. A pinned parameter and a model-unbound nuisance carry 0 in raw_sens.
             dpred_dtheta = objective.prediction_sensitivity(
-                sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
+                sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index,
+                scale_terms=scale_terms)
             yield sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens
 
 
@@ -427,7 +469,7 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     columns (the scale rides the prediction), so ``outer(g_i^p, g_i^p)`` produces the genuine
     location↔scale coupling off the diagonal -- a strict superset of the diagonal cut.
 
-    ``experiments`` is the same ``(sim_data, exp_data, routing)`` iterable
+    ``experiments`` is the same ``(sim_data, exp_data, routing[, data_key])`` iterable
     :func:`assemble_gaussian_gradient` consumes, ``free_params`` the same ordered free-
     parameter list. Mirrors that assembler's point loop exactly (same points, same
     ``raw_sens`` accessor, same ``prediction_sensitivity``), so the Hessian is formed over
@@ -447,9 +489,9 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
 
     hessian = np.zeros((n_param, n_param))
-    for sim_data, exp_data, routing in experiments:
+    for sim_data, exp_data, routing, *rest in experiments:
         _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
-                                      hessian)
+                                      hessian, data_key=rest[0] if rest else None)
 
     # Native -> sampling space, applied once on both axes (ADR-0029): the same per-parameter
     # d theta/d u factor the gradient scales its columns by, here as an outer product.
@@ -458,7 +500,7 @@ def assemble_fisher_hessian(objective, experiments, free_params):
 
 
 def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
-                                  hessian):
+                                  hessian, data_key=None):
     """Accumulate one experiment's per-point Fisher rank-1 terms into ``hessian`` (the
     curvature twin of :func:`_accumulate_experiment`). Same independent variable, same
     comparable-column intersection, same NaN skip, same ``_sim_row_for`` row match, same
@@ -466,7 +508,7 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
     is. The location block reads ``kappa_i`` (``location_fisher_point``) and the noise block the
     per-point matrix ``sum_p I_scale_p * outer(g_i^p, g_i^p)`` (``noise_fisher_point``, ADR-0080)."""
     for point in _iter_scored_points(
-            objective, sim_data, exp_data, routing, index, n_param, "Hessian"):
+            objective, sim_data, exp_data, routing, index, n_param, "Hessian", data_key):
         _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
 
 
@@ -555,14 +597,23 @@ def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
     :class:`~pybnf.data.NormalizationRecord` for each method's closed form."""
     normed = sim_data.data[:, sim_data.cols[col_name]]
     s_i = tensor_sens(col_name, row)
-    if record.method == 'floor':
-        # x' = x + rho*max(x): additive, so ∂x'_i/∂θ = s_i + rho*s_argmax -- a simple rule, but
-        # the floor's gradient is deliberately DEFERRED (ADR-0066, #479); refuse rather than
-        # silently return the wrong (peak/init) quotient below. The fit falls back to a
-        # gradient-free step (ADR-0475).
+    if record.chained:
+        # Only the LAST transform of a multi-transform chain is recorded (the sidecar is keyed by
+        # column), and each rule below reads the *raw* per-row sensitivities, so composing an
+        # unrecorded earlier stage is not possible from what is retained. Refuse rather than
+        # thread the last rule alone over a column an earlier transform already moved.
         raise GradientNotSupported(
-            "Floor normalization ('floor', #479) on column '%s' has a deferred gradient; use a "
-            "gradient-free step." % col_name)
+            "Column '%s' is normalized more than once (a chain of transforms ending in '%s'); only "
+            "the last one's facts are recorded, so the gradient path cannot compose the chain. Use "
+            "a single normalization per column -- a chain ending in the analytic 'scale' is fine, "
+            "since 'scale' is applied at scoring time rather than to the column -- or use a "
+            "gradient-free step." % (col_name, record.method))
+    if record.method == 'floor':
+        # x' = x + rho*max(x) (ADR-0066): additive and separable, so ∂x'_i/∂θ = s_i + rho*s_argmax
+        # -- the scored row's own sensitivity plus rho times the row the max is read from
+        # (recorded as ref_row; the argmax is unchanged by a constant shift). Like ``peak``'s
+        # divisor, the max is differentiated at its achieving row (a.e. valid).
+        return s_i + record.rho * tensor_sens(col_name, record.ref_row)
     if record.method == 'zero':
         return _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i)
     # peak / init / unit: a two-row (+ optional baseline) quotient rule.

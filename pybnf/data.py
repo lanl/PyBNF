@@ -4,7 +4,7 @@
 import logging
 import numpy as np
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 from .printing import PybnfError
 
@@ -217,9 +217,15 @@ class NormalizationRecord:
     * ``floor`` (ADR-0066, #479): ``n_i = raw_i + ρ·max`` -- an additive measurement-noise
       floor (``ρ`` = ``rho``, ``max`` = ``scale`` at ``ref_row`` = argmax), applied *identically
       to the simulated and the experimental column* so a log/relative objective stays finite where
-      a series legitimately touches zero. Its ``∂n_i/∂θ = s_i + ρ·s_ref`` is a simple additive
-      rule, but the gradient path is **deferred** for it (raises ``GradientNotSupported``); the
-      record is still written so the fact holder stays complete.
+      a series legitimately touches zero. ``∂n_i/∂θ = s_i + ρ·s_ref`` (#533).
+
+    One record is kept per column -- the **last** transform applied -- so a column put through a
+    *chain* of two or more ``Data``-level transforms (``floor 0.03, peak``) cannot be
+    reconstructed from the sidecar: each rule above reads the raw sensitivities, and the
+    intermediate stage's values are gone. Such a record carries :attr:`chained`, and the gradient
+    path refuses it rather than threading the last rule alone (the analytic ``scale`` is *not* a
+    ``Data`` transform, so the ``floor 0.03, scale`` chain records only the floor and stays
+    differentiable).
     """
 
     method: str                          # 'peak' | 'init' | 'zero' | 'unit' | 'floor'
@@ -229,6 +235,7 @@ class NormalizationRecord:
     sign: float = 1.0                    # unit-min branch flips the reference term's sign
     rho: float = 0.0                     # floor: the max-fraction added (x' = x + rho*max); 0 for every other method
     ddof: int = 0                        # zero: the K - ddof denominator of the std derivative
+    chained: bool = False                # this column was already normalized once (a chain; the earlier record is gone)
 
 
 class Data:
@@ -650,7 +657,7 @@ class Data:
             # (no NaN) nanmax == max, so this is byte-identical for the common case.
             cmax = float(np.nanmax(column))
             # Record the added amount (rho) and the max its argmax row before the offset -- the
-            # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (deferred, #479).
+            # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (#533).
             self._record_normalization(c, NormalizationRecord(
                 'floor', cmax, ref_row=int(np.nanargmax(column)), rho=float(rho)))
             self.data[:, c] = column + rho * cmax
@@ -682,12 +689,21 @@ class Data:
         derivative through ``∂(raw/N)/∂θ``; every other path ignores it. Keyed by **name**
         (stable identifier) rather than index, mirroring how the gradient assembly addresses a
         scored column. Lazily creates the dict, so a never-normalized ``Data`` keeps
-        ``normalization is None`` (byte-identical)."""
+        ``normalization is None`` (byte-identical).
+
+        A second record for the same column means the column went through a *chain* of
+        ``Data``-level transforms (ADR-0066): the earlier stage's facts are overwritten and its
+        intermediate values are gone, so the new record is flagged :attr:`~NormalizationRecord.chained`
+        and the gradient refuses it rather than threading the last rule over a column an earlier
+        transform already moved."""
         if self.normalization is None:
             self.normalization = {}
         # Key by header name when known (the gradient looks up a scored column by name); fall
         # back to the index for a headerless Data (no gradient path reads it -- just no crash).
-        self.normalization[self.headers.get(col_index, col_index)] = record
+        key = self.headers.get(col_index, col_index)
+        if key in self.normalization:
+            record = replace(record, chained=True)
+        self.normalization[key] = record
 
     def normalize(self, method):
         """
