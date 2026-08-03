@@ -147,6 +147,46 @@ def test_objective_eval_generic_error_becomes_failed_simulation():
     assert res.fail_type == 1
 
 
+class _RefusingModel(_FakeModel):
+    """A model whose *simulation* refuses -- a construct this job_type cannot handle."""
+
+    def execute(self, folder, filename, timeout):
+        raise printing.PybnfError('this model cannot be run on the gradient path')
+
+
+def _run_job_with_model(model):
+    tmp = tempfile.mkdtemp(prefix='pybnf532_')
+    try:
+        job = algorithms.Job(
+            [model], _make_pset(), 'sim_1', tmp, None,
+            calc_future=None, norm_settings=None, postproc_settings=dict())
+        return job.run_simulation()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_simulation_pybnferror_is_raised_not_swallowed():
+    """A refusal raised while SIMULATING is a property of the setup, not of this parameter
+    set, so it must reach the user rather than become one "unknown error" per evaluation and
+    a fit that "finished" with ``inf`` at every start (#532). Contrast the scoring arm above,
+    which keeps penalizing the point (#388)."""
+    with pytest.raises(printing.PybnfError, match='gradient path'):
+        _run_job_with_model(_RefusingModel())
+
+
+def test_simulation_generic_error_still_becomes_failed_simulation():
+    """Only the user-targeted refusal fails fast; an ordinary blowup still penalizes the
+    point so the run continues."""
+
+    class _BlowingUpModel(_FakeModel):
+        def execute(self, folder, filename, timeout):
+            raise RuntimeError('integrator exploded')
+
+    res = _run_job_with_model(_BlowingUpModel())
+    assert isinstance(res, algorithms.FailedSimulation)
+    assert res.fail_type == 2
+
+
 # ---------------------------------------------------------------------------
 # add_to_trajectory: local-eval failure penalizes instead of crashing
 # ---------------------------------------------------------------------------

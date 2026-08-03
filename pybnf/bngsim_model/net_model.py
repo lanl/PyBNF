@@ -41,9 +41,12 @@ from .expressions import (
     _build_mutant_param_set,
     _parse_net_species_initializers,
     _parse_net_rhs_symbols,
+    _net_param_definitions,
     _net_species_ic_seed_map,
+    _intervention_seed_row,
     _model_param_values,
 )
+from ..gradient.derivative import NotDifferentiable
 from .scan import (
     _with_sim_timeout,
     _resolve_scan_points,
@@ -81,12 +84,22 @@ class _SimulateActionState:
     ``carry_sensitivities=True`` so the measurement phase's forward-sensitivity
     ICs are seeded from the equilibration steady-state sensitivity ``dx_ss/dθ``
     instead of zero (ADR-0052).
+
+    ``carried_baseline`` is what a ``resetConcentrations()`` resets *to*. A
+    ``saveConcentrations()`` redefines the reset target to the live state, so once one
+    has been taken of an advanced state, a later reset returns to a carried state rather
+    than to the seed initial conditions -- and bngsim restores that state's ``dx/dθ``
+    with it. Two pre-equilibration experiments in one model make exactly that sequence
+    (#532): the second one's leading reset lands on the first one's saved snapshot, and
+    reading it as a fresh start had the measured phase refuse ("output sensitivities were
+    requested on a carried-over species state").
     """
     sim: object
     method: str = 'ode'
     poplevel: object = None
     current_time: float = 0.0
     carried_state: bool = False
+    carried_baseline: bool = False
 
 
 @dataclass
@@ -205,6 +218,12 @@ class BngsimModel(NetModel):
     # direction, since only a stated absence may drop one.
     _net_rhs_symbols = None
 
+    # ``{parameter id: defining expression}`` from the .net parameters block, so a
+    # mid-protocol intervention's own ∂x(0)/∂θ can be differentiated through the derived
+    # ids it is written over (#532). Empty on an instance built via object.__new__: no
+    # definitions known means no chaining, which under-reaches rather than mis-reaches.
+    _net_param_definitions = {}
+
     def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
                  save_files=False):
         super().__init__(
@@ -225,6 +244,7 @@ class BngsimModel(NetModel):
             self.netfile_lines
         )
         self._net_rhs_symbols = _parse_net_rhs_symbols(self.netfile_lines)
+        self._net_param_definitions = _net_param_definitions(self.netfile_lines)
         if nf is not None:
             self._net_path = nf
             self._engine_model = _runtime.bngsim.Model.from_net(nf)
@@ -431,6 +451,83 @@ class BngsimModel(NetModel):
             kwargs['sensitivity_ic'] = list(req.ic)
         return kwargs
 
+    # --- carried forward-sensitivity seed across a mid-protocol species write (#532) --- #
+    #
+    # A pre-equilibration leaves the equilibrated ``dx_ss/dθ`` pending on the model core,
+    # which the measured phase consumes as its ``∂x(0)/∂θ`` (``carry_sensitivities=True``,
+    # ADR-0052). ``Model.set_concentration`` DROPS that whole matrix -- bngsim cannot know an
+    # externally supplied amount's θ-derivative, so it refuses to guess -- and the #474
+    # protocol writes a species between the two phases (the wash). Without the two helpers
+    # below the measured phase then fails outright ("carry_sensitivities=True, but no matching
+    # forward-sensitivity seed from a prior phase is available"), which is what made every
+    # pre-equilibrated gradient fit with a species intervention unusable.
+    #
+    # PyBNF is the protocol primitive here, and it *does* know the assignment's derivative, so
+    # it supplies what bngsim declines to guess: capture the matrix, do the write, put it back
+    # with the written species' row replaced by that assignment's own ∂/∂θ. This is exactly the
+    # contract ``set_pending_sensitivity_seed`` documents ("a protocol primitive that restores a
+    # species state TOGETHER WITH its θ-derivative"), and the same row-by-row reading bngsim
+    # itself applies to a scan's ``on_point`` hook (lanl/bngsim#111).
+
+    def _capture_carried_sensitivity_seed(self, model):
+        """The pending carry-over ``∂x/∂θ`` and its column names, or ``None``.
+
+        ``None`` on the scalar path and whenever nothing is pending (no equilibration has run
+        yet, so a write has no derivative to preserve), which makes the restore below a no-op
+        and leaves the scalar path byte-identical.
+        """
+        if self._sensitivity_request is None:
+            return None
+        core = getattr(model, '_core', None)
+        if core is None or not getattr(core, 'has_pending_sensitivity_seed', False):
+            return None
+        return (np.array(core.pending_sensitivity_seed(), dtype=float),
+                list(core.pending_sensitivity_seed_param_names))
+
+    def _restore_carried_sensitivity_seed(self, model, carried, species_name, expr):
+        """Re-install a captured ``∂x/∂θ`` after writing ``species_name``, with its row rebuilt.
+
+        ``expr`` is the assignment's source text, whose derivative becomes the species' new seed
+        row: ``0`` for a literal amount (a wash, a fixed bolus -- the reading
+        ``Model.set_concentration`` documents), and the real ``d(expr)/dθ`` for an amount written
+        over model parameters. ``expr=None`` means the write did not replace the amount but
+        shifted it by a constant (``addConcentration``), whose derivative is the carried row
+        unchanged. Every other species keeps the equilibration's row.
+
+        Refuses when the assignment cannot be differentiated, or when the written species is not
+        one the engine names -- a seed row that is guessed rather than known is a silently wrong
+        gradient, and this one multiplies the whole measured phase.
+        """
+        if carried is None:
+            return
+        seed, names = carried
+        seed = seed.copy()
+        if expr is not None:
+            try:
+                index = list(model.species_names).index(species_name)
+            except ValueError:
+                raise PybnfError(
+                    "Model %s: the intervention setConcentration(%r, ...) writes a species the "
+                    "engine does not name, so its forward-sensitivity seed row cannot be placed. "
+                    "Run a gradient-free fit for this protocol."
+                    % (self.name, species_name)) from None
+            try:
+                seed[index, :] = _intervention_seed_row(
+                    expr, names, self._net_param_definitions,
+                    _model_param_values(model))
+            except NotDifferentiable as exc:
+                raise PybnfError(
+                    "Model %s: the intervention setConcentration(%r, %r) between the "
+                    "pre-equilibration and the measured phase cannot be differentiated (%s), so "
+                    "the initial condition it assigns has no known d/dtheta. Write the "
+                    "intervention amount as arithmetic over model parameters, or run a "
+                    "gradient-free fit." % (self.name, species_name, expr, exc)) from exc
+        core = model._core
+        core.set_pending_sensitivity_seed(seed, names)
+        # The state the next phase starts from is a θ-dependent snapshot, not a fresh initial
+        # condition, so keep bngsim's carry-over arm engaged (the write cleared it).
+        core.ic_state_dirty = True
+
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
         from ..pset import FailedSimulationError
@@ -619,7 +716,9 @@ class BngsimModel(NetModel):
 
             if _is_reset_concentrations(line):
                 model.reset()
-                state.carried_state = False   # reset clears the carried-over state
+                # The reset target is the seed ICs -- or, once a saveConcentrations() has
+                # redefined it, that snapshot, which is carried if the state it captured was.
+                state.carried_state = state.carried_baseline
                 concentration_overrides.clear()
                 continue
 
@@ -642,6 +741,8 @@ class BngsimModel(NetModel):
                 # overrides carry THROUGH a save (only resetConcentrations(), which
                 # returns to the seed, clears them, above).
                 model.save_concentrations()
+                # ...and it becomes the reset target, carried iff the live state is.
+                state.carried_baseline = state.carried_state
                 continue
 
             if _is_save_parameters(line):
@@ -656,30 +757,44 @@ class BngsimModel(NetModel):
             sc_expr = _parse_set_concentration_expr(line)
             if sc_expr is not None:
                 species_name, conc_expr = sc_expr
+                # The write drops any carried dx/dθ, so capture it first and put it back with
+                # this assignment's own row (#532); a no-op off the gradient path.
+                carried = self._capture_carried_sensitivity_seed(model)
+                applied = False
                 try:
                     conc_value = _eval_model_expression(conc_expr, model)
                     model.set_concentration(species_name, conc_value)
                     concentration_overrides[species_name] = conc_expr
+                    applied = True
                 except Exception:
                     logger.warning(
                         "setConcentration(%s, %s) failed",
                         species_name,
                         conc_expr,
                     )
+                if applied:
+                    self._restore_carried_sensitivity_seed(
+                        model, carried, species_name, conc_expr)
                 continue
 
             ac = _parse_add_concentration(line)
             if ac is not None:
                 species_name, delta = ac
+                carried = self._capture_carried_sensitivity_seed(model)
+                applied = False
                 try:
                     current = model.get_concentration(species_name)
                     model.set_concentration(species_name, current + delta)
+                    applied = True
                 except Exception:
                     logger.warning(
                         "addConcentration(%s, %s) failed - species not found",
                         species_name,
                         delta,
                     )
+                if applied:
+                    # A constant shift of the carried amount: d/dθ is the carried row itself.
+                    self._restore_carried_sensitivity_seed(model, carried, species_name, None)
                 continue
 
             ps_params = _parse_parameter_scan_action(line)
@@ -788,12 +903,15 @@ class BngsimModel(NetModel):
             # ── resetConcentrations() ──
             if _is_reset_concentrations(line):
                 model.reset()
-                state.carried_state = False   # reset clears the carried-over state
+                # The reset target, which a saveConcentrations() may have redefined to a
+                # carried state (as in _execute_actions).
+                state.carried_state = state.carried_baseline
                 continue
 
             # ── saveConcentrations() ──
             if _is_save_concentrations(line):
                 model.save_concentrations()
+                state.carried_baseline = state.carried_state
                 continue
 
             # ── saveParameters() ──
@@ -1194,11 +1312,12 @@ class BngsimModel(NetModel):
         # Gate this scan's sensitivity request on whether its output is scored
         # (#475): set before any per-point Simulator below reads it (all scan
         # strategies build their simulators through _sensitivity_request_kwargs,
-        # and _scan_carried_state's refusal consults _action_bears_sensitivities).
+        # and _scan_carried_state's gate consults _action_bears_sensitivities).
         self._current_action_suffix = s.suffix
         # Reset the per-scan sensitivity accumulator (#476): a gradient-supporting
-        # strategy (parity steady-state / independent, both reset-to-seed) fills it
-        # with the per-dose-point tensors; every other strategy leaves it None.
+        # strategy (parity steady-state / independent, both reset-to-seed; and the
+        # carried-state scan, #532) fills it with the per-dose-point tensors; every
+        # other strategy leaves it None.
         self._pending_scan_sens = None
         if carried_state:
             rows, obs_names, expr_names = self._scan_carried_state(model, s, is_bifurcate)
@@ -1340,26 +1459,28 @@ class BngsimModel(NetModel):
         fresh-from-seed dose-response path, ADR-0046), whose seed re-sync would
         discard the pre-equilibrated state.
 
-        bngsim refuses a scan on a sensitivity-configured Simulator (per-point
-        seeds off a mid-protocol snapshot would be wrong), so a *scored*
-        carried-state scan is unavailable on the gradient path -- surfaced as a
-        clear PyBNF error. An incidental/unscored carried-state scan (#475) needs
-        no sensitivities, so it runs on the ordinary sensitivity-free path below
-        (the simulators built here never pass sensitivity kwargs).
+        Gradient path (#532): a *scored* carried-state scan is differentiable on
+        bngsim>=0.12.0 (lanl/bngsim#81), which seeds each point's ``∂x(0)/∂θ`` from
+        the ``dx/dθ`` of the snapshot it restores -- the pre-equilibration's -- rather
+        than from the model's seed initial conditions, and resolves the ``on_point``
+        hook's own rows through it (lanl/bngsim#111). The scan Simulator is therefore
+        built sensitivity-bearing here, and each point's tensor is stacked down the dose
+        axis exactly as a fresh-from-seed scan's is (#476). An older bngsim, which had
+        no correct option to offer and refused, is refused here by name instead
+        (:meth:`_require_carried_scan_sensitivities`). An incidental/unscored
+        carried-state scan (#475) needs no sensitivities and runs on the ordinary
+        sensitivity-free path, as before.
         """
-        if self._action_bears_sensitivities():
-            raise PybnfError(
-                "Model %s: a scored parameter_scan following a pre-equilibration "
-                "(a carried, non-seed model state) cannot be run on the gradient "
-                "path -- bngsim refuses per-point sensitivity seeds taken off a "
-                "mid-protocol snapshot. Run a gradient-free fit for a "
-                "pre-equilibrated dose-response experiment." % self.name)
+        bears = self._action_bears_sensitivities()
+        if bears:
+            self._require_carried_scan_sensitivities(model, s)
         method = s.method
         if method == 'psa':
             sim = _runtime.bngsim.Simulator(model, method='psa', poplevel=s.poplevel)
         else:
             sim = _runtime.bngsim.Simulator(
-                model, method=method, **self._codegen_kwargs(method))
+                model, method=method, **self._codegen_kwargs(method),
+                **(self._sensitivity_request_kwargs(method) if bears else {}))
 
         overrides = s.concentration_overrides or {}
 
@@ -1407,6 +1528,7 @@ class BngsimModel(NetModel):
         obs_names = []
         expr_names = []
         rows = []
+        sens_slices = [] if bears else None
         for value, result in zip(s.points, results):
             row, row_obs, row_expr = self._scan_result_to_row(
                 result, value, print_functions=s.print_funcs)
@@ -1414,7 +1536,64 @@ class BngsimModel(NetModel):
                 obs_names = row_obs
                 expr_names = row_expr
             rows.append(row)
+            if sens_slices is not None:
+                sens_slices.append(self._scan_point_sensitivities(result, s.print_funcs))
+        if sens_slices is not None:
+            self._pending_scan_sens = sens_slices
         return rows, obs_names, expr_names
+
+    def _require_carried_scan_sensitivities(self, model, s):
+        """Refuse a scored carried-state scan this backend cannot differentiate correctly (#532).
+
+        Each refusal is a case where bngsim would either raise from inside the scan or have no
+        derivative to give, and every one of them is decided *before* the scan runs so the fit
+        reports why rather than returning a non-finite objective per start:
+
+        * a bngsim older than 0.12.0, which refused every sensitivity-configured scan outright
+          (the carry did not exist to offer);
+        * a non-ODE scan, non-differentiable for the same reason a non-ODE ``simulate`` is
+          (delegated, so the message is the one that path already gives);
+        * an initial-condition (``sensitivity_ic``) axis, which has no meaning across the scan
+          boundary -- each point starts from a snapshot, not from the model's own ICs;
+        * scanning a differentiated parameter, whose carried ``∂x/∂θ`` was accumulated at the
+          pre-scan value and cannot be composed with a point that pins the same symbol;
+        * a live state carrying no ``dx/dθ`` at all, which means something between the
+          equilibration and the scan dropped it.
+        """
+        if not _runtime.BNGSIM_HAS_SCAN_SENS_CARRY:
+            raise PybnfError(
+                "Model %s: a scored parameter_scan following a pre-equilibration (a carried, "
+                "non-seed model state) needs a bngsim that carries the equilibration's dx/dtheta "
+                "into the scan, which this build does not (bngsim %s). Upgrade to "
+                "bngsim>=0.12.0 (lanl/bngsim#81), or run a gradient-free fit for a "
+                "pre-equilibrated dose-response experiment."
+                % (self.name, _runtime.BNGSIM_VERSION or 'unknown'))
+        # Non-ODE refuses with the message the simulate() path already gives.
+        self._sensitivity_request_kwargs(s.method)
+        req = self._sensitivity_request
+        if req.ic:
+            raise PybnfError(
+                "Model %s: a scored parameter_scan following a pre-equilibration cannot carry "
+                "an initial-condition sensitivity axis (%s): each dose starts from the carried "
+                "post-intervention snapshot, not from the model's initial conditions, so "
+                "d(output)/d(initial condition) has no meaning across that boundary. Bind the "
+                "free parameter to a model parameter id, or run a gradient-free fit."
+                % (self.name, ', '.join(req.ic)))
+        if s.param_name in req.params:
+            raise PybnfError(
+                "Model %s: a scored parameter_scan following a pre-equilibration cannot scan "
+                "'%s', which is also a fitted parameter this run differentiates. The carried "
+                "d(state)/d(%s) was accumulated at the pre-scan value, and each dose overwrites "
+                "that same symbol. Scan the dose/condition parameter the data sweeps, or run a "
+                "gradient-free fit." % (self.name, s.param_name, s.param_name))
+        core = getattr(model, '_core', None)
+        if core is not None and not getattr(core, 'has_pending_sensitivity_seed', False):
+            raise PybnfError(
+                "Model %s: a scored parameter_scan following a pre-equilibration found no "
+                "carried forward-sensitivity matrix dx/dtheta on the state each dose starts "
+                "from, so the doses would be seeded as fresh starts -- wrong, not approximate. "
+                "The equilibration phase must run on the gradient path with no "
+                "resetConcentrations() between it and the scan." % self.name)
 
     def _scan_newton_steady_state(self, model, s):
         """steady_state=>1 + ss_method=>"newton"/"kinsol": KINSOL Newton per point.

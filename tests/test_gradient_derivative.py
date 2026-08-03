@@ -90,6 +90,39 @@ def test_evaluate_refuses_an_unbound_symbol():
         D.evaluate(D.from_python_expression('q*p'), {'p': 1.0})
 
 
+DEFINITIONS = {'q': '2*r', 'r': '5', 's': 'q*p'}   # a definition written over definitions
+
+
+def _resolve(name, targets=('p',)):
+    if name in targets or name not in DEFINITIONS:
+        return None
+    return D.from_python_expression(DEFINITIONS[name])
+
+
+@pytest.mark.parametrize('expr,expected', [
+    ('q', 10.0),                      # q = 2*r = 10, folded to a number
+    ('q*p', None),                    # 10*p -- still reads the target
+    ('s', None),                      # s = q*p, one level deeper
+])
+def test_substitute_collapses_a_definition_chain(expr, expected):
+    """A derived id is inlined transitively, so a value written over it differentiates through
+    it (#532: a dose in a derived volume, ``IGF1_cold_conc*(NA*Vecf)``)."""
+    node = D.substitute(D.from_python_expression(expr), _resolve)
+    assert D.symbols(node) <= {'p'}
+    if expected is not None:
+        assert D.is_constant(node) and node[1] == pytest.approx(expected)
+    else:
+        assert D.evaluate(D.differentiate(node, 'p'), {}) == pytest.approx(10.0)
+
+
+def test_substitute_leaves_targets_standing_and_bounds_a_self_reference():
+    """A target is a leaf (it is what we differentiate against), and a definition that refers
+    to itself stops at ``max_depth`` rather than recursing forever."""
+    assert D.substitute(D.sym('p'), _resolve) == D.sym('p')
+    loop = D.substitute(D.sym('x'), lambda name: D.sym('x') if name == 'x' else None)
+    assert loop == D.sym('x')
+
+
 def test_render_is_readable_for_a_refusal_message():
     assert D.render(D.from_python_expression('q/r')) == '(q / r)'
     assert D.render(D.num(-1)) == '-1'

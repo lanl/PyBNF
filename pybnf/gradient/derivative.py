@@ -121,6 +121,33 @@ def symbols(node):
     return frozenset(found)
 
 
+_REBUILD = {'+': add, '-': sub, '*': mul, '/': div, '**': power}
+
+
+def substitute(node, resolve, max_depth=32):
+    """Rewrite ``node``, replacing each symbol by the tree ``resolve(name)`` returns.
+
+    ``resolve`` returns ``None`` to leave a symbol standing (a differentiation target, or a
+    leaf whose value the environment supplies). A replacement is itself substituted, so a
+    definition written over other definitions (``Vecf = dilution*Vecf_default``,
+    ``Vecf_default = 2.1e-9*f``) collapses to its leaves; ``max_depth`` bounds that chain so
+    a self-referential definition cannot recurse forever. The constructors fold as they
+    rebuild, so a chain that bottoms out in numbers arrives as a single ``('num', ...)``.
+    """
+    kind = node[0]
+    if kind == 'num':
+        return node
+    if kind == 'sym':
+        replacement = None if max_depth <= 0 else resolve(node[1])
+        if replacement is None:
+            return node
+        return substitute(replacement, resolve, max_depth - 1)
+    if kind == 'neg':
+        return neg(substitute(node[1], resolve, max_depth))
+    return _REBUILD[kind](substitute(node[1], resolve, max_depth),
+                          substitute(node[2], resolve, max_depth))
+
+
 def evaluate(node, env):
     """Evaluate the tree against ``env`` (``{symbol: value}``).
 

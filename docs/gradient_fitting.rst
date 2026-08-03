@@ -527,6 +527,20 @@ parameter sensitivities (which the gradient path does by construction). A free p
 independent of its initial conditions (its steady-state sensitivity is zero), so there is nothing to
 seed; that combination is refused rather than reported as a (degenerate) zero.
 
+The measured phase may be a **dose-response scan** rather than a time course — the
+preincubate → wash → dose-scan protocol (``preequilibrate:`` + ``condition:`` +
+``type: parameter_scan``), where every dose starts from the carried post-intervention state. Each
+dose's initial sensitivity is that state's :math:`\partial x/\partial\theta`, and the per-dose
+tensors stack down the dose axis exactly as for a fresh-from-seed scan. The **intervention** in
+between (a species ``setConcentration``) assigns an initial condition of its own, so its
+:math:`\partial x_k(0)/\partial\theta` is that assignment's derivative, not the equilibration's:
+zero for a literal amount, and the exact derivative for an amount written over model parameters
+(including through derived ones). An intervention amount outside the arithmetic grammar is refused
+by name. This needs ``bngsim >= 0.12.0``; an older build refuses the scored scan with an upgrade
+hint. Scanning a parameter the fit is *differentiating* is refused — the carried derivative was
+taken at the pre-scan value while each dose pins the same symbol — so scan the dose/condition
+parameter the data sweeps.
+
 
 The capability gate (what is supported)
 ---------------------------------------

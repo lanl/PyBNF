@@ -13,11 +13,12 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     project = metadata['project']
 
     assert project['requires-python'] == '>=3.11'
-    # bngsim >= 0.11.35: observable/expression-level steady-state forward sensitivities on
-    # SteadyStateResult.output_sensitivities (lanl/bngsim#12), which make a scored KINSOL/Newton
-    # dose-response scan differentiable (#478). (0.11.34 added the native carried-state
-    # parameter_scan/bifurcate + named saved states of lanl/bngsim#11 for #474.)
-    assert 'bngsim>=0.11.35,<1' in project['dependencies']
+    # bngsim >= 0.12.0: parameter_scan/bifurcate carry the equilibration's dx/dθ into the scan
+    # (lanl/bngsim#81) and resolve an on_point hook's own ∂x(0)/∂θ (lanl/bngsim#111), which make
+    # a scored PRE-EQUILIBRATED dose-response scan differentiable (#532). (0.11.35 added the
+    # steady-state SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the
+    # native carried-state parameter_scan/bifurcate + named saved states of lanl/bngsim#11 for #474.)
+    assert 'bngsim>=0.12.0,<1' in project['dependencies']
 
 
 def test_every_pybnf_subpackage_is_shipped():

@@ -77,7 +77,9 @@ def _run_job_catching(j, debug=False, failed_logs_dir=''):
     fail), so a model with a genuine numerical hazard (e.g. the finite-time
     blowup of lesson 21, whose ODE solver aborts for a diverging parameter set)
     needs this variant to be driven inline: the failing evaluations are scored
-    ``+inf`` and the optimizer routes around them, just as in production.
+    ``+inf`` and the optimizer routes around them, just as in production. (The real
+    one additionally re-raises a user-targeted ``PybnfError`` -- a setup-level refusal
+    that would fail every job, #532 -- which no recovery target raises.)
     """
     from pybnf.algorithms.core import Result, FailedSimulation
     try:

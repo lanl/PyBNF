@@ -347,6 +347,19 @@ class Job:
             if debug:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 1)
+        except PybnfError:
+            # A user-targeted refusal raised while SIMULATING -- a model construct this
+            # job_type cannot handle, a backend capability the fit needs. It is a property
+            # of the setup, not of this parameter set, so every job will hit it: re-raise so
+            # ``result_from_completed`` applies its documented fail-fast policy and the user
+            # reads the reason. Swallowed here (the generic arm below), it became one
+            # "unknown error" per evaluation and a fit that "finished" with ``inf`` at every
+            # start -- how a stale gradient guard presented in #532. The SCORING arm further
+            # down deliberately keeps swallowing: a per-point objective failure penalizes
+            # that point rather than the run (#388).
+            if debug:
+                self._copy_log_files(failed_logs_dir)
+            raise
         except TimeoutExpired:
             if debug:
                 self._copy_log_files(failed_logs_dir)

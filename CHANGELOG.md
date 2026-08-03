@@ -6,6 +6,34 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A pre-equilibrated dose-response experiment can now be fit by a gradient method (#532,
+  ADR-0098).** The preincubate → wash → dose-scan protocol (`preequilibrate:` + `condition:` +
+  `type: parameter_scan`) refused every scored gradient evaluation, and the refusal landed at
+  *scoring* — so a `trf` fit of Erickson 2019's `igf1r` job "finished" with `inf` at all ten starts
+  and said only `Unknown error during job bestfit_infocrit`. Two things were wrong. The guard
+  itself was **stale**: bngsim 0.12.0 (lanl/bngsim#81, #111) carries the state each dose restores
+  *together with* its `dx/dθ`, which is exactly the capability the guard said did not exist; it is
+  now a capability gate (`bngsim >= 0.12.0`, the new `pyproject` floor), and each dose's tensor
+  stacks down the dose axis like any other scan's. Underneath it, the protocol's **wash** was
+  silently discarding the equilibration's derivative — `Model.set_concentration` drops the pending
+  `dx/dθ` rather than guess an externally supplied amount's, so *no* pre-equilibrated experiment
+  with a species intervention could be gradient-fit, a measured time course failing outright with
+  `carry_sensitivities=True, but no matching forward-sensitivity seed from a prior phase is
+  available`. PyBNF now supplies the row it knows: the intervention's own `∂x_k(0)/∂θ` — `0` for a
+  literal amount, the exact derivative for one written over model parameters (differentiated
+  through the `.net`'s derived ids), the carried row for an `addConcentration` — with the rest of
+  the matrix preserved, and an honest refusal naming the assignment when it lies outside the
+  arithmetic grammar. A `resetConcentrations()` that follows a `saveConcentrations()` is likewise
+  recognised as returning to a *carried* state, which is what made a model's **second**
+  pre-equilibration experiment refuse. All seven `igf1r` rate constants now agree with central
+  differences to ≤ 2.3e-04 on all three experiments, and the fit reaches a finite objective.
+- **A refusal raised while simulating now stops the fit and states its reason, instead of
+  returning `inf` at every start (#532).** `Job.run_simulation` swallowed a user-targeted
+  `PybnfError` into its generic "unknown error" arm, so a property of the *setup* — a model
+  construct this `job_type` cannot handle, a missing backend capability — was reported once per
+  evaluation as a failed simulation and the run continued to a meaningless finish. The documented
+  fail-fast policy (re-raise; it would fail every job) existed one layer up and was never reached.
+  Scoring failures are unchanged: a per-point objective failure still penalizes that point (#388).
 - **A gradient start that reaches a point it cannot differentiate no longer takes the whole
   multi-start fit down with it (#528, ADR-0092).** A stiff parameter point can score finitely while
   its forward sensitivities diverge, leaving a finite objective with a non-finite gradient. That

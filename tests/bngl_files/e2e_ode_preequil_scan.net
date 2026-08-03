@@ -1,0 +1,19 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k_prod   3.0  # Constant
+    2 k_deg    2.0  # Constant
+    3 washout  0.0  # Constant
+    4 bolus    2*k_deg  # ConstantExpression
+end parameters
+begin species
+    1 A() 0
+    2 P() 0
+end species
+begin reactions
+    1 2 1,2 k_prod #birth
+    2 1 0 k_deg #death
+    3 1 0 washout #washing
+end reactions
+begin groups
+    1 A_tot                1
+end groups

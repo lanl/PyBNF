@@ -141,6 +141,18 @@ BNGSIM_HAS_SS_OUTPUT_SENS = bool(
     BNGSIM_AVAILABLE
     and hasattr(getattr(bngsim, 'SteadyStateResult', None), 'output_sensitivities')
 )
+# ``Simulator.parameter_scan`` / ``bifurcate`` carry the state each point starts from
+# TOGETHER WITH its ``dx/dθ`` (bngsim>=0.12.0, lanl/bngsim#81), and resolve the
+# ``on_point`` hook's own ``∂x(0)/∂θ`` row by row (lanl/bngsim#111). Both landed before
+# the 0.12.0 release, and ``Model.declare_ic_sensitivity`` -- the public API #111 added --
+# is present exactly when they are, so it is the probe. ``capabilities()`` has no feature
+# key for it, so this is the second (and last) direct type probe this module owns. Gates
+# only the *gradient* carried-state (pre-equilibrated) dose-response scan (#532): a scalar
+# carried-state scan, and every fresh-from-seed gradient scan, are unaffected.
+BNGSIM_HAS_SCAN_SENS_CARRY = bool(
+    BNGSIM_AVAILABLE
+    and hasattr(getattr(bngsim, 'Model', None), 'declare_ic_sensitivity')
+)
 
 
 def feature_missing_reason(name):

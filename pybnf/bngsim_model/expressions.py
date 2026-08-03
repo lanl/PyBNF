@@ -236,6 +236,77 @@ def _net_blocks(net_lines):
     return blocks
 
 
+_TOKEN = re.compile(r'[A-Za-z_]\w*')
+
+
+def _net_param_definitions(net_lines):
+    """``{parameter id: defining expression}`` for a .net ``begin parameters`` block.
+
+    A BNG ``.net`` keeps a derived parameter's *expression* (``Vecf=dilution*Vecf_default``)
+    beside the primitives' plain numbers, so this map is what lets a caller chain through a
+    derived id: :func:`_parse_net_rhs_symbols` expands the right-hand side's reads through it,
+    and :func:`_intervention_expression_reads` / :func:`_intervention_seed_row` inline it to
+    differentiate a mid-protocol intervention. Both the numbered (``1 k_prod 3.0``) and bare
+    (``k_prod 3.0``) forms are accepted, as the .net writer emits either.
+    """
+    definitions = {}
+    for line in _net_blocks(net_lines).get('parameters', ()):
+        fields = line.split()
+        if len(fields) >= 3 and fields[0].isdigit():
+            definitions[fields[1]] = ' '.join(fields[2:])
+        elif len(fields) >= 2:
+            definitions[fields[0]] = ' '.join(fields[1:])
+    return definitions
+
+
+def _intervention_expression_reads(expr, definitions):
+    """The parameter ids an intervention expression reads, transitively through ``definitions``.
+
+    A cheap over-approximation (bare token matching, as :func:`_parse_net_rhs_symbols` uses):
+    its only job is to answer "can a differentiated parameter possibly reach this value?".
+    When the answer is no -- the overwhelmingly common case for a wash to ``0`` or a dose
+    written in fixed constants -- the intervention's ``∂x(0)/∂θ`` row is exactly zero and no
+    expression has to be parsed at all.
+    """
+    names = set(_TOKEN.findall(str(expr)))
+    worklist = list(names)
+    while worklist:
+        name = worklist.pop()
+        for ref in _TOKEN.findall(definitions.get(name, '')):
+            if ref not in names:
+                names.add(ref)
+                worklist.append(ref)
+    return names
+
+
+def _intervention_seed_row(expr, targets, definitions, param_values):
+    """``[d(expr)/d(target)]`` for a mid-protocol species assignment, one entry per target.
+
+    The row a ``setConcentration`` intervention contributes to the carried forward-sensitivity
+    seed ``∂x(0)/∂θ`` (#532): the species it writes starts the next phase at *this* value, so
+    its seed row is this expression's own derivative, not the derivative the equilibration
+    accumulated. Derived parameters are inlined first (:func:`derivative.substitute`), so a
+    dose written over a derived volume differentiates through it.
+
+    Raises :class:`~pybnf.gradient.derivative.NotDifferentiable` when the expression -- or a
+    definition on the path from it to a target -- lies outside the arithmetic grammar, or when
+    the derivative reads a symbol ``param_values`` does not define. The caller turns that into
+    a refusal; a guessed row would be a silently wrong gradient.
+    """
+    targets = list(targets)
+    if not _intervention_expression_reads(expr, definitions) & set(targets):
+        return [0.0] * len(targets)
+
+    def resolve(name):
+        if name in targets or name not in definitions:
+            return None
+        return derivative.from_python_expression(definitions[name])
+
+    tree = derivative.substitute(derivative.from_python_expression(expr), resolve)
+    return [derivative.evaluate(derivative.differentiate(tree, target), param_values)
+            for target in targets]
+
+
 def _parse_net_rhs_symbols(net_lines):
     """The parameter ids a .net file's ODE right-hand side reads -- deliberately over-inclusive.
 
@@ -255,26 +326,19 @@ def _parse_net_rhs_symbols(net_lines):
     deletes half a derivative.
     """
     blocks = _net_blocks(net_lines)
-    token = re.compile(r'[A-Za-z_]\w*')
-    definitions = {}
-    for line in blocks.get('parameters', ()):
-        fields = line.split()
-        if len(fields) >= 3 and fields[0].isdigit():
-            definitions[fields[1]] = ' '.join(fields[2:])
-        elif len(fields) >= 2:
-            definitions[fields[0]] = ' '.join(fields[1:])
+    definitions = _net_param_definitions(net_lines)
     names = set()
     for line in blocks.get('reactions', ()):
         fields = line.split()
         if len(fields) >= 4:
-            names.update(token.findall(' '.join(fields[3:])))
+            names.update(_TOKEN.findall(' '.join(fields[3:])))
     for line in blocks.get('functions', ()):
         fields = line.split()
-        names.update(token.findall(' '.join(fields[2:] if fields[0].isdigit() else fields[1:])))
+        names.update(_TOKEN.findall(' '.join(fields[2:] if fields[0].isdigit() else fields[1:])))
     worklist = list(names)
     while worklist:
         name = worklist.pop()
-        for ref in token.findall(definitions.get(name, '')):
+        for ref in _TOKEN.findall(definitions.get(name, '')):
             if ref not in names:
                 names.add(ref)
                 worklist.append(ref)

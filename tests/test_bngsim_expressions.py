@@ -227,6 +227,61 @@ def test_net_species_ic_seed_map_outside_the_grammar_is_not_routable():
     assert expressions._net_species_ic_seed_map(inits, ['kf']) == {'kf': None}
 
 
+# ------------------------------------------- mid-protocol intervention seed row (#532)
+#
+# The Erickson igf1r shape: a dose written over derived ids (``Vecf`` over ``dilution`` over
+# ``Vecf_default`` over ``f``), none of them fitted, so the row is exactly zero and no
+# expression is parsed at all. The chaining only has to be exact when a fitted id IS reachable.
+IGF1R_DEFINITIONS = {
+    'f': '1.0', 'NA': '6.02214e23', 'Vecf_default': '2.1e-9*f',
+    'dilution': '1.0', 'Vecf': 'dilution*Vecf_default', 'IGF1_cold_conc': '0',
+    'a1_perMpers': '100000.0', 'a1': 'a1_perMpers/(NA*Vecf)',
+}
+IGF1R_VALUES = {'f': 1.0, 'NA': 6.02214e23, 'Vecf_default': 2.1e-9, 'dilution': 1.0,
+                'Vecf': 2.1e-9, 'IGF1_cold_conc': 0.0, 'a1_perMpers': 1e5,
+                'a1': 1e5 / (6.02214e23 * 2.1e-9)}
+
+
+def test_intervention_expression_reads_follows_the_definition_chain():
+    """The reachability question the fast path answers: which fitted ids could this dose move?"""
+    reads = expressions._intervention_expression_reads(
+        'IGF1_cold_conc*(NA*Vecf)', IGF1R_DEFINITIONS)
+    assert {'IGF1_cold_conc', 'NA', 'Vecf', 'dilution', 'Vecf_default', 'f'} <= reads
+    assert 'a1_perMpers' not in reads
+
+
+def test_intervention_seed_row_is_zero_when_no_target_is_reachable():
+    """A wash to ``0``, and the igf1r competitor dose in fixed constants: both have an exactly
+    zero seed row, decided without parsing the expression."""
+    for expr in ('0', 'IGF1_cold_conc*(NA*Vecf)'):
+        assert expressions._intervention_seed_row(
+            expr, ['a1_perMpers', 'd1'], IGF1R_DEFINITIONS, IGF1R_VALUES) == [0.0, 0.0]
+
+
+def test_intervention_seed_row_differentiates_through_a_derived_parameter():
+    """``a1 = a1_perMpers/(NA*Vecf)``: dosing a species to ``a1`` seeds
+    ``d a1/d a1_perMpers = 1/(NA*Vecf)``, which is only visible after the derived id is
+    inlined. Taking the surface expression at face value would report zero."""
+    row = expressions._intervention_seed_row(
+        'a1', ['a1_perMpers'], IGF1R_DEFINITIONS, IGF1R_VALUES)
+    assert row == [pytest.approx(1.0 / (IGF1R_VALUES['NA'] * IGF1R_VALUES['Vecf']))]
+
+
+def test_intervention_seed_row_outside_the_grammar_refuses():
+    """A row that cannot be known is refused, not guessed -- it multiplies the whole
+    measured phase."""
+    from pybnf.gradient.derivative import NotDifferentiable
+    with pytest.raises(NotDifferentiable):
+        expressions._intervention_seed_row(
+            'exp(a1_perMpers)', ['a1_perMpers'], IGF1R_DEFINITIONS, IGF1R_VALUES)
+
+
+def test_net_param_definitions_reads_both_numbered_and_bare_forms():
+    lines = ['begin parameters', '  1 k 2.0  # Constant', '  2 kd k*3  # ConstantExpression',
+             '  bare 7', 'end parameters']
+    assert expressions._net_param_definitions(lines) == {'k': '2.0', 'kd': 'k*3', 'bare': '7'}
+
+
 # ---------------------------------------------------------- model expression eval
 class _FakeModel:
     def __init__(self, params):

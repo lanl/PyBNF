@@ -220,8 +220,10 @@ def test_unscored_carried_state_scan_runs_sensitivity_free():
     assert ds['scan'].output_sensitivities is None
 
 
-def test_scored_carried_state_scan_still_refuses():
-    """A SCORED carried-state scan cannot be differentiated -- it must still refuse."""
+def test_scored_carried_state_scan_refuses_when_the_scanned_parameter_is_fitted():
+    """A scan of a parameter this run differentiates cannot compose with the carried
+    ``∂x/∂θ`` -- the snapshot's derivative was taken at the pre-scan value, and each dose
+    pins the same symbol. Refuse by name rather than let bngsim raise mid-scan (#532)."""
     model = _mixed_net_model(
         [
             'simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"pre"})',
@@ -230,11 +232,11 @@ def test_scored_carried_state_scan_still_refuses():
         ],
         [('simulate', 'pre'), ('parameter_scan', 'scan')],
     )
-    model.enable_output_sensitivities(params=['k_prod'])
+    model.enable_output_sensitivities(params=['k_deg'])
     model.set_scored_suffixes({'pre', 'scan'})   # the scan output is a scored target
     with pytest.raises(PybnfError) as exc:
-        model.execute('/tmp', 'carried_scored', 60)
-    assert 'pre-equilibration' in str(exc.value).lower()
+        model.execute('/tmp', 'carried_scan_fitted', 60)
+    assert "cannot scan 'k_deg'" in str(exc.value)
 
 
 def test_scored_gate_folds_in_mutant_suffix():
@@ -487,6 +489,212 @@ def test_scored_newton_dose_response_refuses_without_ss_output_sens_capability(m
         model.execute('/tmp', 'dr_newton_nocap', 120)
     msg = str(exc.value).lower()
     assert '0.11.35' in msg and 'newton' in msg
+
+
+# ------------- pre-equilibrated (carried-state) dose-response scan (#532) ------------
+#
+# ``e2e_ode_preequil_scan.net`` is the #474 preincubate->wash->dose-scan protocol in
+# miniature: a catalyst ``P`` drives production of ``A`` (P -> P + A at k_prod, P not
+# consumed) and ``A`` decays at ``k_deg + washout``. Equilibrating with P present settles
+# A at ``k_prod/k_deg``; a WASH zeroes P (a species setConcentration -- the intervention);
+# the measured phase then reads A at ``t_end``, so
+#
+#     A(t_end) = (k_prod/k_deg) * exp(-(k_deg + washout)*t_end)
+#     dA/dk_deg = -exp(-(k_deg + washout)*t_end) * k_prod * (1/k_deg**2 + t_end/k_deg)
+#
+# A SHARP oracle for the carry in both halves. The ``1/k_deg**2`` term is entirely the
+# equilibration's ``dx_ss/dk_deg``: a measured phase re-seeded as a fresh start returns
+# only the ``t_end/k_deg`` term. And with P washed away nothing produces A, so a phase
+# that re-derived its state from the .net seed would read a flat zero -- value and
+# derivative both leave the oracle if the carry is wrong.
+
+PREEQUIL_K_PROD = 3.0
+PREEQUIL_K_DEG = 2.0
+PREEQUIL_T_END = 1.0
+PREEQUIL_DOSES = [0.0, 0.5, 1.0, 2.0, 4.0]
+
+_PREEQUIL_LOAD = 'setConcentration("P()",1)'
+_PREEQUIL_EQUIL = ('simulate({method=>"ode",steady_state=>1,t_start=>0,t_end=>200,'
+                   'n_steps=>1,suffix=>"pre"})')
+_PREEQUIL_WASH = 'setConcentration("P()",0)'
+_PREEQUIL_MEASURE = ('simulate({method=>"ode",t_start=>0,t_end=>%g,n_steps=>10,'
+                     'suffix=>"relax"})' % PREEQUIL_T_END)
+
+
+def _preequil_scan_action(parameter='washout', doses=PREEQUIL_DOSES, suffix='relax'):
+    """The measured dose-response: each dose resets to the carried post-wash snapshot."""
+    return ('parameter_scan({parameter=>"%s",par_scan_vals=>[%s],reset_conc=>1,'
+            't_start=>0,t_end=>%g,n_steps=>1,suffix=>"%s"})'
+            % (parameter, ','.join(repr(d) for d in doses), PREEQUIL_T_END, suffix))
+
+
+def _preequil_model(actions, suffixes, *, request=True, scored=('relax',), ic=None):
+    net = FIXTURES / 'e2e_ode_preequil_scan.net'
+    model = bngsim_model.BngsimModel(
+        net.stem, list(actions), list(suffixes), [], nf=str(net))
+    model.param_set = pset.PSet(
+        [pset.FreeParameter('k_deg', 'uniform_var', 0.0, 10.0, value=PREEQUIL_K_DEG)])
+    if request:
+        model.enable_output_sensitivities(params=['k_deg'], ic=ic)
+        model.set_scored_suffixes(set(scored))
+    return model
+
+
+def _preequil_scan_model(*, wash=(_PREEQUIL_WASH,), scan=None, **kw):
+    """The whole protocol: load -> equilibrate -> wash -> save -> scan."""
+    actions = [_PREEQUIL_LOAD, _PREEQUIL_EQUIL, *wash, 'saveConcentrations()',
+               scan if scan is not None else _preequil_scan_action()]
+    return _preequil_model(actions, [('simulate', 'pre'), ('parameter_scan', 'relax')], **kw)
+
+
+def _preequil_value(dose):
+    return (PREEQUIL_K_PROD / PREEQUIL_K_DEG) * np.exp(-(PREEQUIL_K_DEG + dose) * PREEQUIL_T_END)
+
+
+def _preequil_derivative(dose):
+    return -np.exp(-(PREEQUIL_K_DEG + dose) * PREEQUIL_T_END) * PREEQUIL_K_PROD * (
+        1.0 / PREEQUIL_K_DEG ** 2 + PREEQUIL_T_END / PREEQUIL_K_DEG)
+
+
+def test_scored_carried_state_scan_carries_dose_axis_sensitivity_tensor():
+    """A scored pre-equilibrated dose-response is differentiable on bngsim>=0.12.0 (#532).
+
+    Each dose's ``∂x(0)/∂θ`` is the carried post-wash ``dx/dθ``, so the stacked dose-axis
+    tensor must land on the closed form -- including the ``1/k_deg**2`` term contributed
+    entirely by the equilibration. This is the case the guard used to refuse outright,
+    which surfaced only at scoring and left every gradient start with ``inf``."""
+    model = _preequil_scan_model()
+    data = model.execute('/tmp', 'preequil_scan_grad', 120)['relax']
+
+    sens = data.output_sensitivities
+    assert sens is not None
+    assert sens.selectors == ['observable:A_tot']
+    assert sens.param_names == ['k_deg']
+    assert sens.d_ic is None
+    assert sens.d_param.shape == (len(PREEQUIL_DOSES), 1, 1)
+
+    np.testing.assert_allclose(data.data[:, data.cols['washout']], PREEQUIL_DOSES)
+    np.testing.assert_allclose(
+        data.data[:, data.cols['A_tot']],
+        [_preequil_value(d) for d in PREEQUIL_DOSES], rtol=1e-5, atol=1e-8)
+    np.testing.assert_allclose(
+        sens.slice_for('observable:A_tot')[:, 0],
+        [_preequil_derivative(d) for d in PREEQUIL_DOSES], rtol=1e-4, atol=1e-7)
+
+
+def test_carried_state_scan_scalar_path_carries_no_sensitivities():
+    """Scalar path: the same protocol reads the same doses and carries no tensor."""
+    model = _preequil_scan_model(request=False)
+    data = model.execute('/tmp', 'preequil_scan_scalar', 120)['relax']
+    assert data.output_sensitivities is None
+    np.testing.assert_allclose(
+        data.data[:, data.cols['A_tot']],
+        [_preequil_value(d) for d in PREEQUIL_DOSES], rtol=1e-5, atol=1e-8)
+
+
+def test_preequilibration_intervention_keeps_the_carried_seed_for_a_measured_time_course():
+    """The species wash between the phases must not discard the equilibration's ``dx/dθ``.
+
+    ``Model.set_concentration`` drops the whole pending matrix -- bngsim will not guess an
+    externally supplied amount's derivative -- so the measured phase used to fail outright
+    ("carry_sensitivities=True, but no matching forward-sensitivity seed ... is available")
+    for *every* pre-equilibration protocol with a species intervention, time course as well
+    as scan. PyBNF supplies the row it knows (a literal amount: zero) and the rest of the
+    matrix survives."""
+    model = _preequil_model(
+        [_PREEQUIL_LOAD, _PREEQUIL_EQUIL, _PREEQUIL_WASH, _PREEQUIL_MEASURE],
+        [('simulate', 'pre'), ('simulate', 'relax')])
+    data = model.execute('/tmp', 'preequil_tc_grad', 120)['relax']
+    assert data.data[-1, data.cols['A_tot']] == pytest.approx(_preequil_value(0.0), rel=1e-5)
+    np.testing.assert_allclose(
+        data.output_sensitivities.slice_for('observable:A_tot')[-1, 0],
+        _preequil_derivative(0.0), rtol=1e-4, atol=1e-7)
+
+
+@pytest.mark.parametrize('amount', ['2*k_deg', 'bolus'], ids=['literal_expr', 'derived_param'])
+def test_intervention_amount_reading_a_fitted_parameter_seeds_its_own_derivative(amount):
+    """An intervention written over the fitted parameter seeds ``d(amount)/dθ``, not zero.
+
+    Dosing ``A`` to ``2*k_deg`` (directly, or through the .net's derived ``bolus = 2*k_deg``,
+    which must be inlined before differentiating) with production washed away gives
+    ``A(t) = 2*k_deg*exp(-(k_deg+dose)*t)`` and ``dA/dk_deg = 2*exp(...)*(1 - k_deg*t)``.
+    Keeping the equilibration's row for the written species instead (``-k_prod/k_deg**2``)
+    would report ``-4.75*exp(...)`` where the truth is ``-2*exp(...)``, and reading the row
+    as a literal zero would report ``-4*exp(...)`` -- so this pins the assignment as the
+    source of the row."""
+    model = _preequil_scan_model(
+        wash=(_PREEQUIL_WASH, 'setConcentration("A()","%s")' % amount))
+    data = model.execute('/tmp', 'preequil_scan_bolus', 120)['relax']
+
+    doses = np.array(PREEQUIL_DOSES)
+    decay = np.exp(-(PREEQUIL_K_DEG + doses) * PREEQUIL_T_END)
+    np.testing.assert_allclose(data.data[:, data.cols['A_tot']],
+                               2 * PREEQUIL_K_DEG * decay, rtol=1e-5, atol=1e-8)
+    np.testing.assert_allclose(
+        data.output_sensitivities.slice_for('observable:A_tot')[:, 0],
+        2 * decay * (1.0 - PREEQUIL_K_DEG * PREEQUIL_T_END), rtol=1e-4, atol=1e-7)
+
+
+def test_non_differentiable_intervention_refuses_rather_than_guessing_a_seed_row():
+    """An intervention amount outside the arithmetic grammar has no known ``d/dθ``; a guessed
+    row would multiply the whole measured phase, so refuse and name the assignment."""
+    model = _preequil_scan_model(
+        wash=(_PREEQUIL_WASH, 'setConcentration("A()","exp(k_deg)")'))
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'preequil_scan_nondiff', 120)
+    msg = str(exc.value)
+    assert 'exp(k_deg)' in msg and 'cannot be differentiated' in msg
+
+
+def test_a_second_preequilibration_experiment_resets_onto_the_saved_carried_state():
+    """A ``resetConcentrations()`` after a ``saveConcentrations()`` returns to that snapshot,
+    not to the seed ICs -- so it is still a carried state, and bngsim restores its ``dx/dθ``
+    with it (#532). Reading the reset as a fresh start made the SECOND pre-equilibration
+    experiment in a model refuse ("output sensitivities were requested on a carried-over
+    species state"), which is how the igf1r fit failed even with the scan guard lifted.
+
+    Both experiments equilibrate to the same steady state, so both scans meet the same
+    oracle."""
+    second = [
+        'resetConcentrations()', _PREEQUIL_LOAD, _PREEQUIL_EQUIL, _PREEQUIL_WASH,
+        'saveConcentrations()', _preequil_scan_action(suffix='relax2'),
+    ]
+    model = _preequil_model(
+        [_PREEQUIL_LOAD, _PREEQUIL_EQUIL, _PREEQUIL_WASH, 'saveConcentrations()',
+         _preequil_scan_action(), *second],
+        [('simulate', 'pre'), ('parameter_scan', 'relax'), ('parameter_scan', 'relax2')],
+        scored=('relax', 'relax2'))
+    ds = model.execute('/tmp', 'preequil_scan_twice', 120)
+
+    expected = [_preequil_derivative(d) for d in PREEQUIL_DOSES]
+    for suffix in ('relax', 'relax2'):
+        np.testing.assert_allclose(
+            ds[suffix].data[:, ds[suffix].cols['A_tot']],
+            [_preequil_value(d) for d in PREEQUIL_DOSES], rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(
+            ds[suffix].output_sensitivities.slice_for('observable:A_tot')[:, 0],
+            expected, rtol=1e-4, atol=1e-7)
+
+
+def test_scored_carried_state_scan_refuses_without_the_bngsim_carry_capability(monkeypatch):
+    """On a bngsim older than 0.12.0 the carry does not exist, so the scan still refuses --
+    but now by name, with the version it needs. The capability gates the *gradient* path,
+    not the install."""
+    monkeypatch.setattr(_runtime, 'BNGSIM_HAS_SCAN_SENS_CARRY', False)
+    model = _preequil_scan_model()
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'preequil_scan_nocap', 120)
+    msg = str(exc.value)
+    assert '0.12.0' in msg and 'pre-equilibration' in msg
+
+
+def test_scored_carried_state_scan_refuses_an_initial_condition_axis():
+    """``sensitivity_ic`` has no meaning across the scan boundary: a dose starts from the
+    carried snapshot, not from the model's initial conditions."""
+    model = _preequil_scan_model(ic=['A()'])
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'preequil_scan_ic', 120)
+    assert 'initial-condition sensitivity axis' in str(exc.value)
 
 
 def test_scored_continuation_dose_response_refuses_on_gradient_path():
