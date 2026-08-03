@@ -604,10 +604,10 @@ def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
         # thread the last rule alone over a column an earlier transform already moved.
         raise GradientNotSupported(
             "Column '%s' is normalized more than once (a chain of transforms ending in '%s'); only "
-            "the last one's facts are recorded, so the gradient path cannot compose the chain. Use "
-            "a single normalization per column -- a chain ending in the analytic 'scale' is fine, "
-            "since 'scale' is applied at scoring time rather than to the column -- or use a "
-            "gradient-free step." % (col_name, record.method))
+            "the last one's facts are recorded, so the gradient path cannot compose the chain "
+            "(issue #539). Use a single normalization per column -- a chain ending in the analytic "
+            "'scale' is fine, since 'scale' is applied at scoring time rather than to the column "
+            "-- or use a gradient-free step." % (col_name, record.method))
     if record.method == 'floor':
         # x' = x + rho*max(x) (ADR-0066): additive and separable, so ∂x'_i/∂θ = s_i + rho*s_argmax
         # -- the scored row's own sensitivity plus rho times the row the max is read from

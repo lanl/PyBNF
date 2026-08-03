@@ -186,8 +186,9 @@ All notable changes to PyBNF are documented below. This project adheres to
   it; the profiled scale is resolved per experiment, so a column scaled in one experiment stays an
   ordinary column in another. One boundary is now stated rather than silently mis-differentiated: a
   chain of two or more *data-level* transforms on one column (`floor 0.03, peak`) keeps only the
-  last one's facts, so the gradient path refuses it by name — `floor 0.03, scale` is unaffected,
-  since `scale` is applied at scoring time rather than to the column.
+  last one's facts, so the gradient path refuses it by name, pointing at the open issue that
+  tracks composing them (#539) — `floor 0.03, scale` is unaffected, since `scale` is applied at
+  scoring time rather than to the column.
 - **A total wall-clock budget for a fit, `wall_time_fit`, that finalizes on expiry (#529,
   ADR-0093).** PyBNF's time limits were all per unit of work — `wall_time_sim` bounds one
   simulation, `wall_time_gen` one network generation — and nothing bounded a *run*: the only native

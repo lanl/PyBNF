@@ -102,7 +102,8 @@ still have no PEtab v2 representation and are still refused there. The estimated
 constraint, and measurement-model layers, which compose with this unchanged.
 
 **Deliberately still out:** composing a chain of two or more `Data`-level normalizations
-(refused above). The prediction-dependent σ sources keep reading the *raw* simulated column
+(refused above; tracked as issue **#539**, which the refusal names — composing it needs each
+stage's record *and* its intermediate values, neither of which the sidecar retains). The prediction-dependent σ sources keep reading the *raw* simulated column
 for both their value and their sensitivity, so a scaled column's σ is unaffected either way —
 self-consistent, and unchanged by this ADR.
 

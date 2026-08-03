@@ -1131,8 +1131,8 @@ Algorithm Options
   :ref:`gradient-based fit <gradient_fitting>` (``trf`` / ``lbfgs`` / ``gntr``) can run on a
   normalized or analytically scaled column. The one exception is a chain of two or more
   **data-level** transforms on the same column (``floor 0.03, peak``), which the gradient path
-  refuses; ``floor 0.03, scale`` is fine, since ``scale`` is applied at scoring time rather than to
-  the column.
+  refuses (issue #539); ``floor 0.03, scale`` is fine, since ``scale`` is applied at scoring time
+  rather than to the column.
 
   Default: No normalization
 
