@@ -2563,7 +2563,12 @@ class FreeParameter:
         return self._prior.has_bounded_support
 
     def value_from_quantile(self, q):
-        """Map a [0, 1] quantile to a value via the prior's inverse CDF, in scale.
+        """Map a [0, 1] quantile through the prior's inverse CDF, in scale.
+
+        Returns a **new FreeParameter** at that value, not the bare number -- despite the
+        name. Every caller wants the parameter (the samplers build a PSet straight from these),
+        so passing the result back into :meth:`set_value` is a type error the bounds check
+        reports obscurely, as ``'float' object has no attribute 'name'``.
 
         For the bounded (Uniform) families this is the latin-hypercube rescale:
         scale.inverse(lo + q*(hi - lo)) -- equal bit-for-bit to the historical
@@ -2571,7 +2576,9 @@ class FreeParameter:
         return self.set_value(self._scale.inverse(self._prior.ppf(q)))
 
     def initial_value_from_quantile(self, q):
-        """Map a [0, 1] quantile through the initialization distribution."""
+        """Map a [0, 1] quantile through the initialization distribution.
+
+        Returns a **new FreeParameter**, like :meth:`value_from_quantile` -- see there."""
         if self.initialization_distribution == INITIALIZATION_PRIOR:
             return self.value_from_quantile(q)
         lo_u, hi_u = self._initialization_bounds_u()
