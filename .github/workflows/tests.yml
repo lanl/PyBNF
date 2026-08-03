@@ -36,6 +36,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
           bngsim: ${{ matrix.no-bngsim == '1' && 'false' || 'true' }}
 
+      - name: Warm the arviz version-check stamp
+        # arviz < 1.0 (the py<3.12 resolution) prints a daily refactor warning on import and
+        # records the date through a helper it calls atomic, which it is not: the temp file has
+        # a FIXED name, `daily_warning.tmp`, so every process shares it.
+        #
+        #     tmp = path.with_suffix(path.suffix + ".tmp")
+        #     tmp.write_text(text)
+        #     tmp.replace(path)
+        #
+        # Under `-n auto` the xdist workers import arviz at once, the first replace() renames
+        # the shared temp away, and the rest raise FileNotFoundError -- which surfaces as
+        # test_inference_data.py failing to collect on some workers but not others, i.e.
+        # "Different tests were collected between gw0 and gw1", not as an arviz error.
+        #
+        # Importing once here, serially, writes today's date so arviz's own `last_date != today`
+        # guard short-circuits in every worker and the racing write never happens. Tolerant of
+        # arviz being absent (the bngsim-less leg resolves a different set) and of arviz >= 1.0,
+        # which dropped the stamp entirely.
+        run: |
+          uv run --no-sync python -c "
+          try:
+              import arviz  # noqa: F401
+          except ImportError:
+              pass
+          "
+
       - name: Run unit tests (parallel)
         env:
           # Empty except on the bngsim-less leg, where it is '1'. An empty value
