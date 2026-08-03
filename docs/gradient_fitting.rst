@@ -21,11 +21,12 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
    These requirements are **enforced**, not merely documented: a gradient ``job_type`` on a
    non-edition-2 config, a non-bngsim model, or a model that bngsim cannot differentiate is
    refused up front with a message that names **which** requirement is unmet, then points back at
-   a metaheuristic ``job_type`` on an indented ``->`` line beneath it. In
-   particular a model with **discrete events** (a state-dependent discrete jump in the dynamics)
-   has no smooth forward sensitivity — bngsim refuses sensitivity requests on it — so it is
-   refused at construction rather than failing mid-run; a non-ODE simulation *method* (SSA /
-   NFsim) is likewise refused (at the first sensitivity-bearing simulation). It is computed in
+   a metaheuristic ``job_type`` on an indented ``->`` line beneath it. A non-ODE simulation
+   *method* (SSA / NFsim) is refused at the first sensitivity-bearing simulation. A model with
+   **discrete events** (a discrete jump in the dynamics) *is* supported: bngsim applies the
+   event's own sensitivity jump at each fire, so a dosing or stimulation schedule fits on the
+   gradient path — see *Discrete events* below for which event shapes it covers and what an older
+   bngsim does instead. The gradient is computed in
    PyBNF's native parameter space and then transformed once into the sampling space the optimizer
    walks (see *Parameter scales* below), so a log-scaled parameter composes for free.
 
@@ -570,6 +571,55 @@ by name. This needs ``bngsim >= 0.12.0``; an older build refuses the scored scan
 hint. Scanning a parameter the fit is *differentiating* is refused — the carried derivative was
 taken at the pre-scan value while each dose pins the same symbol — so scan the dose/condition
 parameter the data sweeps.
+
+
+Discrete events
+---------------
+
+A **discrete event** — an SBML ``event``, and so also an Antimony ``at (…): …`` — is a discrete
+jump in the dynamics: it reinitialises the integrator state at a trigger, which is how a dosing
+or stimulation schedule is usually written. A forward sensitivity carried across such a jump is
+right only if the solver applies the event's own jump to it at each fire,
+
+.. math::
+
+   s^+ = \frac{\partial h}{\partial x}
+         \left(s^- + f^-\frac{\partial t^*}{\partial p}\right)
+         + \frac{\partial h}{\partial p}
+         - f^+\frac{\partial t^*}{\partial p}
+
+for a state assignment :math:`x^+ = h(x^-, p)` firing at :math:`t^*`. On a bngsim **newer than
+0.12.1** it does, so an event-bearing model fits on ``trf`` / ``lbfgs`` / ``gntr`` like any
+other. The event shapes it covers are:
+
+* a **fixed trigger time** (``time >= 5``), where the crossing does not move with the parameters
+  (:math:`\partial t^*/\partial p = 0`) and the jump is the assignment Jacobian alone;
+* a trigger whose **threshold is a fitted constant** (``time >= t_on`` with ``t_on`` estimated),
+  where the crossing time is resolved before the run;
+* a **state-dependent** trigger (``A < 30``) that reduces to a single relational comparison,
+  whose crossing bngsim differentiates in flight by the implicit function theorem.
+
+What it declines — an event with an **execution delay**, and a trigger that is *not* a single
+relational comparison (a conjunction, a negation, an equality), whose true-set boundary has no
+one differentiable surface — is refused per simulation with a message naming the reason, so the
+fit stops with an actionable error rather than a wrong gradient. Use a metaheuristic ``job_type``
+for those.
+
+**On bngsim 0.12.1 or older** the refusal is instead *blanket* and arrives up front, at
+construction. The floor is set by silent wrongness, not by a missing feature: such a build can
+answer an event it cannot actually differentiate without saying so. A trigger reading the state
+came back as a finite tensor with the event's contribution missing rather than being refused
+(lanl/bngsim#52, through 0.11.x); an assignment reading the state — ``A := A + dose``, the
+repeat-dosing idiom — dropped the carried term and restarted the assigned row from zero
+(lanl/bngsim#144, through 0.12.1); and a solver root that fires nothing rewound the state but not
+the sensitivity history (lanl/bngsim#146, through 0.12.1). PyBNF declines the whole class on
+those builds rather than run a fit to completion on a wrong gradient, and the message names the
+upgrade.
+
+**Discontinuity triggers are not events.** A forcing pulse or a piecewise-time schedule written
+as ``if(t >= tau)`` in a rate law breaks the integrator step but never jumps the state, so
+sensitivities through it were always valid and were never gated (its switch-time parameter
+``tau`` is itself differentiable).
 
 
 The capability gate (what is supported)

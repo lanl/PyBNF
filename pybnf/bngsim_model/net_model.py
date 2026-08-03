@@ -347,18 +347,20 @@ class BngsimModel(NetModel):
 
     @property
     def has_discrete_events(self):
-        """True iff the engine model contains state-jumping discrete events (#461).
+        """True iff the engine model contains state-jumping discrete events (#461/#536).
 
-        A discrete event reinitialises the integrator state discontinuously, but
-        bngsim's CVODES forward-sensitivity vectors are *not* reinitialised across
-        the jump, so the sensitivity columns go silently stale at and after an event
-        fires -- bngsim therefore refuses forward output sensitivities outright on
-        such a model rather than return wrong derivatives (bngsim GH #205). The
-        gradient path reads this as its pre-flight differentiability gate
-        (:meth:`GradientOptimizer._require_differentiable_dynamics`) to refuse a
-        discrete-event model **up front** -- with an actionable "use a metaheuristic
-        job_type" message -- instead of letting the fit start and fail at the first
-        sensitivity-bearing ``simulate()``.
+        A discrete event reinitialises the integrator state discontinuously, so a
+        forward-sensitivity vector carried across it is right only if the solver
+        applies the event's own jump at each fire. bngsim originally did not, and
+        refused sensitivities on any event-bearing model rather than return stale
+        derivatives (bngsim GH #205); the gradient path reads this property as its
+        pre-flight differentiability gate
+        (:meth:`GradientOptimizer._require_differentiable_dynamics`) so that refusal
+        arrives **up front**, with an actionable "use a metaheuristic job_type"
+        message, instead of at the first sensitivity-bearing ``simulate()``. bngsim
+        now applies the jump and refuses only the subclasses it cannot cross, so on a
+        build at or above :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS`'s floor
+        the gate no longer fires and this property only documents the structure.
 
         Only true state-jumping events are counted (the engine core's ``n_events``).
         Discontinuity triggers -- forcing pulses / piecewise-time dosing schedules --

@@ -252,18 +252,14 @@ def test_trf_refuses_when_bngsim_lacks_output_sensitivities(tmp_path, monkeypatc
         H.drive(alg)
 
 
-@pytest.mark.recovery
-def test_trf_refuses_discrete_event_model_before_run(tmp_path, monkeypatch):
-    """A model with discrete events (a state-dependent discrete jump) has no smooth
-    forward sensitivity -- bngsim refuses sensitivity requests on it (its CVODES
-    sensitivity vectors are not reinitialised across the jump, GH #205). The
-    differentiability gate refuses such a model **up front**, at construction next to
-    the backend gate, with an actionable message pointing at a metaheuristic job_type
-    -- never a mid-run backend traceback (#461). The decay fixture carries no events
-    and the net backend cannot author them (the engine's ``n_events`` is read-only), so
-    we force the signal the gate reads (``has_discrete_events``); the gate fires before
-    any simulation, so no run is driven. The real signal -- the property reading the
-    engine's event count -- is covered by
+def _event_gate_config(tmp_path, monkeypatch):
+    """A buildable one-model ``trf`` config plus the forced discrete-event signal.
+
+    The decay fixture carries no events and the net backend cannot author them (the
+    engine's ``n_events`` is read-only), so both differentiability-gate tests force
+    the signal the gate reads (``has_discrete_events``). The gate fires at
+    construction, before any simulation, so no run is driven either way. The real
+    signal -- the property reading the engine's event count -- is covered by
     ``test_bngsim_model_has_discrete_events_reads_engine_event_count``."""
     from pybnf.bngsim_model.net_model import BngsimModel
 
@@ -278,8 +274,36 @@ def test_trf_refuses_discrete_event_model_before_run(tmp_path, monkeypatch):
         population_size=1, max_iterations=10)
     monkeypatch.setattr(BngsimModel, 'has_discrete_events',
                         property(lambda self: True))
+    return conf
+
+
+@pytest.mark.recovery
+def test_trf_refuses_discrete_event_model_on_a_build_that_misclassifies_one(
+        tmp_path, monkeypatch):
+    """On a bngsim below the event-sensitivity floor, a discrete-event model is refused
+    **up front** -- at construction next to the backend gate, with an actionable message
+    naming the upgrade and a metaheuristic job_type, never a mid-run backend traceback
+    (#461/#536). Such a build does not merely lack a subclass: a trigger that reads the
+    state came back as a finite tensor missing the event's contribution instead of being
+    refused (lanl/bngsim#52), so the whole class is refused rather than run to completion
+    on a silently-wrong gradient."""
+    conf = _event_gate_config(tmp_path, monkeypatch)
+    monkeypatch.setattr('pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS', False)
     with pytest.raises(PybnfError, match='(?i)event'):
         H.build(conf, 'trf')
+
+
+@pytest.mark.recovery
+def test_trf_admits_discrete_event_model_on_a_build_that_differentiates_one(
+        tmp_path, monkeypatch):
+    """The other side of the lifted gate (#536): on a bngsim that applies the event jump
+    and refuses the subclasses it cannot cross, a discrete-event model is no longer
+    refused at construction -- the gradient fit builds. What that build still cannot
+    differentiate stays a backend refusal, where the whole event is in view."""
+    conf = _event_gate_config(tmp_path, monkeypatch)
+    monkeypatch.setattr('pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS', True)
+    alg = H.build(conf, 'trf')
+    assert alg is not None
 
 
 @pytest.mark.bngsim_antimony

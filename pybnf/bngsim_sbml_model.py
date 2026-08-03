@@ -100,6 +100,28 @@ def _sbml_doc_to_text(doc):
     return writer.writeSBMLToString(doc)
 
 
+def _is_event_sensitivity_refusal(exc):
+    """Is ``exc`` bngsim declining to differentiate this model's discrete events (#536)?
+
+    bngsim classifies each event and refuses the subclasses whose crossing it cannot
+    differentiate -- an execution delay, and a trigger that does not reduce to a single
+    relational comparison -- with a ``ValueError`` raised from every sensitivity-bearing
+    ``run()``. That is a *structural* verdict, identical at every parameter set, and so
+    wants a different answer from a candidate point the integrator merely could not get
+    through; :meth:`BngsimSbmlModelNoTimeout.execute` turns it into an actionable
+    refusal and leaves everything else on the back-off path.
+
+    Recognised by the message, since bngsim raises a plain ``ValueError`` for it. Both
+    halves must match, so an unrelated sensitivity error is not swept up. Should bngsim
+    ever reword it, this degrades to the old behaviour (one more failed simulation) --
+    never to a wrong gradient.
+    """
+    if not isinstance(exc, ValueError):
+        return False
+    text = str(exc).lower()
+    return 'sensitivities are not supported' in text and 'events' in text
+
+
 def _mutate_scalar(value, operation, amount):
     if operation == '=':
         return amount
@@ -1100,19 +1122,22 @@ class BngsimSbmlModelNoTimeout(Model):
 
     @property
     def has_discrete_events(self):
-        """True iff the engine model contains state-jumping discrete events (#461).
+        """True iff the engine model contains state-jumping discrete events (#461/#536).
 
-        SBML ``event``\\ s reinitialise the integrator state discontinuously, but
-        bngsim's CVODES forward-sensitivity vectors are *not* reinitialised across
-        the jump, so the sensitivity columns go silently stale at and after an event
-        fires -- bngsim therefore refuses forward output sensitivities outright on
-        such a model rather than return wrong derivatives (bngsim GH #205). The
-        gradient path reads this as its pre-flight differentiability gate
-        (:meth:`GradientOptimizer._require_differentiable_dynamics`) to refuse a
-        discrete-event model **up front** -- with an actionable "use a metaheuristic
-        job_type" message -- instead of letting the fit start and fail at the first
-        sensitivity-bearing ``simulate()``. The net backend's property documents the
-        same contract; this is its SBML twin.
+        SBML ``event``\\ s reinitialise the integrator state discontinuously, so a
+        forward-sensitivity vector carried across one is right only if the solver
+        applies the event's own jump at each fire. bngsim originally did not, and
+        refused sensitivities on any event-bearing model rather than return stale
+        derivatives (bngsim GH #205); the gradient path reads this property as its
+        pre-flight differentiability gate
+        (:meth:`GradientOptimizer._require_differentiable_dynamics`) so that refusal
+        arrives **up front**, with an actionable "use a metaheuristic job_type"
+        message, instead of at the first sensitivity-bearing ``simulate()``. bngsim
+        now applies the jump and refuses only the subclasses it cannot cross, so on a
+        build at or above :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS`'s floor
+        the gate no longer fires. The net backend's property documents the same
+        contract; this is its SBML twin -- and, since a ``.net`` model cannot author
+        events, the one that is reachable in practice.
 
         Only true state-jumping events are counted (the engine core's ``n_events``).
         ``False`` when the engine model or its event count is unavailable (an
@@ -1418,6 +1443,31 @@ class BngsimSbmlModelNoTimeout(Model):
                         )
                     else:
                         logger.exception('bngsim SBML simulation failed for model %s', self.name)
+                    if (self._sensitivity_request is not None
+                            and _is_event_sensitivity_refusal(exc)):
+                        # bngsim declining to differentiate this model's events is a
+                        # *permanent, structural* refusal -- it will refuse identically
+                        # at every parameter set -- so it must not be scored as one more
+                        # non-integrable trial point the optimizer backs off from (#492)
+                        # and eventually gives up on as "all jobs are failing". Reachable
+                        # since #536 stopped refusing every event-bearing model up front:
+                        # bngsim differentiates the subclasses it can classify and
+                        # refuses the rest (an execution delay; a trigger that is not a
+                        # single relational comparison), per simulation. Narrow on
+                        # purpose -- every other backend failure keeps the
+                        # FailedSimulationError back-off, which is right for a candidate
+                        # point the integrator cannot get through.
+                        raise PybnfError(
+                            "Model %s: bngsim cannot supply forward output sensitivities "
+                            "for this model's discrete events, so gradient-based fitting "
+                            "has no gradient here: %s" % (self.name, exc),
+                            hint=["Re-encode the event in a shape bngsim differentiates: "
+                                  "a fixed trigger time, a trigger thresholding a fitted "
+                                  "constant, or a single relational comparison, all "
+                                  "without an execution delay.",
+                                  "Or refit with a gradient-free job_type "
+                                  "(e.g. job_type = de), which needs no sensitivities."],
+                        ) from exc
                     raise FailedSimulationError from exc
 
         return result_dict

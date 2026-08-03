@@ -153,6 +153,54 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
     BNGSIM_AVAILABLE
     and hasattr(getattr(bngsim, 'Model', None), 'declare_ic_sensitivity')
 )
+# Forward sensitivities that survive a DISCRETE EVENT -- the jump
+#
+#     s+ = dh/dx . (s- + f-.dt*/dp) + dh/dp - f+.dt*/dp
+#
+# bngsim applies at each fire, for the event subclasses it can classify (#536).
+# The floor is set by the last build that could return a wrong jump *without
+# saying so*, because that -- not a missing feature -- is what this flag guards
+# against. Three separate silent derivatives had to go first:
+#
+# * a trigger that reads the state through an SBML document (``S < 30``) was
+#   neither refused nor differentiated, returning a finite tensor missing the
+#   event's contribution (lanl/bngsim#52, fixed in 0.12.0);
+# * an event assignment that *reads* the state (``A := A + dose`` -- the
+#   repeat-dosing idiom) lost the carried term dh/dx.s-, so the assigned row
+#   restarted from zero: measured on 0.12.1 as -10.96 where the model's own
+#   central difference says -311.20, while the same model built through
+#   ``ModelBuilder.add_event`` was right to 2e-6. Fixed as a side effect of
+#   lanl/bngsim#144's jump-handler rework, after 0.12.1;
+# * a CVODE root that fires *nothing* -- a discontinuity root, or an event root
+#   that crossed without rising -- rewound the state but not the sensitivity
+#   history, injecting a spurious step into every column (lanl/bngsim#146),
+#   also after 0.12.1.
+#
+# So the floor is "newer than 0.12.1", which every later release satisfies
+# whether the next one bumps the minor or the major. What the qualifying build
+# then *supports* is a separate, wider question -- a fixed trigger time
+# (bngsim GH #212), a threshold that is a fitted constant (lanl/bngsim#49), a
+# state-dependent trigger differentiated in flight (lanl/bngsim#144) -- and it
+# refuses the rest per simulation rather than guessing, which is exactly why
+# PyBNF can stop classifying events itself.
+#
+# ``capabilities()`` has no feature key to read here -- it reports compiled
+# backends and build options, and what separates these builds is a set of bug
+# fixes -- so this is a version floor rather than a probe. An unparseable
+# version reads as *absent* (fail closed): elsewhere in this module an
+# unparseable version is accepted, because rejecting it would brick an
+# otherwise-working install, but here the cost of guessing wrong is a wrong
+# gradient rather than a refusal.
+_BNGSIM_EVENT_SENS_VERSION = (0, 12, 2)
+BNGSIM_HAS_EVENT_SENS = bool(
+    BNGSIM_AVAILABLE
+    and (_parse_version(BNGSIM_VERSION) or ()) >= _BNGSIM_EVENT_SENS_VERSION
+)
+
+
+def event_sens_min_version():
+    """The bngsim version whose forward sensitivities survive a discrete event (#536)."""
+    return '%d.%d.%d' % _BNGSIM_EVENT_SENS_VERSION
 
 
 def feature_missing_reason(name):

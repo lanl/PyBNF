@@ -207,6 +207,49 @@ All notable changes to PyBNF are documented below. This project adheres to
   Two overruns are deliberate and documented: one in-flight simulation may run up to `wall_time_sim`
   past the deadline before it is abandoned, and finalizing re-simulates the best fit once. Refused
   (rather than silently ignored) for `job_type = hmc`, which runs its own in-process sampling loop.
+- **A model with discrete events fits on the gradient path (#536).** An SBML `event` — and so an
+  Antimony `at (…): …`, the usual way a dosing or stimulation schedule is written — used to refuse
+  `trf` / `lbfgs` / `gntr` at construction. That refusal (#461) was right when it was written: a
+  forward sensitivity carried across a state jump is correct only if the solver applies the event's
+  own jump `s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p` at each fire, and bngsim did not, so it
+  refused sensitivities on any event-bearing model and PyBNF hoisted that refusal to a clean
+  pre-flight gate. bngsim applies the jump now, across a fixed trigger time, a trigger whose
+  threshold is a fitted constant (lanl/bngsim#49), and a state-dependent trigger whose crossing it
+  differentiates in flight (lanl/bngsim#144). The gate is therefore a
+  **capability check** rather than a blanket structural refusal: an event-bearing model is allowed
+  through, and the subclasses the build genuinely cannot cross (an execution delay; a trigger that
+  is not a single relational comparison) keep a per-simulation refusal naming the reason.
+
+  **The floor is set by silent wrongness, not by a missing feature.** A build that refuses is
+  safe; a build that answers an event it cannot actually differentiate, without saying so, is the
+  thing this gate exists to prevent. Three such answers had to go first, which puts the floor
+  *newer than bngsim 0.12.1*: a trigger reading the state came back as a finite tensor with the
+  event's contribution missing rather than being refused (lanl/bngsim#52, through 0.11.x); an
+  assignment reading the state — `A := A + dose`, the repeat-dosing idiom — dropped the carried
+  `∂h/∂x·s⁻` and restarted the assigned row from zero, measured on 0.12.1 at `-10.96` against the
+  model's own central difference of `-311.20` while the identical model built through
+  `ModelBuilder.add_event` was right to `2e-6` (fixed after 0.12.1 by lanl/bngsim#144's
+  jump-handler rework); and a solver root that fires nothing rewound the state but not the
+  sensitivity history (lanl/bngsim#146, also after 0.12.1). On 0.12.1 or older the refusal stays,
+  and stays blanket, with the message naming the upgrade. The floor lives in
+  `pybnf._bngsim_caps` (`BNGSIM_HAS_EVENT_SENS`) and is not a dependency bump: the install floor
+  stays `bngsim>=0.11.35`, and every scalar (metaheuristic) fit is unaffected either way.
+
+  The SBML backend also gained a narrowed form of the net backend's #525 wrapper, which the lifted
+  gate makes reachable: bngsim declining to differentiate a model's events is a *structural*
+  verdict, identical at every parameter set, so it now surfaces as an actionable `PybnfError`
+  instead of a `FailedSimulationError` the optimizer scores `inf` and steps around — which would
+  have reported an unsupported event as a failed search. Every other backend failure keeps that
+  back-off, which is the right answer for a candidate point the integrator cannot get through
+  (#492).
+
+  New coverage is a finite-difference oracle on a two-species event fixture at both levels, the
+  backend tensor and the assembled objective gradient (`tests/test_gradient_events.py`): every
+  sensitivity column is scored against a central difference of PyBNF's own trajectory / own loss,
+  including the columns that cross the jump, which is the only instrument that catches a jump term
+  that is missing rather than merely inaccurate. The backend-level oracles run on every build,
+  since what bngsim computes is worth asserting whether or not PyBNF admits the model; the fits,
+  and the bolus-assignment case that set the floor, are gated on `BNGSIM_HAS_EVENT_SENS`.
 - **Published-source organization and two curated real-world jobs.** The real-world gallery now
   uses `Author-Year/job_slug` paths aligned with the BNGL-Models job corpus. The former flat
   Kozer EGFR, Monine TLBR, Gupta FcεRI, and Mitra receptor jobs retain their tested edition-2

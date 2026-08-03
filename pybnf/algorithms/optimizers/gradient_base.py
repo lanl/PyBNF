@@ -46,6 +46,7 @@ must be picklable for backup/resume, exactly like Powell and CMA-ES (ADR-0007).
 import numpy as np
 
 from .concurrent_multistart import DONE, ConcurrentMultiStartOptimizer
+from ... import _bngsim_caps
 from ...gradient import (
     GradientNotSupported,
     apply_routings,
@@ -282,8 +283,9 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         # Backend gate: every model must expose bngsim's forward-sensitivity hooks
         # (the capability gate itself fires later, at apply_routing).
         self._require_sensitivity_backend()
-        # Differentiability gate: a discrete-event model has no smooth forward
-        # sensitivity (bngsim refuses one), so refuse it now rather than mid-run (#461).
+        # Differentiability gate: a discrete-event model needs a bngsim that
+        # differentiates the jump; on a build that does not, refuse now rather than
+        # run to completion on a silently-wrong gradient (#461/#536).
         self._require_differentiable_dynamics()
         # The reflecting box in sampling space u (the leaf's step projects/reflects into it).
         self._u_lower, self._u_upper = self._u_bounds()
@@ -370,8 +372,10 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
     #   model must expose bngsim's forward-sensitivity hooks; a non-bngsim (e.g.
     #   RoadRunner/SBML) model has no sensitivity tensor here;
     # * **differentiability** (:meth:`_require_differentiable_dynamics`, after model
-    #   build, #461) -- a discrete-event model has no smooth forward sensitivity
-    #   (bngsim refuses one, GH #205), so refuse it here rather than fail mid-run;
+    #   build, #461/#536) -- a discrete-event model needs a bngsim whose forward
+    #   sensitivities survive the jump *and* which refuses the event subclasses it
+    #   cannot cross; on an older build the refusal is blanket and fires here rather
+    #   than mid-run, and on a current one the model passes straight through;
     # * **capability** (deferred to :meth:`_setup_gradient_path`'s ``apply_routing``,
     #   #447) -- raises if the bngsim build lacks the ``output_sensitivities`` feature.
     #
@@ -388,7 +392,10 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
     # sensitivities, so it runs sensitivity-free instead of aborting a fit whose scored
     # objective is fully differentiable. :meth:`_setup_gradient_path` declares each
     # model's scored suffixes so the backend can make that per-action distinction. Events,
-    # by contrast, are a build-time structural signal and so *can* be a pre-flight gate.
+    # by contrast, are a build-time structural signal and so *can* be a pre-flight gate --
+    # which is why the one subclass of them a current bngsim still declines (a delayed or
+    # non-relational trigger) keeps its refusal in the backend, where the whole event is
+    # in view, instead of being re-derived here (#536).
     def _require_edition_2(self, config):
         """Refuse a legacy (edition < 2) config before any model is built."""
         edition = config.config.get('edition')
@@ -417,29 +424,66 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                           _FALLBACK_HINT])
 
     def _require_differentiable_dynamics(self):
-        """Refuse a discrete-event model before the run (#461).
+        """Refuse a discrete-event model on a build that cannot differentiate one (#461/#536).
 
-        A discrete event is a state-dependent discrete jump in the dynamics; it
-        reinitialises the integrator state discontinuously, but bngsim's CVODES
-        forward-sensitivity vectors are not reinitialised across the jump, so the
-        sensitivities go silently stale -- bngsim refuses forward output
-        sensitivities outright on such a model (GH #205). Without this gate that
-        refusal would surface only mid-run, at the first sensitivity-bearing
-        ``simulate()`` (caught and re-raised in ``BngsimModel.execute``). Fired here
-        next to :meth:`_require_sensitivity_backend`, it gives the discrete-event
-        model the same clean pre-flight "use a metaheuristic job_type" refusal the
-        other gates give. Models whose backend exposes no event count
-        (``has_discrete_events`` absent) pass through untouched."""
+        A discrete event is a discrete jump in the dynamics: it reinitialises the
+        integrator state discontinuously, so a forward-sensitivity vector carried
+        across it is right only if the solver applies the event's own jump
+
+        .. math::
+
+            s^+ = \\frac{\\partial h}{\\partial x}
+                  \\left(s^- + f^-\\frac{\\partial t^*}{\\partial p}\\right)
+                  + \\frac{\\partial h}{\\partial p}
+                  - f^+\\frac{\\partial t^*}{\\partial p}
+
+        at each fire. Originally it never did -- the vectors were carried straight
+        through and went silently stale, so bngsim refused sensitivities on any
+        event-bearing model and #461 hoisted that refusal here, as a **blanket**
+        pre-flight gate, rather than let it surface mid-run at the first
+        sensitivity-bearing ``simulate()``.
+
+        bngsim applies the jump now. From the version
+        :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS` reads it also *classifies*
+        each event honestly -- differentiating the subclasses it covers (a fixed
+        trigger time; a trigger thresholding a fitted constant, lanl/bngsim#49; a
+        state-dependent trigger whose crossing it differentiates in flight,
+        lanl/bngsim#144) and refusing the rest (an execution delay; a trigger that
+        does not reduce to a single relational comparison). On such a build this
+        stops being a gate: the model is allowed through and bngsim's own per-model
+        refusal covers what it cannot cross, re-raised as a clean
+        :class:`~pybnf.printing.PybnfError` by
+        ``BngsimSbmlModelNoTimeout.execute`` -- the SBML/Antimony backend being the
+        only one an event can reach PyBNF through, since a ``.net`` model cannot
+        author one.
+
+        Below that floor the refusal stays, and stays blanket, because an older
+        build does not merely lack a subclass -- it answers one *wrongly and
+        quietly*: a trigger reading the state came back as a finite tensor missing
+        the event's contribution instead of being refused (lanl/bngsim#52), and an
+        event assignment that reads the state dropped its carried term altogether
+        (lanl/bngsim#144). Refusing up front, with a message naming the upgrade,
+        beats a fit that runs to completion on a wrong gradient.
+
+        Models whose backend exposes no event count (``has_discrete_events``
+        absent) pass through untouched."""
+        if _bngsim_caps.BNGSIM_HAS_EVENT_SENS:
+            return
         for model in self.model_list:
             if getattr(model, 'has_discrete_events', False):
                 raise PybnfError(
-                    "Gradient-based fitting (job_type = %s) requires smooth, "
-                    "differentiable dynamics, but model '%s' contains discrete "
-                    "events (a state-dependent discrete jump). Forward output "
-                    "sensitivities go stale across such a jump, so bngsim cannot "
-                    "supply the gradient there." % (
-                        self._fit_type_label(), getattr(model, 'name', '?')),
-                    hint=_FALLBACK_HINT)
+                    "Gradient-based fitting (job_type = %s) needs forward "
+                    "sensitivities that survive a discrete event (a discrete jump in "
+                    "the dynamics), and model '%s' contains one. The installed bngsim "
+                    "(%s) can still answer such an event wrongly without saying so -- "
+                    "a tensor missing the event's contribution rather than a refusal "
+                    "-- so the gradient there would be silently wrong." % (
+                        self._fit_type_label(), getattr(model, 'name', '?'),
+                        _bngsim_caps.BNGSIM_VERSION or 'version unknown'),
+                    hint=["Upgrade to bngsim >= %s, which differentiates the event "
+                          "subclasses it supports and refuses the rest."
+                          % _bngsim_caps.event_sens_min_version(),
+                          _FALLBACK_HINT])
 
     def _fit_type_label(self):
         """The fit_type code for messages (the leaf's registered name, best-effort)."""
