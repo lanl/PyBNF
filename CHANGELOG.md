@@ -169,9 +169,24 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Fixed
+- **A gradient fit is refused, rather than silently doubled, on a bngsim build that seeds a
+  lowered `initialAssignment` into the parameter axis (#537, ADR-0100).** The backend authors
+  confirmed (lanl/bngsim#155) that `output_sensitivities(axis='parameter')` is the **total**
+  derivative — `d_param[θ] = (RHS path) + Σ_j (∂x_j(0)/∂θ)·d_ic[x_j]` — so a route holding both a
+  parameter's own axis and an IC term is correct only while the backend seeds nothing for that
+  species. lanl/bngsim#147 changes that for compound parameter-only assignments, which it lowers
+  to a synthetic `_ic_<species>` derived parameter. `route_for_model` now detects exactly that
+  build-and-model combination and refuses by name, so `Fiedler_BMCSystBiol2016` — the one slug in
+  23 whose free parameters legitimately route both axes, correct on every build through 0.12.1 at
+  ≤3.7e-06 — fails loudly on the first build carrying #147 instead of reporting seven columns at
+  the wrong value. The assembly's numeric guard was also generalized: it now compares the
+  parameter slice against the **weighted sum** of the IC terms rather than a single slice, which
+  catches a non-unit seed (`X(0) = a*X0` gives `d_param[X0] = 3.0·d_ic[X]`, agreeing to roundoff
+  rather than bit-for-bit — the counterexample the first cut missed). The net backend is pinned to
+  the same contract by test, having been verified bit-identical on `e2e_ode_decay.net`.
 - **A parameter's own sensitivity axis is not "identically zero" when it seeds an initial
   condition — it is the whole derivative, and adding the IC axis to it doubles the column
-  (#537).** ADR-0097 drops the `sensitivity_params` axis of a parameter that only seeds species
+  (#537, ADR-0100).** ADR-0097 drops the `sensitivity_params` axis of a parameter that only seeds species
   initial values, documented as sparing a wasted vector on an axis that "would be identically
   zero". Measured on `Raia_CancerResearch2011`, that axis is not zero: bngsim seeds `∂x(0)/∂p`
   into it as well (lanl/bngsim#43, widened to compound `initialAssignment` expressions by

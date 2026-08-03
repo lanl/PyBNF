@@ -1147,6 +1147,32 @@ class BngsimSbmlModelNoTimeout(Model):
         core = getattr(self._get_engine_template(), '_core', None)
         return bool(getattr(core, 'n_events', 0))
 
+    def lowered_ic_species(self):
+        """Species whose ``initialAssignment`` this bngsim build **lowered** (lanl/bngsim#147).
+
+        A compound parameter-only initial assignment (``u(0) = b*v0``, or a steady-state
+        expression over kinetic constants) is lowered to a synthetic derived parameter named
+        ``_ic_<species>``, which is what lets ``compute_ic_param_sens_seed`` differentiate it --
+        so on such a build the assignment's inputs are seeded into the **parameter** axis and
+        ``d_param[p]`` already carries ``dx(0)/dp``. Before #147 only a bare ``<ci>`` assignment
+        was seeded, and a compound one contributed nothing to that axis.
+
+        That difference decides whether the gradient router may add an initial-condition term on
+        top of a parameter's own axis, and it is not otherwise readable from the API
+        (lanl/bngsim#155 tracks exposing the effective seed matrix, which will replace this).
+        Detecting the synthetic parameter is a **build discriminator only** -- never a routing
+        rule, since a bare assignment and a ``.net`` ``R() R0`` are seeded with no synthetic
+        parameter at all, so an empty result does not mean "nothing is seeded".
+
+        Empty when the engine model is unavailable, which keeps a model that cannot answer from
+        blocking a fit that the pre-#147 arithmetic handles correctly.
+        """
+        try:
+            names = set(self._get_engine_template().param_names)
+        except Exception:                                   # pragma: no cover - defensive
+            return frozenset()
+        return frozenset(s for s in self._species_names if ('_ic_%s' % s) in names)
+
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 

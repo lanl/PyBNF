@@ -574,6 +574,50 @@ def test_check_column_multiplicity_rejects_a_repeated_param_column():
         routing.check_column_multiplicity()
 
 
+class _SeedingModel:
+    """A model whose ``initialAssignment`` for ``S()`` this build may or may not have lowered."""
+
+    name = 'm'
+    mutants = ()
+
+    def __init__(self, lowered=()):
+        self._lowered = frozenset(lowered)
+
+    def sensitivity_entity_namespace(self):
+        # ``k`` seeds S()'s initial value AND is a kinetic constant, so it keeps both axes.
+        return ({'k': 0.3}, [('S()', '2*k')],
+                {'k': (SeedTerm(IC, 'S()', ('num', 2.0)),)})
+
+    def ode_rhs_symbols(self):
+        return frozenset({'k', 'S()'})
+
+    def lowered_ic_species(self):
+        return self._lowered
+
+
+def test_route_for_model_gate_fires_only_on_a_lowering_build():
+    """The gate is a build discriminator, not a routing rule. On a build that lowers nothing
+    (every release through 0.12.1) the same model routes both axes exactly as before, which is
+    correct there -- the parameter axis carries only the right-hand-side path and the ic term
+    supplies the seeding. Fiedler_BMCSystBiol2016 is this shape."""
+    from pybnf.gradient import GradientNotSupported
+    routing = R.route_for_model(_SeedingModel(lowered=()), ['k'])
+    assert routing.routes['k'].contributions == (
+        RouteContribution(IC, 'S()', 2.0), RouteContribution(PARAM, 'k', 1.0))
+    # ...and the same model on a lowering build is refused rather than silently doubled.
+    with pytest.raises(GradientNotSupported) as excinfo:
+        R.route_for_model(_SeedingModel(lowered={'S()'}), ['k'])
+    message = str(excinfo.value)
+    assert "'k'" in message and "'S()'" in message
+    assert 'lanl/bngsim#147' in message and 'lanl/bngsim#155' in message
+
+
+def test_route_for_model_gate_ignores_a_lowered_species_the_route_does_not_reach():
+    """A lowered species that this parameter does not seed is none of the gate's business."""
+    routing = R.route_for_model(_SeedingModel(lowered={'T()'}), ['k'])
+    assert len(routing.routes['k'].contributions) == 2
+
+
 class _CapturingModel:
     """Records the request :func:`apply_routings` hands to the gradient path."""
 

@@ -614,12 +614,25 @@ def _check_axes_are_not_the_same_derivative(sens, routing):
     reproduces #537's signature exactly: ``init_Rec_i`` at 2.00000x its central difference, every
     other column untouched.
 
-    So it is checked rather than assumed, numerically and per experiment: for any route holding
-    both an IC contribution and its own PARAM contribution, compare the two tensor slices. Exact
-    equality across every selector and row is the signature -- two independent derivatives of a
-    live model do not coincide bit-for-bit -- so this refuses only a genuine double-count.
-    ``Fiedler_BMCSystBiol2016``, which legitimately routes both axes for seven parameters, has
-    slices that differ and passes.
+    So it is checked rather than assumed, numerically and per experiment: for a route holding
+    both, compare the parameter slice against the **sum of the initial-condition terms the route
+    is about to add**, each with its own chain-rule factor. Agreement means the parameter axis
+    is *entirely* seeding -- the right-hand-side path is zero -- so the two are one derivative
+    and the sum would double it.
+
+    Comparing against the weighted sum rather than a single slice is what makes this work for a
+    non-unit seed. Where the coefficient is exactly 1 the two columns are the same IVP and
+    CVODES returns them bit-for-bit (Raia); where it is not (``X(0) = a*X0`` gives
+    ``d_param[X0] = 3.0 * d_ic[X]``) they agree to roundoff instead, which an equality test
+    misses -- lanl/bngsim#155. Hence a tight relative tolerance: two genuinely independent
+    derivatives of a live model do not track each other to 1e-12 across every selector and row.
+
+    What this **cannot** catch is a parameter that seeds *and* drives the right-hand side, where
+    ``d_param`` is ``RHS + seeding`` and overlaps the initial-condition terms only partially --
+    no comparison of totals can see a partial overlap. That case is gated at routing time
+    instead (:func:`~pybnf.gradient.routing.route_for_model`) and closes properly once
+    lanl/bngsim#155 exposes the seed matrix. ``Fiedler_BMCSystBiol2016`` is that shape and
+    passes here, correctly.
     """
     if sens.d_param is None or sens.d_ic is None:
         return   # only one axis was computed; nothing can be summed twice
@@ -628,23 +641,28 @@ def _check_axes_are_not_the_same_derivative(sens, routing):
                     if c.target == PARAM and c.key == name and c.requested), None)
         if own is None or own.key not in sens.param_names:
             continue
-        p_col = sens.d_param[:, :, sens.param_names.index(own.key)]
-        for c in route.contributions:
-            if c.target != IC or not c.requested or c.key not in sens.ic_species:
-                continue
-            i_col = sens.d_ic[:, :, sens.ic_species.index(c.key)]
-            if p_col.shape != i_col.shape or not np.array_equal(p_col, i_col):
-                continue
-            raise PybnfError(
-                "Free parameter '%s' routes to both the parameter axis '%s' and the "
-                "initial-condition axis '%s', but the simulation returns bit-identical "
-                "sensitivity columns for the two -- they are the same derivative, not the "
-                "right-hand-side and seeding halves of one, so the assembly would sum it twice "
-                "and report this column at exactly twice its true value. The backend seeds "
-                "d(x(0))/d('%s') into the parameter axis, which already carries the whole "
-                "derivative for a parameter the right-hand side does not otherwise read; the "
-                "routing should drop that axis (ADR-0097). See lanl/PyBNF#537."
-                % (name, own.key, c.key, name))
+        ic_terms = [c for c in route.contributions
+                    if c.target == IC and c.requested and c.key in sens.ic_species]
+        if not ic_terms:
+            continue
+        # Both sides carry this experiment's condition factor, so scale the parameter slice by
+        # its own contribution's factor to compare like with like.
+        p_col = own.factor * sens.d_param[:, :, sens.param_names.index(own.key)]
+        ic_sum = sum(c.factor * sens.d_ic[:, :, sens.ic_species.index(c.key)] for c in ic_terms)
+        scale = float(np.abs(p_col).max()) if p_col.shape == ic_sum.shape else 0.0
+        if scale == 0.0 or np.abs(p_col - ic_sum).max() > 1e-12 * scale:
+            continue
+        raise PybnfError(
+            "Free parameter '%s' routes to both the parameter axis '%s' and the "
+            "initial-condition axis/axes %s, but the simulation returns the same numbers for "
+            "the two (agreeing to %.1e relative) -- they are one derivative, not the "
+            "right-hand-side and seeding halves of one, so the assembly would sum it twice and "
+            "report this column at an integer multiple of its true value. The backend seeds "
+            "d(x(0))/d('%s') into the parameter axis, which already carries the whole "
+            "derivative for a parameter the right-hand side does not otherwise read; the "
+            "routing should drop that axis (ADR-0097). See lanl/PyBNF#537, lanl/bngsim#155."
+            % (name, own.key, ', '.join(repr(c.key) for c in ic_terms),
+               float(np.abs(p_col - ic_sum).max()) / scale, name))
 
 
 def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):

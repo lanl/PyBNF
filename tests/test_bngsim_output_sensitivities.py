@@ -764,3 +764,36 @@ def test_missing_support_map_keeps_every_expression():
     result = _StubResult(['f1', 'f2'], {})
     sens = bngsim_model.BngsimModel._extract_output_sensitivities(result, True)
     assert sens.selectors == ['observable:Atot', 'expression:f1', 'expression:f2']
+
+
+# =========================== the two axes are not independent (#537) ===
+
+def test_parameter_axis_carries_the_ic_seeding_on_the_net_backend():
+    """``d_param[S0]`` and ``d_ic[S()]`` are the SAME derivative for a ``.net`` ``S() S0``.
+
+    The contract behind lanl/PyBNF#537: ``output_sensitivities(axis='parameter')`` is the
+    **total** derivative, so it carries ``dx(0)/dp`` as well as the right-hand-side path
+    (lanl/bngsim#43/#147/#155). For a parameter whose only role is the initial condition, with
+    ``d(S(0))/d(S0) = 1``, the two axes are literally the same IVP -- identical
+    ``s' = J s + df/dp`` with ``df/dp = 0``, identical unit seed -- so CVODES integrates them to
+    the same bits and summing them would double the column.
+
+    Pinned on the **net** backend specifically: the measurement that opened #537 was on SBML,
+    and it matters that the router's rule (drop the parameter axis for a pure initial-value
+    seed) is load-bearing here too rather than an SBML quirk. If this ever stops holding, the
+    routing rule needs revisiting, not the test."""
+    import bngsim
+    model = bngsim.Model.from_net(str(FIXTURES / 'e2e_ode_decay.net'))
+    sim = bngsim.Simulator(model, method='ode',
+                           sensitivity_params=['S0'], sensitivity_ic=['S()'])
+    result = sim.run(sample_times=[0.0, 1.0, 2.0, 3.0], rtol=1e-11, atol=1e-13)
+    d_param = np.asarray(
+        result.output_sensitivities(['observable:Stot'], axis='parameter'), float)[:, 0, 0]
+    d_ic = np.asarray(
+        result.output_sensitivities(['observable:Stot'], axis='ic'), float)[:, 0, 0]
+
+    # S(t) = S0 exp(-k t), so both columns are exp(-k t) -- and bit-for-bit each other.
+    np.testing.assert_allclose(d_ic, np.exp(-0.3 * np.array([0.0, 1.0, 2.0, 3.0])), rtol=1e-6)
+    assert np.array_equal(d_param, d_ic), (
+        'the parameter axis no longer carries the IC seeding on the net backend; '
+        'pybnf.gradient.routing drops that axis on the assumption that it does')

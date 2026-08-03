@@ -304,7 +304,28 @@ def test_assembly_refuses_when_the_two_axes_are_the_same_derivative():
         RouteContribution(IC, 'S()', 1.0), RouteContribution(PARAM, 'k', 1.0)))})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
 
-    with pytest.raises(PybnfError, match='bit-identical sensitivity columns'):
+    with pytest.raises(PybnfError, match='the same numbers for the two'):
+        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_assembly_refuses_a_non_unit_seed_the_parameter_axis_already_carries():
+    """The lanl/bngsim#155 counterexample: with a seed coefficient other than 1 the two axes are
+    proportional rather than identical (``X(0) = a*X0`` gives ``d_param[X0] = 3.0 * d_ic[X]``),
+    and agree to roundoff instead of bit-for-bit. Comparing the parameter slice against the
+    **weighted sum** of the ic terms catches it; the earlier bit-equality test did not."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+    # The backend's parameter axis IS 3x the ic column, give or take integration roundoff.
+    dk = 3.0 * ds0 * (1.0 + 3e-16)
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp([118.0, 82.0, 50.0, 38.0], 4.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', (
+        RouteContribution(IC, 'S()', 3.0), RouteContribution(PARAM, 'k', 1.0)))})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    with pytest.raises(PybnfError, match='the same numbers for the two'):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
 

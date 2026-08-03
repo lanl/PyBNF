@@ -8,6 +8,15 @@ species initial. The seeding pattern is no longer allowed to answer the question
 asked directly, and its answer is only ever a **veto on dropping** a column, never a reason to drop
 one.
 
+> **Partly superseded by ADR-0100 (issue #537).** This ADR justifies dropping the axis as economy —
+> it "would be identically zero", so keeping it merely wastes a sensitivity vector. That premise is
+> false: the backend's parameter axis is the *total* derivative and already carries `∂x(0)/∂θ`, so
+> for a pure initial-value seed it is byte-identical to the initial-condition axis and keeping both
+> doubles the column rather than wasting a vector. The rule below (drop only on a stated absence
+> from the right-hand side) is unchanged and still right; what changes is that the drop is
+> load-bearing for correctness, and that the fallback chosen here for a model that *cannot* answer —
+> keep the axis, "the safe direction" — is not safe and is now a refusal. See ADR-0100.
+
 ## The problem
 
 `Fiedler_BMCSystBiol2016` initialises all six of its species from `initialAssignment`s that are the

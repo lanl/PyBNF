@@ -736,8 +736,56 @@ def route_for_model(model, free_params, condition=None):
     param_values, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
     rhs_symbols = getattr(model, 'ode_rhs_symbols', lambda: None)()
     condition = _resolve_condition(model, condition)
-    return route_experiment(free_params, param_values, species_initializers, condition,
-                            ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols)
+    routing = route_experiment(free_params, param_values, species_initializers, condition,
+                               ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols)
+    _refuse_seeded_double_count(model, routing)
+    return routing
+
+
+def _refuse_seeded_double_count(model, routing):
+    """Refuse a both-axes route whose seeding the backend already carries (#537, lanl/bngsim#147).
+
+    ``d_param[p]`` is the **total** derivative: the right-hand-side path *plus* whatever
+    ``dx(0)/dp`` the backend seeded (lanl/bngsim#155). A route that holds both its own parameter
+    axis and an initial-condition term is correct only while the backend seeds *nothing* for that
+    species -- otherwise the seeding half is counted twice, and the result is a finite, smooth,
+    plausible gradient pointing somewhere slightly wrong.
+
+    On a build that lowers a compound ``initialAssignment`` (lanl/bngsim#147) it does seed it, and
+    :meth:`~pybnf.bngsim_sbml_model.BngsimSbmlModel.lowered_ic_species` says which species those
+    are. So this refuses exactly that combination, up front and by name, rather than at scoring
+    time or not at all. ``Fiedler_BMCSystBiol2016`` is the shape in question: seven kinetic
+    constants that drive the rate laws *and* seed all six species initials.
+
+    Deliberately narrow. It cannot see a **bare** ``<ci>`` assignment, which every build seeds
+    with no synthetic parameter to detect -- a parameter with a bare initial-value seed that is
+    *also* read by the right-hand side is the same defect and is not caught here. No model in the
+    PEtab benchmark subset has that shape, and closing it needs the seed matrix itself
+    (lanl/bngsim#155); until then :func:`pybnf.gradient.assembly._check_axes_are_not_the_same_derivative`
+    catches the sub-case where the right-hand-side path is zero.
+    """
+    lowered = getattr(model, 'lowered_ic_species', lambda: frozenset())()
+    if not lowered:
+        return
+    for name, route in routing.routes.items():
+        if not any(c.target == PARAM and c.key == name and c.requested
+                   for c in route.contributions):
+            continue
+        clash = sorted(c.key for c in route.contributions
+                       if c.target == IC and c.requested and c.key in lowered)
+        if not clash:
+            continue
+        raise GradientNotSupported(
+            f"Free parameter '{name}' reaches the trajectory both through its own parameter "
+            f"axis and through the initial condition of {', '.join(repr(k) for k in clash)}, "
+            f"whose initialAssignment this bngsim build lowers to a synthetic derived "
+            f"parameter (lanl/bngsim#147). On such a build the backend seeds d(x(0))/d"
+            f"('{name}') into the parameter axis, so that axis already carries the seeding and "
+            f"adding the initial-condition term would count it twice -- a gradient column at a "
+            f"multiple of its true value, which the objective cannot reveal. PyBNF cannot yet "
+            f"read what the backend seeded (lanl/bngsim#155 tracks exposing it), so it refuses "
+            f"rather than guess. Use a gradient-free optimizer or sampler for this fit, or a "
+            f"bngsim build without #147.")
 
 
 def apply_routing(model, routing):
