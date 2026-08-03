@@ -396,6 +396,111 @@ def test_route_experiment_param_ref_directly_bound_free_param_still_binds():
         RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
 
 
+# ------------------------------------------- one contribution per column (#537) ----
+
+# Two condition targets that seed the SAME species initial value with different derivatives
+# (``S() <- a + 2*b``): the only shape in which one free parameter legitimately reaches one
+# native column twice, and therefore the shape that decides whether "reads this column twice"
+# can be read as a defect.
+TWO_PATH_SEEDS = {'a': (SeedTerm(IC, 'S()', ONE),),
+                  'b': (SeedTerm(IC, 'S()', ('num', 2.0)),)}
+TWO_PATH_PARAMS = {'S0': 1.0, 'k': 0.1, 'a': 0.0, 'b': 0.0}
+
+
+def test_route_experiment_folds_two_paths_onto_one_column():
+    """A free parameter that reaches one native column by two paths gets **one** contribution
+    carrying their summed derivative, not two terms the assembly adds separately (#537).
+
+    The arithmetic is unchanged -- ``d(S())/dm`` is still ``1 + 2`` -- but the column is now
+    named once, which is what lets a column named twice be treated as the defect it otherwise
+    cannot be distinguished from."""
+    r = route_experiment(['m'], TWO_PATH_PARAMS, DECAY_SPECIES,
+                         _pref(('a', '=', 'm'), ('b', '=', 'm')),
+                         ic_seed_map=TWO_PATH_SEEDS, rhs_symbols=DECAY_RHS)
+    assert r.routes['m'].contributions == (RouteContribution(IC, 'S()', 3.0),)
+    assert r.sensitivity_ic == ['S()']
+    r.check_column_multiplicity()
+
+
+def test_route_experiment_folds_only_the_repeated_column_and_keeps_the_order():
+    """Not IC-specific, and not a merge of the whole route: two targets seeding one *derived
+    parameter* (``beta``) fold onto that column, while each target's own axis stays its own
+    contribution, in first-seen order."""
+    seeds = {'a': (SeedTerm(PARAM, 'beta', ONE),),
+             'b': (SeedTerm(PARAM, 'beta', ('num', 3.0)),)}
+    params = {'beta': 0.0, 'a': 0.0, 'b': 0.0}
+    r = route_experiment(['m'], params, [], _pref(('a', '=', 'm'), ('b', '=', 'm')),
+                         ic_seed_map=seeds)
+    assert r.routes['m'].contributions == (
+        RouteContribution(PARAM, 'beta', 4.0),   # 1 + 3, one column
+        RouteContribution(PARAM, 'a', 1.0),
+        RouteContribution(PARAM, 'b', 1.0))
+    assert r.sensitivity_params == ['beta', 'a', 'b']
+
+
+def test_route_experiment_folds_a_point_dependent_path_symbolically():
+    """A fold sums the derivative **trees**, not the numbers, so a point-dependent path stays
+    point-dependent and ``at_point`` still refreshes the whole sum (#530 composes with #537).
+
+    ``S()`` is seeded by ``a`` (derivative 1) and by ``b`` (derivative ``g``), with the same
+    free parameter ``m`` assigned to both targets and ``g`` set from free parameter ``g_free``:
+    ``d(S())/dm = 1 + g``, which is only a number once ``g_free`` is known."""
+    seeds = {'a': (SeedTerm(IC, 'S()', ONE),),
+             'b': (SeedTerm(IC, 'S()', ('sym', 'g')),)}
+    params = {'S0': 1.0, 'k': 0.1, 'a': 0.0, 'b': 0.0, 'g': 4.0}
+    cond = _pref(('a', '=', 'm'), ('b', '=', 'm'), ('g', '=', 'g_free'))
+    r = route_experiment(['m', 'g_free'], params, DECAY_SPECIES, cond,
+                         ic_seed_map=seeds, rhs_symbols=DECAY_RHS)
+    assert r.is_point_dependent is True
+    # One contribution at the build point (g = 4 nominal), carrying the summed tree.
+    assert r.routes['m'].contributions == (
+        RouteContribution(IC, 'S()', 5.0, ('+', ('num', 1.0), ('sym', 'g'))),)
+    # ...and the sum -- both halves of it -- is re-evaluated at the fit point.
+    resolved = r.at_point({'m': 2.0, 'g_free': 10.0})
+    assert resolved.routes['m'].contributions == (
+        RouteContribution(IC, 'S()', 11.0, ('+', ('num', 1.0), ('sym', 'g'))),)
+    resolved.check_column_multiplicity()
+
+
+def test_check_column_multiplicity_passes_a_routed_experiment():
+    """Every routing the router builds satisfies the invariant, including the multi-column
+    routes -- distinct columns are what a route is *for*; only a repeated one is the defect."""
+    for cond in (None,
+                 _cond(('k', '*', 3.0)),
+                 _pref(('k', '=', 'm'), ('S0', '=', 'm')),
+                 _pref(('a', '=', 'm'), ('b', '=', 'm'))):
+        route_experiment(['k', 'S0', 'm', 'sigma'], TWO_PATH_PARAMS, DECAY_SPECIES, cond,
+                         ic_seed_map={**IC_SEED_MAP, **TWO_PATH_SEEDS},
+                         rhs_symbols=DECAY_RHS).check_column_multiplicity()
+
+
+def test_check_column_multiplicity_rejects_an_ic_column_read_twice():
+    """The #537 guard: a route that names one ``ic`` column twice is refused by name, rather
+    than assembling a column at exactly twice its true value.
+
+    This is the narrow invariant the ``Raia_CancerResearch2011`` anomaly violated -- its
+    ``init_Rec_i`` route was a single ``('ic', 'Rec_i', 1.0)`` contribution, and the assembled
+    column came back at exactly 2x its central difference. Nothing in an objective value can
+    reveal an integer-scaled gradient column, so the routing is checked instead."""
+    routing = R.ExperimentRouting(routes={'init_Rec_i': ParamRoute('init_Rec_i', (
+        RouteContribution(IC, 'Rec_i', 1.0), RouteContribution(IC, 'Rec_i', 1.0)))})
+    with pytest.raises(PybnfError) as excinfo:
+        routing.check_column_multiplicity()
+    message = str(excinfo.value)
+    assert "'init_Rec_i'" in message and "ic sensitivity column 'Rec_i' 2 times" in message
+    assert '#537' in message
+
+
+def test_check_column_multiplicity_rejects_a_repeated_param_column():
+    """Not IC-specific: the parameter axis is checked the same way."""
+    routing = R.ExperimentRouting(routes={'k': ParamRoute('k', (
+        RouteContribution(PARAM, 'k', 1.0),
+        RouteContribution(IC, 'S()', 1.0),
+        RouteContribution(PARAM, 'k', 0.5)))})
+    with pytest.raises(PybnfError, match="param sensitivity column 'k' 2 times"):
+        routing.check_column_multiplicity()
+
+
 class _CapturingModel:
     """Records the request :func:`apply_routings` hands to the gradient path."""
 

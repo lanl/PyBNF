@@ -71,6 +71,20 @@ that is not a bare number -- ``d(beta_N)/d(R0_) = gamma_/N_`` -- is **point-depe
 carried symbolically and evaluated at each evaluated PSet by
 :meth:`ExperimentRouting.at_point`.
 
+One contribution per native column (#537)
+------------------------------------------
+A route's derivative is the **sum** over its contributions, so two contributions naming the
+*same* ``(target, key)`` column would have the assembly read one tensor column twice and add
+it twice. That is legitimate arithmetic when the two terms are genuinely different chain-rule
+paths that happen to meet -- two condition targets seeding one species' initial value -- and
+it is indistinguishable, once assembled, from a column counted twice by mistake. So
+:func:`route_experiment` **folds** same-column terms into one contribution whose derivative
+tree is their sum, making "one contribution per native column" a structural property of every
+routing; :meth:`ExperimentRouting.check_column_multiplicity` then lets the assembly *assert*
+that property per experiment rather than assume it (#537: a ``Raia_CancerResearch2011``
+gradient column came back at exactly twice its central difference, once, on the one route in
+that fit with an ``ic``-axis contribution, and never again).
+
 Scope
 -----
 The seed grammar is arithmetic (``+ - * / **``, numbers, symbols). An initial value reached
@@ -126,6 +140,10 @@ class RouteContribution:
     value at the routing's build point and :meth:`ExperimentRouting.at_point` refreshes it
     before each assembly; such a term is always requested, since a factor that merely happens
     to vanish at the build point must not drop the column the fit later needs.
+
+    Two contributions of one route never name the same ``(target, key)``: same-column terms
+    are folded into one by :func:`route_experiment` (#537), so :attr:`column` is a route-unique
+    identity the assembly can check against.
     """
     target: str
     key: object  # str (param id / species) for param/ic; None for none
@@ -136,6 +154,11 @@ class RouteContribution:
     def requested(self):
         """Whether this term needs its native sensitivity column computed."""
         return self.target != NONE and (self.node is not None or self.factor != 0.0)
+
+    @property
+    def column(self):
+        """The native sensitivity column this term reads -- ``(target, key)`` (#537)."""
+        return (self.target, self.key)
 
 
 @dataclass(frozen=True)
@@ -221,6 +244,41 @@ class ExperimentRouting:
         """Whether any chain-rule factor must be re-evaluated at the fit point (#530)."""
         return any(c.node is not None
                    for route in self.routes.values() for c in route.contributions)
+
+    def check_column_multiplicity(self):
+        """Raise unless every route reads each native sensitivity column **exactly once** (#537).
+
+        A route's derivative is the sum over its contributions, so a column named by two of
+        them is added twice. :func:`route_experiment` folds same-column terms as it builds a
+        route, which makes that impossible by construction -- this re-checks it where the
+        columns are actually summed (:func:`pybnf.gradient.assembly._raw_sensitivity_accessor`,
+        once per experiment per evaluation), because the failure it guards against is silent:
+        the assembled column is a clean multiple of the true derivative, so the fit walks a
+        scaled surface and converges to a plausible wrong answer instead of erroring.
+
+        Raises :class:`~pybnf.printing.PybnfError` naming the free parameter, the axis and key
+        of the doubled column, and each duplicate's factor -- the diagnostic #537 lacked when a
+        ``Raia_CancerResearch2011`` ``ic``-axis column assembled at exactly 2x its central
+        difference and did not reproduce. Never raises for a legitimate multi-path route (two
+        condition targets seeding one species): those arrive already folded.
+        """
+        for name, route in self.routes.items():
+            seen = {}
+            for c in route.contributions:
+                seen.setdefault(c.column, []).append(c)
+            for (target, key), terms in seen.items():
+                if len(terms) == 1:
+                    continue
+                raise PybnfError(
+                    "Gradient routing is inconsistent: free parameter '%s' reaches the %s "
+                    "sensitivity column '%s' %d times in one route (factors: %s), so the "
+                    "assembly would add that column %d times into its derivative -- a column "
+                    "scaled by an integer multiple of the truth, which no fit can detect from "
+                    "its own objective. Same-column terms are folded when a routing is built, "
+                    "so this is an internal inconsistency; please report it on "
+                    "lanl/PyBNF#537 with the model and configuration."
+                    % (name, target, key, len(terms),
+                       ', '.join(repr(t.factor) for t in terms), len(terms)))
 
     def at_point(self, param_values):
         """This routing with every point-dependent factor evaluated at ``param_values``.
@@ -483,6 +541,11 @@ def route_experiment(free_params, param_values, species_initializers, condition=
     A seed the arithmetic grammar cannot differentiate, a non-``=`` parameter reference, and a
     target that binds no sensitivity entity all raise :class:`GradientNotSupported` rather than
     emit a silently-wrong column.
+
+    Terms of one route that meet on the same native column are **folded** into a single
+    contribution carrying their summed derivative (:func:`_fold_same_column`, #537) -- the same
+    sum the assembly would have accumulated, but leaving each column named exactly once, so a
+    column that *is* named twice is unambiguously a defect and can be checked for.
     """
     nominal_values = dict(param_values) if isinstance(param_values, dict) else {}
     param_ids = set(param_values)
@@ -538,9 +601,47 @@ def route_experiment(free_params, param_values, species_initializers, condition=
             # No model column at all (a free sigma, or a free parameter pinned out of every
             # experiment): a single NONE contribution, dropped by the request lists and assembly.
             contribs.append(RouteContribution(NONE, None, condition_factor(name, condition)))
-        routes[name] = ParamRoute(free_param=name, contributions=tuple(contribs))
+        routes[name] = ParamRoute(free_param=name,
+                                  contributions=_fold_same_column(contribs, env, name))
     return ExperimentRouting(routes=routes, nominal_values=nominal_values,
                              condition=condition)
+
+
+def _fold_same_column(contributions, env, free_param):
+    """Fold a route's same-``(target, key)`` terms into one contribution each (#537).
+
+    Two contributions can name one native column when a free parameter reaches it by more than
+    one path -- two condition targets whose ``initialAssignment``\\ s seed the same species, or
+    a bind-by-id term meeting a param-ref term on the same id. Their sum is the derivative
+    either way, so folding is arithmetically neutral; what it buys is that "one contribution
+    per column" becomes structural, letting
+    :meth:`ExperimentRouting.check_column_multiplicity` treat a repeated column as the
+    internal inconsistency it otherwise cannot be distinguished from. It also spares the
+    assembly a second read of a column it has already read.
+
+    The folded term sums the two **derivative trees**, not their evaluated factors, so a
+    point-dependent path keeps its symbolic form and :meth:`ExperimentRouting.at_point` still
+    refreshes the whole sum at each fit point. A route whose columns are already distinct --
+    every route of every fit that predates this -- is returned term-for-term unchanged.
+    """
+    folded = {}   # (target, key) -> RouteContribution, in first-seen order
+    for c in contributions:
+        prior = folded.get(c.column)
+        if prior is None:
+            folded[c.column] = c
+            continue
+        node = derivative.add(_node_of(prior), _node_of(c))
+        constant = derivative.is_constant(node)
+        folded[c.column] = RouteContribution(
+            c.target, c.key, _evaluate_factor(node, env, free_param),
+            None if constant else node)
+    return tuple(folded.values())
+
+
+def _node_of(contribution):
+    """A contribution's derivative as a tree -- its symbolic ``node``, or its constant factor."""
+    return (contribution.node if contribution.node is not None
+            else derivative.num(contribution.factor))
 
 
 def route_for_model(model, free_params, condition=None):

@@ -52,6 +52,7 @@ from pybnf.measurement.base import MeasurementLayer, MeasurementModel, PerMeasur
 from pybnf.objective import (
     ChiSquareObjective, LikelihoodObjective, LogNormalObjective, SumOfSquaresObjective,
 )
+from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter, PSet, Mutation, MutationSet
 
 
@@ -237,6 +238,52 @@ def test_multi_contribution_route_sums_columns():
     assert res.param_names == ['m']
     np.testing.assert_allclose(res.jacobian, J)
     np.testing.assert_allclose(res.gradient, J.T @ rho)
+
+
+def test_single_contribution_ic_route_contributes_exactly_once():
+    """The #537 invariant, stated positively: a route whose sole contribution is an ``ic``-axis
+    term assembles that column exactly once -- ``1 * ds0``, not ``2 * ds0``."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    obs = np.array([118.0, 82.0, 50.0, 38.0])
+    sigma = 4.0
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_ic=ds0)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'S0': ParamRoute.single('S0', IC, 'S()', 1.0)})
+    free = _free(('S0', 'uniform_var', 0.0, 500.0, 120.0))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.jacobian, ((1.0 / sigma) * ds0).reshape(-1, 1))
+
+
+def test_assembly_refuses_a_route_that_reads_one_ic_column_twice():
+    """#537: a route naming one native column twice is refused before a point is read, instead
+    of assembling that column at an integer multiple of its true value.
+
+    A ``Raia_CancerResearch2011`` gradient column came back at exactly 2x its central difference
+    once and never reproduced; its route was a single ``ic``-axis contribution, and nothing in
+    the objective -- which is finite, smooth and plausible either way -- could have revealed the
+    scaling. The assembly therefore checks the routing rather than trusting it."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_ic=ds0)
+    exp = _exp([118.0, 82.0, 50.0, 38.0], 4.0)
+    doubled = ExperimentRouting(routes={'S0': ParamRoute('S0', (
+        RouteContribution(IC, 'S()', 1.0), RouteContribution(IC, 'S()', 1.0)))})
+    free = _free(('S0', 'uniform_var', 0.0, 500.0, 120.0))
+
+    with pytest.raises(PybnfError, match="ic sensitivity column 'S\\(\\)' 2 times"):
+        assemble_gaussian_gradient(obj, [(sim, exp, doubled)], free)
+    # ...and the same guard stands on the Fisher (gntr) and constraint assemblers, which sum
+    # the same contributions through their own accessors.
+    with pytest.raises(PybnfError, match='2 times'):
+        assemble_fisher_hessian(obj, [(sim, exp, doubled)], free)
+    with pytest.raises(PybnfError, match='2 times'):
+        assemble_constraint_gradient([], {'m': {'s': sim}}, {('m', 's'): doubled}, free)
 
 
 def test_summation_across_experiments_stacks_residuals_and_sums_gradient():

@@ -169,6 +169,24 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Added
+- **A gradient routing that would read one sensitivity column twice is now refused, not
+  assembled (#537).** A route's derivative is the sum over its contributions, so two of them
+  naming the same native `(axis, key)` column add that column twice — and the result is a clean
+  integer multiple of the true derivative, which nothing downstream can detect: the objective
+  stays finite, smooth and plausible, and the fit simply walks a scaled surface to a wrong
+  answer. That is the shape a `Raia_CancerResearch2011` column came back in, once, during the
+  #535 finite-difference sweep — exactly 2× its central difference on `init_Rec_i`, the fit's
+  only initial-condition-axis parameter — and it has not reproduced in six runs at the same
+  point, so there is no confirmed defect to fix. What there is now is a standing check on the
+  narrow invariant it violated. Two halves: `route_experiment` **folds** terms that meet on one
+  column into a single contribution carrying their summed derivative tree (the same sum, one
+  tensor read, and `at_point` still refreshes a point-dependent path), which makes
+  one-contribution-per-column structural rather than incidental; and the gradient, EFIM and
+  constraint assemblers each `check_column_multiplicity()` on every routing they consume, once
+  per experiment, raising a `PybnfError` that names the free parameter, the axis and key of the
+  repeated column, and each duplicate's factor. Note the scope: this covers the routing and
+  assembly half of #537's hypothesis. A doubled column arriving from the backend's own
+  sensitivity tensor would still pass, and remains open on the issue.
 - **A floored or analytically scaled observable is now a gradient target (#533, ADR-0099).** The
   two ADR-0066 normalization primitives shipped with deliberately deferred gradients, so a fit
   whose experiment declared either — `normalization <obs> = floor 0.03, scale`, the chain

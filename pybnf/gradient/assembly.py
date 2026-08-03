@@ -553,7 +553,16 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
     references, so it is delegated to the model's ``prediction_sensitivity``, which calls back
     into this same accessor for each referenced column (a species/observable that *is* in the
     tensor, normalization-folded). A plain column has no measurement model and collapses to the
-    tensor/normalized sensitivity, so the no-measurement path is byte-identical."""
+    tensor/normalized sensitivity, so the no-measurement path is byte-identical.
+
+    The routing is checked here -- once per experiment, before any point is read -- for the one
+    structural property ``tensor_sens`` relies on and cannot itself detect: each route names
+    each native column exactly once, so summing a route's contributions counts each column
+    exactly once (:meth:`~pybnf.gradient.routing.ExperimentRouting.check_column_multiplicity`,
+    #537). A column added twice is a clean integer multiple of the true derivative, which no
+    objective value can reveal -- the fit just walks a scaled surface -- so it is asserted
+    rather than assumed."""
+    routing.check_column_multiplicity()
     norm = sim_data.normalization or {}
     measurement = getattr(objective, 'measurement', None)
     measurement_models = ({mm.observable_id: mm for mm in measurement.models}
@@ -792,7 +801,13 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
     or model-unbound (``NONE``) parameter left at 0 -- the constraint counterpart of the
     objective's ``raw_sens``, keyed by the full ``(model, suffix, observable)`` since a constraint
     may read any simulation's output. The independent variable does not move with theta
-    (sensitivity 0); a constant operand is handled by the constraint (it never calls this)."""
+    (sensitivity 0); a constant operand is handled by the constraint (it never calls this).
+
+    Every supplied routing is checked for the one-contribution-per-native-column invariant the
+    summation below relies on, exactly as the objective's accessor checks its own (#537)."""
+    for routing in routings.values():
+        routing.check_column_multiplicity()
+
     def raw_sens(model, suffix, observable, row):
         sim_data = sim_data_dict[model][suffix]
         sens = sim_data.output_sensitivities
