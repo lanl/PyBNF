@@ -89,6 +89,14 @@ that property per experiment rather than assume it (#537: a ``Raia_CancerResearc
 gradient column came back at exactly twice its central difference, once, on the one route in
 that fit with an ``ic``-axis contribution, and never again).
 
+The fold on its own would defeat that check, though -- it turns two same-column terms into one
+term of doubled factor, which after the fact is indistinguishable from a legitimate single
+term. So each contribution carries the chain-rule path(s) it came from
+(:attr:`RouteContribution.origins`: ``'bind'`` for the bind-by-id classification,
+``'ref:<target>'`` per condition parameter-reference), and the check reads *those*. One path
+reaching one column twice is the defect; two paths meeting on it is arithmetic, and only the
+labels tell them apart once the factors have been summed.
+
 Scope
 -----
 The seed grammar is arithmetic (``+ - * / **``, numbers, symbols). An initial value reached
@@ -148,11 +156,23 @@ class RouteContribution:
     Two contributions of one route never name the same ``(target, key)``: same-column terms
     are folded into one by :func:`route_experiment` (#537), so :attr:`column` is a route-unique
     identity the assembly can check against.
+
+    ``origins`` labels the chain-rule path(s) this term came from -- ``'bind'`` for the
+    bind-by-id classification, ``'ref:<target>'`` for a condition's parameter-reference through
+    that target. It carries the provenance a fold would otherwise erase: folding is what makes
+    one-contribution-per-column structural, but it also turns two same-column terms into one
+    term with a doubled factor, which is indistinguishable after the fact from a legitimate
+    single term. The labels keep the two apart -- one path reaching one column twice is a
+    defect, two paths meeting on it is arithmetic -- so
+    :meth:`ExperimentRouting.check_column_multiplicity` can still see through the fold.
+    Metadata, not identity: excluded from equality/hash/repr so a routing compares by what it
+    computes.
     """
     target: str
     key: object  # str (param id / species) for param/ic; None for none
     factor: float
     node: tuple = None
+    origins: tuple = field(default=(), compare=False, repr=False)
 
     @property
     def requested(self):
@@ -163,6 +183,19 @@ class RouteContribution:
     def column(self):
         """The native sensitivity column this term reads -- ``(target, key)`` (#537)."""
         return (self.target, self.key)
+
+    @property
+    def repeated_origin(self):
+        """The first chain-rule path this term folded in **more than once**, or ``None``.
+
+        One path reaching one native column twice is the double-count #537 is about; the fold
+        would otherwise present it as a single term with twice the factor."""
+        seen = set()
+        for origin in self.origins:
+            if origin in seen:
+                return origin
+            seen.add(origin)
+        return None
 
 
 @dataclass(frozen=True)
@@ -270,6 +303,21 @@ class ExperimentRouting:
             seen = {}
             for c in route.contributions:
                 seen.setdefault(c.column, []).append(c)
+                # A fold presents same-column terms as ONE contribution with their summed
+                # factor, so the count above can no longer see a path that reached one column
+                # twice -- only the provenance labels can.
+                repeated = c.repeated_origin
+                if repeated is not None:
+                    raise PybnfError(
+                        "Gradient routing is inconsistent: free parameter '%s' reaches the %s "
+                        "sensitivity column '%s' twice by the same chain-rule path (%s), and "
+                        "the two were folded into one term of factor %r -- so the assembly "
+                        "would scale that column by an integer multiple of the truth, which no "
+                        "fit can detect from its own objective. Two *different* paths meeting "
+                        "on one column is legitimate arithmetic; one path arriving twice is "
+                        "not. Please report this on lanl/PyBNF#537 with the model and "
+                        "configuration."
+                        % (name, c.target, c.key, repeated, c.factor))
             for (target, key), terms in seen.items():
                 if len(terms) == 1:
                     continue
@@ -302,7 +350,8 @@ class ExperimentRouting:
             contribs = tuple(
                 c if c.node is None
                 else RouteContribution(c.target, c.key,
-                                       _evaluate_factor(c.node, env, name), c.node)
+                                       _evaluate_factor(c.node, env, name), c.node,
+                                       origins=c.origins)
                 for c in route.contributions)
             routes[name] = ParamRoute(free_param=name, contributions=contribs)
         return ExperimentRouting(routes=routes, nominal_values=self.nominal_values,
@@ -605,7 +654,7 @@ def route_experiment(free_params, param_values, species_initializers, condition=
                 constant = derivative.is_constant(node)
                 ref_contribs.setdefault(free_param, []).append(RouteContribution(
                     axis, key, _evaluate_factor(node, env, free_param),
-                    None if constant else node))
+                    None if constant else node, origins=('ref:%s' % mut.name,)))
 
     routes = {}
     for name in free_params:
@@ -623,7 +672,7 @@ def route_experiment(free_params, param_values, species_initializers, condition=
             constant = derivative.is_constant(scaled)
             contribs.append(RouteContribution(
                 axis, key, _evaluate_factor(scaled, env, name),
-                None if constant else scaled))
+                None if constant else scaled, origins=('bind',)))
         contribs.extend(ref_contribs.get(name, []))
         if not contribs:
             # No model column at all (a free sigma, or a free parameter pinned out of every
@@ -662,7 +711,7 @@ def _fold_same_column(contributions, env, free_param):
         constant = derivative.is_constant(node)
         folded[c.column] = RouteContribution(
             c.target, c.key, _evaluate_factor(node, env, free_param),
-            None if constant else node)
+            None if constant else node, origins=prior.origins + c.origins)
     return tuple(folded.values())
 
 

@@ -489,6 +489,64 @@ def test_check_column_multiplicity_passes_a_routed_experiment():
                          rhs_symbols=DECAY_RHS).check_column_multiplicity()
 
 
+def test_fold_records_which_paths_it_merged():
+    """A fold must not erase the provenance the guard reads (#537 follow-up).
+
+    Folding is what makes one-contribution-per-column structural, but it also turns two
+    same-column terms into one term of doubled factor -- after which a count cannot tell a
+    legitimate two-path meeting from one path arriving twice. Each contribution therefore
+    carries its chain-rule path labels."""
+    r = route_experiment(['m'], TWO_PATH_PARAMS, DECAY_SPECIES,
+                         _pref(('a', '=', 'm'), ('b', '=', 'm')),
+                         ic_seed_map=TWO_PATH_SEEDS, rhs_symbols=DECAY_RHS)
+    (folded,) = r.routes['m'].contributions
+    assert folded.factor == 3.0
+    assert folded.origins == ('ref:a', 'ref:b')     # two DISTINCT paths -> legitimate
+    assert folded.repeated_origin is None
+    r.check_column_multiplicity()
+    # A bind-by-id term is labelled too, so a fold across the two kinds stays distinguishable.
+    plain = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, None, rhs_symbols=DECAY_RHS)
+    assert plain.routes['k'].contributions[0].origins == ('bind',)
+
+
+def test_provenance_is_metadata_not_identity():
+    """``origins`` is excluded from equality, hash and repr, so every existing assertion about
+    what a routing *computes* is unaffected by what it records."""
+    a = RouteContribution(IC, 'S()', 1.0)
+    b = RouteContribution(IC, 'S()', 1.0, origins=('bind',))
+    assert a == b and hash(a) == hash(b)
+    assert 'origins' not in repr(b)
+
+
+def test_check_column_multiplicity_sees_through_a_fold():
+    """The guard's real job: one chain-rule path reaching one column twice, already folded into
+    a single term of doubled factor, is still caught (#537 follow-up).
+
+    Before provenance was recorded this was invisible -- the fold left one contribution, the
+    count was 1, and the check passed a column scaled by two."""
+    routing = R.ExperimentRouting(routes={'init_Rec_i': ParamRoute('init_Rec_i', (
+        RouteContribution(IC, 'Rec_i', 2.0, origins=('bind', 'bind')),))})
+    with pytest.raises(PybnfError) as excinfo:
+        routing.check_column_multiplicity()
+    message = str(excinfo.value)
+    assert 'twice by the same chain-rule path' in message
+    assert "'init_Rec_i'" in message and "'Rec_i'" in message and '2.0' in message
+
+
+def test_at_point_preserves_provenance():
+    """``at_point`` rebuilds every point-dependent contribution, and must carry the labels
+    across or the guard goes blind exactly on the routings that get re-resolved each step."""
+    seeds = {'a': (SeedTerm(IC, 'S()', ONE),),
+             'b': (SeedTerm(IC, 'S()', ('sym', 'g')),)}
+    params = {'S0': 1.0, 'k': 0.1, 'a': 0.0, 'b': 0.0, 'g': 4.0}
+    r = route_experiment(['m'], params, DECAY_SPECIES,
+                         _pref(('a', '=', 'm'), ('b', '=', 'm')),
+                         ic_seed_map=seeds, rhs_symbols=DECAY_RHS)
+    resolved = r.at_point({'m': 2.0})
+    assert resolved.routes['m'].contributions[0].origins == ('ref:a', 'ref:b')
+    resolved.check_column_multiplicity()
+
+
 def test_check_column_multiplicity_rejects_an_ic_column_read_twice():
     """The #537 guard: a route that names one ``ic`` column twice is refused by name, rather
     than assembling a column at exactly twice its true value.

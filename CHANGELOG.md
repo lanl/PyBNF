@@ -206,7 +206,14 @@ All notable changes to PyBNF are documented below. This project adheres to
   one-contribution-per-column structural rather than incidental; and the gradient, EFIM and
   constraint assemblers each `check_column_multiplicity()` on every routing they consume, once
   per experiment, raising a `PybnfError` that names the free parameter, the axis and key of the
-  repeated column, and each duplicate's factor. Note the scope: this covers the routing and
+  repeated column, and each duplicate's factor. The fold would otherwise blind that check —
+  two same-column terms become one term of doubled factor, indistinguishable after the fact
+  from a legitimate single term — so each contribution records the chain-rule path(s) it came
+  from (`origins`: `bind`, or `ref:<target>` per condition parameter-reference) and the check
+  reads those. One path reaching one column twice is the defect; two paths meeting on it is
+  arithmetic, and only the labels separate them once the factors are summed. Provenance is
+  metadata: excluded from equality, hash and repr, so a routing still compares by what it
+  computes. Note the scope: this covers the routing and
   assembly half of #537's hypothesis. A doubled column arriving from the backend's own
   sensitivity tensor would still pass, and remains open on the issue.
 - **A floored or analytically scaled observable is now a gradient target (#533, ADR-0099).** The
