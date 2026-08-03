@@ -23,7 +23,10 @@ contract ``set_param`` already uses. So classification is by name (:func:`classi
   (``_parse_net_species_initializers``) routes to ``sensitivity_ic`` keyed by the *species*.
   An initial-condition parameter does not appear in the ODE RHS, so the ``parameter``
   sensitivity axis would be identically zero; bngsim's ``ic`` axis carries it. (Checked
-  first, because an IC parameter is *also* a ``begin parameters`` id.)
+  first, because an IC parameter is *also* a ``begin parameters`` id.) Whether the RHS truly
+  omits it is the *model's* answer -- ``ode_rhs_symbols`` -- not an inference from the seeding
+  pattern: a kinetic constant that a steady-state ``initialAssignment`` also uses seeds initial
+  conditions **and** drives the RHS (ADR-0097, #535).
 * a free parameter whose id is a model parameter routes to ``sensitivity_params`` keyed by
   the parameter.
 * a free parameter matching **no** model id (e.g. a free sigma) is **not** a sensitivity
@@ -332,7 +335,8 @@ def classify_free_param(free_param, param_ids, species_initializers):
     return (NONE, None)
 
 
-def classify_condition_target(target, param_ids, species_names, ic_seed_map):
+def classify_condition_target(target, param_ids, species_names, ic_seed_map,
+                              rhs_symbols=None):
     """Classify the model entity a param-ref condition sets: return a list of
     ``(axis, key, node)`` seeding terms.
 
@@ -358,7 +362,8 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map):
     :class:`GradientNotSupported` -- keeping a gradient/EFIM fit honest rather than emitting a
     silently-wrong column.
     """
-    terms = classify_bound_id(target, param_ids, species_names, ic_seed_map)
+    terms = classify_bound_id(target, param_ids, species_names, ic_seed_map,
+                              rhs_symbols=rhs_symbols)
     if terms:
         return terms
     raise GradientNotSupported(
@@ -367,7 +372,8 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map):
         f"bind; the gradient path cannot route it. Use a gradient-free optimizer or sampler.")
 
 
-def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initializers=()):
+def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initializers=(),
+                      rhs_symbols=None):
     """Every sensitivity column a model id reaches: ``[(axis, key, node), ...]``, possibly empty.
 
     The shared core of "what does this id move?", used for **both** a condition target and a
@@ -376,10 +382,15 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
     reaches the trajectory by *being* a quantity the ODE reads (its own axis) and by **seeding**
     other entities' initial values (``ic_seed_map``), and it may do both.
 
-    A **pure initial-value seed** -- an id that only seeds species ICs -- deliberately gets no
-    axis of its own: it is absent from the ODE right-hand side, so that axis is identically zero
-    and requesting it would only cost a sensitivity vector. This is the IC-precedence rule
-    :func:`classify_free_param` applies to a bare initializer, generalized to any seed.
+    A **pure initial-value seed** -- an id every one of whose seeds is a species IC -- gets no
+    axis of its own, *provided the model confirms the ODE right-hand side never reads it*
+    (``rhs_symbols``, from :meth:`BngsimModel.ode_rhs_symbols`). Both halves are needed. Seeding
+    only initial conditions does not imply absence from the right-hand side: a steady-state
+    ``initialAssignment`` seeds every species initial from the very kinetic constants that drive
+    the rate laws, and dropping their axes deleted the entire right-hand-side half of ten
+    derivatives in ``Fiedler_BMCSystBiol2016`` (ADR-0097, #535). ``rhs_symbols`` is a **veto on
+    dropping**, never a reason to drop: ``None`` -- the model cannot say -- keeps the axis, so
+    the worst case is one redundant sensitivity vector rather than a silent zero.
 
     ``species_initializers`` is the backend-independent fallback for an id the seed map does not
     mention: a *bare* initializer (``species <- p``) is a unit seed, which is how
@@ -400,7 +411,8 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
     terms = [(s.target, s.key, s.node) for s in seeds]
     if name in species_names:
         terms.append((IC, name, derivative.ONE))
-    elif name in param_ids and not _seeds_only_initial_conditions(seeds):
+    elif name in param_ids and not (_seeds_only_initial_conditions(seeds)
+                                    and _absent_from_rhs(name, rhs_symbols)):
         terms.append((PARAM, name, derivative.ONE))
     return terms
 
@@ -428,8 +440,25 @@ def _seeds_only_initial_conditions(seeds):
     return bool(seeds) and all(s.target == IC for s in seeds)
 
 
+def _absent_from_rhs(name, rhs_symbols):
+    """Whether the model has *told us* the ODE right-hand side never reads ``name``.
+
+    ``None`` -- the model cannot say -- is not absence: it returns ``False``, keeping the id's
+    own :data:`PARAM` axis. The two errors are not symmetric. A kept-but-zero axis costs one
+    forward-sensitivity vector; a dropped-but-live one silently omits every right-hand-side path
+    from that parameter's derivative, which is what a steady-state ``initialAssignment`` over
+    kinetic constants produced in ``Fiedler_BMCSystBiol2016`` (ADR-0097, #535).
+
+    Read only as a veto on a drop this function's caller had already decided on, so a model
+    whose ``ode_rhs_symbols`` misses a symbol keeps a column rather than losing one -- an
+    ``initialAssignment`` on a *compartment size* is exactly such a symbol, absent from every
+    rate law's text while scaling every rate in it.
+    """
+    return rhs_symbols is not None and name not in rhs_symbols
+
+
 def route_experiment(free_params, param_values, species_initializers, condition=None,
-                     ic_seed_map=None):
+                     ic_seed_map=None, rhs_symbols=None):
     """Build the :class:`ExperimentRouting` for one experiment (pure -- no model, no sim).
 
     ``free_params`` is the ordered free-parameter id list (the config's declared variables);
@@ -438,7 +467,9 @@ def route_experiment(free_params, param_values, species_initializers, condition=
     no environment to read and refuses); ``species_initializers`` the ``(species,
     initial-expr)`` pairs; ``condition`` the experiment's :class:`pybnf.pset.MutationSet`
     (``None`` for the wildtype experiment); ``ic_seed_map`` the ``{model parameter ->
-    SeedTerms}`` initial-value seed map (:func:`classify_condition_target`).
+    SeedTerms}`` initial-value seed map (:func:`classify_condition_target`); ``rhs_symbols`` the
+    ids the ODE right-hand side reads, or ``None`` when the model cannot say -- in which case
+    every bound id keeps its own axis (:func:`classify_bound_id`).
 
     A parameter-reference perturbation (a per-condition estimated initial condition, ADR-0076)
     ``target = free_param`` **composes** the chain rule: the referenced free parameter reaches
@@ -478,7 +509,8 @@ def route_experiment(free_params, param_values, species_initializers, condition=
                     f"per-condition estimated initial condition (ADR-0076). Use a gradient-free "
                     f"optimizer or sampler for this fit.")
             for axis, key, node in classify_condition_target(
-                    mut.name, param_ids, species_names, ic_seed_map):
+                    mut.name, param_ids, species_names, ic_seed_map,
+                    rhs_symbols=rhs_symbols):
                 constant = derivative.is_constant(node)
                 ref_contribs.setdefault(free_param, []).append(RouteContribution(
                     axis, key, _evaluate_factor(node, env, free_param),
@@ -494,7 +526,8 @@ def route_experiment(free_params, param_values, species_initializers, condition=
         # constant zero exactly as before.
         scale = derivative.num(condition_factor(name, condition))
         for axis, key, node in classify_bound_id(
-                name, param_ids, species_names, ic_seed_map, species_initializers):
+                name, param_ids, species_names, ic_seed_map, species_initializers,
+                rhs_symbols=rhs_symbols):
             scaled = derivative.mul(scale, node)
             constant = derivative.is_constant(scaled)
             contribs.append(RouteContribution(
@@ -515,15 +548,18 @@ def route_for_model(model, free_params, condition=None):
 
     Reads the model's ``begin parameters`` table (id -> nominal value), ``(species,
     initial-expr)`` pairs, and the initial-value seed map through
-    :meth:`BngsimModel.sensitivity_entity_namespace` (the only model coupling), so the routing
-    core stays backend-agnostic. ``condition`` may be a :class:`pybnf.pset.MutationSet`, a
-    condition *name* resolved against ``model.mutants``, or ``None`` for the wildtype
-    experiment.
+    :meth:`BngsimModel.sensitivity_entity_namespace`, plus the ids its ODE right-hand side reads
+    through :meth:`BngsimModel.ode_rhs_symbols` (the only model coupling), so the routing core
+    stays backend-agnostic. A model exposing neither answers ``None`` to the second question,
+    which keeps every bound id's own axis. ``condition`` may be a
+    :class:`pybnf.pset.MutationSet`, a condition *name* resolved against ``model.mutants``, or
+    ``None`` for the wildtype experiment.
     """
     param_values, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
+    rhs_symbols = getattr(model, 'ode_rhs_symbols', lambda: None)()
     condition = _resolve_condition(model, condition)
     return route_experiment(free_params, param_values, species_initializers, condition,
-                            ic_seed_map=ic_seed_map)
+                            ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols)
 
 
 def apply_routing(model, routing):

@@ -216,6 +216,71 @@ def _net_species_ic_seed_map(species_initializers, param_names):
     return seed_map
 
 
+def _net_blocks(net_lines):
+    """``{block name: [content line, ...]}`` for a .net file, comments and blanks stripped."""
+    blocks, current = {}, None
+    for raw_line in net_lines:
+        line = raw_line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        begin = re.match(r'begin\s+(\w+)', line)
+        if begin:
+            current = begin.group(1)
+            blocks.setdefault(current, [])
+            continue
+        if re.match(r'end\s+\w+', line):
+            current = None
+            continue
+        if current is not None:
+            blocks[current].append(line)
+    return blocks
+
+
+def _parse_net_rhs_symbols(net_lines):
+    """The parameter ids a .net file's ODE right-hand side reads -- deliberately over-inclusive.
+
+    The gradient router drops a bound id's own ``sensitivity_params`` axis only when the
+    right-hand side provably never reads it (ADR-0097); inferring that from the id's *seeding*
+    pattern instead silently deletes the right-hand-side half of the derivative of any rate
+    constant that also seeds an initial value. This is the net backend's answer, the twin of
+    :meth:`BngsimSbmlModelNoTimeout._compute_rhs_symbols`.
+
+    Collected from every reaction's rate-law column and every ``functions`` body, then expanded
+    transitively through the ``parameters`` block so a rate law reading a derived constant
+    (``kon = (1e7*T)/(NA*Vecf)``) also reaches ``T``, ``NA`` and ``Vecf``. The ``species`` block
+    is *not* a source: it sets initial values, whose parameters reach the fit through
+    ``_net_species_ic_seed_map`` instead.
+
+    Over-inclusion costs one redundant forward-sensitivity vector; under-inclusion silently
+    deletes half a derivative.
+    """
+    blocks = _net_blocks(net_lines)
+    token = re.compile(r'[A-Za-z_]\w*')
+    definitions = {}
+    for line in blocks.get('parameters', ()):
+        fields = line.split()
+        if len(fields) >= 3 and fields[0].isdigit():
+            definitions[fields[1]] = ' '.join(fields[2:])
+        elif len(fields) >= 2:
+            definitions[fields[0]] = ' '.join(fields[1:])
+    names = set()
+    for line in blocks.get('reactions', ()):
+        fields = line.split()
+        if len(fields) >= 4:
+            names.update(token.findall(' '.join(fields[3:])))
+    for line in blocks.get('functions', ()):
+        fields = line.split()
+        names.update(token.findall(' '.join(fields[2:] if fields[0].isdigit() else fields[1:])))
+    worklist = list(names)
+    while worklist:
+        name = worklist.pop()
+        for ref in token.findall(definitions.get(name, '')):
+            if ref not in names:
+                names.add(ref)
+                worklist.append(ref)
+    return frozenset(names)
+
+
 def _parse_bngl_param_block(model_lines):
     """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
     params = []

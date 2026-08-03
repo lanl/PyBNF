@@ -809,6 +809,92 @@ def test_sbml_fd_oracle_amount_species_seed(tmp_path):
         truth={'S0': 100.0, 'k': 0.3}, column='S', sigma=2.0)
 
 
+# A rate constant that ALSO seeds a species initial value -- the steady-state-initialisation
+# shape every COPASI/PEtab benchmark export uses, and the one that hid ADR-0097 (#535). `k` is
+# read by the rate law *and* is the sole input to S's initialAssignment, so it reaches the
+# trajectory both ways. Classifying it from its seeding alone ("seeds only ICs, therefore absent
+# from the right-hand side") drops the rate-law half of its derivative outright.
+_RHS_AND_SEED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="rhs_and_seed">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><plus/><cn>100</cn><ci>k</ci></apply></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@_needs_output_sens
+def test_sbml_rhs_symbols_exclude_an_initial_assignment_only_parameter(tmp_path):
+    """``ode_rhs_symbols`` reports what the right-hand side reads, and nothing seeded-only.
+
+    The two fixtures are the two sides of ADR-0097: ``k_src`` reaches the trajectory *only* by
+    seeding an alias, so its own axis really is zero and stays droppable; ``k`` is read by a rate
+    law as well as seeding an initial value, so it is not."""
+    aliased = Path(tmp_path) / 'aliased.xml'
+    aliased.write_text(_ALIASED_PARAM_SBML)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        str(aliased), str(aliased), pset=PSet([]),
+        actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    assert 'k_used' in model.ode_rhs_symbols()
+    assert 'k_src' not in model.ode_rhs_symbols()   # initialAssignment math is not the RHS
+
+    both = Path(tmp_path) / 'rhs_and_seed.xml'
+    both.write_text(_RHS_AND_SEED_SBML)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        str(both), str(both), pset=PSet([]),
+        actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    assert 'k' in model.ode_rhs_symbols()
+
+
+@_needs_output_sens
+def test_sbml_rate_constant_that_also_seeds_an_ic_keeps_its_parameter_axis(tmp_path):
+    """A parameter seeding only species ICs keeps its own axis when the RHS reads it (#535).
+
+    Seeding pattern alone said "pure initial-value seed, so the parameter axis is identically
+    zero" and dropped it -- deleting every rate-law path from the derivative. ``k`` must carry
+    both columns: the ``S`` initial-condition axis it seeds and its own parameter axis."""
+    xml_path = Path(tmp_path) / 'rhs_and_seed.xml'
+    xml_path.write_text(_RHS_AND_SEED_SBML)
+    xml = str(xml_path)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml, xml, pset=PSet([]), actions=(TimeCourse({'time': '10', 'step': '1'}),))
+    _, _, seeds = model.sensitivity_entity_namespace()
+    assert seeds == {'k': (SeedTerm(IC, 'S', ONE),)}
+
+    route = route_for_model(model, ['k'], None)
+    assert route.routes['k'].contributions == (
+        RouteContribution(IC, 'S', 1.0),       # the initial value it seeds
+        RouteContribution(PARAM, 'k', 1.0))    # AND the rate law that reads it
+    assert route.sensitivity_params == ['k'] and route.sensitivity_ic == ['S']
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_rate_constant_that_also_seeds_an_ic(tmp_path):
+    """FD oracle for the case above: with the parameter axis dropped the assembled gradient
+    carried only the seeding term, and no step size brought it onto the central difference."""
+    xml_path = Path(tmp_path) / 'rhs_and_seed.xml'
+    xml_path.write_text(_RHS_AND_SEED_SBML)
+    _assert_fd_matches(
+        tmp_path, str(xml_path), 'rhsseedfd', cond=None,
+        free=[FreeParameter('k', 'uniform_var', 0.01, 3.0, value=0.45)],
+        model_params=lambda theta: {'k': theta['k']},
+        truth={'k': 0.3}, column='S', sigma=2.0)
+
+
 # --- setup regression guard (default CI, no full fit) -------------------------- #
 def _decay_recovery_config(tmp_path, fit_type, *, observables=None, obs_column='S',
                            obs_formula=None, **overrides):

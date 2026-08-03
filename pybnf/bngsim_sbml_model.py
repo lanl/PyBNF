@@ -153,6 +153,12 @@ class BngsimSbmlModelNoTimeout(Model):
     _scored_suffixes = None
     _current_action_suffix = None
 
+    # The ids the ODE right-hand side reads (ADR-0097), set from the parsed document by
+    # _extract_sbml_structure. A class attribute so an instance built via object.__new__ (the
+    # _make_simulator test fakes, unpickling) answers "cannot say" rather than raising -- and
+    # "cannot say" keeps every parameter axis, which is the safe direction.
+    _rhs_symbols = None
+
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
                  strict_ssa=True):
         if integrator not in _SUPPORTED_INTEGRATORS:
@@ -222,6 +228,7 @@ class BngsimSbmlModelNoTimeout(Model):
         (self._species_unit_factor, self._species_assignment_to_concentration,
          self._unsafe_volume) = self._compute_species_unit_factors(doc.getModel())
         self._ic_seed_map = self._compute_ic_seed_map(doc.getModel())
+        self._rhs_symbols = self._compute_rhs_symbols(doc.getModel())
 
     @staticmethod
     def _collect_ast_names(node, out):
@@ -391,6 +398,60 @@ class BngsimSbmlModelNoTimeout(Model):
         for param in blocked:
             seed_map[param] = None  # one non-routable use blocks the parameter outright
         return seed_map
+
+    def _compute_rhs_symbols(self, sbml_model):
+        """Every symbol the ODE right-hand side can read -- deliberately over-inclusive.
+
+        The gradient router drops a bound id's own ``sensitivity_params`` axis only when the
+        right-hand side provably never reads it (ADR-0097). Answering that from the *seeding*
+        pattern instead was wrong for any model whose ``initialAssignment``\\ s are a
+        steady-state solution over the kinetic constants -- ``Fiedler_BMCSystBiol2016`` seeds all
+        six species initials from ``k2 … k10``, which are also the rate constants, so every one
+        of them lost its right-hand-side derivative (#535).
+
+        Collected from reaction kinetic laws, every rule (assignment/rate/algebraic) and every
+        function definition body, plus each event's trigger/delay/priority and assignments.
+        Including *all* rule math regardless of reachability is what makes a chain -- a rate law
+        reading a symbol an ``assignmentRule`` derives from a parameter -- resolve without a
+        transitive walk. **Not** collected: ``initialAssignment`` math, which seeds initial
+        values rather than driving the trajectory, and whose parameters reach the fit through
+        :meth:`_compute_ic_seed_map` instead. That exclusion is what keeps a COPASI alias
+        (``ModelValue_79 = k_syn_R_M``, ADR-0096) from paying for an axis that really is zero.
+
+        Over-inclusion costs one redundant forward-sensitivity vector; under-inclusion silently
+        deletes half a derivative, so every ambiguous case is resolved toward including.
+        """
+        names = set()
+        for i in range(sbml_model.getNumReactions()):
+            law = sbml_model.getReaction(i).getKineticLaw()
+            if law is not None:
+                self._collect_ast_names(law.getMath(), names)
+        for i in range(sbml_model.getNumRules()):
+            self._collect_ast_names(sbml_model.getRule(i).getMath(), names)
+        for i in range(sbml_model.getNumFunctionDefinitions()):
+            self._collect_ast_names(sbml_model.getFunctionDefinition(i).getMath(), names)
+        for i in range(sbml_model.getNumEvents()):
+            event = sbml_model.getEvent(i)
+            for part in (event.getTrigger(), event.getDelay(), event.getPriority()):
+                if part is not None:
+                    self._collect_ast_names(part.getMath(), names)
+            for j in range(event.getNumEventAssignments()):
+                assignment = event.getEventAssignment(j)
+                self._collect_ast_names(assignment.getMath(), names)
+                if assignment.getVariable():
+                    names.add(assignment.getVariable())
+        return frozenset(names)
+
+    def ode_rhs_symbols(self):
+        """The ids the ODE right-hand side reads (:meth:`_compute_rhs_symbols`), for the router.
+
+        The gradient router uses this only to *permit* dropping a pure initial-value seed's
+        own ``sensitivity_params`` axis: an id absent from this set and seeding nothing but
+        species initial conditions has an identically zero axis, so requesting it would waste a
+        sensitivity vector. Absence alone never drops an axis (ADR-0097, #535). Known at load
+        time -- no simulation.
+        """
+        return self._rhs_symbols
 
     @staticmethod
     def _ruled_symbols(sbml_model):

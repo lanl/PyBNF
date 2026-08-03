@@ -33,6 +33,12 @@ from pybnf.gradient import (
     PARAM, IC, NONE, ExperimentRouting, ParamRoute, RouteContribution, route_experiment,
 )
 from pybnf.gradient import assembly
+
+# The e2e_ode_decay fixture's ODE right-hand side: only ``k``. ``S0`` reaches the
+# trajectory solely by seeding species S()'s initial value, so its own parameter axis is
+# identically zero and the router may drop it -- which is what these gates' hardcoded
+# ``enable_output_sensitivities(params=['k'], ic=['S()'])`` request assumes (ADR-0097).
+DECAY_RHS = frozenset({'k', 'S()'})
 from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.priors.scale import Scale
 from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
@@ -2059,8 +2065,9 @@ def test_fd_acceptance_gate(k_type):
     # Per-experiment routing (factors): wildtype k=1, condition k=4; S0 is an unperturbed IC.
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2121,8 +2128,9 @@ def test_fd_acceptance_gate_logscale(scale):
 
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2209,8 +2217,9 @@ def test_fd_acceptance_gate_estimated_sigma(k_type):
 
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2271,8 +2280,9 @@ def test_fd_acceptance_gate_cumulative():
     exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2321,8 +2331,9 @@ def test_fd_acceptance_gate_per_measurement():
     exp_hi = _exp_pm_decay(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2365,8 +2376,9 @@ def test_fd_acceptance_gate_prediction_sigma():
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2413,8 +2425,9 @@ def test_fd_acceptance_gate_normalized(method):
     exp_hi = _exp_norm(k_factor * k_true, s0_true)
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2460,8 +2473,9 @@ def test_fd_acceptance_gate_laplace():
     exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), b)
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2506,8 +2520,9 @@ def test_fd_acceptance_gate_student_t(k_type):
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2548,8 +2563,9 @@ def test_fd_acceptance_gate_student_t_fixed_residual(k_type):
     exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2594,8 +2610,9 @@ def test_fd_acceptance_gate_neg_bin(k_type):
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2639,8 +2656,9 @@ def test_fd_acceptance_gate_neg_bin_median():
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2682,8 +2700,9 @@ def test_fd_acceptance_gate_neg_bin_median_estimated_dispersion():
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2725,8 +2744,9 @@ def test_fd_acceptance_gate_mean_logscale_gaussian():
     exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -2766,8 +2786,9 @@ def test_fd_acceptance_gate_mean_logscale_estimated_sigma():
     exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
     cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -3021,7 +3042,8 @@ def test_fd_acceptance_gate_constraint(model_kind):
     k_true, s0_true = 0.3, 100.0
     exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
 
     def make_cset():
         if model_kind == 'static':
@@ -3069,7 +3091,8 @@ def test_fd_acceptance_gate_estimated_scale(model_kind):
     k_true, s0_true = 0.3, 100.0
     exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
     params, species = ['S0', 'k'], [('S()', 'S0')]
-    route_wt = route_experiment(names, params, species, None)   # s_q is model-unbound -> NONE route
+    rhs = DECAY_RHS
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)   # s_q is model-unbound -> NONE route
 
     def make_cset():
         if model_kind == 'logit':
@@ -3152,7 +3175,8 @@ def test_fd_acceptance_gate_measurement_net():
     sim = _decay_run(free[0].value, free[1].value, True)
     obj = make_obj()
     obj.measurement.apply({'m': {'tc': sim}}, {p.name: p.value for p in free})
-    route = route_experiment(names, ['S0', 'k'], [('S()', 'S0')], None)
+    route = route_experiment(names, ['S0', 'k'], [('S()', 'S0')], None,
+                             rhs_symbols=DECAY_RHS)
     res = assemble_gaussian_gradient(obj, [(sim, exp, route)], free)
 
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
@@ -3332,7 +3356,8 @@ def test_fd_acceptance_gate_preequilibration(k_type):
     # phases switch inline) is not a free parameter, so both k_prod and k_deg route to the
     # parameter sensitivity axis with factor 1 (wildtype routing).
     params, species = ['k_prod', 'k_deg', 'Production_isOn'], []
-    routing = route_experiment(names, params, species, None)
+    rhs = None
+    routing = route_experiment(names, params, species, None, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -3413,8 +3438,9 @@ def test_fd_acceptance_gate_newton_dose_response(k_type):
 
     cond_hi = MutationSet([Mutation('k_deg', '*', k_factor)], 'hi')
     params, species = ['k_prod', 'k_deg'], []
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = None
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
@@ -3496,8 +3522,9 @@ def test_fd_acceptance_gate_dose_response(k_type):
     # dose (never a free parameter), so it is absent from the routing.
     cond_hi = MutationSet([Mutation('k_deg', '*', k_factor)], 'hi')
     params, species = ['k_prod', 'k_deg'], []
-    route_wt = route_experiment(names, params, species, None)
-    route_hi = route_experiment(names, params, species, cond_hi)
+    rhs = None
+    route_wt = route_experiment(names, params, species, None, rhs_symbols=rhs)
+    route_hi = route_experiment(names, params, species, cond_hi, rhs_symbols=rhs)
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}

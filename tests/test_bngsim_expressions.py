@@ -155,6 +155,43 @@ def test_net_species_ic_seed_map_bare_param_seed():
         'initB': (SeedTerm(IC, 'B()', ('num', 1.0)),)}
 
 
+def test_parse_net_rhs_symbols_reads_reactions_and_functions_not_species():
+    """The ids the .net ODE right-hand side reads (ADR-0097, #535).
+
+    ``kon``/``koff`` are rate-law columns; ``prod`` is reached through a ``functions`` body;
+    ``T`` and ``NA`` only through ``kon``'s own definition in the parameters block, which the
+    transitive expansion must follow. ``A_tot`` seeds a species initial value and nothing else,
+    so it is absent -- and that absence is what permits dropping its (identically zero)
+    parameter axis."""
+    lines = [
+        'begin parameters',
+        '  1 T 60',
+        '  2 NA 6.02e23',
+        '  3 kon (1e7*T)/NA',
+        '  4 koff 0.1',
+        '  5 k_prod 2.0',
+        '  6 A_tot 100',
+        'end parameters',
+        'begin species',
+        '  1 A() A_tot',
+        'end species',
+        'begin functions',
+        '  1 prod() k_prod*A_tot',
+        'end functions',
+        'begin reactions',
+        '  1 1,2 3 kon #_R1',
+        '  2 3 1,2 koff',
+        '  3 0 1 prod',
+        'end reactions',
+    ]
+    rhs = expressions._parse_net_rhs_symbols(lines)
+    assert {'kon', 'koff', 'prod', 'T', 'NA', 'k_prod'} <= rhs
+    assert 'A_tot' in rhs          # reached through the functions body, not the species block
+    # A parameter used ONLY to seed a species initial value stays out.
+    seed_only = [ln for ln in lines if 'prod() ' not in ln]
+    assert 'A_tot' not in expressions._parse_net_rhs_symbols(seed_only)
+
+
 def test_net_species_ic_seed_map_carries_the_non_unit_seed_derivative():
     """A numeric initializer seeds nothing; a non-bare expression carries its own
     ``d(IC)/d(param)`` -- 3.0 for ``3.0*Vo``, 1 for each side of ``k+kf`` (#530)."""

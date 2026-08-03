@@ -40,6 +40,7 @@ from .expressions import (
     _eval_model_expression,
     _build_mutant_param_set,
     _parse_net_species_initializers,
+    _parse_net_rhs_symbols,
     _net_species_ic_seed_map,
     _model_param_values,
 )
@@ -198,6 +199,12 @@ class BngsimModel(NetModel):
     # synchronously within one scan, never pickled.
     _pending_scan_sens = None
 
+    # The ids the ODE right-hand side reads (ADR-0097), parsed from the .net at build time.
+    # A class attribute for the same reason as the request above: an instance built via
+    # object.__new__ answers "cannot say", which keeps every parameter axis -- the safe
+    # direction, since only a stated absence may drop one.
+    _net_rhs_symbols = None
+
     def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
                  save_files=False):
         super().__init__(
@@ -217,6 +224,7 @@ class BngsimModel(NetModel):
         self._net_species_initializers = _parse_net_species_initializers(
             self.netfile_lines
         )
+        self._net_rhs_symbols = _parse_net_rhs_symbols(self.netfile_lines)
         if nf is not None:
             self._net_path = nf
             self._engine_model = _runtime.bngsim.Model.from_net(nf)
@@ -368,6 +376,18 @@ class BngsimModel(NetModel):
         species_initializers = list(self._net_species_initializers)
         return (param_values, species_initializers,
                 _net_species_ic_seed_map(species_initializers, param_values))
+
+    def ode_rhs_symbols(self):
+        """The ids the ODE right-hand side reads (``_parse_net_rhs_symbols``), for the router.
+
+        The gradient router uses this only to *permit* dropping a pure initial-value seed's
+        own ``sensitivity_params`` axis: an id absent from this set and seeding nothing but
+        species initial conditions has an identically zero axis, so requesting it would waste a
+        sensitivity vector. Absence alone never drops an axis (ADR-0097, #535). The SBML
+        backend's method documents the same contract. Read off the ``.net``
+        reactions/functions blocks at build time -- no simulation.
+        """
+        return self._net_rhs_symbols
 
     def _sensitivity_request_kwargs(self, method):
         """Simulator kwargs requesting forward sensitivities on the gradient path.

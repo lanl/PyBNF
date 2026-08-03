@@ -41,6 +41,11 @@ FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
 DECAY_PARAMS = ['S0', 'k']
 DECAY_SPECIES = [('S()', 'S0')]
 FREE = ['k', 'S0', 'sigma']   # k -> param, S0 -> ic, sigma -> none (a free noise nuisance)
+# What the fixture's ODE right-hand side reads. Only ``k``: ``S0`` reaches the trajectory purely
+# by seeding S()'s initial value, and saying so is what lets the router drop S0's identically
+# zero parameter axis. A caller that passes no such set is a model that cannot answer, and the
+# router then keeps every axis rather than infer absence from the seeding pattern (ADR-0097).
+DECAY_RHS = frozenset({'k', 'S()'})
 
 
 def _cond(*mutations):
@@ -111,7 +116,7 @@ def test_condition_factor_equals_pins_through_later_ops():
 # ----------------------------------------------------- experiment routing ----
 
 def test_route_experiment_wildtype():
-    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, None)
+    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, None, rhs_symbols=DECAY_RHS)
     assert r.sensitivity_params == ['k']
     assert r.sensitivity_ic == ['S()']
     assert r.routes['k'] == ParamRoute('k', (RouteContribution(PARAM, 'k', 1.0),))
@@ -122,7 +127,8 @@ def test_route_experiment_wildtype():
 
 
 def test_route_experiment_pinned_param_drops_request_column():
-    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('k', '=', 0.5)))
+    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('k', '=', 0.5)),
+                         rhs_symbols=DECAY_RHS)
     assert r.sensitivity_params == []         # k pinned -> column dropped from the request
     assert r.routes['k'].factor == 0.0
     assert r.routes['k'].target == PARAM      # still classified, just zero-factor
@@ -130,7 +136,8 @@ def test_route_experiment_pinned_param_drops_request_column():
 
 
 def test_route_experiment_pinned_ic_drops_request_column():
-    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('S0', '=', 50.0)))
+    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('S0', '=', 50.0)),
+                         rhs_symbols=DECAY_RHS)
     assert r.sensitivity_ic == []             # S0 pinned -> ic column dropped
     assert r.routes['S0'].factor == 0.0
     assert r.sensitivity_params == ['k']
@@ -138,7 +145,7 @@ def test_route_experiment_pinned_ic_drops_request_column():
 
 def test_route_experiment_scaled_factors_keep_columns():
     r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES,
-                         _cond(('k', '*', 3.0), ('S0', '/', 2.0)))
+                         _cond(('k', '*', 3.0), ('S0', '/', 2.0)), rhs_symbols=DECAY_RHS)
     assert r.routes['k'].factor == 3.0
     assert r.routes['S0'].factor == 0.5
     assert r.sensitivity_params == ['k']      # a non-zero factor keeps the column
@@ -146,7 +153,8 @@ def test_route_experiment_scaled_factors_keep_columns():
 
 
 def test_route_experiment_additive_shift_keeps_unit_factor():
-    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('k', '+', 1.0)))
+    r = route_experiment(FREE, DECAY_PARAMS, DECAY_SPECIES, _cond(('k', '+', 1.0)),
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['k'].factor == 1.0
     assert r.sensitivity_params == ['k']
 
@@ -167,9 +175,18 @@ IC_SEED_MAP = {'S0': 'S()'}
 
 def test_classify_condition_target_ic_seed():
     """A condition target that bares a species IC routes to the IC axis, derivative 1 -- and to
-    no parameter axis of its own: a pure IC seed is absent from the ODE right-hand side."""
+    no parameter axis of its own, *once the model confirms* the ODE right-hand side never reads
+    it. Absence has to be stated, not inferred from the seeding (ADR-0097)."""
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP,
+                                     rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
+
+
+def test_classify_condition_target_ic_seed_keeps_its_axis_when_the_rhs_is_unknown():
+    """Same target, no ``rhs_symbols``: the router cannot know the parameter axis is zero, so it
+    keeps it. One redundant sensitivity vector is the safe error; the other one deletes the whole
+    right-hand-side half of the derivative (ADR-0097, #535)."""
     assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == [
-        (IC, 'S()', ONE)]
+        (IC, 'S()', ONE), (PARAM, 'S0', ONE)]
 
 
 def test_classify_condition_target_param():
@@ -182,7 +199,8 @@ def test_classify_condition_target_seeds_several_entities():
     """A target that seeds several initial values contributes one term per seeded entity, each
     with its own derivative -- ``I_ = I0_`` and ``S_ = N_ - I0_`` (#530)."""
     seed_map = {'I0_': (SeedTerm(IC, 'I_', ONE), SeedTerm(IC, 'S_', ('num', -1.0)))}
-    assert classify_condition_target('I0_', {'I0_'}, {'I_', 'S_'}, seed_map) == [
+    assert classify_condition_target('I0_', {'I0_'}, {'I_', 'S_'}, seed_map,
+                                     rhs_symbols=frozenset({'I_', 'S_'})) == [
         (IC, 'I_', ONE), (IC, 'S_', ('num', -1.0))]
 
 
@@ -214,7 +232,8 @@ def test_classify_bound_id_falls_back_to_a_bare_initializer_without_a_seed_map()
     """With no ``ic_seed_map`` the bare initializer is still recognised, which is what every
     caller that predates the seed map relies on -- and a species is not double-counted through
     the SBML backend's ``[(s, s)]`` self-initializer convention."""
-    assert R.classify_bound_id('S0', {'S0'}, {'S()'}, {}, [('S()', 'S0')]) == [(IC, 'S()', ONE)]
+    assert R.classify_bound_id('S0', {'S0'}, {'S()'}, {}, [('S()', 'S0')],
+                               rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
     assert R.classify_bound_id('S', {'k'}, {'S'}, {}, [('S', 'S')]) == [(IC, 'S', ONE)]
 
 
@@ -251,7 +270,8 @@ def test_route_experiment_param_ref_routes_to_ic():
     """A per-condition estimated initial condition ``S0 = S0_A`` routes the *referenced* free
     parameter S0_A onto species S()'s IC axis (chain-rule factor 1), instead of aborting."""
     r = route_experiment(['k', 'S0_A'], DECAY_PARAMS, DECAY_SPECIES,
-                         _pref(('S0', '=', 'S0_A')), ic_seed_map=IC_SEED_MAP)
+                         _pref(('S0', '=', 'S0_A')), ic_seed_map=IC_SEED_MAP,
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['S0_A'].contributions == (RouteContribution(IC, 'S()', 1.0),)
     assert r.sensitivity_ic == ['S()']
     assert r.sensitivity_params == ['k']       # k still binds by id
@@ -270,7 +290,8 @@ def test_route_experiment_param_ref_multi_target_sums():
     """One free parameter assigned to several targets in one condition (a shared multiplier)
     accumulates one contribution per target -- its derivative is their sum."""
     r = route_experiment(['m'], DECAY_PARAMS, DECAY_SPECIES,
-                         _pref(('k', '=', 'm'), ('S0', '=', 'm')), ic_seed_map=IC_SEED_MAP)
+                         _pref(('k', '=', 'm'), ('S0', '=', 'm')), ic_seed_map=IC_SEED_MAP,
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['m'].contributions == (
         RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
     assert r.sensitivity_params == ['k']
@@ -293,7 +314,8 @@ def test_route_experiment_param_ref_non_unit_seed_sums_over_species():
     species' own derivative, so its Jacobian column is their sum (#530)."""
     seed_map = {'S0': (SeedTerm(IC, 'S()', ONE), SeedTerm(IC, 'T()', ('num', -1.0)))}
     r = route_experiment(['S0_A'], DECAY_PARAMS, DECAY_SPECIES,
-                         _pref(('S0', '=', 'S0_A')), ic_seed_map=seed_map)
+                         _pref(('S0', '=', 'S0_A')), ic_seed_map=seed_map,
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['S0_A'].contributions == (
         RouteContribution(IC, 'S()', 1.0), RouteContribution(IC, 'T()', -1.0))
     assert r.sensitivity_ic == ['S()', 'T()']
@@ -342,7 +364,8 @@ def test_route_experiment_param_ref_composes_with_a_non_unit_condition_factor():
     cond = MutationSet([Mutation('k', '*', 3.0),                          # scales the base bind
                         Mutation('S0', '=', 'k', is_param_ref=True)],     # k also seeds S()'s IC
                        'c')
-    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP)
+    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP,
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['k'].contributions == (
         RouteContribution(PARAM, 'k', 3.0), RouteContribution(IC, 'S()', 1.0))
     assert r.sensitivity_params == ['k'] and r.sensitivity_ic == ['S()']
@@ -354,7 +377,8 @@ def test_route_experiment_param_ref_survives_a_pinned_base_bind():
     cond = MutationSet([Mutation('k', '=', 0.5),                          # base bind pinned -> 0
                         Mutation('S0', '=', 'k', is_param_ref=True)],
                        'c')
-    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP)
+    r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES, cond, ic_seed_map=IC_SEED_MAP,
+                         rhs_symbols=DECAY_RHS)
     assert r.routes['k'].contributions == (
         RouteContribution(PARAM, 'k', 0.0), RouteContribution(IC, 'S()', 1.0))
     assert r.sensitivity_params == []          # pinned term dropped from the request
@@ -365,7 +389,8 @@ def test_route_experiment_param_ref_directly_bound_free_param_still_binds():
     """A free parameter that binds by id AND is param-referenced accumulates both contributions
     (its base bind plus the condition target)."""
     r = route_experiment(['k'], DECAY_PARAMS, DECAY_SPECIES,
-                         _pref(('S0', '=', 'k')), ic_seed_map=IC_SEED_MAP)
+                         _pref(('S0', '=', 'k')), ic_seed_map=IC_SEED_MAP,
+                         rhs_symbols=DECAY_RHS)
     # k binds param 'k' by id (base) and is routed to IC 'S()' by the condition.
     assert r.routes['k'].contributions == (
         RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
@@ -389,9 +414,11 @@ def test_apply_routings_unions_a_column_reached_only_through_a_condition():
     NOT a superset -- the union must carry it or the assembly aborts on a missing column
     (#511)."""
     free = ['k', 's0_free']
-    wildtype = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None, ic_seed_map=IC_SEED_MAP)
+    wildtype = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None,
+                                ic_seed_map=IC_SEED_MAP, rhs_symbols=DECAY_RHS)
     conditioned = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES,
-                                   _pref(('S0', '=', 's0_free')), ic_seed_map=IC_SEED_MAP)
+                                   _pref(('S0', '=', 's0_free')), ic_seed_map=IC_SEED_MAP,
+                                   rhs_symbols=DECAY_RHS)
     # The wildtype binds no IC column at all: s0_free matches no model id on its own.
     assert wildtype.sensitivity_ic == []
     assert conditioned.sensitivity_ic == ['S()']
@@ -407,8 +434,8 @@ def test_apply_routings_unions_a_column_reached_only_through_a_condition():
 def test_apply_routings_dedups_across_routings():
     """A column several conditions reach is requested once."""
     free = ['k', 'S0']
-    r1 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None)
-    r2 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None)
+    r1 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None, rhs_symbols=DECAY_RHS)
+    r2 = route_experiment(free, DECAY_PARAMS, DECAY_SPECIES, None, rhs_symbols=DECAY_RHS)
     model = _CapturingModel()
     params, ic = R.apply_routings(model, [r1, r2])
     assert params == ['k'] and ic == ['S()']
@@ -439,6 +466,18 @@ def test_sensitivity_entity_namespace(decay_model):
     # S0 seeds species S()'s initial value with derivative 1, so a condition setting S0 to a
     # free parameter can route that free parameter onto the S() IC axis (ADR-0076, #511).
     assert ic_seed_map == {'S0': (SeedTerm(IC, 'S()', ONE),)}
+
+
+@pytest.mark.bngsim
+def test_ode_rhs_symbols_reads_the_net_reactions_not_the_species_block(decay_model):
+    """The net backend's answer to "what does the ODE right-hand side read?" (ADR-0097, #535).
+
+    ``k`` is a rate law's rate constant; ``S0`` only seeds species S()'s initial value. Only the
+    first belongs, and saying so is what keeps S0's identically zero parameter axis droppable --
+    a rate constant that *also* seeds an initial value would appear here and keep its axis."""
+    rhs = decay_model.ode_rhs_symbols()
+    assert 'k' in rhs
+    assert 'S0' not in rhs
 
 
 @pytest.mark.bngsim
