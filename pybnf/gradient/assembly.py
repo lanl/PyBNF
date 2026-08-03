@@ -165,7 +165,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .errors import GradientNotSupported
-from .routing import PARAM, NONE
+from .routing import PARAM, IC, NONE
 from ..printing import PybnfError
 
 
@@ -563,6 +563,7 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
     objective value can reveal -- the fit just walks a scaled surface -- so it is asserted
     rather than assumed."""
     routing.check_column_multiplicity()
+    _check_axes_are_not_the_same_derivative(sens, routing)
     norm = sim_data.normalization or {}
     measurement = getattr(objective, 'measurement', None)
     measurement_models = ({mm.observable_id: mm for mm in measurement.models}
@@ -593,6 +594,57 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
         return _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens)
 
     return raw_sens
+
+
+def _check_axes_are_not_the_same_derivative(sens, routing):
+    """Refuse a route whose parameter axis and initial-condition axis are the *same* number (#537).
+
+    A free parameter that seeds a species initial value can reach the trajectory on two axes:
+    its own ``sensitivity_params`` column, and the ``sensitivity_ic`` column of the species it
+    seeds. The router keeps both when the model says the ODE right-hand side also reads the
+    parameter (ADR-0097, #535), because then the parameter axis carries the right-hand-side path
+    and the initial-condition terms carry the seeding -- two genuinely different quantities whose
+    sum is the derivative.
+
+    That is a statement about the *backend*, not a theorem. bngsim seeds ``∂x(0)/∂p`` into the
+    parameter axis as well (lanl/bngsim#43, widened to compound initialAssignment expressions by
+    lanl/bngsim#147), and where it does, the two axes are not complementary halves -- they are
+    the same derivative, and summing them doubles the column. On
+    ``Raia_CancerResearch2011`` the two are byte-identical, and forcing both into the route
+    reproduces #537's signature exactly: ``init_Rec_i`` at 2.00000x its central difference, every
+    other column untouched.
+
+    So it is checked rather than assumed, numerically and per experiment: for any route holding
+    both an IC contribution and its own PARAM contribution, compare the two tensor slices. Exact
+    equality across every selector and row is the signature -- two independent derivatives of a
+    live model do not coincide bit-for-bit -- so this refuses only a genuine double-count.
+    ``Fiedler_BMCSystBiol2016``, which legitimately routes both axes for seven parameters, has
+    slices that differ and passes.
+    """
+    if sens.d_param is None or sens.d_ic is None:
+        return   # only one axis was computed; nothing can be summed twice
+    for name, route in routing.routes.items():
+        own = next((c for c in route.contributions
+                    if c.target == PARAM and c.key == name and c.requested), None)
+        if own is None or own.key not in sens.param_names:
+            continue
+        p_col = sens.d_param[:, :, sens.param_names.index(own.key)]
+        for c in route.contributions:
+            if c.target != IC or not c.requested or c.key not in sens.ic_species:
+                continue
+            i_col = sens.d_ic[:, :, sens.ic_species.index(c.key)]
+            if p_col.shape != i_col.shape or not np.array_equal(p_col, i_col):
+                continue
+            raise PybnfError(
+                "Free parameter '%s' routes to both the parameter axis '%s' and the "
+                "initial-condition axis '%s', but the simulation returns bit-identical "
+                "sensitivity columns for the two -- they are the same derivative, not the "
+                "right-hand-side and seeding halves of one, so the assembly would sum it twice "
+                "and report this column at exactly twice its true value. The backend seeds "
+                "d(x(0))/d('%s') into the parameter axis, which already carries the whole "
+                "derivative for a parameter the right-hand side does not otherwise read; the "
+                "routing should drop that axis (ADR-0097). See lanl/PyBNF#537."
+                % (name, own.key, c.key, name))
 
 
 def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):

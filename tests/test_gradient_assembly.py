@@ -286,6 +286,48 @@ def test_assembly_refuses_a_route_that_reads_one_ic_column_twice():
         assemble_constraint_gradient([], {'m': {'s': sim}}, {('m', 's'): doubled}, free)
 
 
+def test_assembly_refuses_when_the_two_axes_are_the_same_derivative():
+    """#537: a route holding both its own parameter axis and an IC axis is refused when the two
+    tensor columns are bit-identical -- they are one derivative, not two halves of one.
+
+    This is the shape measured on ``Raia_CancerResearch2011``: bngsim seeds ``∂x(0)/∂p`` into
+    the parameter axis as well (lanl/bngsim#43), so for a parameter the right-hand side never
+    otherwise reads, ``d_param[p]`` and ``d_ic[species it seeds]`` are the same numbers. Summing
+    them reports that column at exactly 2x its central difference -- which is what #537 saw."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    same = np.array([1.0, 0.66, 0.44, 0.30])
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=same, d_ic=same)   # the two axes coincide
+    exp = _exp([118.0, 82.0, 50.0, 38.0], 4.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', (
+        RouteContribution(IC, 'S()', 1.0), RouteContribution(PARAM, 'k', 1.0)))})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    with pytest.raises(PybnfError, match='bit-identical sensitivity columns'):
+        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_assembly_allows_both_axes_when_they_are_genuinely_different():
+    """The Fiedler case (#535): a kinetic constant that both drives the right-hand side and
+    seeds initial conditions legitimately routes both axes, and their columns differ -- the
+    parameter axis carries the RHS path, the IC terms carry the seeding. Their sum is the
+    derivative, so this must assemble, not refuse."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    dk = np.array([0.0, -80.0, -106.0, -108.0])    # right-hand-side path
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])        # seeding path -- a different quantity
+
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp([118.0, 82.0, 50.0, 38.0], 4.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', (
+        RouteContribution(IC, 'S()', 1.0), RouteContribution(PARAM, 'k', 1.0)))})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.jacobian, ((1.0 / 4.0) * (dk + ds0)).reshape(-1, 1))
+
+
 def test_summation_across_experiments_stacks_residuals_and_sums_gradient():
     """Two experiments contribute stacked residual/Jacobian rows and a summed gradient --
     equal to assembling each alone and adding the scalar gradients."""

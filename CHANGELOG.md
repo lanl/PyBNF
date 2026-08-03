@@ -168,6 +168,28 @@ All notable changes to PyBNF are documented below. This project adheres to
     raise ``NotImplementedError`` — the boundary stays in code, never a silent mis-recovery. A
     linear problem is byte-for-byte unchanged.
 
+### Fixed
+- **A parameter's own sensitivity axis is not "identically zero" when it seeds an initial
+  condition — it is the whole derivative, and adding the IC axis to it doubles the column
+  (#537).** ADR-0097 drops the `sensitivity_params` axis of a parameter that only seeds species
+  initial values, documented as sparing a wasted vector on an axis that "would be identically
+  zero". Measured on `Raia_CancerResearch2011`, that axis is not zero: bngsim seeds `∂x(0)/∂p`
+  into it as well (lanl/bngsim#43, widened to compound `initialAssignment` expressions by
+  lanl/bngsim#147), so `d_param[init_Rec_i]` and `d_ic[Rec_i]` come back **bit-for-bit
+  identical** across every output. The drop is therefore load-bearing for correctness, and
+  forcing both axes into the route reproduces #537's signature exactly — `init_Rec_i` at
+  2.00000× its central difference, every other column untouched. Three changes. The claim is
+  corrected wherever it appears. The **unanswerable-model fallback is now a refusal**: ADR-0097
+  kept the axis when `ode_rhs_symbols()` could not say, on the strength of that false premise,
+  which means one error deletes half a derivative (#535) and the other doubles it — with no safe
+  default left, the router names the parameter and points at a gradient-free `job_type`. Both
+  shipped backends always answer, so no fit changes. And the assembly now **checks numerically**,
+  per experiment: a route holding both its own parameter axis and an IC axis whose tensor slices
+  are bit-identical is refused, since two independent derivatives of a live model do not coincide
+  to the last bit. `Fiedler_BMCSystBiol2016`, which legitimately routes both axes for seven
+  parameters (their columns genuinely differ — RHS path versus seeding), is unchanged at
+  ≤3.7e-06.
+
 ### Added
 - **A gradient routing that would read one sensitivity column twice is now refused, not
   assembled (#537).** A route's derivative is the sum over its contributions, so two of them

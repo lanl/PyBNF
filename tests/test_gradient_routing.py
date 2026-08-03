@@ -181,11 +181,26 @@ def test_classify_condition_target_ic_seed():
                                      rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
 
 
-def test_classify_condition_target_ic_seed_keeps_its_axis_when_the_rhs_is_unknown():
-    """Same target, no ``rhs_symbols``: the router cannot know the parameter axis is zero, so it
-    keeps it. One redundant sensitivity vector is the safe error; the other one deletes the whole
-    right-hand-side half of the derivative (ADR-0097, #535)."""
-    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == [
+def test_classify_condition_target_ic_seed_refuses_when_the_rhs_is_unknown():
+    """Same target, no ``rhs_symbols``: neither answer is safe, so the router refuses (#537).
+
+    ADR-0097 originally *kept* the axis here, reasoning that a kept-but-zero axis costs one
+    wasted sensitivity vector while a dropped-but-live one deletes the right-hand-side half of
+    the derivative (#535). The first half is false. A parameter that seeds a species initial
+    value has ``∂x(0)/∂p`` seeded into the **parameter** axis too (lanl/bngsim#43), so for a pure
+    initial-value seed that axis is byte-identical to the initial-condition axis it gets summed
+    with -- measured on ``Raia_CancerResearch2011``, where routing both gives a column at exactly
+    2x its central difference. Keeping it doubles; dropping it may delete. So: refuse."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='cannot say whether the ODE right-hand side'):
+        classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP)
+    # ...and with an answer, it decides: absent from the RHS -> the IC axis alone.
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP,
+                                     rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
+    # ...present in the RHS -> both, which is correct only because a compound seed's parameter
+    # axis carries the right-hand-side path and NOT the seeding (Fiedler, #535).
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP,
+                                     rhs_symbols=frozenset({'S0', 'k'})) == [
         (IC, 'S()', ONE), (PARAM, 'S0', ONE)]
 
 

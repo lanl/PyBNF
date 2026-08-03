@@ -404,8 +404,9 @@ class BngsimModel(NetModel):
 
         The gradient router uses this only to *permit* dropping a pure initial-value seed's
         own ``sensitivity_params`` axis: an id absent from this set and seeding nothing but
-        species initial conditions has an identically zero axis, so requesting it would waste a
-        sensitivity vector. Absence alone never drops an axis (ADR-0097, #535). The SBML
+        species initial conditions has no separate right-hand-side path on that axis, which
+        would otherwise duplicate the seeding its ``ic`` axis carries (#537). Absence alone never
+        drops an axis (ADR-0097, #535). The SBML
         backend's method documents the same contract. Read off the ``.net``
         reactions/functions blocks at build time -- no simulation.
         """

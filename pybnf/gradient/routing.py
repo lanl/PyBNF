@@ -21,9 +21,13 @@ contract ``set_param`` already uses. So classification is by name (:func:`classi
 
 * a free parameter whose id is a species' **bare initial-value expression**
   (``_parse_net_species_initializers``) routes to ``sensitivity_ic`` keyed by the *species*.
-  An initial-condition parameter does not appear in the ODE RHS, so the ``parameter``
-  sensitivity axis would be identically zero; bngsim's ``ic`` axis carries it. (Checked
-  first, because an IC parameter is *also* a ``begin parameters`` id.) Whether the RHS truly
+  An initial-condition parameter does not appear in the ODE RHS, so its ``parameter`` axis
+  carries no right-hand-side path; bngsim's ``ic`` axis carries the derivative. (Checked
+  first, because an IC parameter is *also* a ``begin parameters`` id.) That axis is **not**
+  identically zero, as this once claimed: the backend also seeds ``∂x(0)/∂p`` into it
+  (lanl/bngsim#43/#147), so for a pure initial-value seed it is byte-identical to the ``ic``
+  axis and summing the two doubles the column (#537). Dropping it is required for
+  correctness, not an optimization. Whether the RHS truly
   omits it is the *model's* answer -- ``ode_rhs_symbols`` -- not an inference from the seeding
   pattern: a kinetic constant that a steady-state ``initialAssignment`` also uses seeds initial
   conditions **and** drives the RHS (ADR-0097, #535).
@@ -376,7 +380,9 @@ def classify_free_param(free_param, param_ids, species_initializers):
 
     Checks the species initial-value namespace first: a free parameter that is a species'
     *bare* initial-value expression routes to the :data:`IC` axis keyed by the *species* (an
-    IC parameter is absent from the ODE RHS, so the parameter axis is identically zero).
+    IC parameter is absent from the ODE RHS, so its parameter axis carries no separate
+    right-hand-side path -- and, because the backend seeds ``∂x(0)/∂p`` into it, would
+    duplicate the IC axis rather than add to it, #537).
     Otherwise a match in the ``begin parameters`` namespace routes to :data:`PARAM` keyed by
     the id; no match at all is :data:`NONE` (a nuisance such as a free sigma -- no model
     column).
@@ -447,8 +453,13 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
     ``initialAssignment`` seeds every species initial from the very kinetic constants that drive
     the rate laws, and dropping their axes deleted the entire right-hand-side half of ten
     derivatives in ``Fiedler_BMCSystBiol2016`` (ADR-0097, #535). ``rhs_symbols`` is a **veto on
-    dropping**, never a reason to drop: ``None`` -- the model cannot say -- keeps the axis, so
-    the worst case is one redundant sensitivity vector rather than a silent zero.
+    dropping**, never a reason to drop.
+
+    A model that *cannot* say is **refused** (#537). ADR-0097 kept the axis there, calling the
+    worst case one redundant sensitivity vector; that is wrong, because the axis is not zero --
+    the backend seeds ``∂x(0)/∂p`` into it too, so keeping it doubles the column rather than
+    wasting a vector. With one error deleting half a derivative and the other doubling it,
+    there is no safe default left to pick.
 
     ``species_initializers`` is the backend-independent fallback for an id the seed map does not
     mention: a *bare* initializer (``species <- p``) is a unit seed, which is how
@@ -469,9 +480,20 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
     terms = [(s.target, s.key, s.node) for s in seeds]
     if name in species_names:
         terms.append((IC, name, derivative.ONE))
-    elif name in param_ids and not (_seeds_only_initial_conditions(seeds)
-                                    and _absent_from_rhs(name, rhs_symbols)):
-        terms.append((PARAM, name, derivative.ONE))
+    elif name in param_ids:
+        if not _seeds_only_initial_conditions(seeds):
+            terms.append((PARAM, name, derivative.ONE))
+        elif rhs_symbols is None:
+            raise GradientNotSupported(
+                f"Free parameter '{name}' seeds only species initial values, and this model "
+                f"cannot say whether the ODE right-hand side also reads it "
+                f"(no 'ode_rhs_symbols'). Both answers are silently wrong: dropping its own "
+                f"parameter axis deletes every right-hand-side path from its derivative (#535), "
+                f"and keeping it double-counts, because a seeded parameter's axis already "
+                f"carries the same initial-value derivative its initial-condition axis does "
+                f"(#537). Use a gradient-free optimizer or sampler for this fit.")
+        elif not _absent_from_rhs(name, rhs_symbols):
+            terms.append((PARAM, name, derivative.ONE))
     return terms
 
 
@@ -501,16 +523,22 @@ def _seeds_only_initial_conditions(seeds):
 def _absent_from_rhs(name, rhs_symbols):
     """Whether the model has *told us* the ODE right-hand side never reads ``name``.
 
-    ``None`` -- the model cannot say -- is not absence: it returns ``False``, keeping the id's
-    own :data:`PARAM` axis. The two errors are not symmetric. A kept-but-zero axis costs one
-    forward-sensitivity vector; a dropped-but-live one silently omits every right-hand-side path
-    from that parameter's derivative, which is what a steady-state ``initialAssignment`` over
-    kinetic constants produced in ``Fiedler_BMCSystBiol2016`` (ADR-0097, #535).
-
-    Read only as a veto on a drop this function's caller had already decided on, so a model
-    whose ``ode_rhs_symbols`` misses a symbol keeps a column rather than losing one -- an
+    Read only as a veto on a drop the caller had already decided on, so a model whose
+    ``ode_rhs_symbols`` misses a symbol keeps a column rather than losing one -- an
     ``initialAssignment`` on a *compartment size* is exactly such a symbol, absent from every
     rate law's text while scaling every rate in it.
+
+    ``None`` -- the model cannot say -- is handled by the caller, which **refuses** rather than
+    guessing (#537). ADR-0097 originally kept the axis in that case, on the reasoning that a
+    kept-but-zero axis costs one wasted sensitivity vector while a dropped-but-live one deletes
+    the right-hand-side half of the derivative (``Fiedler_BMCSystBiol2016``, #535). The first
+    half of that is false: the axis is **not** zero. A parameter that seeds a species initial
+    value through an ``initialAssignment`` has its ``∂x(0)/∂p`` seeded into bngsim's *parameter*
+    axis too (lanl/bngsim#43, widened to compound expressions by lanl/bngsim#147), so for a
+    pure initial-value seed the parameter axis carries **the whole derivative** -- byte-identical
+    to the initial-condition axis it would be summed with. Keeping it therefore does not waste a
+    vector, it doubles the column. Neither answer is safe without knowing what the RHS reads, so
+    an unanswerable model gets a refusal.
     """
     return rhs_symbols is not None and name not in rhs_symbols
 
