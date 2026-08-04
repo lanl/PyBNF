@@ -1030,20 +1030,36 @@ def test_normalization_peak_closed_form():
     assert obj is not None
 
 
-@pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit', ('floor', 0.03)],
-                         ids=['peak', 'init', 'zero', 'unit', 'floor'])
-def test_normalization_chain_rule_matches_finite_difference(method):
+@pytest.mark.parametrize('chain', [
+    ['peak'], ['init'], ['zero'], ['unit'], [('floor', 0.03)],
+    [('floor', 0.03), 'peak'], ['peak', ('floor', 0.03)], ['init', 'zero'], ['zero', 'unit'],
+    [('floor', 0.03), 'peak', 'zero'],
+], ids=['peak', 'init', 'zero', 'unit', 'floor',
+        'floor+peak', 'peak+floor', 'init+zero', 'zero+unit', 'floor+peak+zero'])
+def test_normalization_chain_rule_matches_finite_difference(chain):
     """Every normalization method's threaded derivative ``∂(normalize(raw))/∂θ`` matches a
     central finite difference of PyBNF's own ``Data.normalize`` applied to the raw column
     perturbed along its sensitivity -- an implementation-independent oracle (the analytic chain
     rule vs the actual reduction). Covers the row-coupling each method introduces: ``peak``/
     ``init`` (one reference row), ``unit`` (baseline + max), ``zero`` (every row, through σ),
-    and ``floor`` (the additive max-fraction offset, ADR-0066/#533)."""
+    and ``floor`` (the additive max-fraction offset, ADR-0066/#533).
+
+    Also covers **chains** of two or more ``Data``-level transforms (#539, ADR-0102), which the
+    fold composes stage by stage rather than reading a single record: each ordering of
+    floor/peak (the offset before and after the divisor it feeds), an ``init, zero`` and a
+    ``zero, unit`` (``zero`` couples every row through σ, on either side of the chain), and a
+    three-stage chain. The same FD oracle arbitrates all of them, since ``Data.normalize``
+    applies the whole chain."""
     raw = np.array([2.0, 9.0, 5.0, 3.0])
     dk = np.array([0.5, -2.0, 1.3, -0.7])
     sigma = 1.0
+    # One transform is spelled bare (the whole-column form the config emits for a single
+    # method); a chain is the ordered-pair list, one entry per stage, on the one scored column.
+    method = chain[0] if len(chain) == 1 else [(m, ['Stot']) for m in chain]
     sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
     sim.normalize(method)
+    assert [r.method for r in sim.normalization['Stot']] == [
+        m[0] if isinstance(m, tuple) else m for m in chain]
     exp = _exp(np.zeros(4), sigma)
     routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
@@ -1069,7 +1085,7 @@ def test_floor_normalization_closed_form():
     rho, sigma = 0.03, 1.0
     sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
     sim.normalize(('floor', rho))              # records method='floor', ref_row=argmax
-    assert sim.normalization['Stot'].method == 'floor'
+    assert [r.method for r in sim.normalization['Stot']] == ['floor']
     exp = _exp(np.zeros(4), sigma)
     routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
@@ -1080,20 +1096,78 @@ def test_floor_normalization_closed_form():
     np.testing.assert_allclose(res.jacobian[:, 0], expected / sigma)
 
 
-def test_chained_data_normalizations_refuse():
-    """Only the LAST ``Data``-level transform of a chain is recorded (the sidecar is keyed by
-    column) and every rule reads the *raw* sensitivities, so a two-transform chain
-    (``floor 0.03, peak``) cannot be composed from what is retained -- refused rather than
-    threading peak's rule alone over an already-floored column (#533)."""
+def test_chained_data_normalizations_fold_stage_by_stage():
+    """A chain of two ``Data``-level transforms composes to the closed form of the *composition*,
+    not to the last stage's rule alone (#539, ADR-0102 -- refused before it).
+
+    ``floor 0.03, peak`` is the arbiter: the floor moves the column the peak then divides by, so
+    the peak's divisor ``Y = M + ρM`` and its reference row both belong to the floored column,
+    and the reference term carries the floor's own ``(1+ρ)``::
+
+        y_i = x_i + ρM,     ∂y_i/∂θ = s_i + ρ s_p
+        n_i = y_i / y_p,    ∂n_i/∂θ = (∂y_i/∂θ - n_i ∂y_p/∂θ) / y_p
+
+    Threading peak's rule alone over the already-floored column -- what the pre-#533 path did --
+    would use the *raw* ``s_p`` for the reference term and miss the ``(1+ρ)`` entirely."""
     raw = np.array([2.0, 9.0, 5.0, 3.0])
-    sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
-    sim.normalize([(('floor', 0.03), ['Stot']), ('peak', ['Stot'])])
-    assert sim.normalization['Stot'].method == 'peak' and sim.normalization['Stot'].chained
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    rho = 0.03
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize([(('floor', rho), ['Stot']), ('peak', ['Stot'])])
+
+    # The sidecar is the chain in order, and the floor's own output -- which peak overwrote --
+    # rode along on its record, since its rule reads it and the column no longer holds it.
+    floor_rec, peak_rec = sim.normalization['Stot']
+    assert (floor_rec.method, peak_rec.method) == ('floor', 'peak')
+    np.testing.assert_allclose(floor_rec.values, raw + rho * np.max(raw))
+    assert peak_rec.values is None             # the last stage's output IS the column
+
     exp = _exp(np.zeros(4), 1.0)
     routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
-    with pytest.raises(GradientNotSupported, match='chain'):
-        assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    p = int(np.argmax(raw))
+    floored = raw + rho * np.max(raw)
+    d_floored = dk + rho * dk[p]               # every row picks up the same max-row term
+    normed = floored / floored[p]
+    expected = (d_floored - normed * d_floored[p]) / floored[p]
+    np.testing.assert_allclose(res.jacobian[:, 0], expected)
+
+    # The defect this closes: peak's rule alone, over the raw sensitivities, is a different
+    # number -- it misses the floor's contribution to the divisor's own derivative.
+    wrong = (dk - normed * dk[p]) / floored[p]
+    assert not np.allclose(res.jacobian[:, 0], wrong)
+
+
+def test_chain_built_by_direct_normalize_calls_folds():
+    """The chain's retained values come from the ``normalize_to_*`` methods themselves, not from
+    the ``Data.normalize`` chain driver, so a chain assembled by calling two of them directly
+    folds identically (#539). ``unit`` is the one that records *after* it moves the column (it
+    subtracts the baseline for every column first), so it is the stage this pins."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize_to_peak(cols=[1])
+    sim.normalize_to_unit_scale(cols=[1])      # consumes the peak-normalized column
+    np.testing.assert_allclose(sim.normalization['Stot'][0].values, raw / np.max(raw))
+
+    exp = _exp(np.zeros(4), 1.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    def normed_of(column):
+        d = Data.from_columns(np.column_stack([TIMES, column]), ['time', 'Stot'])
+        d.normalize_to_peak(cols=[1])
+        d.normalize_to_unit_scale(cols=[1])
+        return d.data[:, 1]
+
+    h = 1e-6
+    fd = (normed_of(raw + h * dk) - normed_of(raw - h * dk)) / (2.0 * h)
+    np.testing.assert_allclose(res.jacobian[:, 0], fd, rtol=1e-5, atol=1e-7)
 
 
 def _scaled_objective(obj, cols=('Stot',), data_key='expt'):

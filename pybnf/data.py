@@ -4,7 +4,7 @@
 import logging
 import numpy as np
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 from .printing import PybnfError
 
@@ -201,9 +201,10 @@ class NormalizationRecord:
     lives in :mod:`pybnf.gradient.assembly` (this is a plain fact holder; ``data.py`` knows
     no gradient math).
 
-    Every method's ``∂(normalized_i)/∂θ`` is a function of the **raw** per-row sensitivity
-    ``s_k = ∂raw_k/∂θ`` (the #447 tensor, untouched by normalization) and the **normalized**
-    column values ``n_k`` (read back from the now-rescaled ``Data``):
+    Every method's ``∂(normalized_i)/∂θ`` is a function of the per-row sensitivity of the values
+    this transform *consumed*, ``s_k = ∂raw_k/∂θ`` (the #447 tensor for the first transform of a
+    column, untouched by normalization), and of this transform's own output values ``n_k`` (for
+    the last transform of a column, read back from the now-rescaled ``Data``):
 
     * ``peak``/``init``: ``n_i = raw_i / N`` with ``N`` the column max (``ref_row`` =
       argmax) or the initial value (``ref_row`` = 0) -- ``∂n_i/∂θ = (s_i - n_i·s_ref)/N``.
@@ -219,13 +220,18 @@ class NormalizationRecord:
       to the simulated and the experimental column* so a log/relative objective stays finite where
       a series legitimately touches zero. ``∂n_i/∂θ = s_i + ρ·s_ref`` (#533).
 
-    One record is kept per column -- the **last** transform applied -- so a column put through a
-    *chain* of two or more ``Data``-level transforms (``floor 0.03, peak``) cannot be
-    reconstructed from the sidecar: each rule above reads the raw sensitivities, and the
-    intermediate stage's values are gone. Such a record carries :attr:`chained`, and the gradient
-    path refuses it rather than threading the last rule alone (the analytic ``scale`` is *not* a
-    ``Data`` transform, so the ``floor 0.03, scale`` chain records only the floor and stays
-    differentiable).
+    ``normalization`` is a **chain** (ADR-0066): ``normalization pStat = floor 0.03, peak`` puts
+    one column through two ``Data``-level transforms in order. :attr:`Data.normalization` maps a
+    column to the **list** of its records, in that order, and each stage's rule is the one above
+    read in *that stage's* own inputs -- so the gradient folds the chain forward, threading stage
+    1's rule through stage 2's, rather than reading a single record (#539, ADR-0102).
+
+    Each rule needs its stage's output values, and only the **last** stage's survive in the
+    column itself, so a stage whose output a later transform is about to overwrite keeps a copy
+    in :attr:`values` (populated by :meth:`Data._record_normalization` when the next stage
+    arrives). A column normalized once -- every job in the wild -- retains nothing: ``values``
+    stays ``None`` and the values are read from the ``Data``. The analytic ``scale`` is *not* a
+    ``Data`` transform, so the ``floor 0.03, scale`` chain records only the floor.
     """
 
     method: str                          # 'peak' | 'init' | 'zero' | 'unit' | 'floor'
@@ -235,7 +241,10 @@ class NormalizationRecord:
     sign: float = 1.0                    # unit-min branch flips the reference term's sign
     rho: float = 0.0                     # floor: the max-fraction added (x' = x + rho*max); 0 for every other method
     ddof: int = 0                        # zero: the K - ddof denominator of the std derivative
-    chained: bool = False                # this column was already normalized once (a chain; the earlier record is gone)
+    # This stage's output column, kept only when a LATER transform in the chain overwrote it
+    # (the last stage's output is the column itself). Out of the repr/eq: a record is compared
+    # and printed as the handful of scalars above, not as an array of values.
+    values: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
 
 
 class Data:
@@ -257,9 +266,10 @@ class Data:
         # Forward output sensitivities (#385/#447): None on the scalar path,
         # an OutputSensitivities payload on the gradient path. Additive only.
         self.output_sensitivities = None
-        # Per-column normalization records (#453/#385): None until normalize() runs,
-        # then {col_name: NormalizationRecord}. The gradient path reads it to thread the
-        # normalizer's own derivative; absent -> byte-identical. Additive only.
+        # Per-column normalization records (#453/#385): None until normalize() runs, then
+        # {col_name: [NormalizationRecord, ...]} in chain order (ADR-0066/0102). The gradient
+        # path reads it to thread the normalizer's own derivative; absent -> byte-identical.
+        # Additive only.
         self.normalization = None
         self.bind_to(self.update_weights)
         if file_name is not None:
@@ -528,7 +538,7 @@ class Data:
                 # rows where this observable is unmeasured; np.max would poison the whole column,
                 # so peak/argmax skip the NaNs and normalize only the real points.
                 self._record_normalization(c, NormalizationRecord(
-                    'peak', float(np.nanmax(column)), ref_row=int(np.nanargmax(column))))
+                    'peak', float(np.nanmax(column)), ref_row=int(np.nanargmax(column))), column)
                 self.data[:, c] = self.data[:, c] / np.nanmax(self.data[:, c])
 
     def normalize_to_init(self, idx=0, cols='all'):
@@ -550,7 +560,7 @@ class Data:
                 # Record N = initial value before the in-place divide overwrites row 0
                 # (#453): ref_row 0 is the divisor's source row for the gradient chain rule.
                 self._record_normalization(c, NormalizationRecord(
-                    'init', float(self.data[0, c]), ref_row=0))
+                    'init', float(self.data[0, c]), ref_row=0), self.data[:, c])
                 self.data[:, c] = self.data[:, c] / self.data[0, c]
 
     def normalize_to_zero(self, idx=0, bc=True, cols='all'):
@@ -571,17 +581,19 @@ class Data:
                 cols.remove(idx)
             ddof = 0 if not bc else 1
             for c in cols:
+                # Centre and scale out of place, so the column still holds this transform's
+                # *input* values when they are recorded below (a chain hands them to the
+                # previous stage, whose rule reads them -- ADR-0102). The arithmetic is the
+                # same subtract-then-divide as the in-place form it replaces.
                 col = self.data[:, c]
-                col -= np.mean(col)
-                std = np.std(col, ddof=ddof)
-                if std != 0:
-                    col /= std
-                self.data[:, c] = col
+                centered = col - np.mean(col)
+                std = np.std(centered, ddof=ddof)
                 # Record the z-score scale (std; 0 means the column was left un-divided) and
                 # the K - ddof denominator the gradient's d std/d theta uses (#453). z-score
                 # couples every row, so only these scalars are recorded -- the per-row mean of
                 # the sensitivities is recomputed from the tensor at gradient time.
-                self._record_normalization(c, NormalizationRecord('zero', float(std), ddof=ddof))
+                self._record_normalization(c, NormalizationRecord('zero', float(std), ddof=ddof), col)
+                self.data[:, c] = centered / std if std != 0 else centered
 
     def _subtract_baseline(self, idx=0, cols='all'):
         if cols == 'all':
@@ -606,6 +618,11 @@ class Data:
         if cols == 'all':
             cols = list(range(self.data.shape[1]))
             cols.remove(idx)
+        # Snapshot each column *before* the baseline subtraction: unlike every other method this
+        # one moves the column before it records, and a chain's earlier stage needs the values
+        # this transform consumed, not the baseline-subtracted ones (ADR-0102). A no-op (None)
+        # unless this column is already normalized, so a single unit-scaling copies nothing.
+        consumed = {c: self._chain_stage_input(c) for c in cols}
         self._subtract_baseline(idx, cols)
         for c in cols:
             # nan-aware (#479 follow-up): skip NaN rows (a sparse column's unmeasured points) so a
@@ -617,13 +634,14 @@ class Data:
                 # sensitivity enters with a flipped sign (#453); the baseline is still row 0.
                 self._record_normalization(c, NormalizationRecord(
                     'unit', float(np.abs(np.nanmin(self.data[:, c]))),
-                    ref_row=int(np.nanargmin(self.data[:, c])), baseline_row=0, sign=-1.0))
+                    ref_row=int(np.nanargmin(self.data[:, c])), baseline_row=0, sign=-1.0),
+                    consumed[c])
                 self.data[:, c] = self.data[:, c] / np.abs(np.nanmin(self.data[:, c]))
             else:
                 # N = the max-after-baseline; ref_row is its argmax, baseline is row 0 (#453).
                 self._record_normalization(c, NormalizationRecord(
                     'unit', float(cmax), ref_row=int(np.nanargmax(self.data[:, c])),
-                    baseline_row=0, sign=1.0))
+                    baseline_row=0, sign=1.0), consumed[c])
                 self.data[:, c] = self.data[:, c] / np.nanmax(self.data[:, c])
 
     def normalize_to_floor(self, rho, idx=0, cols='all'):
@@ -659,7 +677,7 @@ class Data:
             # Record the added amount (rho) and the max its argmax row before the offset -- the
             # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (#533).
             self._record_normalization(c, NormalizationRecord(
-                'floor', cmax, ref_row=int(np.nanargmax(column)), rho=float(rho)))
+                'floor', cmax, ref_row=int(np.nanargmax(column)), rho=float(rho)), column)
             self.data[:, c] = column + rho * cmax
 
     @staticmethod
@@ -682,8 +700,24 @@ class Data:
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
         return output
 
-    def _record_normalization(self, col_index, record):
-        """Stash how column ``col_index`` was normalized, keyed by its header name (#453).
+    def _chain_stage_input(self, col_index):
+        """The values a transform about to run on ``col_index`` will consume -- copied, but only
+        when an earlier transform already recorded this column (ADR-0102).
+
+        ``None`` for the first transform of a column, which is every column of every job that
+        normalizes once: there is no earlier stage waiting for these values, so nothing is
+        copied and the sidecar costs what it always did. Callers that move the column before
+        they record it (:meth:`normalize_to_unit_scale`, which subtracts the baseline for every
+        column first) take this snapshot at the top; the rest hand
+        :meth:`_record_normalization` the live column, which still holds its input values."""
+        if self.normalization is None:
+            return None
+        if not self.normalization.get(self.headers.get(col_index, col_index)):
+            return None
+        return self.data[:, col_index].copy()
+
+    def _record_normalization(self, col_index, record, consumed):
+        """Append how column ``col_index`` was just normalized, keyed by its header name (#453).
 
         The gradient path reads :attr:`normalization` to thread the normalizer's own
         derivative through ``∂(raw/N)/∂θ``; every other path ignores it. Keyed by **name**
@@ -691,19 +725,31 @@ class Data:
         scored column. Lazily creates the dict, so a never-normalized ``Data`` keeps
         ``normalization is None`` (byte-identical).
 
-        A second record for the same column means the column went through a *chain* of
-        ``Data``-level transforms (ADR-0066): the earlier stage's facts are overwritten and its
-        intermediate values are gone, so the new record is flagged :attr:`~NormalizationRecord.chained`
-        and the gradient refuses it rather than threading the last rule over a column an earlier
-        transform already moved."""
+        A column's value is the **list** of records for the transforms it went through, in chain
+        order (ADR-0066: ``floor 0.03, peak`` is two stages), so the gradient can fold the chain
+        stage by stage instead of reading a single record (#539, ADR-0102). Each stage's rule
+        reads that stage's *output* values, and only the last stage's survive in the column, so
+        a second record hands ``consumed`` -- the values this transform is about to replace,
+        which are exactly the previous stage's output -- back to the record that produced them.
+
+        :param consumed: the column as it stands *before* this transform, still holding the
+            values the transform consumes. Only read when this column is already normalized;
+            pass :meth:`_chain_stage_input`'s snapshot if the column moved before recording."""
         if self.normalization is None:
             self.normalization = {}
         # Key by header name when known (the gradient looks up a scored column by name); fall
         # back to the index for a headerless Data (no gradient path reads it -- just no crash).
         key = self.headers.get(col_index, col_index)
-        if key in self.normalization:
-            record = replace(record, chained=True)
-        self.normalization[key] = record
+        chain = self.normalization.setdefault(key, [])
+        if chain:
+            if consumed is None:
+                raise ValueError(
+                    "Recording a chained normalization ('%s' after '%s') on column %r without "
+                    "the values it consumes: the earlier stage's output is about to be "
+                    "overwritten and its chain rule reads it (ADR-0102)."
+                    % (record.method, chain[-1].method, key))
+            chain[-1] = replace(chain[-1], values=np.array(consumed, dtype=float))
+        chain.append(record)
 
     def normalize(self, method):
         """

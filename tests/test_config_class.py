@@ -768,6 +768,22 @@ class TestNewEraNormalization:
         assert c.config['analytic_scale'] == {'egf_high': frozenset({'x', 'y'}),
                                               'egf_low': frozenset({'x', 'y'})}
 
+    def test_data_level_chain_compiles_in_order_and_records_both_stages(self):
+        # A chain of two DATA-level transforms (#539, ADR-0102): both are applied to the column,
+        # so both are emitted -- in chain order, which is what makes the sim Data record the two
+        # stages in the order the gradient folds them.
+        c = self._build_grid({('normalization', 'x'): [('floor', 0.03), 'peak']})
+        assert c.config['normalization'] == {
+            'egf_high': [(('floor', 0.03), ['x']), ('peak', ['x'])],
+            'egf_low': [(('floor', 0.03), ['x']), ('peak', ['x'])]}
+        assert not c.config.get('analytic_scale')      # no scoring-time transform here
+        d = data.Data(file_name='bngl_files/par1.exp')
+        raw_x = d.data[:, d.cols['x']].copy()
+        d.normalize(c.config['normalization']['egf_high'])
+        assert [r.method for r in d.normalization['x']] == ['floor', 'peak']
+        np.testing.assert_allclose(d.normalization['x'][0].values,
+                                   raw_x + 0.03 * np.nanmax(raw_x))
+
     def test_invalid_type_in_chain_lists_floor_and_scale(self):
         with pytest.raises(printing.PybnfError, match='floor, scale'):
             self._resolve({('normalization', 'x'): [('bogus', 1.0)]})
@@ -831,7 +847,7 @@ class TestNewEraPreprocessingKeysRideThrough:
         assert c.obj._scale_mode('x') == 'linear'
         # The experimental x column was floored in place (a 'floor' record proves it).
         floored = next(iter(c.exp_data.values()))['par1']
-        assert floored.normalization['x'].method == 'floor'
+        assert [r.method for r in floored.normalization['x']] == ['floor']
 
 
 class TestRaggedReplicates:

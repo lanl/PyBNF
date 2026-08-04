@@ -436,10 +436,11 @@ own derivative so it stays exact.
   (:math:`\hat y_i + \rho\max\hat y`) is additive, so every row picks up the same
   :math:`\rho\,\partial\hat y_p/\partial\theta` term. All five are
   threaded, and any combination of these transforms composes (normalization is applied first, then
-  the cumulative/per-measurement transform on top, exactly as scoring does). The one exception is a
-  **chain of two or more of these** on one column (``floor 0.03, peak``): only the last transform's
-  facts are recorded, so the gradient path refuses it rather than compose it wrongly. A chain
-  ending in ``scale`` is fine — ``scale`` is not a data-level transform.
+  the cumulative/per-measurement transform on top, exactly as scoring does). A **chain** of two or
+  more of them on one column (``floor 0.03, peak``) composes as well: each stage's rule is that
+  same closed form read in *its own* inputs — the previous stage's per-row sensitivities — so the
+  gradient folds the chain forward, one wrapper per stage, with the values a stage produced riding
+  along on its record when the next transform overwrites them (#539).
 
 * **Analytic per-series scale** (``normalization <obs> = scale``): the scored value is
   :math:`c^{*}(\theta)\,\hat y_i(\theta)`, where :math:`c^{*}` is profiled out of the *whole*
@@ -643,8 +644,8 @@ log; see *Log / lognormal noise scale* above), with each noise parameter either 
 from the data / a constant) or estimated as a **single free parameter** (see *Estimated σ* and
 *Asymmetric and non-Gaussian families* above), the prediction formed through any of the
 per-observable **trajectory transforms** (cumulative→incident, a per-measurement scale/offset,
-normalization — floor included — or an analytic per-series scale; see *Trajectory transforms and
-normalization* above), and observables materialized
+normalization — floor and multi-transform chains included — or an analytic per-series scale; see
+*Trajectory transforms and normalization* above), and observables materialized
 through a **measurement-model layer** (the SBML/Antimony / ``observableFormula`` path; see
 *Measurement-model layer* above). Any other configuration raises a clear ``GradientNotSupported``
 naming what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
