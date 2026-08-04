@@ -2326,6 +2326,75 @@ def _decay_run(k_eff, s0_eff, with_sensitivities):
     return model.execute('/tmp', 'fd', 60)['tc']
 
 
+# The #532 pre-equilibration fixture with its LOADING DOSE written over a fitted parameter
+# (#538) -- the shape a ``preequilibrate:`` condition with a species target emits. ``P`` is
+# never loaded, so nothing produces ``A`` and the dose simply decays at ``k_deg + washout``
+# through a fixed-duration equilibration into the measured phase.
+PREEQUIL_DOSE_ACTIONS = [
+    'setConcentration("A()","2*k_deg")',
+    'simulate({method=>"ode",t_start=>0,t_end=>0.5,n_steps=>1,suffix=>"pre"})',
+    'simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10,suffix=>"relax"})',
+]
+
+
+def _preequil_dose_run(k_deg, washout, free=None):
+    """Run the pre-equilibration net at the given rates, on the gradient path when ``free``.
+
+    Returns the measured ``relax`` :class:`Data` and the routing built from the model's own
+    bind-by-id namespace. Both free parameters land on the parameter axis; ``k_deg`` reaches
+    the trajectory twice over -- through the decay rate AND through the dose it sets -- and the
+    second path exists only because the write's ``∂x_k(0)/∂θ`` row is declared (#538)."""
+    import pybnf.bngsim_model as bngsim_model
+    from pybnf.gradient import route_for_model, apply_routing
+    net = FIXTURES / 'e2e_ode_preequil_scan.net'
+    model = bngsim_model.BngsimModel(
+        net.stem, list(PREEQUIL_DOSE_ACTIONS),
+        [('simulate', 'pre'), ('simulate', 'relax')], [], nf=str(net))
+    model.param_set = PSet([
+        FreeParameter('k_deg', 'uniform_var', 0.0, 100.0, value=k_deg),
+        FreeParameter('washout', 'uniform_var', 0.0, 100.0, value=washout),
+    ])
+    routing = None
+    if free is not None:
+        routing = route_for_model(model, [p.name for p in free])
+        apply_routing(model, routing)
+        model.set_scored_suffixes({'relax'})
+    return model.execute('/tmp', 'fd_preequil', 60)['relax'], routing
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_preequilibration_dose_over_a_fitted_parameter():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) for a
+    pre-equilibration protocol whose **loading dose is a fitted parameter** (#538).
+
+    This is the assembled-column form of the acceptance #538 asks for: ``k_deg`` sets the dose
+    (``setConcentration("A()","2*k_deg")``, the write a ``preequilibrate:`` species condition
+    emits) *and* the decay rate, while ``washout`` only decays. Without the declared
+    ``∂x_k(0)/∂θ`` row the dose half of ``k_deg``'s column vanishes and the assembled gradient
+    misses central differences by a wide margin -- while ``washout``'s column, which never
+    passes through the write, stays right. A fit sees only a plausible wrong direction."""
+    sigma = 0.02
+    free = [FreeParameter('k_deg', 'uniform_var', 0.1, 10.0, value=2.0),
+            FreeParameter('washout', 'uniform_var', 0.0, 10.0, value=0.4)]
+    names = [p.name for p in free]
+
+    gen, _ = _preequil_dose_run(1.7, 0.3)
+    t = gen.data[:, gen.cols['time']]
+    a = gen.data[:, gen.cols['A_tot']]
+    exp = Data.from_columns(np.column_stack([t, a, np.full(len(a), sigma)]),
+                            ['time', 'A_tot', 'A_tot_SD'])
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim, _ = _preequil_dose_run(theta['k_deg'], theta['washout'])
+        return ChiSquareObjective().evaluate(sim, exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim, routing = _preequil_dose_run(free[0].value, free[1].value, free)
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
 @pytest.mark.bngsim
 @pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
 def test_fd_acceptance_gate(k_type):

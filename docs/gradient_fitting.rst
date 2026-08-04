@@ -572,6 +572,17 @@ hint. Scanning a parameter the fit is *differentiating* is refused — the carri
 taken at the pre-scan value while each dose pins the same symbol — so scan the dose/condition
 parameter the data sweeps.
 
+The **pre-equilibration condition's own** species perturbation (a ``preequilibrate:`` condition
+with a species target) is the same assignment written one phase earlier, before anything has run,
+and it is differentiated the same way: PyBNF declares the assignment's
+:math:`\partial x_k(0)/\partial\theta` to the backend so the run is seeded from it (ADR-0101). This
+matters only for a **fixed-duration** equilibration (``equil_t_end:``) — a steady-state
+equilibration relaxes the assigned amount away, so the measured phase genuinely does not depend on
+it. In both positions, an amount that reads a fitted parameter which no requested sensitivity
+column carries is refused by name rather than contributing a zero row: write such a dose over model
+parameters the fit varies (``"A()" = 2*k_deg``, or through a derived id), not over a free parameter
+that binds no model parameter.
+
 
 Discrete events
 ---------------

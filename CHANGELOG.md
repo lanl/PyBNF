@@ -6,6 +6,25 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A pre-equilibration condition that doses a species from a fitted parameter no longer reports a
+  zero gradient column for it (#538, ADR-0101).** `preequilibrate:` applies its condition inline,
+  so a species target becomes a `setConcentration` written *before* the first phase — and
+  `Model.set_concentration` reads an assigned amount as a literal initial condition
+  (`∂x_k(0)/∂θ = 0`), retiring whatever seeding the species' `.net` expression carried
+  (lanl/bngsim#113). ADR-0098 supplies that row for a write between two phases; with nothing
+  pending it had nothing to rebuild and left the write to the backend, so an amount like
+  `"A()" = 2*k_deg` contributed **exactly zero** to `k_deg`'s derivative. Nothing failed and no
+  refusal fired: the fit simply walked a wrong steepest direction to a plausible answer. PyBNF now
+  *declares* the assignment's own `∂x_k(0)/∂θ` (`Model.declare_ic_sensitivity`, the API bngsim
+  documents for a hand-assigned θ-dependent initial condition), so bngsim's own seeding starts from
+  it — narrowly, only when a fitted parameter reaches the amount, so every protocol whose gradient
+  was already right reaches the backend through the same calls as before. An `addConcentration`
+  re-declares the row its constant shift left alone. Visible only with a **fixed-duration**
+  equilibration (`equil_t_end:`, what the preincubate → wash → dose-scan protocols use); a
+  steady-state equilibration relaxes the dose away, so the derivative is genuinely zero there.
+  Also new: an intervention amount that reads a fitted parameter **no** requested
+  forward-sensitivity column carries is now refused by name, on both this path and the
+  mid-protocol one, rather than silently contributing a zero row.
 - **A pre-equilibrated dose-response experiment can now be fit by a gradient method (#532,
   ADR-0098).** The preincubate → wash → dose-scan protocol (`preequilibrate:` + `condition:` +
   `type: parameter_scan`) refused every scored gradient evaluation, and the refusal landed at
