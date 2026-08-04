@@ -635,6 +635,119 @@ def test_intervention_amount_reading_a_fitted_parameter_seeds_its_own_derivative
         2 * decay * (1.0 - PREEQUIL_K_DEG * PREEQUIL_T_END), rtol=1e-4, atol=1e-7)
 
 
+# ---- the same dose written BEFORE the first phase (#538) ----
+#
+# The perturbation of a ``preequilibrate:`` condition is a species write with nothing pending:
+# no phase has run since the reset, so what it supersedes is the .net's own initial-condition
+# seeding rather than a carried ``dx/dθ``. bngsim retires that row on an assignment
+# (lanl/bngsim#113), which is right for the literal amount ``set_concentration`` documents and
+# wrong for an amount written over a fitted parameter -- the row has to be *declared* instead.
+#
+# Oracle: with ``P`` never loaded nothing produces ``A``, so a dose of ``2*k_deg`` decays
+# through a FIXED-duration equilibration into the measured phase, and only the total elapsed
+# time matters:
+#
+#     A(T) = 2*k_deg*exp(-k_deg*T)          T = PREEQUIL_EQUIL_T + PREEQUIL_T_END
+#     dA/dk_deg = 2*exp(-k_deg*T)*(1 - k_deg*T)
+#
+# A steady-state equilibration would wash the dose out entirely and see nothing; a fixed
+# duration is what the #474 preincubate protocols use (``equil_t_end:``), and it is what
+# carries the defect into the measured phase.
+
+PREEQUIL_EQUIL_T = 0.5
+PREEQUIL_TOTAL_T = PREEQUIL_EQUIL_T + PREEQUIL_T_END
+
+_PREEQUIL_FIXED_EQUIL = ('simulate({method=>"ode",t_start=>0,t_end=>%g,n_steps=>1,'
+                         'suffix=>"pre"})' % PREEQUIL_EQUIL_T)
+
+
+def _fresh_dose_model(*writes):
+    """The dose-before-the-first-phase protocol: ``writes`` -> fixed equilibration -> measure."""
+    return _preequil_model([*writes, _PREEQUIL_FIXED_EQUIL, _PREEQUIL_MEASURE],
+                           [('simulate', 'pre'), ('simulate', 'relax')])
+
+
+@pytest.mark.parametrize('amount', ['2*k_deg', 'bolus'], ids=['literal_expr', 'derived_param'])
+def test_equilibration_phase_dose_reading_a_fitted_parameter_declares_its_own_derivative(amount):
+    """A dose written over the fitted parameter BEFORE the first phase keeps its derivative.
+
+    The mid-protocol twin of the test above, and the half #532 left open: with nothing pending
+    there is no matrix to rebuild, so the assignment's row is declared to the engine
+    (``Model.declare_ic_sensitivity``) and bngsim's own seeding starts from it. Left to the
+    backend the write retires the species' parameter-graph row and the column comes back
+    **exactly zero** -- 0 where the truth is ``-0.199`` -- which no objective can detect."""
+    model = _fresh_dose_model('setConcentration("A()","%s")' % amount)
+    data = model.execute('/tmp', 'preequil_fresh_bolus', 120)['relax']
+
+    decay = np.exp(-PREEQUIL_K_DEG * PREEQUIL_TOTAL_T)
+    assert data.data[-1, data.cols['A_tot']] == pytest.approx(
+        2 * PREEQUIL_K_DEG * decay, rel=1e-5)
+    assert data.output_sensitivities.slice_for('observable:A_tot')[-1, 0] == pytest.approx(
+        2 * decay * (1.0 - PREEQUIL_K_DEG * PREEQUIL_TOTAL_T), rel=1e-4)
+
+
+def test_a_constant_shift_of_a_declared_dose_keeps_the_declared_row():
+    """``addConcentration`` shifts the amount without replacing it, so ``d/dθ`` is unchanged --
+    the same reading as the carried case, applied before the first phase.
+
+    Dosing to ``2*k_deg`` and then adding a literal ``1`` gives ``A(0) = 2*k_deg + 1``, so
+    ``dA/dk_deg = exp(-k_deg*T)*(2 - (2*k_deg+1)*T)``. bngsim retires the row on the shift too
+    (it is a ``set_concentration`` underneath), so without re-declaring it the ``2`` term is
+    lost and only the ``-(2*k_deg+1)*T`` half survives."""
+    model = _fresh_dose_model('setConcentration("A()","2*k_deg")', 'addConcentration("A()",1)')
+    data = model.execute('/tmp', 'preequil_fresh_shift', 120)['relax']
+
+    decay = np.exp(-PREEQUIL_K_DEG * PREEQUIL_TOTAL_T)
+    a0 = 2 * PREEQUIL_K_DEG + 1.0
+    assert data.data[-1, data.cols['A_tot']] == pytest.approx(a0 * decay, rel=1e-5)
+    assert data.output_sensitivities.slice_for('observable:A_tot')[-1, 0] == pytest.approx(
+        decay * (2.0 - a0 * PREEQUIL_TOTAL_T), rel=1e-4)
+
+
+def test_a_literal_dose_before_the_first_phase_declares_nothing(monkeypatch):
+    """Narrowness guard: only an amount a fitted parameter reaches is declared.
+
+    Every #474 protocol opens with literal writes (the load, the wash), which are fresh-start
+    writes too -- and bngsim's own reading of them (``∂x_k(0)/∂θ = 0``) is already right. So
+    the declaration must not fire for them, and every gradient that was correct before #538 is
+    produced by exactly the same backend calls."""
+    declared = []
+    original = bngsim_model.BngsimModel._declare_fresh_start_sensitivity_row
+
+    def spy(self, model, species_name, expr, own_row):
+        row = original(self, model, species_name, expr, own_row)
+        if row is not None:
+            declared.append((species_name, row))
+        return row
+
+    monkeypatch.setattr(bngsim_model.BngsimModel,
+                        '_declare_fresh_start_sensitivity_row', spy)
+    model = _preequil_model(
+        [_PREEQUIL_LOAD, _PREEQUIL_EQUIL, _PREEQUIL_WASH, _PREEQUIL_MEASURE],
+        [('simulate', 'pre'), ('simulate', 'relax')])
+    data = model.execute('/tmp', 'preequil_fresh_literal', 120)['relax']
+
+    assert declared == []
+    np.testing.assert_allclose(
+        data.output_sensitivities.slice_for('observable:A_tot')[-1, 0],
+        _preequil_derivative(0.0), rtol=1e-4, atol=1e-7)
+
+
+def test_a_dose_reading_a_fitted_parameter_no_column_carries_refuses():
+    """A zero row that is *arithmetically* correct for the columns on hand is still a wrong
+    gradient when the amount reads a fitted parameter none of them carries -- and it is the
+    silent kind. Dosing over ``k_prod`` while only ``k_deg`` is on the sensitivity axis names
+    the parameter and refuses, rather than reporting a flat-zero ``k_prod`` column."""
+    model = _fresh_dose_model('setConcentration("A()","2*k_prod")')
+    model.param_set = pset.PSet([
+        pset.FreeParameter('k_deg', 'uniform_var', 0.0, 10.0, value=PREEQUIL_K_DEG),
+        pset.FreeParameter('k_prod', 'uniform_var', 0.0, 10.0, value=PREEQUIL_K_PROD)])
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'preequil_fresh_unrouted', 120)
+    msg = str(exc.value)
+    assert 'k_prod' in msg and 'zero' in msg
+
+
 def test_non_differentiable_intervention_refuses_rather_than_guessing_a_seed_row():
     """An intervention amount outside the arithmetic grammar has no known ``d/dθ``; a guessed
     row would multiply the whole measured phase, so refuse and name the assignment."""

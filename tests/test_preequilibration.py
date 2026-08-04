@@ -230,6 +230,25 @@ class TestBoundaries:
                      'setParameter("k_deg",5)'):
             assert i_equil < acts.index(line) < i_save, (line, acts)
 
+    def test_equilibration_phase_species_dose_keeps_its_parameter_provenance(self, tmp_path):
+        # #538: the pre-equilibration condition's own species perturbation is emitted BEFORE the
+        # equilibration, and a fitted amount must reach the backend as the expression that names
+        # the parameter -- not as the number that parameter currently holds. The number is what
+        # erases the provenance, and the backend cannot recover a d/dtheta it was never told.
+        conf = _build(tmp_path, _BASE + [
+            'condition: dose, perturbations: "A()" = 2*k_deg',
+            "experiment: relax, preequilibrate: dose, equil_t_end: 0.5, data: relax.exp",
+        ])
+        acts = conf.models["m"].actions
+        assert 'setConcentration("A()","2*k_deg")' in acts
+        i_reset = acts.index("resetConcentrations()")
+        i_dose = acts.index('setConcentration("A()","2*k_deg")')
+        i_equil = next(i for i, a in enumerate(acts) if "relax_preequil" in a)
+        assert i_reset < i_dose < i_equil, acts
+        # a FIXED-duration equilibration is what carries the dose into the measured phase (a
+        # steady-state one would relax it away, which is why the gap stayed invisible).
+        assert "steady_state" not in acts[i_equil] and "t_end=>0.5" in acts[i_equil]
+
     def test_species_perturbation_relative_op_is_refused(self, tmp_path):
         # A species amount (setConcentration) is an absolute set; a relative op has no meaning.
         with pytest.raises(PybnfError, match="species perturbation|only '='"):

@@ -121,6 +121,14 @@ state, not a symbol a seed derivative reads"), and `Configuration._preequilibrat
 already refuses a parameter-valued perturbation inline in a pre-equilibration phase, so no such
 protocol reaches this code.
 
+> **Superseded by ADR-0101 (#538).** That last sentence is false. `_build_condition_mutation`
+> routes a target containing `(` to a species perturbation *before* the parameter-reference branch,
+> so a BNGL species-pattern condition is never `is_param_ref` and the pre-equilibration refusal
+> never sees it; the amount is emitted quoted, and such a protocol does reach this code. It reaches
+> it at the *other* end, though — as the `preequilibrate:` phase's own write, with nothing pending
+> — which the capture below reads as "no derivative to preserve" and leaves to bngsim, whose
+> reading of an assigned amount is a literal zero. ADR-0101 declares that row instead.
+
 ## Verification
 
 - **Closed-form oracle.** `e2e_ode_preequil_scan.net` equilibrates `A` to `k_prod/k_deg`, washes

@@ -43,6 +43,7 @@ from .expressions import (
     _parse_net_rhs_symbols,
     _net_param_definitions,
     _net_species_ic_seed_map,
+    _intervention_expression_reads,
     _intervention_seed_row,
     _model_param_values,
 )
@@ -498,13 +499,27 @@ class BngsimModel(NetModel):
     # contract ``set_pending_sensitivity_seed`` documents ("a protocol primitive that restores a
     # species state TOGETHER WITH its θ-derivative"), and the same row-by-row reading bngsim
     # itself applies to a scan's ``on_point`` hook (lanl/bngsim#111).
+    #
+    # A write with NOTHING pending is the other half (#538). It is not a case with no derivative
+    # to preserve -- it is a write whose species has not been advanced yet, so its ``∂x_k(0)/∂θ``
+    # is the one bngsim derives from the .net's own initial-condition expression, and
+    # ``set_concentration`` retires that row too (lanl/bngsim#113: an assigned amount is no longer
+    # described by the expression it superseded). So an amount written over a *fitted* parameter --
+    # the equilibration-phase perturbation of a pre-equilibration protocol, ``"A()" = 2*k_deg`` --
+    # loses its whole column. There is no matrix to re-install there; the row is *declared* instead
+    # (``Model.declare_ic_sensitivity``, the API lanl/bngsim#111 documents for exactly this:
+    # "for a hand-assigned θ-dependent IC this declaration is the only way the engine can know
+    # ∂x_k(0)/∂θ"). bngsim's own seeding then starts the run from it, so nothing about the run's
+    # carried-state arm changes -- a fresh phase stays fresh.
 
     def _capture_carried_sensitivity_seed(self, model):
         """The pending carry-over ``∂x/∂θ`` and its column names, or ``None``.
 
-        ``None`` on the scalar path and whenever nothing is pending (no equilibration has run
-        yet, so a write has no derivative to preserve), which makes the restore below a no-op
-        and leaves the scalar path byte-identical.
+        ``None`` on the scalar path and whenever nothing is pending -- no phase has run since
+        the last reset, so the species state is still the model's own initial condition and
+        what the write supersedes is a *declared* row, not a carried matrix
+        (:meth:`_declare_fresh_start_sensitivity_row`). ``None`` leaves the scalar path
+        byte-identical.
         """
         if self._sensitivity_request is None:
             return None
@@ -514,7 +529,28 @@ class BngsimModel(NetModel):
         return (np.array(core.pending_sensitivity_seed(), dtype=float),
                 list(core.pending_sensitivity_seed_param_names))
 
-    def _restore_carried_sensitivity_seed(self, model, carried, species_name, expr):
+    def _capture_own_sensitivity_row(self, species_name, carried):
+        """``{param: ∂x_k(0)/∂θ}`` the backend seeds ``species_name`` with, or ``None`` (#538).
+
+        Read BEFORE a species write at a fresh start (``carried is None``), where the write
+        supersedes the parameter-graph row bngsim derives from the .net expression rather than a
+        carried matrix. Only an ``addConcentration`` -- a constant shift, which leaves ``d/dθ``
+        alone -- needs the old row back; a ``setConcentration`` replaces it outright.
+
+        ``None`` -- nothing to declare -- on the scalar path, on a carried write (which rebuilds
+        the pending matrix instead), and when no parameter axis is requested, so every such
+        protocol keeps bngsim's own reading unchanged. An empty mapping is the different answer
+        "the backend seeds this species from nothing"; it still enables the ``setConcentration``
+        arm, which does not read the old row.
+        """
+        if carried is not None or self._sensitivity_request is None:
+            return None
+        if not (self._sensitivity_request.params or ()):
+            return None
+        return dict((self.backend_ic_sensitivity() or {}).get(species_name) or {})
+
+    def _restore_carried_sensitivity_seed(self, model, carried, species_name, expr,
+                                          own_row=None):
         """Re-install a captured ``∂x/∂θ`` after writing ``species_name``, with its row rebuilt.
 
         ``expr`` is the assignment's source text, whose derivative becomes the species' new seed
@@ -524,12 +560,16 @@ class BngsimModel(NetModel):
         shifted it by a constant (``addConcentration``), whose derivative is the carried row
         unchanged. Every other species keeps the equilibration's row.
 
+        With nothing carried, the same row is *declared* on the model instead (#538) -- see
+        :meth:`_declare_fresh_start_sensitivity_row`.
+
         Refuses when the assignment cannot be differentiated, or when the written species is not
         one the engine names -- a seed row that is guessed rather than known is a silently wrong
         gradient, and this one multiplies the whole measured phase.
         """
         if carried is None:
-            return
+            return self._declare_fresh_start_sensitivity_row(
+                model, species_name, expr, own_row)
         seed, names = carried
         seed = seed.copy()
         if expr is not None:
@@ -541,22 +581,93 @@ class BngsimModel(NetModel):
                     "engine does not name, so its forward-sensitivity seed row cannot be placed. "
                     "Run a gradient-free fit for this protocol."
                     % (self.name, species_name)) from None
-            try:
-                seed[index, :] = _intervention_seed_row(
-                    expr, names, self._net_param_definitions,
-                    _model_param_values(model))
-            except NotDifferentiable as exc:
-                raise PybnfError(
-                    "Model %s: the intervention setConcentration(%r, %r) between the "
-                    "pre-equilibration and the measured phase cannot be differentiated (%s), so "
-                    "the initial condition it assigns has no known d/dtheta. Write the "
-                    "intervention amount as arithmetic over model parameters, or run a "
-                    "gradient-free fit." % (self.name, species_name, expr, exc)) from exc
+            seed[index, :] = self._intervention_row(species_name, expr, names,
+                                                    _model_param_values(model))
         core = model._core
         core.set_pending_sensitivity_seed(seed, names)
         # The state the next phase starts from is a θ-dependent snapshot, not a fresh initial
         # condition, so keep bngsim's carry-over arm engaged (the write cleared it).
         core.ic_state_dirty = True
+
+    def _declare_fresh_start_sensitivity_row(self, model, species_name, expr, own_row):
+        """Declare ``∂x_k(0)/∂θ`` for a species written before any phase has run (#538).
+
+        The fresh-start twin of the carried-seed rebuild above. ``set_concentration`` retires the
+        species' parameter-graph seed row (lanl/bngsim#113), which is right for the literal amount
+        it documents and wrong for an amount written over a fitted parameter -- the equilibration
+        perturbation of a pre-equilibration protocol (``preequilibrate:`` with a species target)
+        is exactly that write, and a fixed-duration equilibration carries its effect straight into
+        the measured phase. Left alone the fitted parameter's whole column comes back **zero**,
+        which no objective can detect.
+
+        Declaring is deliberately narrow: an all-zero row says exactly what bngsim already says,
+        so a θ-independent amount is left alone, and an ``addConcentration`` (``expr is None``)
+        re-declares the row its constant shift left untouched only when there is a non-trivial one
+        to restore. Every protocol whose gradient is right today therefore emits no declaration at
+        all -- which is what the returned row (``None`` when nothing was declared) lets a test
+        state. The refusals are *not* narrowed with it: they are decided inside
+        :meth:`_intervention_row`, before the row's values are known.
+        """
+        if own_row is None:
+            return None
+        targets = list(self._sensitivity_request.params or ())
+        if expr is None:
+            row = {name: value for name, value in own_row.items() if name in targets}
+        else:
+            row = dict(zip(targets, self._intervention_row(
+                species_name, expr, targets, _model_param_values(model))))
+        if not any(row.values()):
+            return None
+        try:
+            model.declare_ic_sensitivity({species_name: row})
+        except Exception as exc:
+            raise PybnfError(
+                "Model %s: the intervention setConcentration(%r, %r) assigns an initial "
+                "condition that depends on a fitted parameter, but its forward-sensitivity row "
+                "could not be declared to the backend (%s), so that parameter's gradient column "
+                "would be silently zero. Run a gradient-free fit for this protocol."
+                % (self.name, species_name, expr, exc)) from exc
+        return row
+
+    def _intervention_row(self, species_name, expr, targets, param_values):
+        """``[d(expr)/d(target)]`` for one intervention amount, refusing rather than guessing.
+
+        Wraps :func:`_intervention_seed_row` with the two refusals a guessed row would hide: an
+        amount outside the arithmetic grammar, and an amount that reads a parameter this fit
+        varies which no requested sensitivity column carries (#538).
+        """
+        self._refuse_unrouted_intervention_reads(species_name, expr, targets)
+        try:
+            return _intervention_seed_row(expr, targets, self._net_param_definitions,
+                                          param_values)
+        except NotDifferentiable as exc:
+            raise PybnfError(
+                "Model %s: the intervention setConcentration(%r, %r) between the "
+                "pre-equilibration and the measured phase cannot be differentiated (%s), so "
+                "the initial condition it assigns has no known d/dtheta. Write the "
+                "intervention amount as arithmetic over model parameters, or run a "
+                "gradient-free fit." % (self.name, species_name, expr, exc)) from exc
+
+    def _refuse_unrouted_intervention_reads(self, species_name, expr, targets):
+        """Refuse an intervention amount that reads a fitted parameter no column carries (#538).
+
+        :func:`_intervention_seed_row` answers such an amount with a clean zero row -- it has no
+        column to put the derivative in -- and that zero is indistinguishable, to any objective,
+        from a parameter the trajectory genuinely does not depend on. It is the one wrong answer
+        this whole seam exists to avoid, so name the parameter and stop instead.
+        """
+        fitted = set(self.param_set.keys()) if self.param_set is not None else set()
+        unrouted = sorted((_intervention_expression_reads(expr, self._net_param_definitions)
+                           & fitted) - set(targets))
+        if not unrouted:
+            return
+        raise PybnfError(
+            "Model %s: the intervention setConcentration(%r, %r) reads fitted parameter(s) %s, "
+            "which no requested forward-sensitivity column carries, so the initial condition it "
+            "assigns would contribute exactly zero to their gradient -- a wrong column no "
+            "objective can detect. Bind them to model parameters the gradient routes, or run a "
+            "gradient-free fit for this protocol."
+            % (self.name, species_name, expr, ', '.join(unrouted)))
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
@@ -787,9 +898,12 @@ class BngsimModel(NetModel):
             sc_expr = _parse_set_concentration_expr(line)
             if sc_expr is not None:
                 species_name, conc_expr = sc_expr
-                # The write drops any carried dx/dθ, so capture it first and put it back with
-                # this assignment's own row (#532); a no-op off the gradient path.
+                # The write drops this species' dx/dθ, so capture what it drops first and put
+                # back this assignment's own row: the carried matrix from a prior phase (#532),
+                # or -- with nothing pending -- the .net's own initial-condition seeding, which
+                # is declared rather than re-installed (#538). No-op off the gradient path.
                 carried = self._capture_carried_sensitivity_seed(model)
+                own_row = self._capture_own_sensitivity_row(species_name, carried)
                 applied = False
                 try:
                     conc_value = _eval_model_expression(conc_expr, model)
@@ -804,13 +918,14 @@ class BngsimModel(NetModel):
                     )
                 if applied:
                     self._restore_carried_sensitivity_seed(
-                        model, carried, species_name, conc_expr)
+                        model, carried, species_name, conc_expr, own_row=own_row)
                 continue
 
             ac = _parse_add_concentration(line)
             if ac is not None:
                 species_name, delta = ac
                 carried = self._capture_carried_sensitivity_seed(model)
+                own_row = self._capture_own_sensitivity_row(species_name, carried)
                 applied = False
                 try:
                     current = model.get_concentration(species_name)
@@ -824,7 +939,8 @@ class BngsimModel(NetModel):
                     )
                 if applied:
                     # A constant shift of the carried amount: d/dθ is the carried row itself.
-                    self._restore_carried_sensitivity_seed(model, carried, species_name, None)
+                    self._restore_carried_sensitivity_seed(model, carried, species_name, None,
+                                                           own_row=own_row)
                 continue
 
             ps_params = _parse_parameter_scan_action(line)
