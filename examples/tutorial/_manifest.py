@@ -136,7 +136,9 @@ class ConfCheck:
     conf: str                 # filename, relative to the example folder
     recover: dict             # {param: true_value} (recovery target / CI-bracket target)
     tol: float = 0.03          # fractional recovery tolerance
-    marker: str = 'default'    # 'default' (bngsim+newera) | 'slow' | 'jax'
+    marker: str = 'default'    # 'default' (bngsim+newera) | 'slow' | 'jax' | 'antimony'
+                               # ('jax'/'antimony' gate on an optional dependency: the conf
+                               #  SKIPS where it is absent rather than failing)
     refused: bool = False      # True => a gradient fit that must be REFUSED, not run
     profile: dict = None       # {param: expected identifiability class} for profile_likelihood
     max_obj: float = None      # constraint fit: assert best objective <= this (0 => all satisfied)
@@ -423,7 +425,13 @@ EXAMPLES = (
         # all recovering the same k -- a backend/format interop regression.
         confs=(
             ConfCheck('fit_bngl.conf', recover={'k': 0.5}, tol=0.03),
-            ConfCheck('fit_antimony.conf', recover={'k': 0.5}, tol=0.03),
+            # `antimony` is an optional extra (pybnf[antimony] -> bngsim[antimony]), so
+            # this conf is unrunnable on a stock install -- mark it so it SKIPS there
+            # instead of failing on PyBNF's "requires optional dependency 'antimony'".
+            # Its BNGL and SBML twins below need no marker: python-libsbml is a hard
+            # dependency of bngsim, so the SBML path is present wherever bngsim is.
+            ConfCheck('fit_antimony.conf', recover={'k': 0.5}, tol=0.03,
+                      marker='antimony'),
             ConfCheck('fit_sbml.conf', recover={'k': 0.5}, tol=0.03),
         ),
     ),

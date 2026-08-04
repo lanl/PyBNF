@@ -42,7 +42,7 @@ pytestmark = [pytest.mark.bngsim, pytest.mark.recovery]
 
 
 def _marks(confcheck):
-    """pytest marks for a conf's tier (default / slow / jax-gated)."""
+    """pytest marks for a conf's tier (default / slow / jax- or antimony-gated)."""
     marks = []
     if confcheck.marker == 'slow':
         marks.append(pytest.mark.slow)
@@ -50,6 +50,15 @@ def _marks(confcheck):
         marks.append(pytest.mark.skipif(
             importlib.util.find_spec('jax') is None,
             reason='needs the optional jax extra (pip install pybnf[jax])'))
+    if confcheck.marker == 'antimony':
+        # Declare the dependency and let conftest's dispatch table skip on it, the
+        # way every other antimony-dependent test does. The module's own pytestmark
+        # is `bngsim`, which is satisfied by a default install -- but `antimony` is
+        # an optional extra of an optional extra (pybnf[antimony] -> bngsim[antimony]),
+        # so an .ant conf is unrunnable on a stock environment and used to FAIL there
+        # rather than skip: PyBNF refuses the model with "Antimony model support was
+        # requested, but requires optional dependency 'antimony'".
+        marks.append(pytest.mark.bngsim_antimony)
     return marks
 
 
