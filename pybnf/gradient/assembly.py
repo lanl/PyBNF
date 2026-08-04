@@ -75,7 +75,9 @@ transform: a **cumulative -> incident** difference (ADR-0051), a **per-measureme
 offset formula (ADR-0045), or an upstream ``Data``-level **normalization** (ADR-0053/0066). Each
 makes ``∂pred/∂θ`` differ from the raw observable sensitivity, so the assembly reads a
 ``raw_sens(col, row)`` accessor (the #447 tensor, routing-factor-folded, with normalization's
-own quotient/chain rule threaded in -- ``_normalized_sensitivity``) and hands it to the
+own quotient/chain rule threaded in -- ``_normalized_sensitivity``, which for a *chain* of
+``Data``-level transforms wraps the tensor accessor once per stage, each stage's rule read in
+the values that stage consumed and produced, #539/ADR-0102) and hands it to the
 objective's :meth:`~pybnf.objective.SummationObjective.prediction_sensitivity` seam, which
 mirrors ``_prediction`` branch for branch (cumulative differences sensitivity rows; a per-
 measurement formula chains its symbolic gradient through each referenced column's sensitivity
@@ -565,6 +567,7 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
     routing.check_column_multiplicity()
     _check_axes_are_not_the_same_derivative(sens, routing)
     norm = sim_data.normalization or {}
+    normalized = {}   # col -> the folded chain accessor, built on first use and reused per row
     measurement = getattr(objective, 'measurement', None)
     measurement_models = ({mm.observable_id: mm for mm in measurement.models}
                           if measurement else {})
@@ -588,10 +591,12 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
         model = measurement_models.get(col_name)
         if model is not None:
             return model.prediction_sensitivity(sim_data, row, pset_values, raw_sens, index)
-        record = norm.get(col_name)
-        if record is None:
+        records = norm.get(col_name)
+        if not records:
             return tensor_sens(col_name, row)
-        return _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens)
+        if col_name not in normalized:
+            normalized[col_name] = _normalized_sensitivity(records, col_name, sim_data, tensor_sens)
+        return normalized[col_name](col_name, row)
 
     return raw_sens
 
@@ -665,28 +670,68 @@ def _check_axes_are_not_the_same_derivative(sens, routing):
                float(np.abs(p_col - ic_sum).max()) / scale, name))
 
 
-def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
-    """Thread a per-column normalizer's own derivative into ``∂(normalized col)/∂θ`` (ADR-0053).
+def _normalized_sensitivity(records, col_name, sim_data, tensor_sens):
+    """Fold a column's normalization **chain** into one ``∂(normalized col)/∂θ`` accessor
+    (ADR-0053/0066, #539).
 
     ``normalization`` rescales the predicted column by a θ-dependent ``N(θ)`` read off the
     moving trajectory, so ``∂(raw/N)/∂θ`` is a quotient/chain rule coupling the scored row with
-    the row(s) ``N`` is read from. The raw per-row sensitivities ``s_k`` come from the
-    (un-normalized) #447 tensor; the normalized values ``n_k`` are read back from the now-
-    rescaled ``Data`` (so the raw values need not be retained). See
-    :class:`~pybnf.data.NormalizationRecord` for each method's closed form."""
-    normed = sim_data.data[:, sim_data.cols[col_name]]
+    the row(s) ``N`` is read from. A chain (``floor 0.03, peak``) applies two or more such
+    transforms in order, and each one's rule is that same closed form read in *its own* inputs:
+    the previous stage's per-row sensitivities, and its own output values. So the fold is
+    literal -- start from the raw #447 tensor accessor and wrap it once per stage, each wrapper
+    reading the accessor the previous stage returned. A single transform is the one-iteration
+    case and threads exactly the rule it always did.
+
+    The values a stage's rule reads are its **output** column: retained on the record when a
+    later transform overwrote them (:class:`~pybnf.data.NormalizationRecord.values`), and for
+    the last stage read back from the now-rescaled ``Data`` -- so a column normalized once
+    retains nothing. See :class:`~pybnf.data.NormalizationRecord` for each method's closed form.
+
+    Returns an accessor with ``tensor_sens``'s own ``(col_name, row)`` signature, which is what
+    lets each stage call its predecessor exactly as the un-chained rule called the tensor."""
+    final = sim_data.data[:, sim_data.cols[col_name]]
+    stage_sens = tensor_sens
+    for i, record in enumerate(records):
+        values = record.values if i < len(records) - 1 else final
+        if values is None:
+            # Only reachable if a caller normalized the column twice without going through
+            # Data's own normalize_* methods, which hand each overwritten stage its values.
+            raise GradientNotSupported(
+                "Column '%s' went through a chain of normalizations (%s) but stage %d ('%s') "
+                "kept none of the values it produced, which its own chain rule reads, so the "
+                "chain cannot be folded (issue #539). Use a single normalization per column, or "
+                "a gradient-free step."
+                % (col_name, ' -> '.join(r.method for r in records), i + 1, record.method))
+        stage_sens = _stage_sensitivity(record, values, stage_sens)
+    return stage_sens
+
+
+def _stage_sensitivity(record, normed, previous):
+    """One stage of a normalization chain: ``∂(this stage's output)/∂θ`` from ``previous``, the
+    accessor for the values it consumed, and ``normed``, the values it produced.
+
+    Memoized per row, because a stage reads its predecessor at rows other than the scored one --
+    the reference row a divisor is read from, and for ``zero`` *every* row. So a ``zero`` mid-
+    chain asks the stage below it for the whole column, once per scored row, and that stage asks
+    the one below it; without the memo the work would multiply down the chain per scored row.
+    With it each (stage, row) is computed once per experiment per evaluation. The tensor at the
+    bottom is not memoized, so a single transform costs exactly what it always did."""
+    cache = {}   # keyed by row alone: a stage belongs to the one column its chain normalizes
+
+    def stage(col_name, row):
+        if row not in cache:
+            cache[row] = _stage_rule(record, col_name, row, normed, previous)
+        return cache[row]
+
+    return stage
+
+
+def _stage_rule(record, col_name, row, normed, tensor_sens):
+    """The closed-form rule for one recorded transform (:class:`~pybnf.data.NormalizationRecord`),
+    read in the values it consumed (``tensor_sens``, the previous stage's accessor -- the #447
+    tensor itself for the first transform of a column) and the values it produced (``normed``)."""
     s_i = tensor_sens(col_name, row)
-    if record.chained:
-        # Only the LAST transform of a multi-transform chain is recorded (the sidecar is keyed by
-        # column), and each rule below reads the *raw* per-row sensitivities, so composing an
-        # unrecorded earlier stage is not possible from what is retained. Refuse rather than
-        # thread the last rule alone over a column an earlier transform already moved.
-        raise GradientNotSupported(
-            "Column '%s' is normalized more than once (a chain of transforms ending in '%s'); only "
-            "the last one's facts are recorded, so the gradient path cannot compose the chain "
-            "(issue #539). Use a single normalization per column -- a chain ending in the analytic "
-            "'scale' is fine, since 'scale' is applied at scoring time rather than to the column "
-            "-- or use a gradient-free step." % (col_name, record.method))
     if record.method == 'floor':
         # x' = x + rho*max(x) (ADR-0066): additive and separable, so ∂x'_i/∂θ = s_i + rho*s_argmax
         # -- the scored row's own sensitivity plus rho times the row the max is read from
@@ -706,7 +751,8 @@ def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
 def _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i):
     """``∂/∂θ`` of a z-score-normalized column (subtract mean μ, divide by std σ) -- the one
     method that couples **every** row through σ (ADR-0053). With ``s_bar`` the per-row mean of
-    the raw sensitivities and σ = ``record.scale``::
+    the sensitivities of the values it consumed (the #447 tensor's, or -- mid-chain -- the
+    previous stage's) and σ = ``record.scale``::
 
         ∂n_i/∂θ = (s_i - s_bar)/σ - n_i·(∂σ/∂θ)/σ,
         ∂σ/∂θ  = Σ_k n_k (s_k - s_bar)/(K - ddof)

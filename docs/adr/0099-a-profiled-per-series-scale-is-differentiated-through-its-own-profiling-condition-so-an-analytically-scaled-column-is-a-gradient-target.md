@@ -103,7 +103,15 @@ constraint, and measurement-model layers, which compose with this unchanged.
 
 **Deliberately still out:** composing a chain of two or more `Data`-level normalizations
 (refused above; tracked as issue **#539**, which the refusal names — composing it needs each
-stage's record *and* its intermediate values, neither of which the sidecar retains). The prediction-dependent σ sources keep reading the *raw* simulated column
+stage's record *and* its intermediate values, neither of which the sidecar retains).
+
+> **Closed by ADR-0102 (#539).** The sidecar now keeps a *list* of records per column in chain
+> order, and a stage whose output a later transform overwrites keeps a copy of it on its record
+> — so both of the things named as missing are retained, and the gradient folds the chain
+> forward one stage at a time instead of refusing it. The `chained` flag introduced here is gone
+> with the refusal it fed.
+
+The prediction-dependent σ sources keep reading the *raw* simulated column
 for both their value and their sensitivity, so a scaled column's σ is unaffected either way —
 self-consistent, and unchanged by this ADR.
 

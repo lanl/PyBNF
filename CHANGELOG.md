@@ -245,6 +245,22 @@ All notable changes to PyBNF are documented below. This project adheres to
   ≤3.7e-06.
 
 ### Added
+- **A chain of two or more data-level normalizations on one column is now differentiable (#539,
+  ADR-0102).** `normalization` is an ordered chain (ADR-0066), and five of its transforms —
+  `peak`, `init`, `zero`, `unit`, `floor` — rewrite the column in place. Stacking two of them
+  (`normalization pStat = floor 0.03, peak`) was refused on every gradient `job_type`, because the
+  sidecar recording *how* a column was normalized kept one record per column: the second transform
+  overwrote the first one's facts, and its intermediate values were gone with them. The sidecar is
+  now the **list** of a column's transforms in chain order, and the gradient folds it — each
+  stage's chain rule is the same closed form it always was, read in that stage's own inputs (the
+  previous stage's per-row sensitivities) rather than in the raw ones, so the fold wraps the
+  sensitivity accessor once per stage. The values a stage produced, which its own rule reads, ride
+  along on its record when the next transform overwrites them; a column normalized once — every
+  fit in the wild — retains nothing and costs what it did before, and its gradient is the same
+  arithmetic in the same order. Every normalized *value* is unchanged: this is about what is
+  recorded alongside them, not what is computed. `floor 0.03, scale` is unaffected either way, and
+  a chain of any length still composes with the analytic `scale` (ADR-0099), the cumulative and
+  per-measurement transforms, and the EFIM path.
 - **A gradient routing that would read one sensitivity column twice is now refused, not
   assembled (#537).** A route's derivative is the sum over its contributions, so two of them
   naming the same native `(axis, key)` column add that column twice — and the result is a clean
@@ -285,11 +301,9 @@ All notable changes to PyBNF are documented below. This project adheres to
   σ-unweighted, so `c*` is not in general the objective's own minimizer over the scale. A scaled
   fixed-σ Gaussian fit stays an exact least-squares model, so `trf`, `lbfgs`, and `gntr` all consume
   it; the profiled scale is resolved per experiment, so a column scaled in one experiment stays an
-  ordinary column in another. One boundary is now stated rather than silently mis-differentiated: a
-  chain of two or more *data-level* transforms on one column (`floor 0.03, peak`) keeps only the
-  last one's facts, so the gradient path refuses it by name, pointing at the open issue that
-  tracks composing them (#539) — `floor 0.03, scale` is unaffected, since `scale` is applied at
-  scoring time rather than to the column.
+  ordinary column in another. One boundary was stated here rather than silently mis-differentiated
+  — a chain of two or more *data-level* transforms on one column (`floor 0.03, peak`), which kept
+  only the last one's facts — and is closed by #539 above.
 - **A total wall-clock budget for a fit, `wall_time_fit`, that finalizes on expiry (#529,
   ADR-0093).** PyBNF's time limits were all per unit of work — `wall_time_sim` bounds one
   simulation, `wall_time_gen` one network generation — and nothing bounded a *run*: the only native

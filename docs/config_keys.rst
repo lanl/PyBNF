@@ -1129,10 +1129,9 @@ Algorithm Options
   exporter refuses it rather than silently scoring the raw, un-normalized columns. Every
   transform here, ``floor`` and ``scale`` included, *is* differentiable, so a
   :ref:`gradient-based fit <gradient_fitting>` (``trf`` / ``lbfgs`` / ``gntr``) can run on a
-  normalized or analytically scaled column. The one exception is a chain of two or more
-  **data-level** transforms on the same column (``floor 0.03, peak``), which the gradient path
-  refuses (issue #539); ``floor 0.03, scale`` is fine, since ``scale`` is applied at scoring time
-  rather than to the column.
+  normalized or analytically scaled column -- including a **chain** of them
+  (``floor 0.03, peak``), which the gradient composes stage by stage, each stage's chain rule
+  read in the values that stage consumed and produced.
 
   Default: No normalization
 
