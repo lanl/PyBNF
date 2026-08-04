@@ -34,5 +34,6 @@ pybnf -c gompertz_growth_pso.conf
 
 ## Next
 
-→ **Lesson 6** (`step_input/`): a model the gradient optimizers *refuse* — and
-what that teaches you about choosing an algorithm.
+→ **Lesson 6** (`step_input/`): a model with a discontinuous input — what the
+gradient path takes in its stride, what it genuinely refuses, and how to tell
+which is which.

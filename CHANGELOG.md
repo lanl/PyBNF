@@ -244,6 +244,28 @@ All notable changes to PyBNF are documented below. This project adheres to
   parameters (their columns genuinely differ — RHS path versus seeding), is unchanged at
   ≤3.7e-06.
 
+### Changed
+- **Tutorial Lesson 6 no longer teaches a refusal that stopped being one (#536).** Its whole
+  premise was that a hard `if(t < tau, …)` step in a rate law is not differentiable, so `trf`
+  refuses it and the fix is to smooth the step into a sigmoid. bngsim 0.12.2 differentiates it,
+  and the lesson's three claims all failed when measured: the fit is not refused; its gradient is
+  *correct* (agrees with a central difference to 3e-06 at a well-conditioned step — the apparent
+  3e-03 disagreement at `h = 1e-6` grows as `h` shrinks, which is roundoff, not a defect); and
+  `tau` — which the lesson said "the hard-`if()` model could never expose to a gradient" — is
+  recovered to 1.2e-08, because the solver contributes the crossing term where the switch fires.
+  `step_input_trf_refused.conf` is renamed `step_input_trf.conf`, now fits `tau` alongside the
+  rest, and is checked as a *recovery* rather than a refusal.
+
+  The refusal half of the lesson is kept rather than deleted, because Lesson 3 sends readers here
+  for it and because "what does a gradient fit refuse" is still worth teaching — it moves to a new
+  `step_input_ssa_refused.conf`, a scored `method: ssa` experiment. That reason is durable in a way
+  the old one was not: an SSA trajectory is a random walk, so there is no derivative with respect
+  to the rate parameters to carry, and forward sensitivities exist only for the ODE backend. The
+  smooth-sigmoid variant stays, re-pointed from "the differentiable one" to a **conditioning**
+  choice — both fit the same parameters to the same accuracy and differ in what they cost the
+  integrator. Without this the nightly `recovery` job would have gone red on its own the moment
+  bngsim 0.12.2 reached PyPI, since CI installs bngsim unpinned.
+
 ### Added
 - **A gradient routing that would read one sensitivity column twice is now refused, not
   assembled (#537).** A route's derivative is the sum over its contributions, so two of them

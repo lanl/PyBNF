@@ -7,13 +7,17 @@
 #        J(t) = J_base                for t <  tau
 #        J(t) = J_base + J_step       for t >= tau
 #
-#  This model uses an `if(t < tau, ...)` conditional in its input rate law. It is
-#  the star of Lesson 6 -- it fits fine with a metaheuristic (differential
-#  evolution) but the gradient optimizers (trf/lbfgs) REFUSE it. The reason is
-#  specific: bngsim's forward-sensitivity engine does not support the `if()`
-#  conditional construct (it raises "expression 'Input_X' ... uses unsupported
-#  construct: if() conditional"). The refusal is a feature, not a bug -- it tells
-#  you to pick a gradient-free algorithm for inputs expressed this way.
+#  This model uses an `if(t < tau, ...)` conditional in its input rate law -- a
+#  genuine discontinuity in the dynamics. It is the star of Lesson 6, which fits
+#  it three ways: with a metaheuristic (differential evolution), and with the
+#  gradient optimizer `trf` both here and on a sigmoid-smoothed twin.
+#
+#  Until bngsim 0.12.2 the gradient optimizers REFUSED this model: the
+#  forward-sensitivity engine had no support for the `if()` construct. It does
+#  now, and it handles both halves of the problem -- a jump at a known time (the
+#  crossing does not move, so sensitivities carry straight through it) and a jump
+#  at a FITTED time, where the solver adds the crossing term that makes `tau`
+#  itself estimable. The lesson kept its shape and changed its point.
 #
 #  A `Clock()` pseudo-species carries simulation time `t` so the input function
 #  can reference it (BNGL rate laws have no built-in `time` symbol).
@@ -25,7 +29,7 @@ begin model
     k       0.6    # first-order decay rate       [1/day]     <- FITTED
     J_base  1.2    # baseline input               [AU/day]    <- FITTED
     J_step  2.4    # step increase at t = tau      [AU/day]    <- FITTED
-    tau     4.0    # step time                    [day]       (fixed/known)
+    tau     4.0    # step time                    [day]       <- FITTED (trf conf)
     X0      0.5    # initial amount               [AU]        (fixed/known)
   end parameters
 
@@ -45,8 +49,8 @@ begin model
   end observables
 
   begin functions
-    # The stepped input -- a discrete jump at t = tau (this is what makes the
-    # model non-differentiable for the gradient optimizers).
+    # The stepped input -- a discrete jump at t = tau. Not smooth, and fitted
+    # on both the gradient and the gradient-free path all the same.
     Input_X()  = if(t < tau, J_base, J_base + J_step)
   end functions
 

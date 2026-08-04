@@ -628,9 +628,12 @@ those builds rather than run a fit to completion on a wrong gradient, and the me
 upgrade.
 
 **Discontinuity triggers are not events.** A forcing pulse or a piecewise-time schedule written
-as ``if(t >= tau)`` in a rate law breaks the integrator step but never jumps the state, so
-sensitivities through it were always valid and were never gated (its switch-time parameter
-``tau`` is itself differentiable).
+as ``if(t >= tau)`` in a rate law breaks the integrator step but never jumps the state, so it
+never reached the differentiability gate above. It is differentiable on a current bngsim,
+switch time included: the crossing contributes a term where the switch fires, so ``tau`` is
+itself estimable. (This is newer than it looks — through bngsim 0.12.1 an ``if()`` in a rate law
+declined bngsim's sensitivity codegen and the fit was refused per simulation, which is what
+tutorial Lesson 6 used to be about.)
 
 
 The capability gate (what is supported)

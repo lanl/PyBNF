@@ -836,18 +836,29 @@ EXAMPLES = (
     Example(
         folder='06_step_input',
         model='step_input.bngl',
-        truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},
+        truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4, 'tau': 4.0},
         build_free={'k': ('uniform_var', 0.1, 3.0),
                     'J_base': ('uniform_var', 0.1, 5.0),
-                    'J_step': ('uniform_var', 0.1, 6.0)},
+                    'J_step': ('uniform_var', 0.1, 6.0),
+                    'tau': ('uniform_var', 2.0, 7.0)},
         datasets=(
             Dataset('step_input.exp', obs=('Obs_X',), t_end=12, n_points=25),
         ),
         confs=(
             ConfCheck('step_input_de.conf',
                       recover={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4}, tol=0.05),
-            ConfCheck('step_input_trf_refused.conf', recover={}, refused=True,
-                      note='piecewise input -> gradient optimizer must refuse'),
+            # The hard if() step is differentiable as of bngsim 0.12.2, INCLUDING the
+            # crossing term that makes the switch time tau estimable -- so this conf
+            # (formerly step_input_trf_refused.conf) recovers rather than refuses.
+            ConfCheck('step_input_trf.conf',
+                      recover={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4, 'tau': 4.0},
+                      tol=0.03,
+                      note='hard if() step on the gradient path, switch time included'),
+            # The refusal the lesson still teaches, and a durable one: an SSA
+            # trajectory has no derivative w.r.t. the rate parameters to carry, so
+            # forward sensitivities exist only for the ODE backend.
+            ConfCheck('step_input_ssa_refused.conf', recover={}, refused=True,
+                      note='stochastic (ssa) scored action -> gradient optimizer must refuse'),
         ),
     ),
     Example(
@@ -862,8 +873,9 @@ EXAMPLES = (
             Dataset('step_input_smooth.exp', obs=('Obs_X',), t_end=12, n_points=25),
         ),
         confs=(
-            # The smooth sigmoid step IS differentiable -> trf fits it, and even
-            # recovers the transition time tau (impossible for the hard if()).
+            # The smooth sigmoid twin. It fits the same parameters to the same
+            # accuracy as the hard step above -- the two differ in what they cost
+            # the integrator, not in whether a gradient exists.
             ConfCheck('step_input_smooth_trf.conf',
                       recover={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4, 'tau': 4.0},
                       tol=0.03),
