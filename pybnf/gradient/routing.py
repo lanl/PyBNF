@@ -20,17 +20,15 @@ A ``parameter:`` free parameter (ADR-0043) binds to the model entity of the same
 contract ``set_param`` already uses. So classification is by name (:func:`classify_free_param`):
 
 * a free parameter whose id is a species' **bare initial-value expression**
-  (``_parse_net_species_initializers``) routes to ``sensitivity_ic`` keyed by the *species*.
-  An initial-condition parameter does not appear in the ODE RHS, so its ``parameter`` axis
-  carries no right-hand-side path; bngsim's ``ic`` axis carries the derivative. (Checked
-  first, because an IC parameter is *also* a ``begin parameters`` id.) That axis is **not**
-  identically zero, as this once claimed: the backend also seeds ``∂x(0)/∂p`` into it
-  (lanl/bngsim#43/#147), so for a pure initial-value seed it is byte-identical to the ``ic``
-  axis and summing the two doubles the column (#537). Dropping it is required for
-  correctness, not an optimization. Whether the RHS truly
-  omits it is the *model's* answer -- ``ode_rhs_symbols`` -- not an inference from the seeding
-  pattern: a kinetic constant that a steady-state ``initialAssignment`` also uses seeds initial
-  conditions **and** drives the RHS (ADR-0097, #535).
+  (``_parse_net_species_initializers``) may reach the trajectory on either axis, and which one
+  is the *backend's* answer, not an inference (ADR-0100, #537). ``d_param`` is the **total**
+  derivative -- the right-hand-side path plus whatever ``∂x(0)/∂θ`` the backend seeded -- so the
+  rule is: route the id's own ``sensitivity_params`` axis, and add a ``sensitivity_ic`` term only
+  for a ``(species, param)`` pair :meth:`BngsimModel.backend_ic_sensitivity` reports **absent**.
+  Adding one the backend already carries doubles that column; omitting one it does not carry
+  deletes the seeding. ``ode_rhs_symbols`` survives only as an optimization, dropping an axis
+  that is provably identically zero (nothing seeded into it, and a right-hand side the model
+  states never reads the id), so a model that cannot say simply keeps it.
 * a free parameter whose id is a model parameter routes to ``sensitivity_params`` keyed by
   the parameter.
 * a free parameter matching **no** model id (e.g. a free sigma) is **not** a sensitivity
@@ -449,7 +447,7 @@ def classify_free_param(free_param, param_ids, species_initializers):
 
 
 def classify_condition_target(target, param_ids, species_names, ic_seed_map,
-                              rhs_symbols=None):
+                              rhs_symbols=None, backend_ic_seeds=None):
     """Classify the model entity a param-ref condition sets: return a list of
     ``(axis, key, node)`` seeding terms.
 
@@ -476,7 +474,8 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map,
     silently-wrong column.
     """
     terms = classify_bound_id(target, param_ids, species_names, ic_seed_map,
-                              rhs_symbols=rhs_symbols)
+                              rhs_symbols=rhs_symbols,
+                              backend_ic_seeds=backend_ic_seeds)
     if terms:
         return terms
     raise GradientNotSupported(
@@ -486,7 +485,7 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map,
 
 
 def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initializers=(),
-                      rhs_symbols=None):
+                      rhs_symbols=None, backend_ic_seeds=None):
     """Every sensitivity column a model id reaches: ``[(axis, key, node), ...]``, possibly empty.
 
     The shared core of "what does this id move?", used for **both** a condition target and a
@@ -526,24 +525,39 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
         # below -- the same column twice.
         seeds = tuple(SeedTerm(IC, species, derivative.ONE)
                       for species, expr in species_initializers if expr.strip() == name)
-    terms = [(s.target, s.key, s.node) for s in seeds]
+    # An initial-value seed the backend already carries is INSIDE this id's own parameter
+    # axis, so routing it again on the ic axis counts it twice (#537, lanl/bngsim#155).
+    carried = _backend_carries(name, seeds, backend_ic_seeds)
+    terms = [(s.target, s.key, s.node) for s in seeds
+             if not (s.target == IC and s.key in carried)]
     if name in species_names:
         terms.append((IC, name, derivative.ONE))
-    elif name in param_ids:
-        if not _seeds_only_initial_conditions(seeds):
-            terms.append((PARAM, name, derivative.ONE))
-        elif rhs_symbols is None:
-            raise GradientNotSupported(
-                f"Free parameter '{name}' seeds only species initial values, and this model "
-                f"cannot say whether the ODE right-hand side also reads it "
-                f"(no 'ode_rhs_symbols'). Both answers are silently wrong: dropping its own "
-                f"parameter axis deletes every right-hand-side path from its derivative (#535), "
-                f"and keeping it double-counts, because a seeded parameter's axis already "
-                f"carries the same initial-value derivative its initial-condition axis does "
-                f"(#537). Use a gradient-free optimizer or sampler for this fit.")
-        elif not _absent_from_rhs(name, rhs_symbols):
-            terms.append((PARAM, name, derivative.ONE))
+    elif name in param_ids and not (carried == frozenset()
+                                    and _seeds_only_initial_conditions(seeds)
+                                    and _absent_from_rhs(name, rhs_symbols)):
+        # Keep the id's own axis unless it is provably identically zero: nothing seeded into
+        # it and a right-hand side the model states never reads the id. Keeping it is always
+        # arithmetically safe now that the seeds it duplicates have been dropped above, so an
+        # unanswerable model (``rhs_symbols is None``) simply keeps it (#535's error) instead
+        # of having to choose between two silent wrongs.
+        terms.append((PARAM, name, derivative.ONE))
     return terms
+
+
+def _backend_carries(name, seeds, backend_ic_seeds):
+    """The seeded species whose ``d(x(0))/d(name)`` the backend's parameter axis already holds.
+
+    ``backend_ic_seeds`` is :meth:`BngsimModel.backend_ic_sensitivity`'s
+    ``{species: {param: coefficient}}``. Presence is the whole question -- a coefficient of
+    ``0.0`` is *seeded and zero at this state*, still inside the parameter axis, and still not
+    something to add again. ``None`` means the backend could not say, which
+    :func:`route_for_model` refuses before reaching here; the empty default keeps a direct
+    caller of this pure core (a test, a backend-free router) on the historical behaviour of
+    routing every seed itself."""
+    if not backend_ic_seeds:
+        return frozenset()
+    return frozenset(s.key for s in seeds
+                     if s.target == IC and name in (backend_ic_seeds.get(s.key) or {}))
 
 
 def _seed_terms(target, ic_seed_map):
@@ -593,7 +607,7 @@ def _absent_from_rhs(name, rhs_symbols):
 
 
 def route_experiment(free_params, param_values, species_initializers, condition=None,
-                     ic_seed_map=None, rhs_symbols=None):
+                     ic_seed_map=None, rhs_symbols=None, backend_ic_seeds=None):
     """Build the :class:`ExperimentRouting` for one experiment (pure -- no model, no sim).
 
     ``free_params`` is the ordered free-parameter id list (the config's declared variables);
@@ -650,7 +664,7 @@ def route_experiment(free_params, param_values, species_initializers, condition=
                     f"optimizer or sampler for this fit.")
             for axis, key, node in classify_condition_target(
                     mut.name, param_ids, species_names, ic_seed_map,
-                    rhs_symbols=rhs_symbols):
+                    rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds):
                 constant = derivative.is_constant(node)
                 ref_contribs.setdefault(free_param, []).append(RouteContribution(
                     axis, key, _evaluate_factor(node, env, free_param),
@@ -667,7 +681,7 @@ def route_experiment(free_params, param_values, species_initializers, condition=
         scale = derivative.num(condition_factor(name, condition))
         for axis, key, node in classify_bound_id(
                 name, param_ids, species_names, ic_seed_map, species_initializers,
-                rhs_symbols=rhs_symbols):
+                rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds):
             scaled = derivative.mul(scale, node)
             constant = derivative.is_constant(scaled)
             contribs.append(RouteContribution(
@@ -735,57 +749,33 @@ def route_for_model(model, free_params, condition=None):
     """
     param_values, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
     rhs_symbols = getattr(model, 'ode_rhs_symbols', lambda: None)()
-    condition = _resolve_condition(model, condition)
-    routing = route_experiment(free_params, param_values, species_initializers, condition,
-                               ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols)
-    _refuse_seeded_double_count(model, routing)
-    return routing
-
-
-def _refuse_seeded_double_count(model, routing):
-    """Refuse a both-axes route whose seeding the backend already carries (#537, lanl/bngsim#147).
-
-    ``d_param[p]`` is the **total** derivative: the right-hand-side path *plus* whatever
-    ``dx(0)/dp`` the backend seeded (lanl/bngsim#155). A route that holds both its own parameter
-    axis and an initial-condition term is correct only while the backend seeds *nothing* for that
-    species -- otherwise the seeding half is counted twice, and the result is a finite, smooth,
-    plausible gradient pointing somewhere slightly wrong.
-
-    On a build that lowers a compound ``initialAssignment`` (lanl/bngsim#147) it does seed it, and
-    :meth:`~pybnf.bngsim_sbml_model.BngsimSbmlModel.lowered_ic_species` says which species those
-    are. So this refuses exactly that combination, up front and by name, rather than at scoring
-    time or not at all. ``Fiedler_BMCSystBiol2016`` is the shape in question: seven kinetic
-    constants that drive the rate laws *and* seed all six species initials.
-
-    Deliberately narrow. It cannot see a **bare** ``<ci>`` assignment, which every build seeds
-    with no synthetic parameter to detect -- a parameter with a bare initial-value seed that is
-    *also* read by the right-hand side is the same defect and is not caught here. No model in the
-    PEtab benchmark subset has that shape, and closing it needs the seed matrix itself
-    (lanl/bngsim#155); until then :func:`pybnf.gradient.assembly._check_axes_are_not_the_same_derivative`
-    catches the sub-case where the right-hand-side path is zero.
-    """
-    lowered = getattr(model, 'lowered_ic_species', lambda: frozenset())()
-    if not lowered:
-        return
-    for name, route in routing.routes.items():
-        if not any(c.target == PARAM and c.key == name and c.requested
-                   for c in route.contributions):
-            continue
-        clash = sorted(c.key for c in route.contributions
-                       if c.target == IC and c.requested and c.key in lowered)
-        if not clash:
-            continue
+    backend_ic_seeds = getattr(model, 'backend_ic_sensitivity', lambda: None)()
+    if backend_ic_seeds is None and _seeds_any_initial_condition(ic_seed_map):
         raise GradientNotSupported(
-            f"Free parameter '{name}' reaches the trajectory both through its own parameter "
-            f"axis and through the initial condition of {', '.join(repr(k) for k in clash)}, "
-            f"whose initialAssignment this bngsim build lowers to a synthetic derived "
-            f"parameter (lanl/bngsim#147). On such a build the backend seeds d(x(0))/d"
-            f"('{name}') into the parameter axis, so that axis already carries the seeding and "
-            f"adding the initial-condition term would count it twice -- a gradient column at a "
-            f"multiple of its true value, which the objective cannot reveal. PyBNF cannot yet "
-            f"read what the backend seeded (lanl/bngsim#155 tracks exposing it), so it refuses "
-            f"rather than guess. Use a gradient-free optimizer or sampler for this fit, or a "
-            f"bngsim build without #147.")
+            "This model seeds a species initial value from a parameter, and the backend cannot "
+            "report what it seeded into the parameter sensitivity axis "
+            "(no 'effective_ic_sensitivity'; needs bngsim >= 0.12.2). Without that the router "
+            "cannot tell whether adding an initial-condition term would supply the seeding or "
+            "count it twice, and both mistakes are silent -- a gradient column at a multiple of "
+            "its true value, or one missing its whole right-hand-side half. Upgrade bngsim, or "
+            "use a gradient-free optimizer or sampler for this fit.")
+    condition = _resolve_condition(model, condition)
+    return route_experiment(free_params, param_values, species_initializers, condition,
+                            ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
+                            backend_ic_seeds=backend_ic_seeds)
+
+
+def _seeds_any_initial_condition(ic_seed_map):
+    """Whether any parameter in the seed map feeds a species initial value.
+
+    A model with no such seed never reaches the ambiguity, so it must not be refused for a
+    missing reader -- most fits are in that case."""
+    for seeds in (ic_seed_map or {}).values():
+        if seeds is None or isinstance(seeds, str):
+            return True
+        if any(s.target == IC for s in seeds):
+            return True
+    return False
 
 
 def apply_routing(model, routing):

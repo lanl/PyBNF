@@ -328,7 +328,7 @@ def test_bngsim_model_has_discrete_events_reads_engine_event_count():
     assert smooth.has_discrete_events is False
 
 
-def test_every_gradient_refusal_names_its_own_cause_on_stdout():
+def test_every_gradient_refusal_names_its_own_cause_on_stdout(monkeypatch):
     """Which of the four refusals fired is readable from the printed message alone (#527).
 
     ``pybnf.pybnf`` prints ``e.message`` and logs ``e.log_message``. Each gate used to pass its
@@ -361,6 +361,11 @@ def test_every_gradient_refusal_names_its_own_cause_on_stdout():
         _headless([types.SimpleNamespace(name='m')])._require_sensitivity_backend()
     backend = exc.value
 
+    # The discrete-event gate is capability-conditional (#536): it stops firing on a bngsim
+    # at or above BNGSIM_HAS_EVENT_SENS's floor, which 0.12.2 is. This test is about what each
+    # refusal *says*, so pin the flag rather than let the installed build decide whether the
+    # case exists at all.
+    monkeypatch.setattr('pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS', False)
     with pytest.raises(PybnfError) as exc:
         _headless([types.SimpleNamespace(name='m', has_discrete_events=True)]) \
             ._require_differentiable_dynamics()

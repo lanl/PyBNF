@@ -181,27 +181,16 @@ def test_classify_condition_target_ic_seed():
                                      rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
 
 
-def test_classify_condition_target_ic_seed_refuses_when_the_rhs_is_unknown():
-    """Same target, no ``rhs_symbols``: neither answer is safe, so the router refuses (#537).
-
-    ADR-0097 originally *kept* the axis here, reasoning that a kept-but-zero axis costs one
-    wasted sensitivity vector while a dropped-but-live one deletes the right-hand-side half of
-    the derivative (#535). The first half is false. A parameter that seeds a species initial
-    value has ``∂x(0)/∂p`` seeded into the **parameter** axis too (lanl/bngsim#43), so for a pure
-    initial-value seed that axis is byte-identical to the initial-condition axis it gets summed
-    with -- measured on ``Raia_CancerResearch2011``, where routing both gives a column at exactly
-    2x its central difference. Keeping it doubles; dropping it may delete. So: refuse."""
-    from pybnf.gradient import GradientNotSupported
-    with pytest.raises(GradientNotSupported, match='cannot say whether the ODE right-hand side'):
-        classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP)
-    # ...and with an answer, it decides: absent from the RHS -> the IC axis alone.
+def test_classify_condition_target_ic_seed_keeps_its_axis_when_the_rhs_is_unknown():
+    """No ``rhs_symbols`` is no longer a dilemma (#537). Keeping a bound id's own axis is
+    always arithmetically safe once the seeds it duplicates have been dropped, so a model that
+    cannot say simply keeps it, which is #535's safe direction and needs no refusal."""
+    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP) == [
+        (IC, 'S()', ONE), (PARAM, 'S0', ONE)]
+    # Told the RHS never reads it, and with nothing seeded into its axis, that axis is
+    # provably zero and is dropped -- an optimization now, not a correctness question.
     assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP,
                                      rhs_symbols=DECAY_RHS) == [(IC, 'S()', ONE)]
-    # ...present in the RHS -> both, which is correct only because a compound seed's parameter
-    # axis carries the right-hand-side path and NOT the seeding (Fiedler, #535).
-    assert classify_condition_target('S0', {'S0', 'k'}, {'S()'}, IC_SEED_MAP,
-                                     rhs_symbols=frozenset({'S0', 'k'})) == [
-        (IC, 'S()', ONE), (PARAM, 'S0', ONE)]
 
 
 def test_classify_condition_target_param():
@@ -575,47 +564,71 @@ def test_check_column_multiplicity_rejects_a_repeated_param_column():
 
 
 class _SeedingModel:
-    """A model whose ``initialAssignment`` for ``S()`` this build may or may not have lowered."""
+    """A model whose ``k`` both drives the rate law and seeds ``S()``'s initial value, with the
+    backend's seed matrix under the test's control."""
 
     name = 'm'
     mutants = ()
 
-    def __init__(self, lowered=()):
-        self._lowered = frozenset(lowered)
+    def __init__(self, backend_seeds):
+        self._backend_seeds = backend_seeds
 
     def sensitivity_entity_namespace(self):
-        # ``k`` seeds S()'s initial value AND is a kinetic constant, so it keeps both axes.
         return ({'k': 0.3}, [('S()', '2*k')],
                 {'k': (SeedTerm(IC, 'S()', ('num', 2.0)),)})
 
     def ode_rhs_symbols(self):
         return frozenset({'k', 'S()'})
 
-    def lowered_ic_species(self):
-        return self._lowered
+    def backend_ic_sensitivity(self):
+        return self._backend_seeds
 
 
-def test_route_for_model_gate_fires_only_on_a_lowering_build():
-    """The gate is a build discriminator, not a routing rule. On a build that lowers nothing
-    (every release through 0.12.1) the same model routes both axes exactly as before, which is
-    correct there -- the parameter axis carries only the right-hand-side path and the ic term
-    supplies the seeding. Fiedler_BMCSystBiol2016 is this shape."""
-    from pybnf.gradient import GradientNotSupported
-    routing = R.route_for_model(_SeedingModel(lowered=()), ['k'])
-    assert routing.routes['k'].contributions == (
+def test_route_for_model_drops_a_seed_the_backend_already_carries():
+    """The #537 rule. ``k`` drives the right-hand side and seeds ``S()``. When the backend
+    reports that seed, it is already inside ``d_param[k]``, so the ic term is dropped and the
+    parameter axis alone carries both halves. This is the ``Fiedler_BMCSystBiol2016`` shape on
+    a build with lanl/bngsim#147."""
+    r = R.route_for_model(_SeedingModel({'S()': {'k': 2.0}}), ['k'])
+    assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+    assert r.sensitivity_ic == [] and r.sensitivity_params == ['k']
+
+
+def test_route_for_model_keeps_a_seed_the_backend_does_not_carry():
+    """The same model on a backend that seeds nothing for it: the parameter axis carries only
+    the right-hand-side path, so the ic term is what supplies the seeding and must stay. This
+    is the pre-#147 shape, and dropping it here is the #535 defect."""
+    r = R.route_for_model(_SeedingModel({}), ['k'])
+    assert r.routes['k'].contributions == (
         RouteContribution(IC, 'S()', 2.0), RouteContribution(PARAM, 'k', 1.0))
-    # ...and the same model on a lowering build is refused rather than silently doubled.
-    with pytest.raises(GradientNotSupported) as excinfo:
-        R.route_for_model(_SeedingModel(lowered={'S()'}), ['k'])
-    message = str(excinfo.value)
-    assert "'k'" in message and "'S()'" in message
-    assert 'lanl/bngsim#147' in message and 'lanl/bngsim#155' in message
+    assert r.sensitivity_ic == ['S()'] and r.sensitivity_params == ['k']
 
 
-def test_route_for_model_gate_ignores_a_lowered_species_the_route_does_not_reach():
-    """A lowered species that this parameter does not seed is none of the gate's business."""
-    routing = R.route_for_model(_SeedingModel(lowered={'T()'}), ['k'])
-    assert len(routing.routes['k'].contributions) == 2
+def test_route_for_model_seed_present_but_zero_is_still_carried():
+    """A coefficient of ``0.0`` means *seeded, and zero at this state*, which is inside the
+    parameter axis exactly as a non-zero one is. Treating it as absent would add an ic term the
+    backend already carries at every other point (lanl/bngsim#155 fixed the mirror of this bug
+    on their side)."""
+    r = R.route_for_model(_SeedingModel({'S()': {'k': 0.0}}), ['k'])
+    assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+
+
+def test_route_for_model_refuses_when_the_backend_cannot_report_its_seeding():
+    """An older backend cannot say what it seeded, and both answers are silently wrong, so a
+    model that actually has a seed is refused rather than guessed at (needs bngsim >= 0.12.2)."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='effective_ic_sensitivity'):
+        R.route_for_model(_SeedingModel(None), ['k'])
+
+
+def test_route_for_model_without_the_reader_is_fine_when_nothing_seeds():
+    """Most models seed nothing, and those must not be refused for a missing reader."""
+    class _Plain(_SeedingModel):
+        def sensitivity_entity_namespace(self):
+            return ({'k': 0.3}, [('S()', '100')], {})
+
+    r = R.route_for_model(_Plain(None), ['k'])
+    assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
 
 
 class _CapturingModel:
@@ -704,10 +717,16 @@ def test_ode_rhs_symbols_reads_the_net_reactions_not_the_species_block(decay_mod
 
 @pytest.mark.bngsim
 def test_route_for_model_matches_pure_core(decay_model):
+    """``S0`` seeds ``S()``'s initial value, and bngsim reports that seed as already carried on
+    ``S0``'s own parameter axis, so the router drops the ic term and keeps the parameter axis
+    (#537, lanl/bngsim#155). The two are the same numbers -- verified bit-identical in
+    ``test_bngsim_output_sensitivities`` -- so this is the same derivative by the axis that
+    cannot double-count it."""
+    assert decay_model.backend_ic_sensitivity() == {'S()': {'S0': 1.0}}
     r = R.route_for_model(decay_model, FREE, None)
-    assert r.sensitivity_params == ['k']
-    assert r.sensitivity_ic == ['S()']
-    assert r.routes['S0'].target == IC and r.routes['S0'].key == 'S()'
+    assert r.sensitivity_params == ['k', 'S0']
+    assert r.sensitivity_ic == []
+    assert r.routes['S0'].target == PARAM and r.routes['S0'].key == 'S0'
 
 
 @pytest.mark.bngsim
@@ -718,9 +737,10 @@ def test_route_for_model_composes_param_ref_on_the_net_backend(decay_model):
     axis -- the net peer of the SBML initialAssignment path."""
     cond = MutationSet([Mutation('S0', '=', 'S0_A', is_param_ref=True)], 'c')
     r = R.route_for_model(decay_model, ['k', 'S0_A'], cond)
-    assert r.routes['S0_A'].contributions == (RouteContribution(IC, 'S()', 1.0),)
-    assert r.sensitivity_ic == ['S()']
-    assert r.sensitivity_params == ['k']
+    # Through S0's own axis, which already carries d(S(0))/d(S0) (#537).
+    assert r.routes['S0_A'].contributions == (RouteContribution(PARAM, 'S0', 1.0),)
+    assert r.sensitivity_ic == []
+    assert r.sensitivity_params == ['k', 'S0']
 
 
 @pytest.mark.bngsim
@@ -731,8 +751,8 @@ def test_route_for_model_net_backend_multi_target_param_ref_sums(decay_model):
                         Mutation('S0', '=', 'm', is_param_ref=True)], 'c')
     r = R.route_for_model(decay_model, ['m'], cond)
     assert r.routes['m'].contributions == (
-        RouteContribution(PARAM, 'k', 1.0), RouteContribution(IC, 'S()', 1.0))
-    assert r.sensitivity_params == ['k'] and r.sensitivity_ic == ['S()']
+        RouteContribution(PARAM, 'k', 1.0), RouteContribution(PARAM, 'S0', 1.0))
+    assert r.sensitivity_params == ['k', 'S0'] and r.sensitivity_ic == []
 
 
 @pytest.mark.bngsim
@@ -754,8 +774,10 @@ def test_route_for_model_unknown_condition_name_raises(decay_model):
 @pytest.mark.bngsim
 def test_apply_routing_threads_request_to_simulator_kwargs(decay_model):
     R.apply_routing(decay_model, R.route_for_model(decay_model, ['k', 'S0'], None))
+    # S0's seed of S() is already carried on S0's own parameter axis (#537), so the request is
+    # parameter-only. One column either way, and the axis that cannot double-count it.
     assert decay_model._sensitivity_request_kwargs('ode') == {
-        'sensitivity_params': ['k'], 'sensitivity_ic': ['S()'],
+        'sensitivity_params': ['k', 'S0'],
     }
 
 
@@ -763,8 +785,9 @@ def test_apply_routing_threads_request_to_simulator_kwargs(decay_model):
 def test_apply_routing_pinned_param_drops_param_kwarg(decay_model):
     cond = MutationSet([Mutation('k', '=', 0.5)], 'pin')
     R.apply_routing(decay_model, R.route_for_model(decay_model, ['k', 'S0'], cond))
-    # k pinned -> no sensitivity_params; only the IC axis is requested.
-    assert decay_model._sensitivity_request_kwargs('ode') == {'sensitivity_ic': ['S()']}
+    # k pinned -> its column drops; S0 keeps its own parameter axis, which already carries
+    # the seed of S()'s initial value (#537).
+    assert decay_model._sensitivity_request_kwargs('ode') == {'sensitivity_params': ['S0']}
 
 
 @pytest.mark.bngsim

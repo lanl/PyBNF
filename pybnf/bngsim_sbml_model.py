@@ -1147,31 +1147,44 @@ class BngsimSbmlModelNoTimeout(Model):
         core = getattr(self._get_engine_template(), '_core', None)
         return bool(getattr(core, 'n_events', 0))
 
-    def lowered_ic_species(self):
-        """Species whose ``initialAssignment`` this bngsim build **lowered** (lanl/bngsim#147).
+    def backend_ic_sensitivity(self):
+        """``{species: {param: d(x(0))/d(param)}}`` the backend will seed the run with (#537).
 
-        A compound parameter-only initial assignment (``u(0) = b*v0``, or a steady-state
-        expression over kinetic constants) is lowered to a synthetic derived parameter named
-        ``_ic_<species>``, which is what lets ``compute_ic_param_sens_seed`` differentiate it --
-        so on such a build the assignment's inputs are seeded into the **parameter** axis and
-        ``d_param[p]`` already carries ``dx(0)/dp``. Before #147 only a bare ``<ci>`` assignment
-        was seeded, and a compound one contributed nothing to that axis.
+        The reader for lanl/bngsim#155. ``output_sensitivities(axis='parameter')`` is the
+        **total** derivative,
 
-        That difference decides whether the gradient router may add an initial-condition term on
-        top of a parameter's own axis, and it is not otherwise readable from the API
-        (lanl/bngsim#155 tracks exposing the effective seed matrix, which will replace this).
-        Detecting the synthetic parameter is a **build discriminator only** -- never a routing
-        rule, since a bare assignment and a ``.net`` ``R() R0`` are seeded with no synthetic
-        parameter at all, so an empty result does not mean "nothing is seeded".
+            d_param[p] = (right-hand-side path) + sum_k (d(x_k(0))/dp) * d_ic[x_k]
 
-        Empty when the engine model is unavailable, which keeps a model that cannot answer from
-        blocking a fit that the pre-#147 arithmetic handles correctly.
+        so any seeding reported here is *already inside* a parameter's own axis, and the router
+        must add an initial-condition term only for a ``(species, param)`` pair reported
+        **absent**. A present entry whose value is ``0.0`` means seeded with a coefficient that
+        vanishes at this state, which is not the same as absent and must not drop a column the
+        fit needs at another point.
+
+        Answered from model structure alone -- no simulation -- so the routing can be built once
+        at setup, and state-dependent by design, so it is read from the configured model.
+        ``None`` when the backend cannot say, which the router refuses rather than guessing at.
         """
+        model = self._get_engine_template()
+        reader = getattr(model, 'effective_ic_sensitivity', None)
+        if reader is None:
+            return None
         try:
-            names = set(self._get_engine_template().param_names)
+            seeded = reader()
         except Exception:                                   # pragma: no cover - defensive
-            return frozenset()
-        return frozenset(s for s in self._species_names if ('_ic_%s' % s) in names)
+            return None
+        # Restricted to species PyBNF reads on the SAME scale the backend does. The ``ic`` axis
+        # is rescaled by each species' PyBNF-value -> concentration factor when the tensor is
+        # read (:meth:`_extract_output_sensitivities`) and the ``parameter`` axis is not, so for
+        # a species whose factor is not 1 the two axes are in different units and the parameter
+        # axis cannot stand in for an ic term: substituting one for the other on a
+        # ``hasOnlySubstanceUnits`` species in a size-2 compartment overstates its column by
+        # exactly 2 (measured; ``test_sbml_fd_oracle_amount_species_seed`` is the oracle).
+        # Reporting such a species as unseeded keeps the router on the ic route, which the same
+        # oracle validates. No model in the PEtab benchmark subset both seeds an initial
+        # condition and carries a non-unit factor, so nothing real is given up.
+        return {species: row for species, row in seeded.items()
+                if self._species_unit_factor.get(species, 1.0) == 1.0}
 
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).

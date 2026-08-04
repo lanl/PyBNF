@@ -491,9 +491,10 @@ def test_sbml_fd_oracle_free_params_routed_through_a_condition(tmp_path):
         xml, xml, pset=PSet([FreeParameter('k1', 'uniform_var', 0.0, 1e6, value=0.3)]),
         actions=(TimeCourse({'time': '10', 'step': '1'}),))
     route = route_for_model(route_model, names, cond)
-    # s0_free -> IC(S); m_free -> PARAM(kmult1) + PARAM(kmult2) (summed); k1 -> PARAM(k1).
-    assert route.sensitivity_ic == ['S']
-    assert set(route.sensitivity_params) == {'kmult1', 'kmult2', 'k1'}
+    # s0_free -> PARAM(S0), because the backend already seeds d(S(0))/d(S0) into that axis
+    # (#537); m_free -> PARAM(kmult1) + PARAM(kmult2) (summed); k1 -> PARAM(k1).
+    assert route.sensitivity_ic == []
+    assert set(route.sensitivity_params) == {'kmult1', 'kmult2', 'k1', 'S0'}
     assert len(route.routes['m_free'].contributions) == 2
 
     # Synthetic data at the true params -> non-zero residuals at the evaluation point.
@@ -559,7 +560,10 @@ def test_sbml_non_bare_initial_assignment_seed_carries_its_derivative(tmp_path):
     assert ic_seed_map == {'S0': (SeedTerm(IC, 'S', ('num', 2.0)),)}
     cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
     route = route_for_model(model, ['s0_free'], cond)
-    assert route.routes['s0_free'].contributions == (RouteContribution(IC, 'S', 2.0),)
+    # The factor-2 seed is carried on S0's own axis (lanl/bngsim#147 lowers the compound
+    # assignment), so the route is that axis alone rather than the ic term (#537). The seed
+    # map above still records the derivative, which is what the router checks against.
+    assert route.routes['s0_free'].contributions == (RouteContribution(PARAM, 'S0', 1.0),)
 
 
 _UNDIFFERENTIABLE_SEED_SBML = _NONBARE_SEED_SBML.replace(
@@ -713,7 +717,9 @@ def test_sbml_fd_oracle_multi_species_seed_and_derived_parameter(tmp_path):
 
     def _check(route):
         assert route.is_point_dependent
-        assert set(route.sensitivity_ic) == {'I', 'S'}
+        # I0's two species seeds (I = I0, S = N - I0) are both carried on I0's own parameter
+        # axis, so neither needs an ic term (#537). The derived-parameter chain is untouched.
+        assert set(route.sensitivity_ic) == set()
         assert 'beta' in route.sensitivity_params
         assert len(route.routes['g_free'].contributions) == 2   # beta chain + g's own axis
 
@@ -876,10 +882,11 @@ def test_sbml_rate_constant_that_also_seeds_an_ic_keeps_its_parameter_axis(tmp_p
     assert seeds == {'k': (SeedTerm(IC, 'S', ONE),)}
 
     route = route_for_model(model, ['k'], None)
-    assert route.routes['k'].contributions == (
-        RouteContribution(IC, 'S', 1.0),       # the initial value it seeds
-        RouteContribution(PARAM, 'k', 1.0))    # AND the rate law that reads it
-    assert route.sensitivity_params == ['k'] and route.sensitivity_ic == ['S']
+    # Its own axis is the TOTAL derivative and already carries the seed as well as the rate
+    # law, so one contribution covers both halves (#537). Routing the ic term too is what
+    # doubled the seeding half.
+    assert route.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+    assert route.sensitivity_params == ['k'] and route.sensitivity_ic == []
 
 
 @_needs_output_sens

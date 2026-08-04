@@ -169,6 +169,26 @@ All notable changes to PyBNF are documented below. This project adheres to
     linear problem is byte-for-byte unchanged.
 
 ### Fixed
+- **The router now reads what the backend seeded instead of inferring it, so an IC-seeding
+  parameter is routed exactly once (#537, ADR-0100).** bngsim 0.12.2 (lanl/bngsim#157, answering
+  our lanl/bngsim#155) exposes `Model.effective_ic_sensitivity()`, the `{species: {param:
+  ∂x(0)/∂θ}}` the solver will actually be seeded with, from model structure alone and with a
+  present-but-zero entry distinguished from an absent one. The rule is now stated rather than
+  guarded around: **route a bound id's own parameter axis, and add an initial-condition term only
+  for a `(species, param)` pair the backend reports absent.** That subsumes both of the defects
+  either side of it — #535 was an axis dropped that was needed, #537 an axis kept that
+  duplicated, and both came from inferring what the parameter axis contained. `ode_rhs_symbols`
+  is demoted to an optimization (dropping a provably identically-zero axis), so a model that
+  cannot answer keeps its axis instead of facing two silent wrongs; the refusal added for that
+  case is gone, as is the `lowered_ic_species` build discriminator that existed only to survive
+  the interval. `Fiedler_BMCSystBiol2016` returns to 3.68e-06 on 0.12.2 — its value before
+  lanl/bngsim#147 widened the seeded class — and seven slugs whose parameters seed an initial
+  condition switch from the ic axis to the parameter axis, unchanged to the digit. **The minimum
+  bngsim is now 0.12.2.** One limit is deliberate: the two axes are only interchangeable in a
+  common unit convention, and the ic axis is rescaled by each species' PyBNF-value-to-
+  concentration factor while the parameter axis is not, so a species whose factor is not 1 keeps
+  the ic route (substituting overstates its column by `1/factor`, measured across three
+  compartment sizes). Exactly one benchmark model has non-unit factors and it seeds nothing.
 - **A gradient fit is refused, rather than silently doubled, on a bngsim build that seeds a
   lowered `initialAssignment` into the parameter axis (#537, ADR-0100).** The backend authors
   confirmed (lanl/bngsim#155) that `output_sensitivities(axis='parameter')` is the **total**

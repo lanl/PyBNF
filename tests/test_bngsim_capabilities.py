@@ -29,9 +29,32 @@ def _reload_caps_with(monkeypatch, fake_module, env=None):
     return importlib.reload(_bngsim_caps)
 
 
+# The session's real PYBNF_NO_BNGSIM, captured before any test can monkeypatch it. The
+# bngsim-less CI leg sets it for the whole run, so "restore" cannot mean "unset".
+_REAL_NO_BNGSIM = os.environ.get('PYBNF_NO_BNGSIM')
+
+
 def _restore_caps():
-    """Reload _bngsim_caps against the real bngsim package."""
+    """Reload _bngsim_caps against the real bngsim package and the real environment.
+
+    Both halves matter. These tests reload the capability module against a fake bngsim, and
+    some of them also set ``PYBNF_NO_BNGSIM``; this runs from a ``finally``, which is *before*
+    monkeypatch undoes either. Popping the fake module but leaving the environment variable set
+    reloaded the module as though bngsim were absent, and monkeypatch then restored the variable
+    without recomputing -- leaving every capability constant false for the rest of the session.
+
+    That went unnoticed because the constant it broke, ``BNGSIM_HAS_EVENT_SENS``, was already
+    false on every release below its 0.12.2 floor, so the poisoned value matched the real one.
+    On 0.12.2 it is true, and ``test_event_model_reaches_gradient_setup_through_the_real_config``
+    (skipped below the floor, so it had never run in the same session) started failing with
+    "the installed bngsim (version unknown)" -- a discrete-event refusal that reads as a product
+    bug and is entirely an artefact of test ordering.
+    """
     sys.modules.pop('bngsim', None)
+    if _REAL_NO_BNGSIM is None:
+        os.environ.pop('PYBNF_NO_BNGSIM', None)
+    else:
+        os.environ['PYBNF_NO_BNGSIM'] = _REAL_NO_BNGSIM
     importlib.reload(_bngsim_caps)
 
 

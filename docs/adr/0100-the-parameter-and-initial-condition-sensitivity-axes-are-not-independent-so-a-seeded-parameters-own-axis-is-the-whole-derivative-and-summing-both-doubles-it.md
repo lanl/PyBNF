@@ -95,7 +95,46 @@ routings found no other model with a both-axes free parameter; the other 22 IC-s
 across seven slugs route the ic axis alone, which is robust either way since `d_param` is never read
 for them.
 
-## Known gap
+## Follow-through: the reader landed, and the guards became a rule
+
+lanl/bngsim#155 answered the contract and lanl/bngsim#157 shipped the reader, in bngsim 0.12.2:
+`Model.effective_ic_sensitivity()` returns `{species: {param: ∂x(0)/∂θ}}` from model structure alone,
+with a present-but-zero entry distinguished from an absent one. PyBNF's floor moved to 0.12.2 and the
+routing rule is now stated rather than guarded around:
+
+> Route a bound id's own parameter axis, and add an initial-condition term only for a
+> `(species, param)` pair the backend reports **absent**.
+
+That subsumes both defects this ADR and ADR-0097 are about. #535 was an axis dropped that was needed;
+#537 was an axis kept that duplicated. Both came from inferring what the parameter axis contained;
+neither survives reading it. `ode_rhs_symbols` stops being load-bearing and is now only an
+optimization, dropping an axis that is provably identically zero, so an unanswerable model keeps its
+axis instead of facing a choice between two silent wrongs. The refusal added above is gone, and so is
+the `lowered_ic_species` build discriminator, which existed only to survive this interval.
+
+`Fiedler_BMCSystBiol2016` is the case that moves: on 0.12.2 the backend seeds all six of its species
+initials, so its seven parameters route their own axis alone and it returns to 3.68e-06, the value it
+had before lanl/bngsim#147 widened the seeded class. Seven other slugs whose parameters seeded an
+initial condition switch from the ic axis to the parameter axis and are unchanged to the digit.
+
+### One thing the backend's rule does not cover
+
+The two axes are only interchangeable in a common unit convention, and PyBNF does not have one.
+`_extract_output_sensitivities` rescales the **ic** axis by each species' PyBNF-value-to-concentration
+factor and leaves the **parameter** axis alone, so for a species whose factor is not 1 the substitution
+overstates its column by exactly `1/factor` — measured at 2x on a `hasOnlySubstanceUnits` species in a
+size-2 compartment, and confirmed as `1/factor` across compartment sizes 2, 4 and 5.
+
+Scaling the substitution by that factor does not work, because `d_param` is already a sum over every
+species the parameter seeds and one parameter can seed several with different factors. So
+`backend_ic_sensitivity` reports only species PyBNF reads on the backend's scale, and a species with a
+differing factor keeps the ic route that `test_sbml_fd_oracle_amount_species_seed` validates. Across
+the benchmark subset exactly one model has non-unit factors (`Smith_BMCSystBiol2013`) and it seeds no
+initial condition, so nothing real is given up. What remains uncovered is a non-unit-factor species
+that is seeded *and* whose parameter drives the right-hand side, where `d_param` mixes a correctly
+scaled right-hand-side path with a mis-scaled seeding half and the two cannot be separated.
+
+## Known gap (as of the interim guards above)
 
 A **bare** `<ci>` initial assignment is seeded by every build with no synthetic parameter to detect, so
 a parameter with a bare initial-value seed that is *also* read by the right-hand side is the same

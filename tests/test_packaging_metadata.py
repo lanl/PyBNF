@@ -18,7 +18,7 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     # a scored PRE-EQUILIBRATED dose-response scan differentiable (#532). (0.11.35 added the
     # steady-state SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the
     # native carried-state parameter_scan/bifurcate + named saved states of lanl/bngsim#11 for #474.)
-    assert 'bngsim>=0.12.0,<1' in project['dependencies']
+    assert 'bngsim>=0.12.2,<1' in project['dependencies']
 
 
 def test_every_pybnf_subpackage_is_shipped():

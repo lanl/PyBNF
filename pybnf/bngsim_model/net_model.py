@@ -372,6 +372,33 @@ class BngsimModel(NetModel):
         core = getattr(self._engine_model, '_core', None)
         return bool(getattr(core, 'n_events', 0))
 
+    def backend_ic_sensitivity(self):
+        """``{species: {param: d(x(0))/d(param)}}`` the backend will seed the run with (#537).
+
+        The reader for lanl/bngsim#155. ``output_sensitivities(axis='parameter')`` is the
+        **total** derivative,
+
+            d_param[p] = (right-hand-side path) + sum_k (d(x_k(0))/dp) * d_ic[x_k]
+
+        so any seeding reported here is *already inside* a parameter's own axis, and the router
+        must add an initial-condition term only for a ``(species, param)`` pair reported
+        **absent**. A present entry whose value is ``0.0`` means seeded with a coefficient that
+        vanishes at this state, which is not the same as absent and must not drop a column the
+        fit needs at another point.
+
+        Answered from model structure alone -- no simulation -- so the routing can be built once
+        at setup, and state-dependent by design, so it is read from the configured model.
+        ``None`` when the backend cannot say, which the router refuses rather than guessing at.
+        """
+        model = self._engine_model
+        reader = getattr(model, 'effective_ic_sensitivity', None)
+        if reader is None:
+            return None
+        try:
+            return reader()
+        except Exception:                                   # pragma: no cover - defensive
+            return None
+
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 
