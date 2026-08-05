@@ -43,6 +43,33 @@ logger = logging.getLogger(__name__)
 _ENGINE_TEMPLATE_CACHE = {}
 
 
+# Templates a warm was already ATTEMPTED on, keyed like _ENGINE_TEMPLATE_CACHE and
+# holding the template the attempt was made on. Only failures need remembering -- a
+# successful warm is legible on the template itself (_template_is_warm) -- but a warm
+# that raises leaves no trace there, and re-attempting it per action would double the
+# very cost this is meant to remove. Holding the template rather than a bare flag keeps
+# the memo honest if the cache above is cleared and reloaded (the tests do): a fresh
+# template is not the one that failed, so it is warmed. See issue #543.
+_ENGINE_TEMPLATE_WARM_ATTEMPTED = {}
+
+
+def _template_is_warm(template):
+    """Does ``template`` already carry a codegen artifact built for sensitivities (#543)?
+
+    bngsim records both on the model: the artifact itself (a compiled ``.so`` path, or
+    the C source string under the MIR JIT backend) and ``_want_output_sens``, which it
+    documents as doubling for "the attached codegen already has output sens". A plain-RHS
+    artifact inherited from a scalar construction has the flag False, and bngsim's own
+    ``_prepare_output_sens_codegen`` would then clear and regenerate it at the first
+    sensitivity request -- correct, but it saves nothing, so it does not count as warm.
+    """
+    return bool(
+        getattr(template, '_want_output_sens', False)
+        and (getattr(template, '_codegen_so_path', '')
+             or getattr(template, '_codegen_c_source', ''))
+    )
+
+
 from ._bngsim_caps import (
     BNGSIM_HAS_OUTPUT_SENS,
     BNGSIM_HAS_SBML,
@@ -722,7 +749,9 @@ class BngsimSbmlModelNoTimeout(Model):
         Loads the bngsim model once per worker process (paying the libSBML
         parse + analytical-Jacobian derivation) and reuses it for every
         evaluation, cloning it for each per-evaluation parameter application.
-        See issue #415.
+        See issue #415. On the gradient path the template is also *warmed* on
+        first use, so the clones inherit the compiled sensitivity RHS instead of
+        each rebuilding it (:meth:`_warm_engine_template`, issue #543).
         """
         key = getattr(self, '_engine_template_key', None)
         if key is None:
@@ -732,7 +761,59 @@ class BngsimSbmlModelNoTimeout(Model):
         if template is None:
             template = self._load_bngsim_model_from_text(self._base_sbml_text)
             _ENGINE_TEMPLATE_CACHE[key] = template
+        self._warm_engine_template(key, template)
         return template
+
+    def _warm_engine_template(self, key, template):
+        """Build the sensitivity codegen artifact on the template itself, once (#543).
+
+        Every gradient action needs a compiled analytical sensitivity RHS, and bngsim
+        builds one in ``Simulator.__init__`` whenever the constructor is handed
+        ``sensitivity_params``/``sensitivity_ic``. PyBNF builds that Simulator on the
+        per-action *clone* (:meth:`_prepare_engine_model` -> :meth:`_make_simulator`), so
+        the clone is what discovers the artifact and records it -- and the clone is thrown
+        away at the end of the action. ``clone()`` copies the artifact parent -> child but
+        nothing copies it back, so the template's ``_codegen_so_path`` stays empty forever
+        and every action regenerates the C source, and every symbolic derivative behind it,
+        because bngsim keys its compiled ``.so`` on a hash of that source. Constructing one
+        throwaway Simulator **on the template** writes the artifact where ``clone()`` can
+        find it, and every action from then on inherits it. It does not need to run: the
+        codegen happens at construction. Measured through this backend's own action path on
+        Smith_BMCSystBiol2013 (133 species, 16 sensitivity columns) as 2.015 s -> 0.537 s per
+        action, source generated 4 of 4 times before and 0 of 4 after, tensor bit-identical.
+
+        Warmed with the sensitivity request the actions will use, not a scalar stand-in.
+        bngsim emits the output-sensitivity evaluator only when the model carries
+        ``_want_output_sens`` -- which the *constructor* sets from its own sensitivity
+        arguments -- and clears a plain-RHS artifact to regenerate it at the first
+        sensitivity request, so a scalar-warmed template would be correct and save nothing.
+        Which parameters are requested does not enter into it: the emitted source covers the
+        whole RHS, and only that flag varies. The scalar path warms nothing at all -- it
+        never generates the source (measured on the same model: 0.194 s per action warmed or
+        not), so there is nothing there to save, and it stays byte-identical to before this
+        existed.
+
+        A warm that raises is recorded and swallowed, so it costs one attempt per process
+        rather than one per action. Everything that can fail here -- a rate law bngsim cannot
+        differentiate to closed form, a missing codegen backend -- fails identically when the
+        action builds its own Simulator moments later, where :meth:`execute` gives it the
+        refusal handling (and the #536 event-sensitivity diagnosis) it already has. An
+        optimization must not become a new place for the fit to die.
+        """
+        kwargs = self._sensitivity_request_kwargs('ode')
+        if not kwargs:
+            return
+        if _template_is_warm(template):
+            return
+        if _ENGINE_TEMPLATE_WARM_ATTEMPTED.get(key) is template:
+            return
+        _ENGINE_TEMPLATE_WARM_ATTEMPTED[key] = template
+        try:
+            bngsim.Simulator(template, method='ode', **kwargs)
+        except Exception as exc:
+            logger.debug(
+                'Could not warm the engine template for model %s (%s: %s); each action '
+                'will build its own sensitivity RHS.', self.name, type(exc).__name__, exc)
 
     def _set_engine_value_if_present(self, engine_model, name, value):
         """Apply a value to the engine model. Returns True iff it is a species.

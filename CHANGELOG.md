@@ -6,7 +6,28 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
-- **A pre-equilibration condition that doses a species from a fitted parameter no longer reports a
+- **A gradient fit no longer rebuilds the analytical sensitivity RHS on every action (#543).**
+  `_get_engine_template` caches one loaded bngsim model per SBML text per worker process and
+  #415 clones it per action, precisely so the parse and the derived Jacobian are paid once.
+  bngsim's `clone()` cooperates, carrying the compiled sensitivity artifact parent → child —
+  but the `Simulator` was built on the *clone*, so the clone was what discovered and recorded
+  that artifact, and the clone is discarded at the end of the action. Discovery flowed
+  child-ward only: the template's `_codegen_so_path` stayed empty forever, and every action
+  regenerated the C source, and every symbolic derivative behind it, because bngsim keys its
+  compiled `.so` on a hash of that source. PyBNF now warms the template once per process, with
+  the sensitivity request the actions will use (a scalar-shaped warm would be correct and save
+  nothing — bngsim regenerates it at the first sensitivity request), so `clone()` propagates it
+  from then on. Measured on `Smith_BMCSystBiol2013` (133 species, 16 sensitivity columns)
+  through PyBNF's own action path: **2.015 s → 0.537 s per action**, source generated 4 of 4
+  times before and 0 of 4 after; the tensor is bit-for-bit unchanged. Inside a real `gntr` run
+  of that job — dask worker, condition applied, the experiment's own sample times — its first
+  action goes from 3.731 s to 0.327 s. Invisible in a profile
+  that looks at simulation — the integration is untouched and all of the difference is
+  `Simulator(...)` construction. A **scalar** (metaheuristic) fit never generates the source at
+  all, warms nothing, and is byte-identical to before this existed (0.194 s per action either
+  way), which bounds who this helps. The `.net` backend clones from a held `_engine_model` in
+  the same never-warmed shape but is **not** affected: its `.net` codegen memo is keyed on the
+  file path rather than on generated source, and it regenerates nothing (measured 0 of 6).
   zero gradient column for it (#538, ADR-0101).** `preequilibrate:` applies its condition inline,
   so a species target becomes a `setConcentration` written *before* the first phase — and
   `Model.set_concentration` reads an assigned amount as a literal initial condition

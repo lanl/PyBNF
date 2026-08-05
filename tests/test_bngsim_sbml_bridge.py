@@ -704,8 +704,10 @@ def test_bngsim_sbml_model_timeout_reraises_failedsimulationerror(tmp_path, monk
 def _clear_engine_cache():
     """Reset the process-level engine template cache around a test."""
     bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
     yield
     bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
 
 
 @pytest.mark.bngsim_sbml
@@ -753,6 +755,203 @@ def test_engine_template_loaded_once_across_evaluations(tmp_path, _clear_engine_
     # The different K3 values must still produce different trajectories -- the
     # cached model is cloned and set_param'd, not frozen at the first value.
     assert last is not None and 'time_course' in last
+
+
+# ── #543: the cached template is warmed, so clones inherit the sensitivity RHS ──
+
+
+def _count_generated_sources(monkeypatch):
+    """Count calls to bngsim's combined RHS + sensitivity-RHS C source generator.
+
+    That generator -- and every symbolic derivative behind it -- is what an unwarmed
+    template makes each gradient action re-pay, since bngsim keys its compiled ``.so``
+    on a hash of the source it produces (#543). Patched in both modules that hold a
+    reference to it, mirroring how bngsim imports it.
+    """
+    import bngsim._codegen as _cg
+    import bngsim._simulator as _sm
+
+    calls = {'n': 0}
+    original = _cg.generate_combined_from_model
+
+    def _counting(model, emit_output_sens=False):
+        calls['n'] += 1
+        return original(model, emit_output_sens=emit_output_sens)
+
+    monkeypatch.setattr(_cg, 'generate_combined_from_model', _counting)
+    monkeypatch.setattr(_sm, 'generate_combined_from_model', _counting, raising=False)
+    return calls
+
+
+def _run_raf_gradient_actions(tmp_path, k3_values, params=('K5',)):
+    """Run one scored gradient action per K3 value, returning the last tensor."""
+    action = pset.TimeCourse({'time': '100', 'step': '10'})
+    sens = None
+    for i, k3 in enumerate(k3_values):
+        ps = pset.PSet([
+            pset.FreeParameter('K3', 'uniform_var', 2000., 10000., k3),
+            pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+        ])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            _raf_xml_path(), _raf_xml_path(), pset=ps, actions=(action,),
+        )
+        model.enable_output_sensitivities(params=list(params))
+        sens = model.execute(
+            str(tmp_path), 'raf_warm_%d' % i, 100)['time_course'].output_sensitivities
+    return sens
+
+
+@pytest.mark.bngsim_sbml
+def test_gradient_actions_generate_the_sensitivity_source_once(
+        tmp_path, monkeypatch, _clear_engine_cache):
+    """The C source behind the sensitivity RHS is generated once per process, not per action.
+
+    Regression guard for #543. ``_get_engine_template`` caches one loaded engine model and
+    #415 clones it per action, but the ``Simulator`` was built on the *clone* -- so the
+    clone learned the compiled artifact and was then discarded, and the template's
+    ``_codegen_so_path`` stayed empty forever. Every action re-generated the source (4 of 4
+    here; 2.015 s -> 0.537 s per action on Smith_BMCSystBiol2013). Warming the template once
+    makes ``clone()`` carry it, as bngsim's clone-warm contract intends.
+    """
+    calls = _count_generated_sources(monkeypatch)
+    _run_raf_gradient_actions(tmp_path, (8000., 8100., 8200., 8300.))
+
+    assert calls['n'] == 1, (
+        'the sensitivity RHS source was generated %d times across 4 gradient actions; '
+        'expected exactly 1 (the template warm, inherited by every clone)' % calls['n']
+    )
+    template, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values()
+    assert bngsim_sbml_model._template_is_warm(template), (
+        'the cached template carries no sensitivity-bearing codegen artifact after a '
+        'gradient action, so its clones cannot inherit one'
+    )
+
+
+@pytest.mark.bngsim_sbml
+def test_template_loaded_before_the_request_is_warmed_at_the_first_action(
+        tmp_path, monkeypatch, _clear_engine_cache):
+    """A template first loaded on the scalar path is warmed once the request arrives (#543).
+
+    This is the real fit's ordering, not a corner case: the differentiability gate
+    (``has_discrete_events``, #461/#536) and the seed reader (``backend_ic_sensitivity``,
+    #537) both load the template during ``_after_init``, *before* ``_setup_gradient_path``
+    activates the sensitivity request. Warming eagerly at load would therefore bake a
+    scalar-shaped artifact in and save nothing, so the warm is checked on every template
+    fetch and fires at the first action that actually asks for sensitivities.
+    """
+    calls = _count_generated_sources(monkeypatch)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        _raf_xml_path(), _raf_xml_path(), pset=pset.PSet(_raf_params()),
+        actions=(pset.TimeCourse({'time': '100', 'step': '10'}),),
+    )
+    model.has_discrete_events                      # loads the template, request still inactive
+    template, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values()
+    assert not bngsim_sbml_model._template_is_warm(template)
+    assert calls['n'] == 0
+
+    _run_raf_gradient_actions(tmp_path, (8000., 8100., 8200.))
+
+    assert calls['n'] == 1
+    assert bngsim_sbml_model._template_is_warm(template)
+
+
+@pytest.mark.bngsim_sbml
+def test_warming_the_template_does_not_change_the_tensor(tmp_path, _clear_engine_cache):
+    """The warm is an optimization only: the sensitivity tensor is bit-for-bit unchanged.
+
+    The warmed template is what every action clones from, so anything the warm left on it
+    (bngsim sets ``_want_output_sens`` and the codegen artifact there) rides into every
+    evaluation. Pinned against the unwarmed path, exactly (#543).
+    """
+    unwarmed_cls = bngsim_sbml_model.BngsimSbmlModelNoTimeout
+    original_warm = unwarmed_cls._warm_engine_template
+    unwarmed_cls._warm_engine_template = lambda self, key, template: None
+    try:
+        cold = _run_raf_gradient_actions(tmp_path, (8000., 8100.))
+    finally:
+        unwarmed_cls._warm_engine_template = original_warm
+
+    bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
+    warm = _run_raf_gradient_actions(tmp_path, (8000., 8100.))
+
+    assert cold is not None and warm is not None
+    npt.assert_allclose(warm.d_param, cold.d_param, rtol=0, atol=0)
+
+
+@pytest.mark.bngsim_sbml
+def test_scalar_path_never_warms_the_template(tmp_path, monkeypatch, _clear_engine_cache):
+    """A scalar (metaheuristic) fit warms nothing and generates no source (#543).
+
+    The scalar path never asks for an analytical sensitivity RHS, so there is nothing there
+    to save -- measured on Smith_BMCSystBiol2013 at 0.194 s per action warmed or not. It must
+    stay byte-identical to before the warm existed, which means no stray ``Simulator``
+    construction on the template.
+    """
+    calls = _count_generated_sources(monkeypatch)
+    action = pset.TimeCourse({'time': '100', 'step': '10'})
+    for i, k3 in enumerate((8000., 8100., 8200.)):
+        ps = pset.PSet([
+            pset.FreeParameter('K3', 'uniform_var', 2000., 10000., k3),
+            pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+        ])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            _raf_xml_path(), _raf_xml_path(), pset=ps, actions=(action,),
+        )
+        model.execute(str(tmp_path), 'raf_scalar_%d' % i, 100)
+
+    assert calls['n'] == 0
+    assert bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED == {}
+    template, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values()
+    assert not bngsim_sbml_model._template_is_warm(template)
+
+
+@pytest.mark.bngsim_sbml
+def test_failed_warm_is_attempted_once_and_left_to_the_action(
+        tmp_path, monkeypatch, _clear_engine_cache):
+    """A warm that raises is swallowed, tried once, and changes nothing the action sees.
+
+    The warm builds a ``Simulator`` for its side effect, and that construction can fail for
+    real reasons -- a rate law bngsim cannot differentiate, no codegen backend. Each fails
+    identically when the action builds its own ``Simulator`` moments later, with the refusal
+    handling ``execute`` already provides, so the warm must not raise from here. Nor may it
+    retry per action: the failure costs the same as the saving (#543).
+    """
+    xml_path = _raf_xml_path()
+    ps = pset.PSet(_raf_params())
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(pset.TimeCourse({'time': '100', 'step': '10'}),),
+    )
+    model.enable_output_sensitivities(params=['K5'])
+
+    attempts = {'n': 0}
+
+    class _RefusingSimulator:
+        def __init__(self, engine_model, **kwargs):
+            attempts['n'] += 1
+            raise ValueError('no differentiable RHS for this model')
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = _RefusingSimulator
+    for attr in ('Model', 'SsaValidationError', 'SimulationTimeout'):
+        if hasattr(bngsim_sbml_model.bngsim, attr):
+            setattr(fake_bngsim, attr, getattr(bngsim_sbml_model.bngsim, attr))
+    with monkeypatch.context() as patched:
+        patched.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
+        for _ in range(3):
+            assert model._get_engine_template() is not None
+
+    assert attempts['n'] == 1, (
+        'the failing warm was attempted %d times; expected exactly one attempt per '
+        'process, so a template that cannot be warmed costs one construction, not one '
+        'per action' % attempts['n']
+    )
+    # A fresh template (the cache cleared and reloaded) is not the one that failed, so it
+    # is warmed rather than written off.
+    bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    assert model._get_engine_template() is not None
+    assert bngsim_sbml_model._template_is_warm(
+        next(iter(bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values())))
 
 
 def _force_full_reload(model):
