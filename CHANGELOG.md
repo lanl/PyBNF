@@ -6,6 +6,34 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A scalar fit no longer re-derives the analytical Jacobian on every action (#544).** #543
+  warmed the cached engine template so clones inherit the compiled sensitivity RHS, but it
+  warmed only when a sensitivity request was active — and the same never-warmed-parent shape
+  costs the **scalar** path too, one artifact over. bngsim's `Simulator.__init__` calls
+  `model.prepare_analytical_jacobian()`; PyBNF builds that `Simulator` on the per-action
+  *clone*, and the clone is discarded. `clone()` carries the `_jac_attempted` sentinel parent
+  → child precisely so a derived parent yields cheap clones, but nothing ever derived it on
+  the parent, so every scalar action re-ran the SymPy derivation from scratch. PyBNF now warms
+  unconditionally and lets the *shape* of the warm depend on the request rather than gating
+  the warm itself on there being one. Measured through PyBNF's own action path on the
+  44-species `yeast_cell_cycle` model: **0.1542 s → 0.0057 s per action** (27x), derivations
+  10 of 10 → 0 of 10. As reported on #544, `Smith_BMCSystBiol2013` goes 0.0401 s → 0.0224 s,
+  20 of 20 → 0 of 20, taking that job's shipped 64,000-evaluation `cmaes` budget from ~36
+  core-hours to ~14. Trajectories are bit-for-bit unchanged. Two guards this needed: a scalar
+  warm must **not** satisfy a later gradient warm (bngsim clears a plain-RHS artifact and
+  regenerates it at the first sensitivity request, so a scalar-warmed template would be
+  correct and save the gradient path nothing) — the warm-state predicate and the per-shape
+  attempt memo both answer "not yet" for the sensitivity shape; and a model with **no ODE
+  action** warms nothing, since bngsim derives the Jacobian under ODE dispatch and nowhere
+  else, having deliberately moved it off the load path so a stochastic run never pays SymPy.
+  Applies to every SBML/Antimony fit through
+  `sbml_backend = bngsim`, on every `job_type`; the larger the model the bigger
+  the effect, since the derivation scales with the network and the solve does not. The `.net`
+  backend clones from a held `_engine_model` in the same never-warmed shape and does re-attempt
+  the derivation per evaluation (measured 4 of 4), but it costs it essentially nothing: a BNGL
+  network is all-Elementary, so bngsim takes its closed-form C++ Jacobian rather than SymPy —
+  0.1511 s → 0.1472 s per evaluation on `egfr_ground.net` (356 species), within noise. Left
+  alone rather than warmed on a measurement that does not justify it.
 - **A gradient fit no longer rebuilds the analytical sensitivity RHS on every action (#543).**
   `_get_engine_template` caches one loaded bngsim model per SBML text per worker process and
   #415 clones it per action, precisely so the parse and the derived Jacobian are paid once.
@@ -24,10 +52,12 @@ All notable changes to PyBNF are documented below. This project adheres to
   action goes from 3.731 s to 0.327 s. Invisible in a profile
   that looks at simulation — the integration is untouched and all of the difference is
   `Simulator(...)` construction. A **scalar** (metaheuristic) fit never generates the source at
-  all, warms nothing, and is byte-identical to before this existed (0.194 s per action either
-  way), which bounds who this helps. The `.net` backend clones from a held `_engine_model` in
-  the same never-warmed shape but is **not** affected: its `.net` codegen memo is keyed on the
-  file path rather than on generated source, and it regenerates nothing (measured 0 of 6).
+  all and was left untouched here (0.194 s per action either way), which bounded who *this*
+  entry helps; #544 above warms it for a different artifact. The `.net` backend clones from a
+  held `_engine_model` in the same never-warmed shape but is **not** affected here: its `.net`
+  codegen memo is keyed on the file path rather than on generated source, and it regenerates
+  nothing (measured 0 of 6).
+- **A pre-equilibration condition that doses a species from a fitted parameter no longer reports a
   zero gradient column for it (#538, ADR-0101).** `preequilibrate:` applies its condition inline,
   so a species target becomes a `setConcentration` written *before* the first phase — and
   `Model.set_concentration` reads an assigned amount as a literal initial condition

@@ -43,13 +43,16 @@ logger = logging.getLogger(__name__)
 _ENGINE_TEMPLATE_CACHE = {}
 
 
-# Templates a warm was already ATTEMPTED on, keyed like _ENGINE_TEMPLATE_CACHE and
-# holding the template the attempt was made on. Only failures need remembering -- a
-# successful warm is legible on the template itself (_template_is_warm) -- but a warm
-# that raises leaves no trace there, and re-attempting it per action would double the
-# very cost this is meant to remove. Holding the template rather than a bare flag keeps
-# the memo honest if the cache above is cleared and reloaded (the tests do): a fresh
-# template is not the one that failed, so it is warmed. See issue #543.
+# Templates a warm was already ATTEMPTED on, keyed by (template key, whether the attempt
+# asked for sensitivities) and holding the template the attempt was made on. Only failures
+# need remembering -- a successful warm is legible on the template itself
+# (_template_is_warm / _template_jacobian_is_warm) -- but a warm that raises leaves no
+# trace there, and re-attempting it per action would double the very cost this is meant to
+# remove. The shape is part of the key because the two warms are not interchangeable: a
+# scalar warm, failed or successful, must not talk a later gradient warm out of running
+# (#544). Holding the template rather than a bare flag keeps the memo honest if the cache
+# above is cleared and reloaded (the tests do): a fresh template is not the one that
+# failed, so it is warmed. See issues #543 and #544.
 _ENGINE_TEMPLATE_WARM_ATTEMPTED = {}
 
 
@@ -68,6 +71,23 @@ def _template_is_warm(template):
         and (getattr(template, '_codegen_so_path', '')
              or getattr(template, '_codegen_c_source', ''))
     )
+
+
+def _template_jacobian_is_warm(template):
+    """Has ``template`` already attempted the analytical-Jacobian derivation (#544)?
+
+    bngsim derives the (SymPy) Functional Jacobian at most once per model, guarded by the
+    ``_jac_attempted`` sentinel that ``clone()`` copies parent -> child precisely so "a
+    derived parent [yields] cheap, already-warm clones". That sentinel is what a clone
+    reads, so it -- and not whether the derivation produced a *complete* analytical
+    Jacobian -- is what "already warm" has to mean here: a model that fell back to finite
+    differences has still paid the derivation, and neither it nor its clones re-pay it.
+
+    Deliberately weaker than :func:`_template_is_warm`, which the sensitivity warm needs:
+    a scalar-warmed template answers True here and False there, so a gradient fit whose
+    template was scalar-warmed still takes its own (sensitivity-shaped) warm.
+    """
+    return bool(getattr(template, '_jac_attempted', False))
 
 
 from ._bngsim_caps import (
@@ -747,11 +767,12 @@ class BngsimSbmlModelNoTimeout(Model):
         """Return the process-cached base engine model for this SBML text.
 
         Loads the bngsim model once per worker process (paying the libSBML
-        parse + analytical-Jacobian derivation) and reuses it for every
-        evaluation, cloning it for each per-evaluation parameter application.
-        See issue #415. On the gradient path the template is also *warmed* on
-        first use, so the clones inherit the compiled sensitivity RHS instead of
-        each rebuilding it (:meth:`_warm_engine_template`, issue #543).
+        parse) and reuses it for every evaluation, cloning it for each
+        per-evaluation parameter application. See issue #415. The template is
+        also *warmed* on first use, so the clones inherit the derived analytical
+        Jacobian -- and, on the gradient path, the compiled sensitivity RHS --
+        instead of each rebuilding it (:meth:`_warm_engine_template`, issues
+        #543 and #544).
         """
         key = getattr(self, '_engine_template_key', None)
         if key is None:
@@ -764,34 +785,69 @@ class BngsimSbmlModelNoTimeout(Model):
         self._warm_engine_template(key, template)
         return template
 
+    def _runs_ode_actions(self):
+        """Does any action on this model integrate deterministically (#544)?
+
+        The warm below builds artifacts only an ODE solve consumes: bngsim derives the
+        analytical Jacobian and runs its large-model codegen under ``dispatch == 'ode'``
+        and nowhere else, having deliberately moved both off the model-load path so that
+        "non-ODE dispatch ... never pays the SymPy derivation or the codegen compile". A
+        gillespie-only model would otherwise warm something no action of its own ever
+        reads, which is a cost this backend does not pay today. ``actions`` is set in
+        ``__init__``, before any template fetch; an empty list -- a template pulled by a
+        structural query on a model that has none yet -- simply defers the warm to the
+        first fetch that has one, which is what the warm's laziness is for anyway.
+        """
+        return any(self._resolve_method(act) == 'ode'
+                   for act in getattr(self, 'actions', ()))
+
     def _warm_engine_template(self, key, template):
-        """Build the sensitivity codegen artifact on the template itself, once (#543).
+        """Build the ODE-solve artifacts on the template itself, once (#543, #544).
 
-        Every gradient action needs a compiled analytical sensitivity RHS, and bngsim
-        builds one in ``Simulator.__init__`` whenever the constructor is handed
-        ``sensitivity_params``/``sensitivity_ic``. PyBNF builds that Simulator on the
-        per-action *clone* (:meth:`_prepare_engine_model` -> :meth:`_make_simulator`), so
-        the clone is what discovers the artifact and records it -- and the clone is thrown
-        away at the end of the action. ``clone()`` copies the artifact parent -> child but
-        nothing copies it back, so the template's ``_codegen_so_path`` stays empty forever
-        and every action regenerates the C source, and every symbolic derivative behind it,
-        because bngsim keys its compiled ``.so`` on a hash of that source. Constructing one
-        throwaway Simulator **on the template** writes the artifact where ``clone()`` can
-        find it, and every action from then on inherits it. It does not need to run: the
-        codegen happens at construction. Measured through this backend's own action path on
-        Smith_BMCSystBiol2013 (133 species, 16 sensitivity columns) as 2.015 s -> 0.537 s per
-        action, source generated 4 of 4 times before and 0 of 4 after, tensor bit-identical.
+        Every ODE action needs a derived analytical Jacobian, and every *gradient* action
+        additionally needs a compiled analytical sensitivity RHS. bngsim builds both in
+        ``Simulator.__init__`` -- the Jacobian always, the sensitivity RHS whenever the
+        constructor is handed ``sensitivity_params``/``sensitivity_ic``. PyBNF builds that
+        Simulator on the per-action *clone* (:meth:`_prepare_engine_model` ->
+        :meth:`_make_simulator`), so the clone is what derives and records them -- and the
+        clone is thrown away at the end of the action. ``clone()`` copies both parent ->
+        child but nothing copies them back, so the template stays cold forever and every
+        action re-pays: the SymPy Jacobian derivation, and (on the gradient path) the
+        regenerated C source and every symbolic derivative behind it, because bngsim keys
+        its compiled ``.so`` on a hash of that source. Constructing one throwaway Simulator
+        **on the template** writes both where ``clone()`` can find them, and every action
+        from then on inherits them. It does not need to run: both happen at construction.
 
-        Warmed with the sensitivity request the actions will use, not a scalar stand-in.
-        bngsim emits the output-sensitivity evaluator only when the model carries
-        ``_want_output_sens`` -- which the *constructor* sets from its own sensitivity
-        arguments -- and clears a plain-RHS artifact to regenerate it at the first
-        sensitivity request, so a scalar-warmed template would be correct and save nothing.
-        Which parameters are requested does not enter into it: the emitted source covers the
-        whole RHS, and only that flag varies. The scalar path warms nothing at all -- it
-        never generates the source (measured on the same model: 0.194 s per action warmed or
-        not), so there is nothing there to save, and it stays byte-identical to before this
-        existed.
+        Measured per action, the Smith rows as reported on #543 and #544 and the yeast row
+        through this backend's own ``execute``:
+
+        =========================  ================  =========  =========  ==========
+        model                      path              unwarmed   warmed     re-derived
+        =========================  ================  =========  =========  ==========
+        Smith (133 sp, 16 cols)    sensitivity        2.015 s    0.537 s    4/4 -> 0/4
+        Smith                      scalar             0.0401 s   0.0224 s  20/20 -> 0
+        yeast_cell_cycle (44 sp)   scalar             0.1542 s   0.0057 s  10/10 -> 0
+        =========================  ================  =========  =========  ==========
+
+        Tensor and trajectory are bit-identical either way; only how many times the engine
+        re-derives things that depend on model structure alone changes. The ``.net`` backend
+        clones from a held ``_engine_model`` in this same shape and does re-attempt the
+        derivation per evaluation (4 of 4), but a BNGL network is all-Elementary, so bngsim
+        takes its closed-form C++ Jacobian instead of SymPy and the re-attempt costs
+        essentially nothing (0.1511 -> 0.1472 s per evaluation on ``egfr_ground.net``, 356
+        species). Left unwarmed rather than warmed on a number that does not justify it.
+
+        Two shapes, and the weaker one must not satisfy the stronger. bngsim emits the
+        output-sensitivity evaluator only when the model carries ``_want_output_sens`` --
+        which the *constructor* sets from its own sensitivity arguments -- and clears a
+        plain-RHS artifact to regenerate it at the first sensitivity request. So a
+        scalar-warmed template is correct for a gradient fit but saves it nothing, and
+        ``_template_is_warm`` (unlike :func:`_template_jacobian_is_warm`) answers False for
+        one, leaving the gradient warm to run. Which parameters are requested does not
+        enter into it: the emitted source covers the whole RHS, and only that flag varies,
+        so the warm is keyed on the template's own state rather than on a shape tuple. The
+        reverse direction needs nothing: a sensitivity warm derives the Jacobian on its way
+        past.
 
         A warm that raises is recorded and swallowed, so it costs one attempt per process
         rather than one per action. Everything that can fail here -- a rate law bngsim cannot
@@ -800,20 +856,25 @@ class BngsimSbmlModelNoTimeout(Model):
         refusal handling (and the #536 event-sensitivity diagnosis) it already has. An
         optimization must not become a new place for the fit to die.
         """
+        if not self._runs_ode_actions():
+            return
         kwargs = self._sensitivity_request_kwargs('ode')
-        if not kwargs:
+        if kwargs:
+            if _template_is_warm(template):
+                return
+        elif _template_jacobian_is_warm(template):
             return
-        if _template_is_warm(template):
+        memo_key = (key, bool(kwargs))
+        if _ENGINE_TEMPLATE_WARM_ATTEMPTED.get(memo_key) is template:
             return
-        if _ENGINE_TEMPLATE_WARM_ATTEMPTED.get(key) is template:
-            return
-        _ENGINE_TEMPLATE_WARM_ATTEMPTED[key] = template
+        _ENGINE_TEMPLATE_WARM_ATTEMPTED[memo_key] = template
         try:
             bngsim.Simulator(template, method='ode', **kwargs)
         except Exception as exc:
             logger.debug(
                 'Could not warm the engine template for model %s (%s: %s); each action '
-                'will build its own sensitivity RHS.', self.name, type(exc).__name__, exc)
+                'will build its own Jacobian%s.', self.name, type(exc).__name__, exc,
+                ' and sensitivity RHS' if kwargs else '')
 
     def _set_engine_value_if_present(self, engine_model, name, value):
         """Apply a value to the engine model. Returns True iff it is a species.

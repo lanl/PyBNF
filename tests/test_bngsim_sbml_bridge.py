@@ -835,9 +835,10 @@ def test_template_loaded_before_the_request_is_warmed_at_the_first_action(
     This is the real fit's ordering, not a corner case: the differentiability gate
     (``has_discrete_events``, #461/#536) and the seed reader (``backend_ic_sensitivity``,
     #537) both load the template during ``_after_init``, *before* ``_setup_gradient_path``
-    activates the sensitivity request. Warming eagerly at load would therefore bake a
-    scalar-shaped artifact in and save nothing, so the warm is checked on every template
-    fetch and fires at the first action that actually asks for sensitivities.
+    activates the sensitivity request. That fetch now takes the scalar warm (#544), which
+    must not be mistaken for the sensitivity one: a scalar-shaped artifact would save the
+    gradient path nothing, so the warm is checked on every template fetch and the
+    sensitivity shape fires at the first action that actually asks for sensitivities.
     """
     calls = _count_generated_sources(monkeypatch)
     model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
@@ -880,13 +881,17 @@ def test_warming_the_template_does_not_change_the_tensor(tmp_path, _clear_engine
 
 
 @pytest.mark.bngsim_sbml
-def test_scalar_path_never_warms_the_template(tmp_path, monkeypatch, _clear_engine_cache):
-    """A scalar (metaheuristic) fit warms nothing and generates no source (#543).
+def test_scalar_path_warms_the_template_without_the_sensitivity_shape(
+        tmp_path, monkeypatch, _clear_engine_cache):
+    """A scalar (metaheuristic) fit warms too, with the scalar shape (#544).
 
-    The scalar path never asks for an analytical sensitivity RHS, so there is nothing there
-    to save -- measured on Smith_BMCSystBiol2013 at 0.194 s per action warmed or not. It must
-    stay byte-identical to before the warm existed, which means no stray ``Simulator``
-    construction on the template.
+    The same never-warmed-parent shape #543 fixed for the sensitivity RHS costs the scalar
+    path one artifact over: ``Simulator.__init__`` derives the analytical Jacobian, PyBNF
+    builds that Simulator on the per-action clone, and the clone is discarded -- so every
+    scalar action re-derives from scratch (measured 0.1542 -> 0.0057 s per action on the
+    44-species yeast_cell_cycle model through this backend's own action path, derivations
+    10/10 -> 0/10). It warms with a plain ODE ``Simulator``: no sensitivity request, so no
+    C source is generated, and the template must not come out looking sensitivity-warm.
     """
     calls = _count_generated_sources(monkeypatch)
     action = pset.TimeCourse({'time': '100', 'step': '10'})
@@ -900,10 +905,164 @@ def test_scalar_path_never_warms_the_template(tmp_path, monkeypatch, _clear_engi
         )
         model.execute(str(tmp_path), 'raf_scalar_%d' % i, 100)
 
-    assert calls['n'] == 0
-    assert bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED == {}
+    assert calls['n'] == 0, (
+        'the scalar warm generated C source %d times; it asks for no sensitivities, so it '
+        'must not reach the output-sensitivity emitter' % calls['n'])
     template, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values()
+    assert bngsim_sbml_model._template_jacobian_is_warm(template), (
+        'the cached template carries no derived Jacobian after three scalar actions, so '
+        'its clones each re-derive one')
+    assert not bngsim_sbml_model._template_is_warm(template), (
+        'a scalar warm must not leave the template looking sensitivity-warm; a gradient '
+        'fit that inherited it would build a plain-RHS artifact bngsim then discards')
+    key, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE
+    assert list(bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED) == [(key, False)], (
+        'the attempt memo must record the shape it warmed, so a later gradient warm is '
+        'not mistaken for one already tried')
+
+
+@pytest.mark.bngsim_sbml
+def test_scalar_actions_derive_the_jacobian_once(tmp_path, monkeypatch, _clear_engine_cache):
+    """The analytical Jacobian is derived once per process, not once per scalar action (#544).
+
+    The count, not the clock, is the regression guard: bngsim's ``_jac_attempted`` sentinel
+    is what ``clone()`` carries parent -> child, so an unwarmed template hands every clone
+    ``False`` and each action re-runs the SymPy derivation. Warming the template flips the
+    sentinel once and every clone thereafter inherits it.
+    """
+    import bngsim._model as _bngsim_model
+
+    derivations = {'n': 0}
+    original = _bngsim_model.Model.prepare_analytical_jacobian
+
+    def _counting(self):
+        if not self._jac_attempted:
+            derivations['n'] += 1
+        return original(self)
+
+    monkeypatch.setattr(_bngsim_model.Model, 'prepare_analytical_jacobian', _counting)
+
+    action = pset.TimeCourse({'time': '100', 'step': '10'})
+    for i, k3 in enumerate((8000., 8100., 8200., 8400.)):
+        ps = pset.PSet([
+            pset.FreeParameter('K3', 'uniform_var', 2000., 10000., k3),
+            pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+        ])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            _raf_xml_path(), _raf_xml_path(), pset=ps, actions=(action,),
+        )
+        model.execute(str(tmp_path), 'raf_jac_%d' % i, 100)
+
+    assert derivations['n'] == 1, (
+        'the analytical Jacobian was derived %d times across 4 scalar actions; expected '
+        'exactly 1 (the template warm, inherited by every clone)' % derivations['n'])
+
+
+@pytest.mark.bngsim_sbml
+def test_scalar_warm_does_not_satisfy_a_later_gradient_warm(
+        tmp_path, monkeypatch, _clear_engine_cache):
+    """A scalar-warmed template still takes the sensitivity warm (#544).
+
+    The two warms are not interchangeable and the weaker one runs first in every real
+    gradient fit: the differentiability gate loads the template during ``_after_init``,
+    before ``_setup_gradient_path`` activates the request, so the template is already
+    scalar-warmed by the time a sensitivity request exists. bngsim clears a plain-RHS
+    artifact and regenerates it at the first sensitivity request, so a template left at the
+    scalar warm would be correct and would save the gradient fit nothing. Both the warm-state
+    predicate and the per-shape attempt memo have to answer "not yet" for the sensitivity
+    shape.
+    """
+    calls = _count_generated_sources(monkeypatch)
+    scalar_action = pset.TimeCourse({'time': '100', 'step': '10'})
+    scalar = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        _raf_xml_path(), _raf_xml_path(), pset=pset.PSet(_raf_params()),
+        actions=(scalar_action,),
+    )
+    scalar.execute(str(tmp_path), 'raf_scalar_first', 100)
+
+    template, = bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.values()
+    assert bngsim_sbml_model._template_jacobian_is_warm(template)
     assert not bngsim_sbml_model._template_is_warm(template)
+    assert calls['n'] == 0
+
+    _run_raf_gradient_actions(tmp_path, (8000., 8100., 8200.))
+
+    assert bngsim_sbml_model._template_is_warm(template), (
+        'the scalar warm suppressed the sensitivity warm; every gradient action would then '
+        'regenerate the C source that #543 removed')
+    assert calls['n'] == 1, (
+        'the sensitivity RHS source was generated %d times after a scalar-warmed template; '
+        'expected exactly 1 (one warm, inherited by every clone)' % calls['n'])
+
+
+@pytest.mark.bngsim_sbml
+@pytest.mark.parametrize('kwargs, actions', [
+    ({'integrator': 'gillespie'}, (pset.TimeCourse({'time': '10', 'step': '2'}),)),
+    ({}, (pset.TimeCourse({'time': '10', 'step': '2', 'suffix': 's', 'method': 'ssa'}),)),
+    ({}, ()),
+])
+def test_stochastic_only_model_does_not_warm(kwargs, actions, _clear_engine_cache):
+    """A model with no ODE action warms nothing: it would derive what nothing reads (#544).
+
+    bngsim derives the Jacobian and runs its codegen under ODE dispatch and nowhere else,
+    having deliberately moved both off the model-load path so a stochastic run never pays
+    SymPy. Warming unconditionally would hand that cost straight back to the fits bngsim
+    excused from it. Asserted at ``_get_engine_template``, which is where the decision is
+    made -- raf itself refuses SSA (reversible non-mass-action reactions), so an
+    ``execute`` here would fail for a reason that has nothing to do with the warm.
+
+    The empty-action case is the ordering guard: a template pulled by a structural query
+    before any action exists must defer the warm rather than skip or misshape it.
+    """
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        _raf_xml_path(), _raf_xml_path(), pset=pset.PSet(_raf_params()),
+        actions=actions, **kwargs,
+    )
+    template = model._get_engine_template()
+
+    assert bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED == {}
+    assert not bngsim_sbml_model._template_jacobian_is_warm(template)
+    assert not bngsim_sbml_model._template_is_warm(template)
+
+
+@pytest.mark.bngsim_sbml
+def test_scalar_warm_does_not_change_the_trajectory(tmp_path, _clear_engine_cache):
+    """The scalar warm is an optimization only: the trajectory is bit-for-bit unchanged (#544).
+
+    The warmed template is what every action clones from, so the derived Jacobian rides into
+    every evaluation -- and the Jacobian steers CVODE's Newton iteration, which is exactly
+    the kind of thing that shifts a trajectory in the last digits rather than raising.
+    Pinned against the unwarmed path, exactly.
+    """
+    def _run():
+        out = []
+        for i, k3 in enumerate((8000., 8100.)):
+            ps = pset.PSet([
+                pset.FreeParameter('K3', 'uniform_var', 2000., 10000., k3),
+                pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+            ])
+            model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+                _raf_xml_path(), _raf_xml_path(), pset=ps,
+                actions=(pset.TimeCourse({'time': '100', 'step': '10'}),),
+            )
+            out.append(model.execute(str(tmp_path), 'raf_scalar_pin_%d' % i, 100)
+                       ['time_course'].data)
+        return out
+
+    unwarmed_cls = bngsim_sbml_model.BngsimSbmlModelNoTimeout
+    original_warm = unwarmed_cls._warm_engine_template
+    unwarmed_cls._warm_engine_template = lambda self, key, template: None
+    try:
+        cold = _run()
+    finally:
+        unwarmed_cls._warm_engine_template = original_warm
+
+    bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
+    warm = _run()
+
+    for cold_data, warm_data in zip(cold, warm):
+        npt.assert_allclose(warm_data, cold_data, rtol=0, atol=0)
 
 
 @pytest.mark.bngsim_sbml
