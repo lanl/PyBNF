@@ -83,7 +83,7 @@ def _antimony_text_to_sbml_text(text, source_desc):
 
 class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
-                 strict_ssa=True):
+                 strict_ssa=True, rtol=None, atol=None):
         if integrator != 'cvode':
             raise ModelError(
                 'Antimony models currently support only sbml_integrator = cvode'
@@ -92,7 +92,7 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
         _require_bngsim_antimony_support()
 
         self._init_common_attrs(file, abs_file, pset, actions, save_files, integrator, strict_ssa,
-                                file_ext='.ant')
+                                file_ext='.ant', rtol=rtol, atol=atol)
         self.stochastic = False
 
         with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:

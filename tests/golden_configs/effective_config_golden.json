@@ -282,12 +282,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -716,12 +724,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -1158,12 +1174,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -1556,12 +1580,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -2102,12 +2134,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -2656,12 +2696,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -3166,12 +3214,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -3600,12 +3656,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -4042,12 +4106,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -4371,12 +4443,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -4747,12 +4827,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -5044,12 +5132,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -5305,12 +5401,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -5612,12 +5716,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -5930,12 +6042,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -6255,12 +6375,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -6584,12 +6712,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -6961,12 +7097,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -7302,12 +7446,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -7674,12 +7826,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -8003,12 +8163,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -8332,12 +8500,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -8661,12 +8837,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -8990,12 +9174,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -9307,12 +9499,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -9617,12 +9817,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -9945,12 +10153,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -10319,12 +10535,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -10683,12 +10907,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -10998,12 +11230,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -11303,12 +11543,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -11625,12 +11873,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",
@@ -11954,12 +12210,20 @@
     0
    ],
    [
+    "sbml_atol",
+    null
+   ],
+   [
     "sbml_backend",
     "roadrunner"
    ],
    [
     "sbml_integrator",
     "cvode"
+   ],
+   [
+    "sbml_rtol",
+    null
    ],
    [
     "sbml_ssa_strict",

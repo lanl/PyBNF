@@ -32,6 +32,66 @@ _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
 logger = logging.getLogger(__name__)
 
 
+# bngsim's CVODE tolerance defaults (``Simulator.__init__``): rtol = atol = 1e-8.
+# They are BNG2.pl's, and on the BNGL path that is exactly right -- parity with
+# BNG2.pl is what the net backend is measured against, and a BNGL author who needs
+# something else writes ``atol=>...`` in the actions block. They are read off the
+# constructed Simulator when it exposes them, so these only stand in for a build
+# that stops publishing them; see :func:`_effective_tolerances`.
+_BNGSIM_DEFAULT_RTOL = 1e-8
+_BNGSIM_DEFAULT_ATOL = 1e-8
+
+# The tightest absolute tolerance the scale derivation will reach for on its own
+# (#546). CVODE's error test is ``|e_i| <= rtol*|y_i| + atol``, so an atol below
+# ~1e-16 is already past double precision's resolution of a state of order one:
+# tightening further can only matter for states far below one, where the relative
+# term governs anyway, and it buys that at an integration cost with no bound. A
+# model that genuinely lives down there says so with ``sbml_atol``, and hears about
+# it from the log line in :func:`_derive_atol` rather than finding out from its
+# gradient.
+_DERIVED_ATOL_FLOOR = 1e-16
+
+
+def _derive_atol(scale, rtol, default_atol, *, model_name=None, warned=None):
+    """The absolute tolerance a model whose state lives at ``scale`` needs (#546).
+
+    ``rtol * scale``, clamped into ``[_DERIVED_ATOL_FLOOR, default_atol]``. The upper
+    clamp is what makes this safe to apply unconditionally: the derivation can only
+    *tighten*, never loosen, so a model whose species are of order one (or larger) keeps
+    the backend default bit-for-bit and every existing trajectory is unchanged.
+
+    The rule is CVODE's own error test read backwards. It weights each state by
+    ``rtol*|y_i| + atol``, so ``atol`` is a declaration that values below it are noise --
+    a statement about the *model's units*, and 1e-8 is only true of a model whose states
+    are of order one. Giordano_Nature2020 is a population-*fraction* epidemic model whose
+    species sit at 1.7e-8..1, median 3.7e-7, so at the default the absolute term buries
+    the relative one across the whole early trajectory: no significant digits at all. The
+    forward-sensitivity solve carries fewer still -- CVODES scales the state tolerances
+    by the parameter magnitude for the sensitivity vectors, which for a fitted rate of
+    ~0.1 makes their absolute floor ten times *looser* than the states'. Setting ``atol``
+    to ``rtol * scale`` puts the absolute term at the relative one at the model's own
+    magnitude, which is the condition for the relative test to be the one that governs.
+
+    ``scale`` of ``None`` (nothing positive to measure) returns ``default_atol``. When
+    the floor binds -- the model asks for more resolution than the derivation will reach
+    for on its own -- it is logged once per model via the ``warned`` set, because that is
+    the case where the tolerance is still not small enough and nothing else would say so.
+    """
+    if scale is None:
+        return default_atol
+    wanted = rtol * scale
+    if wanted < _DERIVED_ATOL_FLOOR and warned is not None and model_name not in warned:
+        warned.add(model_name)
+        logger.warning(
+            'bngsim SBML model %s: its typical species magnitude (%g) puts the absolute '
+            'tolerance this model wants (%g) below the %g floor the scale derivation '
+            'will reach for on its own; integrating at %g instead. If the fit looks '
+            'under-resolved, set sbml_atol explicitly.',
+            model_name, scale, wanted, _DERIVED_ATOL_FLOOR, _DERIVED_ATOL_FLOOR,
+        )
+    return min(max(wanted, _DERIVED_ATOL_FLOOR), default_atol)
+
+
 # Process-level cache of loaded bngsim engine models, keyed by a hash of the
 # model's base SBML text. The engine model -- including the analytically
 # derived (SymPy) Jacobian -- depends only on the model *structure*, not on
@@ -228,8 +288,25 @@ class BngsimSbmlModelNoTimeout(Model):
     # "cannot say" keeps every parameter axis, which is the safe direction.
     _rhs_symbols = None
 
+    # Explicit CVODE tolerances (``sbml_rtol`` / ``sbml_atol``, #546). ``None`` means
+    # "not stated": rtol then takes the backend default and atol is derived from the
+    # model's own state scale (:meth:`_effective_tolerances`). Class attributes so an
+    # instance built via object.__new__ -- the ``_make_simulator`` test fakes, unpickling
+    # -- answers "not stated" rather than raising.
+    _config_rtol = None
+    _config_atol = None
+
+    # The model's typical (median strictly-positive) nominal species value, set from the
+    # parsed document by _extract_sbml_structure; ``None`` = no scale to derive an atol
+    # from, which keeps the backend default. Memo for the derived pair, and the names the
+    # floor warning has already fired for. All class attributes so an instance built via
+    # object.__new__ answers "cannot say" rather than raising.
+    _nominal_state_scale = None
+    _tolerance_cache = None
+    _atol_floor_warned = None
+
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
-                 strict_ssa=True):
+                 strict_ssa=True, rtol=None, atol=None):
         if integrator not in _SUPPORTED_INTEGRATORS:
             raise ModelError(
                 'sbml_backend = bngsim supports sbml_integrator in {}; got {}'.format(', '.join(_SUPPORTED_INTEGRATORS), integrator)
@@ -238,7 +315,7 @@ class BngsimSbmlModelNoTimeout(Model):
         _require_bngsim_sbml_support()
 
         self._init_common_attrs(file, abs_file, pset, actions, save_files, integrator, strict_ssa,
-                                file_ext='.xml')
+                                file_ext='.xml', rtol=rtol, atol=atol)
         self.stochastic = integrator == 'gillespie' or any(
             getattr(a, 'method', 'ode') == 'ssa' for a in actions
         )
@@ -254,12 +331,14 @@ class BngsimSbmlModelNoTimeout(Model):
         logger.debug('Loaded model %s with bngsim SBML backend', self.name)
 
     def _init_common_attrs(self, file, abs_file, pset, actions, save_files, integrator, strict_ssa,
-                           file_ext):
+                           file_ext, rtol=None, atol=None):
         """Set the model attributes shared by the SBML and Antimony backends.
 
         ``file_ext`` is stripped from the file name to form ``self.name`` ('.xml'
         for SBML, '.ant' for Antimony). ``self.stochastic`` is set by the caller
-        because the two backends compute it differently.
+        because the two backends compute it differently. ``rtol``/``atol`` carry the
+        config's explicit CVODE tolerances (#546); ``None`` leaves each to the
+        backend default / the scale derivation.
         """
         self.file_path = file
         self.abs_file_path = abs_file
@@ -269,6 +348,10 @@ class BngsimSbmlModelNoTimeout(Model):
         self.actions = list(actions)
         self.integrator = integrator
         self.strict_ssa = bool(strict_ssa)
+        self._config_rtol = None if rtol is None else float(rtol)
+        self._config_atol = None if atol is None else float(atol)
+        self._tolerance_cache = None
+        self._atol_floor_warned = set()
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
         self.mutants = [MutationSet()]
 
@@ -298,6 +381,54 @@ class BngsimSbmlModelNoTimeout(Model):
          self._unsafe_volume) = self._compute_species_unit_factors(doc.getModel())
         self._ic_seed_map = self._compute_ic_seed_map(doc.getModel())
         self._rhs_symbols = self._compute_rhs_symbols(doc.getModel())
+        self._nominal_state_scale = self._compute_nominal_state_scale(doc.getModel())
+
+    def _compute_nominal_state_scale(self, sbml_model):
+        """The magnitude this model's state lives at, in bngsim's units (#546).
+
+        The scale the CVODE *absolute* tolerance is measured against
+        (:meth:`_effective_tolerances`), answered as the **median** strictly-positive
+        nominal species value. Read from the parsed document rather than from a loaded
+        engine model, so it costs nothing on top of the parse
+        ``_extract_sbml_structure`` already pays -- and so it is a property of the model
+        text, not of the fit point or of whether this evaluation took the cached-clone or
+        the structural-reload path. ``_species_unit_factor`` puts an amount-declared
+        species into the concentration units bngsim integrates in, exactly as the
+        in-place value paths do.
+
+        Median rather than minimum, which is the version of this that had to be
+        withdrawn. A biochemical model routinely carries one transient intermediate
+        many decades beneath everything else -- ``Brannmark_JBC2010`` seeds ``IRp`` at
+        1.8e-9 while its principal species sit at 0.1..10 -- and resolving *that* to a
+        relative tolerance drives the absolute one to 1e-17, which the model cannot meet:
+        CVODE exhausts ``mxstep`` and the simulation fails outright at fit points it used
+        to integrate in milliseconds. The median asks the question the tolerance is
+        actually about ("what magnitude is this model written in?") and is unmoved by a
+        single outlier at either end, so Brannmark reads 0.033 and keeps a tolerance
+        near the default while Giordano reads 3.7e-7 and gets one four decades tighter.
+
+        Zeros are skipped: a species that starts empty says nothing about the model's
+        scale (Giordano's ``Threatened``/``Extinct``/``Healed`` all start at exactly 0
+        and grow into the same 1e-8..1e-3 band as everything else). ``None`` -- meaning
+        "no scale to derive from", which leaves the tolerance at the backend default --
+        when nothing positive is declared, or when a non-constant compartment volume
+        makes the unit factors themselves parameter-dependent.
+
+        A species whose initial value comes from an ``initialAssignment`` contributes
+        only what it *declares*, which is usually 0 and therefore skipped. That is a
+        limit on what this can detect, not an error: an undetected small scale leaves the
+        tolerance exactly where it is today.
+        """
+        if self._unsafe_volume:
+            return None
+        values = []
+        for i in range(sbml_model.getNumSpecies()):
+            sp = sbml_model.getSpecies(i)
+            factor = self._species_unit_factor.get(sp.getId(), 1.0)
+            value = self._species_initial_value(sp) * factor
+            if np.isfinite(value) and value > 0.0:
+                values.append(value)
+        return float(np.median(values)) if values else None
 
     @staticmethod
     def _collect_ast_names(node, out):
@@ -1425,11 +1556,57 @@ class BngsimSbmlModelNoTimeout(Model):
         except bngsim.SsaValidationError as exc:
             raise ModelError(str(exc)) from exc
 
+    def _effective_tolerances(self, sim):
+        """The ``(rtol, atol)`` every deterministic run of this model uses (#546).
+
+        ``sbml_rtol`` / ``sbml_atol`` win outright when stated. Otherwise rtol is the
+        backend's own default (read off the constructed ``Simulator`` so this tracks
+        bngsim rather than a copy of its constant) and atol is derived from the model's
+        typical species magnitude by :func:`_derive_atol` -- which can only tighten, so a
+        model of order-one scale keeps the default pair exactly.
+
+        The scale is the model's **nominal** one (``_compute_nominal_state_scale``, read
+        off the document at load), not the state this run is about to integrate, so the
+        pair is a constant of the model rather than of the fit point. That matters twice
+        over: a tolerance that moved with a fitted initial condition would put a step in
+        the objective everywhere the derivation crossed a rounding boundary, and the
+        scalar (line-search) evaluations of a gradient fit have to be integrated to the
+        same accuracy as the sensitivities they are compared against, or the two disagree
+        about what the objective is.
+
+        Memoized per model: it is the same answer for every action of every evaluation,
+        and the memo is what the ``sim``-read backend defaults are consulted through.
+        """
+        cached = getattr(self, '_tolerance_cache', None)
+        if cached is not None:
+            return cached
+        rtol = getattr(self, '_config_rtol', None)
+        if rtol is None:
+            rtol = float(getattr(sim, '_rtol', _BNGSIM_DEFAULT_RTOL))
+        atol = getattr(self, '_config_atol', None)
+        if atol is None:
+            default_atol = float(getattr(sim, '_atol', _BNGSIM_DEFAULT_ATOL))
+            scale = getattr(self, '_nominal_state_scale', None)
+            name = getattr(self, 'name', None)
+            atol = _derive_atol(scale, rtol, default_atol, model_name=name,
+                                warned=getattr(self, '_atol_floor_warned', None))
+            if atol != default_atol:
+                logger.debug(
+                    'bngsim SBML model %s: typical species magnitude %g, so the ODE '
+                    'absolute tolerance is %g rather than the backend default %g.',
+                    name, scale, atol, default_atol)
+        self._tolerance_cache = (float(rtol), float(atol))
+        return self._tolerance_cache
+
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
                         seed=None, timeout=None, sample_times=None, steady_state=False,
                         suffix=None):
         sim = self._make_simulator(engine_model, method)
         run_kwargs = {}
+        if method != 'ssa':
+            # CVODE tolerances (#546). A stochastic run has none to set, so the ssa path
+            # is byte-identical to before.
+            run_kwargs['rtol'], run_kwargs['atol'] = self._effective_tolerances(sim)
         if steady_state:
             # A steady-state measurement (ADR-0086, #521): relax to equilibrium
             # (early-stop on ||dx/dt||) with ``end_time`` only the max-time bound, rather

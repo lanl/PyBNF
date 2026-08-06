@@ -1211,6 +1211,38 @@ Algorithm Options
 
   Default: 1
 
+.. _sbml_rtol:
+
+**sbml_rtol**, **sbml_atol**
+  Relevant only when ``sbml_backend = bngsim``: the CVODE relative and absolute error
+  tolerances used for every deterministic (``ode``) simulation of every SBML/Antimony
+  model in the fit. For BNGL models, write ``rtol``/``atol`` in the BNGL file's
+  ``begin actions`` block instead — that is BioNetGen's own surface for them.
+
+  Leave both unset unless you have a reason not to. ``sbml_rtol`` then takes the
+  backend default (``1e-8``), and ``sbml_atol`` is **derived from the model**: it is
+  set to ``sbml_rtol`` times the *median* strictly-positive species initial value in
+  the SBML file, clamped to at most the backend default (``1e-8``) and at least
+  ``1e-16``. Because the clamp only ever tightens, a model whose species are of order
+  one keeps the backend default exactly. The median, rather than the smallest species,
+  keeps one negligible transient intermediate from driving the tolerance for the whole
+  model.
+
+  The derivation exists because a constant absolute tolerance is a statement about the
+  model's units: CVODE weights each state by ``rtol*|y| + atol``, so ``atol = 1e-8``
+  declares values below ``1e-8`` to be noise. That is true of a model in molecule
+  counts and false of, say, a population-*fraction* epidemic model whose species sit
+  around ``1e-7``, whose whole early trajectory then carries no significant digits —
+  and whose forward sensitivities, which a gradient fit reads, carry fewer still. Set
+  ``sbml_atol`` explicitly if your model lives below the ``1e-16`` floor, or if you
+  want a looser tolerance than the derivation picks.
+
+  Default: unset (see above)
+
+  Example:
+
+    * ``sbml_atol = 1e-20``
+
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
   ``parallelize_models`` to run model partitions independently within each replicate.

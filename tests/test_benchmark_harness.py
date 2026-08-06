@@ -69,13 +69,16 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # proposal-scoped Kalman burn-in window -- defaults to 0.3, meaningful only for the
 # kalman proposal these pre-migration de/whitened confs never selected, so a no-op here),
 # and wall_time_fit (#529/ADR-0093; the fit's total wall-clock budget -- defaults to 0 ==
-# unbounded, the historical behavior these pre-migration confs ran under).
+# unbounded, the historical behavior these pre-migration confs ran under), and
+# sbml_rtol/sbml_atol (#546/ADR-0103; the bngsim SBML CVODE tolerances -- default to None
+# == the backend default with a scale-derived atol, and these benchmarks carry .target
+# analytical models with no SBML in them at all, so both are no-ops here).
 _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
     'initialization_distribution', 'edition', 'objective', 'profile_objective',
     'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
     'qualitative_loss', 'qualitative_scale', 'generate_network', 'proposal', 'n_try',
-    'kalman_burnin_frac', 'wall_time_fit',
+    'kalman_burnin_frac', 'wall_time_fit', 'sbml_rtol', 'sbml_atol',
 })
 
 

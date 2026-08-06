@@ -786,6 +786,8 @@ class Configuration:
                             save_files=save_flag,
                             integrator=self.config['sbml_integrator'],
                             strict_ssa=strict_ssa,
+                            rtol=self.config.get('sbml_rtol'),
+                            atol=self.config.get('sbml_atol'),
                         )
                     elif self.config['wall_time_sim'] == 0:
                         model = SbmlModelNoTimeout(
@@ -817,6 +819,8 @@ class Configuration:
                         save_files=save_flag,
                         integrator=self.config['sbml_integrator'],
                         strict_ssa=strict_ssa,
+                        rtol=self.config.get('sbml_rtol'),
+                        atol=self.config.get('sbml_atol'),
                     )
                 elif re.search(r'\.target$', mf):
                     from .analytical_model import AnalyticalModel
@@ -2415,6 +2419,21 @@ class Configuration:
                                      'BNGPATH environmental variable to the folder containing BNG2.pl.\n'
                                      'If BioNetGen is not yet installed, please refer to installation instructions at '
                                      'https://lanl.github.io/PyBNF/installation.html#bionetgen')
+        # The CVODE tolerances are positive, and both are bngsim-only (#546): the
+        # RoadRunner backend has its own integrator settings, and the BNGL path takes
+        # atol/rtol from the actions block, so accepting either key elsewhere would
+        # silently do nothing.
+        for tol_key in ('sbml_rtol', 'sbml_atol'):
+            tol = self.config.get(tol_key)
+            if tol is None:
+                continue
+            if self.config['sbml_backend'] != 'bngsim':
+                raise PybnfError(
+                    'Config option "{}" is only supported when sbml_backend = bngsim. '
+                    'Current sbml_backend is "{}".'.format(tol_key, self.config['sbml_backend'])
+                )
+            if tol <= 0.:
+                raise PybnfError(f'Config option "{tol_key}" must be a positive number; got {tol}.')
         # Check that the integrator is valid
         if self.config['sbml_backend'] == 'bngsim':
             bngsim_integrators = ('cvode', 'gillespie')

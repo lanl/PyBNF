@@ -227,6 +227,14 @@ class GlobalConfig(PyBNFConfigModel):
     sbml_backend: str = 'roadrunner'
     bngl_backend: str = 'auto'
     sbml_ssa_strict: int = 1
+    # CVODE tolerances for the bngsim SBML/Antimony backend (#546, ADR-0103). None =
+    # unset: rtol takes bngsim's default (1e-8) and atol is DERIVED from the model's
+    # median nonzero species value, which can only tighten it -- an order-one model
+    # keeps 1e-8 exactly. Stating either pins it for every deterministic run of every
+    # SBML/Antimony model in the fit. bngsim backend only; the BNGL path takes its
+    # tolerances from the actions block, which is BioNetGen's own surface for them.
+    sbml_rtol: Optional[float] = None
+    sbml_atol: Optional[float] = None
     stochastic_seed: str = 'auto'
     parallel_count: Optional[int] = None
     save_best_data: int = 0

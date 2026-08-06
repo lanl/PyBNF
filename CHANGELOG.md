@@ -6,6 +6,35 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **An SBML model whose species are far below 1 no longer integrates — and differentiates —
+  at a tolerance larger than its own state (#546, ADR-0103).** `Giordano_Nature2020`'s
+  assembled gradient disagreed with central differences on 41 of its 50 fitted parameters, by
+  up to 26%, identically at every finite-difference step size, with no refusal and no warning.
+  The model is piecewise-in-time — 110 `piecewise` expressions across 14 assignment rules, all
+  gated on the COVID NPI stage boundaries — and the error partitioned along whether a parameter
+  sat behind a time gate, so it read as unhandled switching. It is not: bngsim's SBML loader
+  already registers every `time` inequality as a CVODE root (13 for this model), and the
+  crossings are landed on exactly. The defect is the **absolute** tolerance. CVODE weights each
+  state by `rtol*|y| + atol`, so a constant `atol` declares values beneath it to be noise —
+  a statement about the model's units, and bngsim's `1e-8` is BNG2.pl's, right for a model in
+  molecule counts. Giordano is a population-*fraction* model whose species sit at `1.7e-8..1`,
+  median `3.7e-7`: its early trajectory carries no significant digits, and the
+  forward-sensitivity solve carries fewer still, since CVODES scales the state tolerances by the
+  parameter magnitude for the sensitivity vectors. The gate correlation is real but incidental —
+  a gated parameter acts only inside its own stage window, and the earliest windows are where
+  the states are smallest. Tightening `rtol` by four decades changes nothing; tightening `atol`
+  fixes it. The bngsim SBML/Antimony path now derives `atol` as `rtol` times the model's median
+  strictly-positive species initial, clamped to at most the backend default and at least
+  `1e-16`, so it can only ever tighten: across the 23-model subset-I corpus 19 are untouched and
+  4 tighten. Giordano's worst column goes **7.7e-02 → 4.5e-04** for ~14% more wall clock;
+  Brannmark 5.0e-05 → 3.6e-05 and Bertozzi 2.7e-05 → 2.4e-05 at no measurable cost. The median
+  rather than the minimum, because `Brannmark_JBC2010` seeds one transient intermediate at
+  `1.8e-9` against principal species at `0.1..10`, and resolving *that* asks for `1e-17`, which
+  makes the model fail outright on `mxstep` at interior fit points. Unchanged: every BNGL/net
+  model (its tolerances come from the actions block, and BNG2.pl parity is what that backend is
+  measured against), every stochastic run, the RoadRunner backend, and every SBML model of
+  order-one scale.
+
 - **A scalar fit no longer re-derives the analytical Jacobian on every action (#544).** #543
   warmed the cached engine template so clones inherit the compiled sensitivity RHS, but it
   warmed only when a sensitivity request was active — and the same never-warmed-parent shape
@@ -318,6 +347,14 @@ All notable changes to PyBNF are documented below. This project adheres to
   bngsim 0.12.2 reached PyPI, since CI installs bngsim unpinned.
 
 ### Added
+- **`sbml_rtol` and `sbml_atol` config keys (#546, ADR-0103).** State the CVODE tolerances for
+  every deterministic run of every SBML/Antimony model in a fit, on the `sbml_backend = bngsim`
+  path — which previously had no way to ask for either, since `atol`/`rtol` are read only out of
+  a BNGL actions block and an SBML model has none. Unset (the default) leaves `rtol` at the
+  backend default and derives `atol` from the model's own species magnitude, as described under
+  Fixed above. Setting either under another `sbml_backend` is a config error rather than a
+  silent no-op, and a model whose derived tolerance hits the `1e-16` floor is told once, by
+  name, that `sbml_atol` is where to say so.
 - **A chain of two or more data-level normalizations on one column is now differentiable (#539,
   ADR-0102).** `normalization` is an ordered chain (ADR-0066), and five of its transforms —
   `peak`, `init`, `zero`, `unit`, `floor` — rewrite the column in place. Stacking two of them

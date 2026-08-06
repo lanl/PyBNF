@@ -89,7 +89,11 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'profile_likelihood_confidence', 'profile_likelihood_step',
                  'profile_likelihood_min_step', 'profile_likelihood_max_step',
                  'profile_likelihood_dchi2_target', 'profile_likelihood_grad_tol',
-                 'profile_likelihood_step_tol']
+                 'profile_likelihood_step_tol',
+                 # CVODE tolerances for the bngsim SBML/Antimony backend (#546). Unset
+                 # leaves rtol at the backend default and DERIVES atol from the model's
+                 # own state scale; stating either pins it.
+                 'sbml_rtol', 'sbml_atol']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
 # The prior-family var keywords are derived from the registry (ADR-0010): each
 # family yields {base}_var (linear) + log{base}_var (log10). Bounded-support
