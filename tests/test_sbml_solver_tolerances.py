@@ -87,7 +87,7 @@ _needs_output_sens = pytest.mark.skipif(
 _TIME = ('<csymbol encoding="text" '
          'definitionURL="http://www.sbml.org/sbml/symbols/time">time</csymbol>')
 
-_PIECEWISE_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+_PIECEWISE_SBML = f"""<?xml version="1.0" encoding="UTF-8"?>
 <sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
   <model id="pw_decay">
     <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
@@ -108,22 +108,22 @@ _PIECEWISE_SBML = """<?xml version="1.0" encoding="UTF-8"?>
           <apply><plus/>
             <piecewise>
               <piece><ci>k0</ci>
-                <apply><leq/>{time}<ci>t1</ci></apply>
+                <apply><leq/>{_TIME}<ci>t1</ci></apply>
               </piece>
               <otherwise><cn>0</cn></otherwise>
             </piecewise>
             <piecewise>
               <piece><ci>k1</ci>
                 <apply><and/>
-                  <apply><gt/>{time}<ci>t1</ci></apply>
-                  <apply><leq/>{time}<ci>t2</ci></apply>
+                  <apply><gt/>{_TIME}<ci>t1</ci></apply>
+                  <apply><leq/>{_TIME}<ci>t2</ci></apply>
                 </apply>
               </piece>
               <otherwise><cn>0</cn></otherwise>
             </piecewise>
             <piecewise>
               <piece><ci>k2</ci>
-                <apply><gt/>{time}<ci>t2</ci></apply>
+                <apply><gt/>{_TIME}<ci>t2</ci></apply>
               </piece>
               <otherwise><cn>0</cn></otherwise>
             </piecewise>
@@ -138,7 +138,7 @@ _PIECEWISE_SBML = """<?xml version="1.0" encoding="UTF-8"?>
       </reaction>
     </listOfReactions>
   </model>
-</sbml>""".format(time=_TIME)
+</sbml>"""
 
 # A peer of the same model with every scale raised to order one, to pin that the
 # derivation is a no-op there.
@@ -362,14 +362,23 @@ def test_piecewise_in_time_trajectory_matches_the_closed_form(tmp_path):
 
     ``X(t) = X0·exp(-(k0·w0 + k1·w1 + k2·w2))`` exactly, with ``w_j`` the time spent in
     stage ``j``. At bngsim's default absolute tolerance this model's whole trajectory
-    lies at or beneath ``atol``, and the integration is ~2% wrong; at the derived one it
-    is right to eight digits.
+    lies at or beneath ``atol``, and the integration is ~19% wrong at its worst point; at
+    the derived one it is right to six digits.
+
+    The assertion tolerance is deliberately far looser than the agreement a correct run
+    reaches, because what it has to separate is not close: the derived-atol run lands at
+    ``8.5e-07`` relative and the default-atol run this test exists to reject lands at
+    ``1.9e-01``, five orders of magnitude away. ``1e-6`` -- barely above the former --
+    bought no discriminating power for that and instead made the test a platform
+    coin-flip: it held on macOS at ``8.5e-07`` and failed on CI's Linux at ``1.2e-06``,
+    a CVODE run being asked to reproduce itself across two math libraries to seven
+    digits. ``1e-5`` clears both by ~10x and still rejects the failure mode by ~10^4.
     """
     model = _piecewise_model(tmp_path)
     data = model.execute(str(tmp_path), 'pw_scalar', 0)['time_course']
 
     t = np.asarray(data['time'])
-    np.testing.assert_allclose(np.asarray(data['X']), _exact_x(t), rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(data['X']), _exact_x(t), rtol=1e-5)
 
 
 @_needs_output_sens
