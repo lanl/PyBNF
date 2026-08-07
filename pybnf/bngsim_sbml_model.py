@@ -740,7 +740,7 @@ class BngsimSbmlModelNoTimeout(Model):
                 unsafe = True
         return factors, assignment_factors, unsafe
 
-    def _changed_names(self, mut=None, scan_param=None):
+    def _changed_names(self, mut=None, scan_param=None, phase_overrides=None):
         """The parameter/species names this evaluation changes."""
         changed = set()
         if self.param_set is not None:
@@ -749,14 +749,17 @@ class BngsimSbmlModelNoTimeout(Model):
             changed.update(mi.name for mi in mut)
         if scan_param is not None:
             changed.add(scan_param)
+        if phase_overrides:
+            changed.update(name for name, _ in phase_overrides)
         return changed
 
-    def _changes_touch_initials(self, mut=None, scan_param=None):
+    def _changes_touch_initials(self, mut=None, scan_param=None, phase_overrides=None):
         """Whether this evaluation changes a name that a species initial depends
         on, so the baked-in initial concentrations must be recomputed (#415)."""
         if not self._initial_dep_names:
             return False
-        return bool(self._changed_names(mut=mut, scan_param=scan_param)
+        return bool(self._changed_names(mut=mut, scan_param=scan_param,
+                                        phase_overrides=phase_overrides)
                     & self._initial_dep_names)
 
     def _needs_structural_reload(self, mut=None, scan_param=None):
@@ -883,7 +886,7 @@ class BngsimSbmlModelNoTimeout(Model):
                 _mutate_scalar(current, mi.operation, mi.amount(param_values)),
             )
 
-    def _build_sbml_doc(self, mut=None, scan_override=None):
+    def _build_sbml_doc(self, mut=None, scan_override=None, phase_overrides=None):
         doc = _sbml_doc_from_text(self._base_sbml_text, self.file_path)
         sbml_model = doc.getModel()
         self._apply_param_set(sbml_model)
@@ -892,6 +895,13 @@ class BngsimSbmlModelNoTimeout(Model):
         if scan_override is not None:
             scan_name, scan_value = scan_override
             self._set_model_value_if_present(sbml_model, scan_name, scan_value)
+        # The pre-equilibration condition (ADR-0052) is the state the FIRST phase is
+        # initialized in, so it is baked into the document like a mutant -- last, so it
+        # wins over the fit vector, and before initialAssignment expansion, so a species
+        # initial the condition drives is recomputed under it (#547).
+        if phase_overrides:
+            for name, value in phase_overrides:
+                self._set_model_value_if_present(sbml_model, name, value)
         return doc
 
     def _get_engine_template(self):
@@ -1052,7 +1062,7 @@ class BngsimSbmlModelNoTimeout(Model):
         return touched_species
 
     def _prepare_engine_model(self, mut=None, scan_override=None, ic_overrides=None,
-                              param_overrides=None):
+                              param_overrides=None, phase_overrides=None):
         """Clone the cached engine template and apply per-evaluation values.
 
         The fast-path analogue of ``_build_sbml_doc`` + reload: param_set,
@@ -1065,6 +1075,10 @@ class BngsimSbmlModelNoTimeout(Model):
         initialAssignment fixes (#531); both are applied last so they win over a
         direct param_set/scan assignment, exactly as libSBML's own
         initialAssignment expansion does on the reload path. See issue #415.
+
+        ``phase_overrides`` (name -> value pairs) is the pre-equilibration condition
+        (ADR-0052, #547): the state the unmeasured first phase is initialized in,
+        applied like a mutant so it wins over the fit vector.
         """
         engine_model = self._get_engine_template().clone()
         touched_species = self._apply_param_set_engine(engine_model)
@@ -1074,6 +1088,10 @@ class BngsimSbmlModelNoTimeout(Model):
             scan_name, scan_value = scan_override
             if self._set_engine_value_if_present(engine_model, scan_name, scan_value):
                 touched_species = True
+        if phase_overrides:
+            for name, value in phase_overrides:
+                if self._set_engine_value_if_present(engine_model, name, value):
+                    touched_species = True
         if param_overrides:
             for param_name, value in param_overrides.items():
                 engine_model.set_param(param_name, float(value))
@@ -1086,7 +1104,8 @@ class BngsimSbmlModelNoTimeout(Model):
         engine_model.reset()
         return engine_model
 
-    def _recompute_initial_assignments(self, mut=None, scan_override=None):
+    def _recompute_initial_assignments(self, mut=None, scan_override=None,
+                                       phase_overrides=None):
         """Recompute the parameter-driven initial values for this evaluation.
 
         Builds the SBML doc with this evaluation's parameter/species/scan
@@ -1097,7 +1116,8 @@ class BngsimSbmlModelNoTimeout(Model):
         reproduces the values a full reload would bake in, without re-deriving
         the Jacobian. See issues #415 and #531.
         """
-        doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+        doc = self._build_sbml_doc(mut=mut, scan_override=scan_override,
+                                   phase_overrides=phase_overrides)
         sbml_model = doc.getModel()
         libsbml.SBMLTransforms.expandInitialAssignments(sbml_model)
         species_overrides = {}
@@ -1112,7 +1132,7 @@ class BngsimSbmlModelNoTimeout(Model):
                 param_overrides[param_name] = value
         return species_overrides, param_overrides
 
-    def _engine_model_for_action(self, mut=None, scan_override=None):
+    def _engine_model_for_action(self, mut=None, scan_override=None, phase_overrides=None):
         """Build the engine model for one action by reusing the cached engine
         template (see issue #415).
 
@@ -1122,22 +1142,29 @@ class BngsimSbmlModelNoTimeout(Model):
         SBML text only for models with an algebraicRule (which we do not
         analyze). All three avoid re-deriving the analytical Jacobian except
         the last.
+
+        ``phase_overrides`` carries a pre-equilibration experiment's *equilibration*
+        condition (ADR-0052, #547) into the build, so the unmeasured first phase starts
+        from a model initialized under it -- initialAssignments included.
         """
         scan_param = scan_override[0] if scan_override is not None else None
         if self._needs_structural_reload(mut=mut, scan_param=scan_param):
-            doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+            doc = self._build_sbml_doc(mut=mut, scan_override=scan_override,
+                                       phase_overrides=phase_overrides)
             return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
         ic_overrides = param_overrides = None
-        if self._changes_touch_initials(mut=mut, scan_param=scan_param):
+        if self._changes_touch_initials(mut=mut, scan_param=scan_param,
+                                        phase_overrides=phase_overrides):
             if not _HAS_EXPAND_INITIAL_ASSIGNMENTS:
                 # No in-place initial evaluation available -> reload to stay correct.
-                doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+                doc = self._build_sbml_doc(mut=mut, scan_override=scan_override,
+                                           phase_overrides=phase_overrides)
                 return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
             ic_overrides, param_overrides = self._recompute_initial_assignments(
-                mut=mut, scan_override=scan_override)
+                mut=mut, scan_override=scan_override, phase_overrides=phase_overrides)
         return self._prepare_engine_model(
             mut=mut, scan_override=scan_override, ic_overrides=ic_overrides,
-            param_overrides=param_overrides)
+            param_overrides=param_overrides, phase_overrides=phase_overrides)
 
     def model_text(self, mut=None):
         logger.info('Generating model text for %s', self.name)
@@ -1600,9 +1627,22 @@ class BngsimSbmlModelNoTimeout(Model):
 
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
                         seed=None, timeout=None, sample_times=None, steady_state=False,
-                        suffix=None):
-        sim = self._make_simulator(engine_model, method)
+                        suffix=None, sim=None, carry_sensitivities=False):
+        """Run one phase on this model.
+
+        ``sim`` reuses an already-constructed :class:`bngsim.Simulator` instead of
+        building a fresh one. That is what makes a pre-equilibration protocol possible
+        here (ADR-0052, #547): a second ``run()`` on the *same* persistent simulator
+        continues from the state the first one left, which is exactly the carry-over the
+        measured phase needs. ``carry_sensitivities`` is the gradient-path companion --
+        bngsim refuses to seed forward sensitivities on a carried-over state unless it is
+        told to seed them from the prior phase's own ``dx/dtheta`` (GH #210).
+        """
+        if sim is None:
+            sim = self._make_simulator(engine_model, method)
         run_kwargs = {}
+        if carry_sensitivities:
+            run_kwargs['carry_sensitivities'] = True
         if method != 'ssa':
             # CVODE tolerances (#546). A stochastic run has none to set, so the ssa path
             # is byte-identical to before.
@@ -1668,6 +1708,198 @@ class BngsimSbmlModelNoTimeout(Model):
             )
         return seed_value
 
+    def _preequilibration_overrides(self, act, perturbations, phase):
+        """One pre-equilibration phase's ``[(name, value)]`` perturbations (ADR-0052, #547).
+
+        The config layer hands each phase's condition over as ``(kind, name, value)``
+        triples, where ``kind`` distinguishes a BNGL ``setParameter`` from a
+        ``setConcentration``. Here the two are one operation -- ``_set_engine_value_if_present``
+        dispatches on whether the name is an SBML species or a global parameter -- so only
+        the name and a numeric value survive.
+
+        Both are validated rather than quietly dropped. A target this model does not
+        declare would otherwise apply to nothing and the phase would simulate an
+        unperturbed model, which is precisely the silent wrong answer #547 was; and a
+        param-expression value (the BNGL titrated-competitor idiom, #474) has no SBML
+        reading here.
+        """
+        overrides = []
+        for _kind, name, value in perturbations:
+            if name not in self.param_names:
+                raise PybnfError(
+                    f"Experiment '{act.suffix}': the {phase} condition sets '{name}', "
+                    f"which model '{self.name}' does not declare as a species or a global "
+                    "parameter. A pre-equilibration condition is applied to this model's "
+                    "own entities; check the target's spelling (ADR-0052).")
+            try:
+                overrides.append((name, float(value)))
+            except (TypeError, ValueError):
+                raise PybnfError(
+                    f"Experiment '{act.suffix}': the {phase} condition sets '{name}' to the "
+                    f"expression '{value}'. On sbml_backend = bngsim a pre-equilibration "
+                    "condition's value must be a number; use a numeric value, or a BNGL model "
+                    "for an expression-valued intervention (ADR-0062).")
+        return overrides
+
+    def _begin_preequilibration(self, act, mut, *, method, seed, timeout, suffix):
+        """Run the unmeasured equilibration phase and apply the intervention (ADR-0052, #547).
+
+        The SBML/Antimony peer of ``BNGLModel._append_preequilibration_actions``: build the
+        model under the ``preequilibrate:`` condition, relax it (to steady state, or for a
+        fixed ``equil_t_end:``) without measuring, then apply the measurement ``condition:``
+        in place. Returns ``(engine_model, sim, carry_sensitivities, equil_result)`` -- and
+        ``sim`` is the *same* persistent :class:`bngsim.Simulator` the measured phase must
+        run on, since running it again is what carries the equilibrated species state over
+        (there is deliberately no reset between the phases). ``equil_result`` is the
+        unmeasured phase's own Result: never scored, but it carries the equilibrium's
+        ``dx_ss/dtheta``, which is the whole derivative for a measured phase with nothing
+        to integrate.
+
+        ``carry_sensitivities`` tells the measured phase to seed its forward sensitivities
+        from the equilibration's own ``dx_ss/dtheta`` rather than from zero -- bngsim's
+        implicit-function-theorem seeding (GH #210), which it *requires* on a carried-over
+        state and refuses without. Mirrors ``net_model._prepare_simulate_run``'s condition
+        exactly: the parameter axis is what gates the flag, because an initial-condition
+        column cannot survive a stable steady state.
+        """
+        equil = self._preequilibration_overrides(
+            act, act.equil_perturbations, 'pre-equilibration')
+        measure = self._preequilibration_overrides(
+            act, act.measure_perturbations, 'measurement')
+        req = self._sensitivity_request
+        carry = bool(req is not None and req.params and method == 'ode')
+        if carry and any(name in self._species_name_set for name, _ in measure):
+            # A mid-protocol species write retires the carried sensitivity matrix, so the
+            # measured phase would need the intervention's own seed row rebuilt on top of it
+            # (ADR-0098/0101 -- machinery the net backend has and this one does not). Refuse
+            # rather than return a derivative that is wrong across the intervention.
+            raise PybnfError(
+                f"Experiment '{act.suffix}': its measurement condition writes a species "
+                f"amount partway through a pre-equilibration protocol, and sbml_backend = "
+                "bngsim cannot carry forward sensitivities across that write, so a "
+                "gradient-based fit has no gradient here.",
+                hint=["Refit with a gradient-free job_type (e.g. job_type = de), which "
+                      "needs no sensitivities.",
+                      "Or express the intervention as a parameter the species' initial "
+                      "value reads, so it perturbs a parameter rather than the state."])
+
+        engine_model = self._engine_model_for_action(mut=mut, phase_overrides=equil)
+        sim = self._make_simulator(engine_model, method)
+        if act.equil_fixed_time is not None:
+            # A fixed equilibration duration (``equil_t_end:``) -- a timed incubation rather
+            # than a relaxation to equilibrium.
+            equil_result = self._run_simulation(
+                engine_model, act.equil_fixed_time, 2, method=method, seed=seed,
+                timeout=timeout, sim=sim, suffix=f'{suffix}_preequil')
+        else:
+            equil_result = self._run_simulation(
+                engine_model, act.equil_max_time, 2, method=method, seed=seed,
+                timeout=timeout, steady_state=True, sim=sim, suffix=f'{suffix}_preequil')
+        for name, value in measure:
+            self._set_engine_value_if_present(engine_model, name, value)
+        return engine_model, sim, carry, equil_result
+
+    def _run_preequilibrated_time_course(self, act, mut, *, method, seed, timeout, suffix):
+        """The measured time course of a pre-equilibration experiment (ADR-0052, #547).
+
+        Phase two of :meth:`_begin_preequilibration`: the data's own grid, integrated on the
+        simulator the equilibration left advanced, so the equilibrated (then perturbed) state
+        is this run's initial condition. The clock restarts at 0 -- the data times are
+        relative to the intervention -- and only the concentrations carry.
+
+        A ``t = 0``-only experiment (#510) has nothing to integrate: its single row *is* the
+        post-intervention state, and its derivative is the equilibration's final
+        ``dx_ss/dtheta``, so both are read straight off phase one rather than through the
+        fresh-start re-preparation :meth:`_initial_state_data` uses.
+        """
+        engine_model, sim, carry, equil_result = self._begin_preequilibration(
+            act, mut, method=method, seed=seed, timeout=timeout, suffix=suffix)
+        if act.initial_state_only:
+            return self._preequilibrated_initial_state_data(
+                engine_model, equil_result, method=method)
+        result = self._run_simulation(
+            engine_model, act.time, act.stepnumber + 1, method=method, seed=seed,
+            timeout=timeout, sample_times=act.explicit_points,
+            steady_state=bool(act.steady_state), suffix=suffix,
+            sim=sim, carry_sensitivities=carry)
+        return self._result_to_data(result, stochastic=method == 'ssa')
+
+    def _preequilibrated_initial_state_data(self, engine_model, equil_result, *, method):
+        """The post-intervention state as a one-row ``t = 0`` trajectory (#510 + ADR-0052).
+
+        The state is read off the engine model, which holds what the equilibration advanced
+        it to. On the gradient path the derivative is the equilibration's final
+        ``dx_ss/dtheta``: with nothing integrated after it, that row *is* the answer. The
+        intervention that precedes this row perturbs only parameters -- a species write,
+        which would supersede the row, is refused upstream -- so it leaves the row alone.
+        """
+        species_names = list(engine_model.species_names)
+        state = np.asarray(
+            [engine_model.get_concentration(name) for name in species_names], dtype=float)
+        data = self._data_with_headers(
+            np.concatenate(([0.0], state))[np.newaxis, :], ['time'] + species_names)
+        req = self._sensitivity_request
+        if req is None or method != 'ode' or not getattr(
+                equil_result, 'has_sensitivities', False):
+            return data
+        sens = self._extract_output_sensitivities(equil_result)
+        data.output_sensitivities = OutputSensitivities(
+            selectors=sens.selectors, param_names=sens.param_names,
+            ic_species=sens.ic_species,
+            d_param=None if sens.d_param is None else sens.d_param[-1:],
+            d_ic=None if sens.d_ic is None else sens.d_ic[-1:])
+        return data
+
+    def _run_preequilibrated_scan(self, act, mut, *, method, seed, timeout, suffix, points):
+        """The measured dose-response scan of a pre-equilibration experiment (#474, ADR-0062).
+
+        The preincubate -> wash -> dose-scan protocol: phase one equilibrates and the
+        intervention is applied, that state is snapshotted, and every dose starts from the
+        snapshot rather than from the model's seed initial conditions. ``save_concentrations``
+        + ``reset`` per dose is the engine-level form of BNGL's ``saveConcentrations()`` +
+        ``parameter_scan(reset_conc=>1)``, and the reset target being an *advanced* state is
+        why each dose still runs with ``carry_sensitivities`` on the gradient path.
+        """
+        if (act.param in self._species_name_set and self._sensitivity_request is not None
+                and self._sensitivity_request.params and method == 'ode'):
+            # Same boundary as a species intervention, one phase later: writing the dose as a
+            # species amount onto the carried state retires the sensitivity matrix each dose
+            # would otherwise continue from, and this backend has no seed-row rebuild for it
+            # (ADR-0104). A parameter-valued dose axis -- what a PEtab dose-response sweeps --
+            # is unaffected.
+            raise PybnfError(
+                f"Experiment '{act.suffix}': its pre-equilibrated dose-response sweeps the "
+                f"species amount '{act.param}', and sbml_backend = bngsim cannot carry forward "
+                "sensitivities across a species write onto the carried state, so a "
+                "gradient-based fit has no gradient here.",
+                hint=["Refit with a gradient-free job_type (e.g. job_type = de), which needs "
+                      "no sensitivities.",
+                      "Or sweep a model parameter the species' initial value reads, so the "
+                      "dose axis is a parameter rather than the state."])
+        engine_model, sim, carry, _ = self._begin_preequilibration(
+            act, mut, method=method, seed=seed, timeout=timeout, suffix=suffix)
+        engine_model.save_concentrations()
+        scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
+        rows = []
+        headers = None
+        sens_slices = []
+        for x in points:
+            engine_model.reset()
+            self._set_engine_value_if_present(engine_model, act.param, x)
+            result = self._run_simulation(
+                engine_model, act.time, 2, method=method, seed=seed, timeout=timeout,
+                sim=sim, carry_sensitivities=carry)
+            row, point_headers = self._scan_point_to_row(result, x, scan_label)
+            rows.append(row)
+            if headers is None:
+                headers = point_headers
+            sens_slices.append(self._scan_point_sensitivities(result))
+        data = self._data_with_headers(np.vstack(rows), headers)
+        scan_sens = stack_scan_sensitivities(sens_slices)
+        if scan_sens is not None:
+            data.output_sensitivities = scan_sens
+        return data
+
     def execute(self, folder, filename, timeout):
         from ._bngsim_caps import BNGSIM_VERSION as _BNGSIM_VERSION
         from ._bngsim_failure import write_failure_report
@@ -1706,19 +1938,28 @@ class BngsimSbmlModelNoTimeout(Model):
                         method=method,
                     )
                     if isinstance(act, TimeCourse):
-                        engine_model = self._engine_model_for_action(mut=mut)
-                        if act.initial_state_only:
-                            data = self._initial_state_data(
-                                engine_model, method=method, mut=mut)
+                        if getattr(act, 'preequilibrate', False):
+                            # Two phases on one persistent simulator (ADR-0052, #547):
+                            # equilibrate under the `preequilibrate:` condition unmeasured,
+                            # perturb to the measurement `condition:`, then measure with the
+                            # equilibrated state carried over.
+                            data = self._run_preequilibrated_time_course(
+                                act, mut, method=method, seed=seed_value,
+                                timeout=timeout, suffix=suffix_with_mut)
                         else:
-                            result = self._run_simulation(
-                                engine_model, act.time, act.stepnumber + 1,
-                                method=method, seed=seed_value, timeout=timeout,
-                                sample_times=act.explicit_points,
-                                steady_state=bool(act.steady_state),
-                                suffix=suffix_with_mut,
-                            )
-                            data = self._result_to_data(result, stochastic=method == 'ssa')
+                            engine_model = self._engine_model_for_action(mut=mut)
+                            if act.initial_state_only:
+                                data = self._initial_state_data(
+                                    engine_model, method=method, mut=mut)
+                            else:
+                                result = self._run_simulation(
+                                    engine_model, act.time, act.stepnumber + 1,
+                                    method=method, seed=seed_value, timeout=timeout,
+                                    sample_times=act.explicit_points,
+                                    steady_state=bool(act.steady_state),
+                                    suffix=suffix_with_mut,
+                                )
+                                data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(
@@ -1731,7 +1972,6 @@ class BngsimSbmlModelNoTimeout(Model):
                                 f'Parameter_scan parameter {act.param} was not found in model {self.name}'
                             )
 
-                        scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
                         # New-era explicit scan values (ADR-0028, #469/#470): sweep exactly
                         # the data's swept-parameter values instead of a uniform linspace
                         # grid, mirroring the native BNGL path (net_model._scan_independent).
@@ -1741,6 +1981,21 @@ class BngsimSbmlModelNoTimeout(Model):
                             points = act.explicit_points
                         else:
                             points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                        if getattr(act, 'preequilibrate', False):
+                            # The preincubate -> wash -> dose-scan protocol (#474, ADR-0062):
+                            # every dose starts from the carried post-intervention state, not
+                            # from the model's seed initial conditions.
+                            data = self._run_preequilibrated_scan(
+                                act, mut, method=method, seed=seed_value, timeout=timeout,
+                                suffix=suffix_with_mut, points=points)
+                            result_dict[suffix_with_mut] = data
+                            if self.save_files:
+                                self._write_saved_output(
+                                    f'{folder}/{filename}_{act.suffix}{mut.suffix}.scan',
+                                    data,
+                                )
+                            continue
+                        scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
                         rows = []
                         headers = None
                         # Gradient path (#476): each independent, reset-to-seed dose

@@ -100,7 +100,9 @@ Required Keys
       steady state under it, then applies the measurement condition and simulates the data
       grid from that equilibrated state. A pre-equilibration condition may use only
       **absolute** (``=``) perturbations. The conditions it names are consumed by the
-      experiment, so they are not also run as standalone conditions.
+      experiment, so they are not also run as standalone conditions. Available for BNGL
+      models and for SBML/Antimony models under ``sbml_backend = bngsim``; the
+      RoadRunner SBML backend has no state carry-over between phases and refuses it.
     * **model:** names the base model by filename stem; omittable when the job declares a
       single model, required when it declares more than one.
     * **type:** is **inferred** from the data — a ``time`` column ⇒ a time course, a ``time``

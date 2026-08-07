@@ -1487,11 +1487,15 @@ class SbmlModelNoTimeout(Model):
             # New-era pre-equilibration (ADR-0052, #440) needs state carried over between the
             # equilibration and measurement phases. The RoadRunner/SBML backend resets every
             # action (no carry-over), so a pre-equilibration protocol cannot be expressed here.
-            # receptor (the motivating case) is BNGL; this is a separate track (a known gap).
+            # The bngsim SBML backend can (ADR-0104, #547) -- its persistent Simulator carries
+            # the state across runs -- so this refusal now has a same-model remedy.
             raise PybnfError(
                 f"Experiment '{action.suffix}' uses pre-equilibration (preequilibrate:), which "
                 "is not supported on the SBML/RoadRunner backend (it has no state carry-over "
-                "between simulation phases). Use a BNGL model for a pre-equilibration protocol.")
+                "between simulation phases).",
+                hint=["Set 'sbml_backend = bngsim', which runs a pre-equilibration protocol on "
+                      "this same SBML model (ADR-0104).",
+                      "Or use a BNGL model."])
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
         if action.method == 'ssa':

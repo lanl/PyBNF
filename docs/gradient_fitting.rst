@@ -584,6 +584,13 @@ column carries is refused by name rather than contributing a zero row: write suc
 parameters the fit varies (``"A()" = 2*k_deg``, or through a derived id), not over a free parameter
 that binds no model parameter.
 
+Species interventions are the one place the two backends differ. On an SBML/Antimony model
+(``sbml_backend = bngsim``) the parameter-axis seeding above works exactly as described, but a
+**measurement condition that writes a species amount** mid-protocol is refused on the gradient path:
+the write retires the carried sensitivity matrix, and that backend has no rebuild for the write's
+own seed row (ADR-0104). Fit such a protocol with a gradient-free ``job_type``, express the
+intervention as a parameter the species' initial value reads, or use a BNGL model.
+
 
 Discrete events
 ---------------

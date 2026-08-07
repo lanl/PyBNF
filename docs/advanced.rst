@@ -25,9 +25,16 @@ the equilibrated state. This is the right tool whenever the model's initial
 conditions are not the true starting point of the measured protocol, and it lets
 one fit share a single equilibrated baseline across dose or genotype variations.
 See the ``preequilibrate:`` field of the :ref:`experiment <experiment>` key for the
-syntax; the equilibration condition may use only absolute (``=``) perturbations and
-the protocol applies to time-course experiments. This surface requires
-:ref:`edition <edition>` ``>= 2`` and round-trips to PEtab v2.
+syntax; the equilibration condition may use only absolute (``=``) perturbations, and
+the measured phase may be a time course, a steady state, or a dose-response
+``parameter_scan``. This surface requires :ref:`edition <edition>` ``>= 2`` and
+round-trips to PEtab v2.
+
+The protocol needs a simulator that carries state between phases, which BNGL models
+have and — since ADR-0104 — SBML/Antimony models on ``sbml_backend = bngsim`` have too.
+The RoadRunner SBML backend (``sbml_backend = roadrunner``, the default for ``.xml``
+models) resets at every action, so it refuses a ``preequilibrate:`` experiment; set
+``sbml_backend = bngsim`` to run one from an SBML model.
 
 .. _normalization_adv:
 
