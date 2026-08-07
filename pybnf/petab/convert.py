@@ -102,13 +102,22 @@ def petab1to2_preserve_scale(v1_yaml_path, out_dir):
         if str(row.get(C1.PARAMETER_SCALE, C1.LIN)) in _LOG_SCALES
         and _is_estimated(row.get(C1.ESTIMATE, 1))
     }
+    # Which rows carried a prior the *v1 author wrote*. This is the only reliable way to tell a
+    # declared prior from the implicit `uniform` default petab1to2 materializes into the v2
+    # column: after conversion the two are the same cell. Read it from v1, where the blank is
+    # still a blank.
+    declared_priors = {
+        str(pid)
+        for pid, row in v1_pdf.iterrows()
+        if _has_prior(row.get(C1.OBJECTIVE_PRIOR_TYPE))
+    }
     v2_spec = petab_v1.yaml.load_yaml(str(v2_yaml))
 
     # 3. Re-inject the dropped parameter scale as a v2-native log-uniform prior over the bounds.
     if log_estimated:
         v2_param_path = out_dir / v2_spec['parameter_files'][0]
         v2_pdf = pd.read_csv(v2_param_path, sep='\t')
-        inject_log_uniform_priors(v2_pdf, log_estimated)
+        inject_log_uniform_priors(v2_pdf, log_estimated, declared_priors)
         v2_pdf.to_csv(v2_param_path, sep='\t', index=False)
 
     # 4. Re-inject the dropped observableTransformation as a preserved column (issue #499).
@@ -125,14 +134,30 @@ def petab1to2_preserve_scale(v1_yaml_path, out_dir):
     return v2_yaml
 
 
-def inject_log_uniform_priors(v2_pdf, log_estimated_ids):
+def inject_log_uniform_priors(v2_pdf, log_estimated_ids, declared_prior_ids=None):
     """Give each v2 parameter row in ``log_estimated_ids`` a ``log-uniform`` prior in place.
 
     For every row whose ``parameterId`` is in ``log_estimated_ids`` **and** that carries no
-    prior yet, sets ``priorDistribution = log-uniform`` and ``priorParameters`` to its
-    ``[lowerBound, upperBound]``. Rows with an existing prior (a scale petab1to2 already
-    folded into one) and rows not in the set are left untouched. Mutates and returns
-    ``v2_pdf`` (a v2 parameter :class:`pandas.DataFrame`).
+    prior the v1 author declared, sets ``priorDistribution = log-uniform`` and
+    ``priorParameters`` to its ``[lowerBound, upperBound]``. Rows with a declared prior (a
+    scale petab1to2 already folded into one) and rows not in the set are left untouched.
+    Mutates and returns ``v2_pdf`` (a v2 parameter :class:`pandas.DataFrame`).
+
+    ``declared_prior_ids`` is the set of parameter ids that carried a **v1**
+    ``objectivePriorType``. It is required to get this right, because petab1to2 *materializes*
+    PEtab v2's implicit default -- ``priorDistribution = uniform`` over the bounds -- into the
+    converted table whenever the v1 table merely *has* a prior column, even an entirely empty
+    one. After conversion a materialized default and a declared ``uniform`` are the same cell,
+    so a v2-only check cannot separate them; asking v1 can.
+
+    Without this argument the function falls back to "any prior blocks injection", which is
+    safe but silently loses the log scale on exactly those problems. That regression cost
+    `Zhao_QuantBiol2020` all 28 of its log10 parameters (its four v1 prior columns are present
+    and 100% empty) and `Schwen_PONE2014` 24 of 25 (six real ``parameterScaleNormal`` priors,
+    the rest blank), while `Giordano_Nature2020` -- whose v1 table has no prior column at all --
+    converted correctly. The failure is silent: the objective stays right, the finite-difference
+    gradient check still passes, and the fit merely searches a multi-decade parameter on a
+    linear box, which presents as needing more starts.
     """
     import petab.v2.C as C2
 
@@ -143,10 +168,17 @@ def inject_log_uniform_priors(v2_pdf, log_estimated_ids):
         # so the string cells below don't raise a dtype error. NaNs still write as blank.
         v2_pdf[col] = v2_pdf[col].astype('object')
     for i, row in v2_pdf.iterrows():
-        if str(row[C2.PARAMETER_ID]) not in log_estimated_ids:
+        pid = str(row[C2.PARAMETER_ID])
+        if pid not in log_estimated_ids:
             continue
-        if _has_prior(row.get(C2.PRIOR_DISTRIBUTION)):
-            continue  # petab1to2 already carried this scale into a prior -- don't clobber.
+        if declared_prior_ids is None:
+            # Legacy, v2-only reading: cannot tell a declared prior from a materialized
+            # default, so anything present blocks. Kept only for callers that have no v1
+            # table to consult.
+            if _has_prior(row.get(C2.PRIOR_DISTRIBUTION)):
+                continue
+        elif pid in declared_prior_ids:
+            continue  # the v1 author wrote this prior -- don't clobber it.
         lb, ub = row[C2.LOWER_BOUND], row[C2.UPPER_BOUND]
         v2_pdf.at[i, C2.PRIOR_DISTRIBUTION] = C2.LOG_UNIFORM
         v2_pdf.at[i, C2.PRIOR_PARAMETERS] = f'{lb}{C2.PARAMETER_SEPARATOR}{ub}'

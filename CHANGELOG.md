@@ -6,6 +6,30 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **A PEtab v1 problem whose parameter table merely *has* a prior column no longer loses its log
+  estimation scale (#548).** `petab1to2_preserve_scale` re-injects the `parameterScale` that
+  `petab.v2.petab1to2` drops, skipping any row that already carries a prior so a scale petab1to2
+  already folded into one is not clobbered. That guard is right in intent and impossible to
+  implement in v2 alone: petab1to2 **materializes** v2's implicit default — `priorDistribution =
+  uniform` over the bounds — into the converted table whenever the v1 table has a prior column at
+  all, even an entirely empty one, and after conversion a materialized default and a declared
+  `uniform` are the same cell. So the decider was whether the upstream TSV happened to carry a
+  prior column, a cosmetic property of the file: `Zhao_QuantBiol2020` (four prior columns, 100%
+  empty) lost **all 28** of its log10 parameters and `Schwen_PONE2014` (six real
+  `parameterScaleNormal` priors, the rest blank) lost **24 of 25**, while `Giordano_Nature2020`,
+  whose v1 table has no prior column, converted correctly. The conversion now reads which rows
+  carried a prior from **v1**, where a blank is still a blank, and skips only those;
+  `inject_log_uniform_priors` gains an optional `declared_prior_ids` and keeps the conservative
+  v2-only reading when it is omitted. This was silent by construction: the re-injected prior sets
+  only the search scale and initial sampling, and PyBNF's optimiser objective excludes the prior,
+  so the objective, the `simulatedData` oracle check and the finite-difference gradient check all
+  still passed — `Zhao`'s nominal `J_paper` is unchanged to 13 significant digits. Only the search
+  was wrong, and a multi-decade parameter sampled linear-uniform presents as a fit needing more
+  starts: `Zhao`'s `gamma_*` sit on `[1e-08, 1]` with an optimum near 0.05–0.39 and its `sd_*` on
+  `[0.001, 1e5]` with MLEs of 186–5013, so across 28 parameters effectively no box-sampled start
+  lands near the basin. A 100 × 1000 multi-start stalled at ~718 and was decelerating; on the
+  corrected scale it beat that in under 90 seconds. `Schwen` is the discriminating case — its six
+  declared priors survive as `log-normal`, its five genuinely `lin` parameters stay `uniform`.
 - **An SBML model whose species are far below 1 no longer integrates — and differentiates —
   at a tolerance larger than its own state (#546, ADR-0103).** `Giordano_Nature2020`'s
   assembled gradient disagreed with central differences on 41 of its 50 fitted parameters, by

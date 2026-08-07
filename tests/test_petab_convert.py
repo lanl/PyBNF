@@ -154,6 +154,48 @@ class TestInjectLogUniformPriors:
         r = df.set_index('parameterId').loc['klin']
         assert r['priorDistribution'] == 'normal' and r['priorParameters'] == '0;1'
 
+    # -- the materialized-default regression (Zhao_QuantBiol2020 / Schwen_PONE2014) ----------
+    #
+    # When the v1 parameter table merely *has* a prior column -- even one that is entirely
+    # empty -- petab1to2 materializes PEtab v2's implicit default (`uniform` over the bounds)
+    # into every row. A v2-only check cannot tell that apart from a declared `uniform`, so the
+    # log scale was dropped for the whole problem, silently.
+
+    def _materialized_default_shape(self):
+        """What petab1to2 emits when the v1 table has a (possibly empty) prior column."""
+        df = self._petab1to2_shape()
+        df['priorDistribution'] = ['uniform', 'uniform']
+        df['priorParameters'] = ['1e-05;100000.0', '0.0;5.0']
+        return df
+
+    def test_materialized_uniform_default_does_not_block_injection(self):
+        df = self._materialized_default_shape()
+        inject_log_uniform_priors(df, {'klog'}, declared_prior_ids=set())
+        r = df.set_index('parameterId').loc['klog']
+        assert r['priorDistribution'] == 'log-uniform'
+        assert tuple(float(x) for x in r['priorParameters'].split(';')) == (1e-5, 1e5)
+
+    def test_declared_prior_still_wins_over_the_log_scale(self):
+        df = self._materialized_default_shape()
+        df.loc[df.parameterId == 'klog', 'priorDistribution'] = 'log-normal'
+        df.loc[df.parameterId == 'klog', 'priorParameters'] = '0;1'
+        inject_log_uniform_priors(df, {'klog'}, declared_prior_ids={'klog'})
+        r = df.set_index('parameterId').loc['klog']
+        assert r['priorDistribution'] == 'log-normal' and r['priorParameters'] == '0;1'
+
+    def test_linear_param_is_untouched_even_with_a_materialized_default(self):
+        df = self._materialized_default_shape()
+        inject_log_uniform_priors(df, {'klog'}, declared_prior_ids=set())
+        r = df.set_index('parameterId').loc['klin']
+        assert r['priorDistribution'] == 'uniform'   # lin scale -> stays PEtab's own default
+
+    def test_omitting_declared_ids_keeps_the_conservative_legacy_reading(self):
+        # No v1 table to consult -> anything present blocks. Documents the fallback rather
+        # than endorsing it; the production path always passes the set.
+        df = self._materialized_default_shape()
+        inject_log_uniform_priors(df, {'klog'})
+        assert df.set_index('parameterId').loc['klog']['priorDistribution'] == 'uniform'
+
 
 class TestInjectObservableTransformations:
     """The observable-axis twin of the parameterScale re-injection (issue #499)."""
