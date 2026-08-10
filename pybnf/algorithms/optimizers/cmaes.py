@@ -103,9 +103,11 @@ class CMAESConfig(PyBNFConfigModel):
     interpreted relative to the start the fit actually uses. ``cmaes_stop_tol``
     ends the run when the largest principal standard deviation of the search
     distribution shrinks below it; in restart mode (``cmaes_restarts > 0``) it is also
-    the tolerance for the restart battery (#506) -- the relative TolFun (best-objective)
-    stagnation threshold and the absolute TolX coordinate-step threshold. The population
-    size ``lambda`` is the global
+    the TolX coordinate-step threshold of the restart battery (#506), which is the same
+    quantity in the same units. ``cmaes_tolfun`` is the battery's TolFun
+    (best-objective stagnation) tolerance, which is *not*: it is a range in objective
+    units, so it gets its own knob (#550, ADR-0106) and falls back to ``cmaes_stop_tol``
+    when unset. The population size ``lambda`` is the global
     ``population_size`` (consistent with de/pso/sa), and ``max_iterations`` remains
     the global generation budget across all runs. ``cmaes_run_maxgen`` optionally
     adds a smaller per-run generation cap; unset means no user cap.
@@ -124,6 +126,7 @@ class CMAESConfig(PyBNFConfigModel):
 
     cmaes_sigma0: float = 0.3
     cmaes_stop_tol: float = 1e-11
+    cmaes_tolfun: Optional[float] = Field(default=None, ge=0.0)
     cmaes_restarts: int = 0
     cmaes_restart_strategy: str = 'ipop'
     cmaes_ipop_factor: float = 2.0
@@ -151,6 +154,14 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.sigma0 = config.config['cmaes_sigma0']
         self.base_sigma0 = self.sigma0     # un-perturbed sigma0 (BIPOP varies it per restart)
         self.stop_tol = config.config['cmaes_stop_tol']
+        # The restart battery's TolFun tolerance (#550, ADR-0106). It is a range in
+        # OBJECTIVE units, where stop_tol is a step length in sampling space u, so the
+        # two have no common scale and cannot share one well-set value. Unset it falls
+        # back to stop_tol -- the single knob TolFun used before -- so an existing
+        # config keeps the threshold magnitude it had, without the |f| scaling.
+        configured_tolfun = config.config['cmaes_tolfun']
+        self.tolfun = (self.stop_tol if configured_tolfun is None
+                       else float(configured_tolfun))
         self.max_generations = config.config['max_iterations']
 
         # Restart schedule (#498, ADR-0070). cmaes_restarts == 0 (the default) is a
@@ -414,11 +425,17 @@ class CMAESAlgorithm(StartPointOptimizer):
         (#506), each a per-run termination string or None:
 
         * **TolFun** -- the best objective has stagnated: its range over the last
-          ``_tolfun_window`` generations of *this* run is within ``cmaes_stop_tol``
-          (relative, with an absolute floor). This is start-point- and
+          ``_tolfun_window`` generations of *this* run is within ``cmaes_tolfun``
+          (Hansen's absolute tolerance on the range of recent best objective values; it
+          defaults to ``cmaes_stop_tol``). This is start-point- and
           conditioning-independent -- it fires when the run stops improving even though
           the (ill-conditioned) principal step has plateaued above ``cmaes_stop_tol`` --
-          and is the trigger the reproduction problems need.
+          and is the trigger the reproduction problems need. The threshold is a fixed
+          objective-unit range and deliberately does **not** scale with the current
+          ``|f|`` (#550, ADR-0106): on an objective that is unbounded below -- every
+          likelihood fit -- ``|f|`` grows as the fit improves, so a relative threshold
+          rises fastest exactly where firing it costs the most, cutting off the late,
+          large-population restarts that are meant to do the heavy lifting.
         * **TolX** -- every coordinate standard deviation and evolution-path component is
           below ``cmaes_stop_tol``: the whole distribution has collapsed (the classic
           "converged" signal, complementary to the largest-principal-axis test).
@@ -433,9 +450,9 @@ class CMAESAlgorithm(StartPointOptimizer):
         if len(hist) >= window:
             recent = hist[-window:]
             frange = max(recent) - min(recent)
-            if frange <= self.stop_tol * max(1.0, abs(recent[-1])):
+            if frange <= self.tolfun:
                 return ('best objective stagnated (range %.3g over the last %i '
-                        'generations)' % (frange, window))
+                        'generations, tolerance %g)' % (frange, window, self.tolfun))
         coord_std = self.sigma * np.sqrt(np.maximum(np.diag(self.C), 0.0))
         if (np.all(coord_std < self.stop_tol)
                 and np.all(self.sigma * np.abs(self.pc) < self.stop_tol)):

@@ -1505,13 +1505,22 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_t
     * ``cmaes_sigma0 = 0.5``
 
 **cmaes_stop_tol**
-  Stop when the largest principal standard deviation of the search distribution falls below this value.
+  Stop when the largest principal standard deviation of the search distribution falls below this value. This is a step length in the parameter sampling space, and in restart mode (``cmaes_restarts > 0``) it is also the threshold below which every individual coordinate step counts as collapsed. The stagnation threshold on the *objective* is ``cmaes_tolfun``.
 
   Default: 1e-11
 
   Example:
 
     * ``cmaes_stop_tol = 1e-8``
+
+**cmaes_tolfun**
+  Stagnation tolerance on the objective, used only in restart mode (``cmaes_restarts > 0``): a run is declared finished — and yields to the next restart — when the range of its best objective over the last ``10 + ceil(30 × (number of parameters) / population_size)`` generations falls to this value or below. It is an absolute range in the units of your objective function, unlike ``cmaes_stop_tol``, which is a step length in the parameter sampling space; set it to the smallest objective improvement per window that you still consider progress. Unset, it follows ``cmaes_stop_tol``, which is rarely what you want if you rely on stagnation restarts: a value loose enough to detect a stalled run is far looser than a converged search distribution.
+
+  Default: unset (follows ``cmaes_stop_tol``)
+
+  Example:
+
+    * ``cmaes_tolfun = 1e-3``
 
 **cmaes_restarts**
   Maximum number of IPOP / BIPOP restarts for multimodal search. A single CMA-ES run descends into the one basin its start lands in, so on a multimodal objective it reaches only a local minimum. With ``cmaes_restarts > 0``, whenever a run *finishes* by converging (its search distribution shrinks below ``cmaes_stop_tol``, or its step size degenerates) or reaching ``cmaes_run_maxgen`` — as distinct from exhausting the generation budget ``max_iterations`` — CMA-ES reinitializes from a fresh random point in the prior box with a rescaled population and keeps searching, up to this many restarts, keeping the global best across all runs. Requires the box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors), which provides the box restarts resample from. ``0`` (the default) is a single run.

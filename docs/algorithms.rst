@@ -759,6 +759,14 @@ the global ``max_iterations`` budget. It is unset by default, preserving the exi
 unbounded-per-run behavior; BIPOP small runs keep their own automatic, possibly smaller,
 evaluation-balancing cap.
 
+A run also finishes when it stops improving: ``cmaes_tolfun`` is the stagnation
+tolerance, the smallest range of the best objective across the last
+``10 + ceil(30 × (number of parameters) / population_size)`` generations that still
+counts as progress. Because it measures the objective and ``cmaes_stop_tol`` measures a
+step in parameter space, the two have no common scale — set ``cmaes_tolfun`` to the
+objective improvement per window you consider alive, and leave ``cmaes_stop_tol`` at the
+convergence step you actually mean. Unset, ``cmaes_tolfun`` follows ``cmaes_stop_tol``.
+
 
 .. _alg-gradient:
 
