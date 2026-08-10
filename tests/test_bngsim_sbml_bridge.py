@@ -1486,6 +1486,51 @@ def test_amount_species_column_reports_the_declared_amount(tmp_path, _clear_engi
 
 
 @pytest.mark.bngsim_sbml
+def test_amount_species_column_agrees_with_sbml_math_on_the_same_symbol(
+        tmp_path, _clear_engine_cache):
+    """The bridge's column for an amount species equals what SBML math says the symbol is (#553).
+
+    bngsim's ``Result`` carries both readings of the same species: ``species`` is its raw
+    concentration, while ``observables`` is the quantity the symbol denotes -- the amount for a
+    ``hasOnlySubstanceUnits`` species, the concentration otherwise. The second is produced by
+    bngsim's own SBML math and is untouched by anything the bridge does, so it is an oracle
+    for which of the two a PyBNF column should carry.
+
+    This is what justifies the changed expectation in
+    :func:`test_amount_species_initial_assignment_recompute_with_units`. That test asserted the
+    concentration ``initialAmount(2*k_init)/size(2) = k_init``; an ``initialAssignment`` on a
+    ``hasOnlySubstanceUnits`` species sets an *amount*, so the symbol is ``2*k_init`` and the
+    old expectation was the defect written down. Rather than argue from the spec, read it off
+    the model: bngsim reports 6.0 for the symbol where its raw concentration is 3.0.
+    """
+    import bngsim
+
+    xml_path = tmp_path / 'amt_ia_oracle.xml'
+    xml_path.write_text(_AMOUNT_IA_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '3', 'step': '3', 'method': 'ode'})
+
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert model._species_unit_factor['S2'] == 0.5      # 1 / size(=2)
+    out = model.execute(str(tmp_path), 'amt_ia_oracle', 3)['time_course']
+
+    # The oracle, read off bngsim's own Result rather than through the bridge.
+    raw = bngsim.Simulator(bngsim.Model.from_sbml(xml_path)).run([0.0, 3.0])
+    idx = list(raw.species_names).index('S2')
+    symbol_value = float(np.asarray(raw.observables)[0][idx])
+    concentration = float(np.asarray(raw.species)[0][idx])
+
+    # k_init = 3, so the initialAssignment sets S2's AMOUNT to 6; the concentration is 3.
+    assert symbol_value == pytest.approx(6.0, rel=1e-9)
+    assert concentration == pytest.approx(3.0, rel=1e-9)
+    # The bridge's column must carry what the symbol means, not the raw concentration.
+    npt.assert_allclose(
+        np.asarray(out['S2'], dtype=float), symbol_value, rtol=1e-9)
+
+
+@pytest.mark.bngsim_sbml
 def test_variable_volume_compartment_forces_reload(tmp_path, _clear_engine_cache):
     """An amount-based species in a non-constant-volume compartment can't be
     safely unit-converted in place, so the bridge falls back to a full reload --
