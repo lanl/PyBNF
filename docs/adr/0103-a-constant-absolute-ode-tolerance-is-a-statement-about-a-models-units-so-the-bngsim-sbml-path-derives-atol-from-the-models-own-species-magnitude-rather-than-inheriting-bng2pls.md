@@ -1,6 +1,11 @@
 # A constant absolute ODE tolerance is a statement about a model's units, so the bngsim SBML path derives `atol` from the model's own species magnitude rather than inheriting BNG2.pl's (issue #546)
 
-**Status: Accepted and implemented (2026-08-06).** `Giordano_Nature2020`'s gradient was wrong on
+**Status: Accepted and implemented (2026-08-06); superseded by ADR-0105 (2026-08-10).** Everything
+below still holds, including the median and the reason the minimum was withdrawn — ADR-0105 keeps
+this scalar as the *floor* of a per-species vector and as the steady-state convergence cutoff, and
+changes only what "Deliberately out" below says needed a backend change first (lanl/bngsim#196).
+
+`Giordano_Nature2020`'s gradient was wrong on
 41 of its 50 fitted parameters, by up to 26%, with no refusal and no warning. The cause is not the
 model's piecewise-in-time structure, which the backend already handles; it is that bngsim's
 absolute solver tolerance — BNG2.pl's `1e-8` — is larger than that model's entire state.

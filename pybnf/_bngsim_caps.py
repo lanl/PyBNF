@@ -198,6 +198,26 @@ BNGSIM_HAS_EVENT_SENS = bool(
 )
 
 
+# A **per-species** absolute tolerance: ``Simulator.run(atol=...)`` accepts a vector and
+# routes it to ``CVodeSVtolerances`` (lanl/bngsim#196), so a model spanning ten decades no
+# longer has to pick one number for both ends. ADR-0103 derived a scalar because that was
+# the whole of what the backend offered; ADR-0105 derives the vector.
+#
+# The probe is a name, not a version. The build that first carried #196 still declares
+# 0.12.2 -- the same string as the released wheel 25 commits behind it -- so a version
+# floor here would report *present* on an install that does not have it, and that is the
+# expensive direction: the vector would be handed to a ``run`` that takes only a scalar.
+# ``AUTO`` and ``normalize_atol_vector`` are exported from the package namespace by
+# lanl/bngsim#212 and both are listed in ``__all__``; probing the two names PyBNF
+# actually calls keeps the flag honest if either ever moves. Absent, the SBML backend
+# keeps ADR-0103's scalar bit-for-bit, so an older bngsim runs every fit it runs today.
+BNGSIM_HAS_PER_SPECIES_ATOL = bool(
+    BNGSIM_AVAILABLE
+    and hasattr(bngsim, 'AUTO')
+    and hasattr(bngsim, 'normalize_atol_vector')
+)
+
+
 def event_sens_min_version():
     """The bngsim version whose forward sensitivities survive a discrete event (#536)."""
     return '%d.%d.%d' % _BNGSIM_EVENT_SENS_VERSION

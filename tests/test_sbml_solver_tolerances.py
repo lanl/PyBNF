@@ -52,6 +52,34 @@ old default. Its closed-form solution gives an exact sensitivity oracle, which i
 stronger than finite differences: the tests below assert the tensor against the true
 derivative, and assert that pinning ``sbml_atol`` back to the old default reproduces the
 original error.
+
+**The median charged the whole model for one end of it, and #549 gives that back**
+(ADR-0105). A scalar ``atol`` says one thing about a state that may span decades, so it
+over-tightens the large species while still not resolving the small one that pulled it
+down: ``Brannmark_JBC2010`` holds ``IR``/``IRS``/``X`` at ~10 to 3.3e-10, which is
+3.3e-11 *relative*, three decades tighter than the ``rtol`` that governs them.
+lanl/bngsim#196 routes a per-species vector to ``CVodeSVtolerances``, so each species can
+be given back what it never needed.
+
+**Only that, and it took a measurement to find out.** The reading #549 proposes -- resolve
+each species to ``rtol`` of its own magnitude, full stop -- puts ``IRp`` at 1.76e-17, and
+over 100 points of Brannmark's own fit box, with the fit's sensitivity request applied,
+that killed **91 of 100** simulations against the scalar's 39; the ``1e-16`` floor the
+issue asks about changed nothing (91 either way). It is ADR-0103's withdrawn *minimum*
+rule reappearing one species at a time. Clamped below by the model's own scalar -- so the
+vector can only ever *release* a species, never tighten one -- the same 100 points give
+**33**, in 428 s against 576 s. ``test_the_vector_gives_back_the_over_tightening_and
+_nothing_else`` and ``test_no_species_is_ever_integrated_more_tightly_than_it_is_today``
+are that decision; ``test_the_vector_does_not_resolve_what_adr_0103_declined_to`` is the
+boundary it leaves in place, which needs a trajectory-following tolerance
+(lanl/bngsim#213) rather than one read off initial values.
+
+The vector is derived once from the model's *nominal* state, never from the fit point --
+``test_the_vector_is_a_constant_of_the_model_not_of_the_fit_point`` is that requirement,
+and bngsim's ``AUTO`` token is what it rules out. ``_WIDE_SPREAD_SBML`` is this half's
+fixture (the mechanism, in steps: 288 against 377); the scalar tests above did not move,
+and now also cover the fallback path -- an older bngsim, an explicit ``sbml_atol``, a
+model with no over-tightening to undo, which is 19 of the 23 subset-I slugs.
 """
 
 from pathlib import Path
@@ -60,9 +88,10 @@ import numpy as np
 import pytest
 
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
-from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS
+from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS, BNGSIM_HAS_PER_SPECIES_ATOL
 from pybnf.bngsim_sbml_model import (
     _BNGSIM_DEFAULT_ATOL, _BNGSIM_DEFAULT_RTOL, _DERIVED_ATOL_FLOOR, _derive_atol,
+    _derive_atol_vector,
 )
 from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter, PSet, TimeCourse
@@ -75,6 +104,11 @@ pytestmark = pytest.mark.bngsim_sbml
 _needs_output_sens = pytest.mark.skipif(
     not BNGSIM_HAS_OUTPUT_SENS,
     reason='needs a bngsim build with the output_sensitivities feature')
+
+_needs_per_species_atol = pytest.mark.skipif(
+    not BNGSIM_HAS_PER_SPECIES_ATOL,
+    reason='needs a bngsim build whose Simulator.run takes a per-species atol '
+           '(lanl/bngsim#196, exported by lanl/bngsim#212)')
 
 
 # --- fixture: a three-stage piecewise-in-time decay, seeded below the old atol -- #
@@ -157,8 +191,66 @@ _ONE_TINY_TRANSIENT_SBML = _PIECEWISE_SBML.replace(
     'hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>\n'
     '      <species id="X" compartment="c" initialConcentration="1.0"')
 
+# --- fixture: the Brannmark_JBC2010 shape, where the median over-tightens ------- #
+# The same decay, run long, with ``X`` raised to 10 and two inert species pinning the
+# median down: {10, 1e-2, 1e-9} has median 1e-2, so ADR-0103's scalar is 1e-10 for
+# every state including the one at 10. That is the over-tightening ADR-0105 undoes --
+# ``X`` is entitled to the 1e-8 backend default and is being held two decades under it.
+#
+# The cost only becomes visible once ``X`` has decayed FAR below its nominal value,
+# which is why this fixture runs to t = 80 (``X`` ends at ~7e-17): an ``atol`` beneath
+# ``rtol*|y_i|`` is inert until then, and what it demands afterwards is that a species
+# which has decayed into nothing be resolved as if it had not.
+_WIDE_SPREAD_SBML = _PIECEWISE_SBML.replace(
+    '<species id="X" compartment="c" initialConcentration="1e-8"',
+    '<species id="Mid" compartment="c" initialConcentration="1e-2" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>\n'
+    '      <species id="Tiny" compartment="c" initialConcentration="1e-9" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>\n'
+    '      <species id="X" compartment="c" initialConcentration="10"')
+
+# A peer carrying two scales and nothing inert: ``X`` at 1e-8 plus an order-one ``Big``
+# decaying slowly and independently, median 0.5, so ADR-0103's scalar is 5e-9. Used for
+# the structural tests -- ordering, the steady-state cutoff, the off-switches -- and for
+# the boundary this change does NOT cross (see
+# ``test_the_vector_does_not_resolve_what_adr_0103_declined_to``).
+_TWO_SCALE_SBML = _PIECEWISE_SBML.replace(
+    '<species id="X" compartment="c" initialConcentration="1e-8" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>',
+    '<species id="X" compartment="c" initialConcentration="1e-8" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>\n'
+    '      <species id="Big" compartment="c" initialConcentration="1.0" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>'
+).replace(
+    '<parameter id="t2" value="5" constant="true"/>',
+    '<parameter id="t2" value="5" constant="true"/>\n'
+    '      <parameter id="kb" value="0.001" constant="true"/>'
+).replace(
+    '    </listOfReactions>',
+    """      <reaction id="degBig" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="Big" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>kb</ci><ci>Big</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>""")
+
+# The same two scales with a third species seeded at exactly zero, for the rule that
+# decides what a species with no magnitude of its own is measured against.
+_ZERO_SEEDED_SBML = _TWO_SCALE_SBML.replace(
+    '<species id="Big" compartment="c" initialConcentration="1.0" ',
+    '<species id="Empty" compartment="c" initialConcentration="0" '
+    'hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>\n'
+    '      <species id="Big" compartment="c" initialConcentration="1.0" ')
+
 K0, K1, K2, T1, T2, X0 = 0.7, 0.2, 0.5, 2.0, 5.0, 1e-8
+KB, BIG0 = 1e-3, 1.0
 T_END, N_STEPS = 8.0, 32
+
+# ADR-0103's scalar for _TWO_SCALE_SBML (median {1e-8, 1} times rtol, clamped) and for
+# _WIDE_SPREAD_SBML (median {10, 1e-2, 1e-9}). Each is what PyBNF ran on a model of that
+# shape until #549, and each is what the steady-state cutoff stays at under ADR-0105.
+_TWO_SCALE_SCALAR = 5e-9
+_WIDE_SPREAD_SCALAR = 1e-10
+_WIDE_T_END = 80.0
 
 
 def _stage_widths(t):
@@ -186,20 +278,37 @@ def _exact_sensitivities(t, x0=X0):
     return np.stack([-w * x for w in _stage_widths(t)], axis=1)
 
 
+def _exact_big(t):
+    """``Big(t)``: the slow independent decay in the two-scale fixture."""
+    return BIG0 * np.exp(-KB * np.asarray(t))
+
+
 def _write(tmp_path, text, name):
     xml = Path(tmp_path) / name
     xml.write_text(text)
     return str(xml)
 
 
-def _piecewise_model(tmp_path, *, text=_PIECEWISE_SBML, name='pw.xml', rtol=None, atol=None):
-    """A :class:`BngsimSbmlModelNoTimeout` over the piecewise fixture."""
+def _piecewise_model(tmp_path, *, text=_PIECEWISE_SBML, name='pw.xml', rtol=None, atol=None,
+                     extra=()):
+    """A :class:`BngsimSbmlModelNoTimeout` over the piecewise fixture.
+
+    ``extra`` adds ``(name, value)`` free parameters to the fit point, which is how the
+    tests that move a species' *initial condition* are written -- a species id is a
+    fittable name here, exactly as it is on a PEtab problem that estimates one.
+    """
     xml = _write(tmp_path, text, name)
-    ps = PSet([FreeParameter(p, 'uniform_var', 1e-4, 10., value=v)
-               for p, v in (('k0', K0), ('k1', K1), ('k2', K2))])
+    ps = PSet([FreeParameter(p, 'uniform_var', 1e-9, 10., value=v)
+               for p, v in (('k0', K0), ('k1', K1), ('k2', K2)) + tuple(extra)])
     action = TimeCourse({'time': str(T_END), 'step': str(T_END / N_STEPS)})
     return bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml, xml, pset=ps, actions=(action,), rtol=rtol, atol=atol)
+
+
+def _tolerance_kwargs(model):
+    """``(engine model, the tolerance kwargs one deterministic run takes)``."""
+    engine = model._engine_model_for_action()
+    return engine, model._run_tolerance_kwargs(model._make_simulator(engine, 'ode'), engine)
 
 
 # --- the boundaries are already handed to CVODE -------------------------------- #
@@ -356,6 +465,300 @@ def test_a_stochastic_run_sets_no_tolerances(tmp_path, monkeypatch):
     assert 'atol' not in captured
 
 
+# --- the per-species vector (ADR-0105) ------------------------------------------- #
+@pytest.mark.parametrize('nominal, scalar_atol, expected', [
+    # The Brannmark shape. The species at 10 is released from the model-wide 3.3e-10 to
+    # the backend default; the two at or under the model's own scale keep it, including
+    # the 1e-2 one whose own rtol*y (1e-10) is TIGHTER than the scalar.
+    ([10.0, 1e-2, 1.8e-9], 3.3e-10,
+     [_BNGSIM_DEFAULT_ATOL, 3.3e-10, 3.3e-10]),
+    # Only ever tightens relative to the backend default, per species.
+    ([1.0, 1e6], _BNGSIM_DEFAULT_ATOL, [_BNGSIM_DEFAULT_ATOL, _BNGSIM_DEFAULT_ATOL]),
+    # A species with no magnitude of its own is measured against the model's.
+    ([0.0, 1e-3], 1e-11, [1e-11, 1e-11]),
+])
+def test_the_vector_gives_back_the_over_tightening_and_nothing_else(
+        nominal, scalar_atol, expected):
+    """``atol_i = clamp(rtol*y_i, scalar_atol, default)`` -- both clamps load-bearing.
+
+    Read literally, "resolve each species to ``rtol`` of its own magnitude" would put
+    ``Brannmark_JBC2010``'s ``IRp`` (nominal 1.76e-9) at 1.76e-17. That rule was
+    implemented and measured over 100 points of that model's own fit box, with the fit's
+    sensitivity request applied: it killed **91 of 100** simulations against the scalar's
+    39, which is ADR-0103's withdrawn *minimum* rule reappearing one species at a time.
+    The ``1e-16`` floor #549 asks about rescued nothing -- 91 either way -- because the
+    damage is done well above it.
+
+    So the lower clamp is the model's own scalar, and what the vector does is give back
+    ADR-0103's over-tightening to the species that never needed it. That measured 33 of
+    100, against the scalar's 39, in 428 s rather than 576 s.
+
+    The last case is the corpus's other decision: ``derive_atol``'s own default
+    substitutes the smallest strictly positive entry for a species seeded at zero, which
+    on ``Giordano_Nature2020`` -- this change's control -- would tighten its four
+    zero-seeded species 22x for no measured reason. ``rtol * 0`` clamping up to the
+    model's scalar leaves them exactly where ADR-0103 puts them, and needs no rule of
+    its own.
+    """
+    got = _derive_atol_vector(nominal, scalar_atol, _BNGSIM_DEFAULT_RTOL,
+                              _BNGSIM_DEFAULT_ATOL)
+
+    np.testing.assert_allclose(got, expected, rtol=1e-12)
+
+
+@pytest.mark.parametrize('nominal', [
+    [10.0, 1e-2, 1.8e-9], [1.0, 1e6], [0.0, 1e-3], [1e-8, 1.0], [1e-30, 1e30, 0.0],
+])
+def test_no_species_is_ever_integrated_more_tightly_than_it_is_today(nominal):
+    """The safety property the whole change rests on, asserted as a property.
+
+    Every entry lies in ``[scalar_atol, default_atol]``: never tighter than what PyBNF
+    already integrates this model at, never looser than the backend default. The first
+    half is what makes it impossible for a model that runs today to start failing --
+    which is not a hypothetical, since the unclamped version of this derivation more than
+    doubled ``Brannmark_JBC2010``'s dead simulations. The second half is ADR-0103's
+    only-ever-tighten promise, now per species.
+    """
+    scale = float(np.median([v for v in nominal if v > 0.0]))
+    scalar_atol = _derive_atol(scale, _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL)
+    got = _derive_atol_vector(nominal, scalar_atol, _BNGSIM_DEFAULT_RTOL,
+                              _BNGSIM_DEFAULT_ATOL)
+
+    assert np.all(got >= scalar_atol)
+    assert np.all(got <= _BNGSIM_DEFAULT_ATOL)
+
+
+@_needs_per_species_atol
+def test_only_ever_tighten_is_pybnfs_to_apply_not_the_backends():
+    """bngsim's own ``derive_atol`` has no upper clamp; PyBNF's vector does.
+
+    Worth pinning against the library rather than asserting PyBNF's arithmetic twice: a
+    species at order ten comes back from ``bngsim.derive_atol`` *looser* than the backend
+    default, and shipping that would loosen trajectories ADR-0103 promised never to
+    loosen. ``Brannmark_JBC2010``'s ``X`` is the measured case, at 1.0e-07.
+    """
+    import bngsim
+
+    theirs = bngsim.derive_atol([10.0], _BNGSIM_DEFAULT_RTOL)
+    ours = _derive_atol_vector([10.0], 1e-10, _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL)
+
+    assert theirs[0] > _BNGSIM_DEFAULT_ATOL
+    assert ours[0] == _BNGSIM_DEFAULT_ATOL
+
+
+@_needs_per_species_atol
+def test_releasing_the_over_tightened_species_costs_cvode_fewer_steps(tmp_path):
+    """The mechanism, measured on a fixture: the same model, integrated in fewer steps.
+
+    This is what #549 is actually worth, reduced to something a test can hold. ``X`` sits
+    at 10 while the model's median sits at 1e-2, so ADR-0103 hands it 1e-10 -- 1e-11
+    *relative*, three decades tighter than the ``rtol`` that governs it. That is inert
+    until ``X`` decays far below its nominal value, and then it demands that a species
+    which has decayed into nothing be resolved as if it had not.
+
+    Under the vector ``X`` gets the 1e-8 backend default it was always entitled to, and
+    the other two species keep the scalar exactly. Measured here: 288 steps against 377,
+    which is the fixture-scale version of ``Brannmark_JBC2010``'s 33 dead box points
+    against 39. The threshold is set well inside that gap rather than at a bare
+    inequality, so a second platform's CVODE cannot flip it on a step or two.
+    """
+    model = _piecewise_model(tmp_path, text=_WIDE_SPREAD_SBML, name='wide.xml')
+    engine, kwargs = _tolerance_kwargs(model)
+    assert dict(zip(engine.species_names, kwargs['atol'])) == pytest.approx(
+        {'X': _BNGSIM_DEFAULT_ATOL, 'Mid': _WIDE_SPREAD_SCALAR,
+         'Tiny': _WIDE_SPREAD_SCALAR})
+
+    def steps(atol):
+        fresh = model._engine_model_for_action()
+        sim = model._make_simulator(fresh, 'ode')
+        result = sim.run(t_span=(0.0, _WIDE_T_END), n_points=81,
+                         rtol=_BNGSIM_DEFAULT_RTOL, atol=atol)
+        return int(result.solver_stats['n_steps'])
+
+    # A fresh engine model per run: a second run() on the same Simulator continues from
+    # where the first one left off (ADR-0104), which would make these two incomparable.
+    assert steps(kwargs['atol']) < 0.9 * steps(_WIDE_SPREAD_SCALAR)
+
+
+@_needs_per_species_atol
+def test_a_cross_species_spread_reaches_the_run_call_as_a_vector(tmp_path):
+    """Two scales in one model resolve separately, ordered to the engine's species.
+
+    The ordering is asserted **by name** rather than by position, because a vector
+    assigned to the wrong species is exactly as silent as the bug #546 opened on: every
+    entry is a plausible tolerance, so nothing downstream can tell.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two.xml')
+    engine, kwargs = _tolerance_kwargs(model)
+
+    by_name = dict(zip(engine.species_names, kwargs['atol']))
+    assert by_name == pytest.approx(
+        {'X': _TWO_SCALE_SCALAR, 'Big': _BNGSIM_DEFAULT_ATOL})
+    assert kwargs['rtol'] == _BNGSIM_DEFAULT_RTOL
+
+
+@_needs_per_species_atol
+def test_the_steady_state_cutoff_is_stated_rather_than_inherited(tmp_path):
+    """A vector ``atol`` travels with an explicit ``steady_state_tol`` (ADR-0103's scalar).
+
+    bngsim falls its steady-state cutoff back to the *scalar* atol when unset, "also when
+    a per-species atol is in force (issue #196): the criterion is a single norm over every
+    species and has no per-species reading to take" -- and the scalar it falls back to is
+    the Simulator's own 1e-8, not anything derived from the vector. Left alone that
+    silently reverts ADR-0103's steady-state fix: on a model whose states are ~1e-8,
+    ``||dx/dt|| < 1e-8`` holds at t = 0, so every ``time = inf`` measurement (ADR-0086)
+    and every pre-equilibration phase (ADR-0052/0104) returns the initial state and calls
+    it equilibrium.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_ss.xml')
+    _, kwargs = _tolerance_kwargs(model)
+
+    # The median of [1e-8, 1.0] is 0.5, so ADR-0103's scalar clamps to 5e-9 -- which is
+    # what the relaxation test is measured in, and is NOT the 1e-8 bngsim would fall back
+    # to on its own.
+    assert kwargs['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+    assert model._effective_tolerances(object())[1] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+@_needs_per_species_atol
+def test_the_vector_is_a_constant_of_the_model_not_of_the_fit_point(tmp_path):
+    """A fitted initial condition does not move the tolerance.
+
+    The trap #549 names: bngsim's ``AUTO`` token derives from the state the next ``run()``
+    would start from, which on a fit is the fit point, so ``atol`` would become a function
+    of the search position. That puts a step in the objective everywhere the derivation
+    crosses a rounding boundary -- invisible in the usual way, since the objective still
+    looks correct and only the search behaves oddly -- and it breaks the requirement that
+    a gradient fit's line-search evaluations be integrated to the same accuracy as the
+    sensitivities they are compared against. So the vector is read off the *document*.
+
+    The fitted point really does move here, which is what makes the assertion mean
+    something: the engine model integrates ``X`` from 1e-3 while its tolerance stays the
+    one the nominal 1e-8 asked for.
+    """
+    nominal = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_nom.xml')
+    moved = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_fit.xml',
+                             extra=[('X', 1e-3)])
+    nominal_engine, nominal_kwargs = _tolerance_kwargs(nominal)
+    moved_engine, moved_kwargs = _tolerance_kwargs(moved)
+
+    assert float(nominal_engine.get_concentration('X')) == pytest.approx(X0)
+    assert float(moved_engine.get_concentration('X')) == pytest.approx(1e-3)
+    assert moved_kwargs == nominal_kwargs
+
+
+@_needs_per_species_atol
+def test_a_zero_seeded_species_takes_the_models_scale(tmp_path):
+    """A species with nothing to measure lands exactly where ADR-0103 leaves it today.
+
+    bngsim's ``derive_atol`` substitutes the smallest strictly positive entry instead --
+    here 1e-8, giving 1e-16. On ``Giordano_Nature2020``, the slug this change uses as its
+    control, that rule would tighten its four zero-seeded species 22x for no measured
+    reason. The model's own scalar leaves them untouched.
+    """
+    model = _piecewise_model(tmp_path, text=_ZERO_SEEDED_SBML, name='pw_zero.xml')
+    engine, kwargs = _tolerance_kwargs(model)
+
+    by_name = dict(zip(engine.species_names, kwargs['atol']))
+    assert by_name['Empty'] == pytest.approx(_TWO_SCALE_SCALAR)
+    assert by_name['X'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+@_needs_per_species_atol
+def test_a_model_of_one_scale_keeps_the_scalar_call(tmp_path):
+    """A vector saying nothing a scalar does not is not sent (19 of the 23 subset-I slugs).
+
+    That is what "ADR-0103 had nothing to give back here" looks like: a model the scalar
+    derivation left at the backend default has no over-tightening to undo, so every entry
+    of its vector is that default. Handing CVODE a constant vector instead of the constant
+    it already has buys nothing and costs the ~1 ulp ``cvEwtSetSS``/``cvEwtSetSV``
+    difference lanl/bngsim#196 documents, so they keep the call they make today byte for
+    byte -- ``steady_state_tol`` included, since bngsim's own fallback to the run's scalar
+    atol is already correct there. Measured: 100 points of ``Brannmark_JBC2010``'s fit box
+    fail identically under a uniform vector and under the scalar, 39 and 39.
+    """
+    model = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_v.xml')
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': _BNGSIM_DEFAULT_ATOL}
+
+
+@_needs_per_species_atol
+def test_an_explicit_sbml_atol_pins_the_scalar_path(tmp_path):
+    """``sbml_atol`` is the documented off-switch, and switches the vector off entirely.
+
+    Stating it pins the pre-#196 ``CVodeSStolerances`` path, ulp included, on a model
+    that would otherwise take a vector.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_off.xml',
+                             atol=1e-12)
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': 1e-12}
+
+
+def test_an_older_bngsim_keeps_adr_0103s_scalar(tmp_path, monkeypatch):
+    """Without the capability the backend runs every fit it runs today, unchanged.
+
+    ``BNGSIM_HAS_PER_SPECIES_ATOL`` is a *name* probe rather than a version floor because
+    the build that first carried lanl/bngsim#196 declares the same version string as the
+    wheel 25 commits behind it, so a floor would report present on an install without it.
+    """
+    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_HAS_PER_SPECIES_ATOL', False)
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_old.xml')
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL,
+                      'atol': pytest.approx(_TWO_SCALE_SCALAR)}
+
+
+@_needs_per_species_atol
+def test_a_species_the_document_does_not_name_falls_back_and_says_so(tmp_path, caplog):
+    """An unorderable vector is refused, out loud, rather than mis-assigned.
+
+    bngsim renames a species whose SBML id collides with an Antimony reserved word, which
+    is how ``Smith_BMCSystBiol2013`` reaches this path: its ``NULL``/``null`` load as
+    ``_ant_NULL``/``_ant_null``. A vector ordered past a rename would hand one species'
+    tolerance to another and nothing downstream would say so, so the scalar -- correct
+    here, just less discriminating -- is used instead.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_ren.xml')
+
+    class _RenamedEngine:
+        species_names = ('X', '_ant_Big')
+
+    with caplog.at_level('WARNING'):
+        kwargs = model._run_tolerance_kwargs(object(), _RenamedEngine())
+
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL,
+                      'atol': pytest.approx(_TWO_SCALE_SCALAR)}
+    assert any('_ant_Big' in r.message for r in caplog.records)
+
+
+@_needs_per_species_atol
+def test_the_vector_reaches_the_bngsim_run_call(tmp_path, monkeypatch):
+    """The resolved vector, and its steady-state cutoff, are what ``run`` is called with."""
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_run.xml')
+    engine = model._engine_model_for_action()
+    captured = {}
+
+    class _CapturingSim:
+        _rtol = _BNGSIM_DEFAULT_RTOL
+        _atol = _BNGSIM_DEFAULT_ATOL
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError('stop here')
+
+    monkeypatch.setattr(model, '_make_simulator', lambda engine_model, method: _CapturingSim())
+    with pytest.raises(RuntimeError, match='stop here'):
+        model._run_simulation(engine, 1.0, 2, method='ode')
+
+    assert dict(zip(engine.species_names, captured['atol'])) == pytest.approx(
+        {'X': _TWO_SCALE_SCALAR, 'Big': _BNGSIM_DEFAULT_ATOL})
+    assert captured['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
 # --- the oracle ----------------------------------------------------------------- #
 def test_piecewise_in_time_trajectory_matches_the_closed_form(tmp_path):
     """The scalar path resolves the sub-default trajectory it could not before.
@@ -407,6 +810,67 @@ def test_piecewise_in_time_sensitivities_match_the_analytic_oracle(tmp_path):
     for j, name in enumerate(('k0', 'k1', 'k2')):
         err = np.max(np.abs(got[:, j] - oracle[:, j])) / np.max(np.abs(oracle[:, j]))
         assert err < 1e-4, f'{name} column off by {err:.2e}'
+
+
+@_needs_per_species_atol
+def test_the_released_species_still_integrates_to_its_closed_form(tmp_path):
+    """Giving a species back the backend default does not cost it its answer.
+
+    The other half of the step-count test: the release has to be free where it matters,
+    not merely cheap. ``X`` is the species handed from 1e-10 back to 1e-8, and over the
+    stretch of its trajectory that is well clear of that tolerance it still matches the
+    closed form -- measured at 2.0e-05 against the scalar run's 4.0e-07, which is exactly
+    what ``atol/|y|`` predicts at ``|y|`` ~ 1e-3 and is a tolerance question rather than a
+    correctness one.
+
+    The comparison is restricted to where the exact solution is above 1e-3 on purpose.
+    Below that ``X`` is approaching the noise floor ``atol`` declares for it, and asking
+    it to be relatively accurate there is asking the absolute tolerance not to be an
+    absolute tolerance.
+    """
+    model = _piecewise_model(tmp_path, text=_WIDE_SPREAD_SBML, name='wide_traj.xml')
+    engine = model._engine_model_for_action()
+    sim = model._make_simulator(engine, 'ode')
+    result = sim.run(t_span=(0.0, _WIDE_T_END), n_points=81,
+                     **model._run_tolerance_kwargs(sim, engine))
+
+    t = np.asarray(result.time)
+    got = np.asarray(result.species[:, list(engine.species_names).index('X')])
+    exact = _exact_x(t, 10.0)
+    clear = exact > 1e-3
+    np.testing.assert_allclose(got[clear], exact[clear], rtol=1e-3)
+
+
+@_needs_per_species_atol
+def test_the_vector_does_not_resolve_what_adr_0103_declined_to(tmp_path):
+    """The boundary of this change, asserted rather than left to be discovered.
+
+    It is tempting to read "one tolerance per species" as "every species is finally
+    resolved against its own magnitude". It is not, and the difference is the whole of
+    what the measurement decided: the unclamped rule would put ``X`` here at 1e-16 and
+    ``Brannmark_JBC2010``'s ``IRp`` at 1.76e-17, and over 100 points of Brannmark's fit
+    box that killed 91 simulations against the scalar's 39.
+
+    So a species below the model's own scale keeps the compromise ADR-0103 struck for it,
+    and ``X`` -- 1e-8 in a model whose scale is 0.5 -- is still integrated at 5e-9 and
+    still buried under it. Reaching that case needs a tolerance that follows the
+    *trajectory* rather than one read off initial values (lanl/bngsim#213), which is a
+    different construct and a different issue.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_edge.xml')
+    engine, kwargs = _tolerance_kwargs(model)
+    assert dict(zip(engine.species_names, kwargs['atol']))['X'] == pytest.approx(
+        _TWO_SCALE_SCALAR)
+
+    data = model.execute(str(tmp_path), 'pw_two_edge', 0)['time_course']
+    t = np.asarray(data['time'])
+    x_err = np.max(np.abs(np.asarray(data['X']) - _exact_x(t)) / _exact_x(t))
+    big_err = np.max(np.abs(np.asarray(data['Big']) - _exact_big(t)) / _exact_big(t))
+
+    # 1.2e-01 measured. The threshold sits a decade under it rather than just beneath, so
+    # a second platform's CVODE cannot flip the test.
+    assert x_err > 1e-2, f'expected X to still be buried, got {x_err:.2e}'
+    assert big_err < 1e-5, f'expected Big to be unaffected, got {big_err:.2e}'
 
 
 @_needs_output_sens

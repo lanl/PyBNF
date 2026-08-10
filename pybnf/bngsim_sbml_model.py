@@ -92,6 +92,56 @@ def _derive_atol(scale, rtol, default_atol, *, model_name=None, warned=None):
     return min(max(wanted, _DERIVED_ATOL_FLOOR), default_atol)
 
 
+def _derive_atol_vector(nominal, scalar_atol, rtol, default_atol):
+    """One absolute tolerance per species, from the model's nominal state (ADR-0105).
+
+    ``atol_i = clamp(rtol * y_i, scalar_atol, default_atol)``, with ``y_i`` the species'
+    own nominal magnitude and ``scalar_atol`` the model-wide number :func:`_derive_atol`
+    gives it. Both clamps carry an argument and neither is decoration:
+
+    * **The upper clamp is ADR-0103's, per species.** Nothing is ever loosened past the
+      backend default, so a species of order one keeps ``1e-8`` and a model whose species
+      are all of order one integrates exactly as before. bngsim's own ``derive_atol`` has
+      no upper clamp -- it returns ``1.0e-07`` for ``Brannmark_JBC2010``'s ``X``, looser
+      than the default -- so only-ever-tighten is PyBNF's to apply, and is applied here.
+
+    * **The lower clamp is the model's own scalar, and it is there because the
+      alternative was measured and lost.** Read literally, "resolve each species to
+      ``rtol`` of its own magnitude" says ``Brannmark``'s ``IRp`` (nominal ``1.76e-9``)
+      should be integrated at ``1.76e-17``. Over 100 points sampled from that model's fit
+      box, with the fit's own sensitivity request applied, that rule **killed 91
+      simulations out of 100 against the scalar's 39** -- ADR-0103's withdrawn
+      *minimum* rule reappearing one species at a time. Nothing rescued it: the
+      ``1e-16`` floor #549 asks about made no difference at all (91 either way), because
+      the damage is done well above it, by the species at ``1.1e-13`` and ``1.6e-12``.
+
+      A tolerance below ``rtol*|y_i|`` only ever binds once ``|y_i|`` has fallen far
+      below its *nominal* value, and what it then demands is that a species which has
+      decayed into nothing be resolved as if it had not. Initial values cannot tell that
+      case apart from a species that genuinely lives down there; that needs the
+      trajectory (lanl/bngsim#213).
+
+    So what this vector does is **give back ADR-0103's over-tightening to the species
+    that never needed it**, and nothing else. Every entry lands in
+    ``[scalar_atol, default_atol]``, so no species is integrated more tightly than PyBNF
+    integrates it today and no model that runs today can start failing. On the same 100
+    box points that is 39 dead simulations to **33**, in 428 s rather than 576 s.
+    ``Brannmark``'s ``IR``/``IRS``/``X`` sit at ~10 and were being held to ``3.3e-10`` --
+    ``3.3e-11`` *relative*, three decades tighter than the ``rtol`` that governs them --
+    to buy a resolution for ``IRp`` that ADR-0103 had already decided not to chase.
+
+    A species declared at zero falls out of the same expression rather than needing a
+    rule: ``rtol * 0`` clamps up to ``scalar_atol``, i.e. a species with no magnitude of
+    its own is measured against the model's. That is also the no-regression choice --
+    bngsim's ``derive_atol`` substitutes the smallest strictly positive entry instead,
+    which on ``Giordano_Nature2020`` would tighten its four zero-seeded species 22x.
+
+    ``nominal`` is ordered; the caller owns the ordering contract against
+    ``Model.species_names``.
+    """
+    return np.clip(rtol * np.asarray(nominal, dtype=float), scalar_atol, default_atol)
+
+
 # Process-level cache of loaded bngsim engine models, keyed by a hash of the
 # model's base SBML text. The engine model -- including the analytically
 # derived (SymPy) Jacobian -- depends only on the model *structure*, not on
@@ -152,6 +202,7 @@ def _template_jacobian_is_warm(template):
 
 from ._bngsim_caps import (
     BNGSIM_HAS_OUTPUT_SENS,
+    BNGSIM_HAS_PER_SPECIES_ATOL,
     BNGSIM_HAS_SBML,
     BNGSIM_SBML_ERROR,
     bngsim,
@@ -296,13 +347,19 @@ class BngsimSbmlModelNoTimeout(Model):
     _config_rtol = None
     _config_atol = None
 
-    # The model's typical (median strictly-positive) nominal species value, set from the
-    # parsed document by _extract_sbml_structure; ``None`` = no scale to derive an atol
-    # from, which keeps the backend default. Memo for the derived pair, and the names the
-    # floor warning has already fired for. All class attributes so an instance built via
-    # object.__new__ answers "cannot say" rather than raising.
+    # The model's per-species nominal values in bngsim's units, and their typical (median
+    # strictly-positive) magnitude, both set from the parsed document by
+    # _extract_sbml_structure. ``None`` = nothing to derive an atol from, which keeps the
+    # backend default. ``_tolerance_cache`` memoizes the derived *scalar* pair (ADR-0103,
+    # still the steady-state cutoff under ADR-0105) and ``_atol_vector_cache`` the derived
+    # per-species vector together with the species ordering it was built for.
+    # ``_atol_floor_warned`` holds the names the floor warning has already fired for. All
+    # class attributes so an instance built via object.__new__ -- the ``_make_simulator``
+    # test fakes, unpickling -- answers "cannot say" rather than raising.
+    _nominal_species_values = None
     _nominal_state_scale = None
     _tolerance_cache = None
+    _atol_vector_cache = None
     _atol_floor_warned = None
 
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
@@ -351,6 +408,7 @@ class BngsimSbmlModelNoTimeout(Model):
         self._config_rtol = None if rtol is None else float(rtol)
         self._config_atol = None if atol is None else float(atol)
         self._tolerance_cache = None
+        self._atol_vector_cache = None
         self._atol_floor_warned = set()
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
         self.mutants = [MutationSet()]
@@ -381,20 +439,52 @@ class BngsimSbmlModelNoTimeout(Model):
          self._unsafe_volume) = self._compute_species_unit_factors(doc.getModel())
         self._ic_seed_map = self._compute_ic_seed_map(doc.getModel())
         self._rhs_symbols = self._compute_rhs_symbols(doc.getModel())
-        self._nominal_state_scale = self._compute_nominal_state_scale(doc.getModel())
+        self._nominal_species_values = self._compute_nominal_species_values(doc.getModel())
+        self._nominal_state_scale = self._compute_nominal_state_scale(
+            self._nominal_species_values)
 
-    def _compute_nominal_state_scale(self, sbml_model):
+    def _compute_nominal_species_values(self, sbml_model):
+        """Every species' nominal value, by id, in bngsim's units (ADR-0105).
+
+        The state both tolerance derivations are read off: the **median** of the
+        strictly-positive entries is ADR-0103's scalar scale
+        (:meth:`_compute_nominal_state_scale`), and the entries themselves are
+        ADR-0105's per-species vector (:func:`_derive_atol_vector`). Read from the
+        parsed document rather than from a loaded engine model, so it costs nothing on
+        top of the parse ``_extract_sbml_structure`` already pays -- and so it is a
+        property of the model *text*, not of the fit point or of whether this evaluation
+        took the cached-clone or the structural-reload path. ``_species_unit_factor``
+        puts an amount-declared species into the concentration units bngsim integrates
+        in, exactly as the in-place value paths do.
+
+        A non-positive or non-finite declaration is stored as ``0.0``, meaning "no
+        magnitude of its own": the median skips it, and the vector's lower clamp puts it
+        at the model's scalar without needing a rule of its own. ``None`` -- meaning
+        "nothing to derive from", which leaves the tolerance at the backend default --
+        when a non-constant compartment volume makes the unit factors themselves
+        parameter-dependent, since then the values here are not the ones that would be
+        integrated.
+        """
+        if self._unsafe_volume:
+            return None
+        values = {}
+        for i in range(sbml_model.getNumSpecies()):
+            sp = sbml_model.getSpecies(i)
+            factor = self._species_unit_factor.get(sp.getId(), 1.0)
+            value = self._species_initial_value(sp) * factor
+            values[sp.getId()] = (
+                float(value) if np.isfinite(value) and value > 0.0 else 0.0)
+        return values
+
+    def _compute_nominal_state_scale(self, nominal_values):
         """The magnitude this model's state lives at, in bngsim's units (#546).
 
-        The scale the CVODE *absolute* tolerance is measured against
-        (:meth:`_effective_tolerances`), answered as the **median** strictly-positive
-        nominal species value. Read from the parsed document rather than from a loaded
-        engine model, so it costs nothing on top of the parse
-        ``_extract_sbml_structure`` already pays -- and so it is a property of the model
-        text, not of the fit point or of whether this evaluation took the cached-clone or
-        the structural-reload path. ``_species_unit_factor`` puts an amount-declared
-        species into the concentration units bngsim integrates in, exactly as the
-        in-place value paths do.
+        The scale the *scalar* CVODE absolute tolerance is measured against, answered as
+        the **median** strictly-positive nominal species value. Under ADR-0103 that scalar
+        was the integration tolerance; under ADR-0105 it is the steady-state convergence
+        cutoff whenever the per-species vector is in force (see
+        :meth:`_run_tolerance_kwargs`), and still the integration tolerance on every path
+        the vector does not reach.
 
         Median rather than minimum, which is the version of this that had to be
         withdrawn. A biochemical model routinely carries one transient intermediate
@@ -419,15 +509,9 @@ class BngsimSbmlModelNoTimeout(Model):
         limit on what this can detect, not an error: an undetected small scale leaves the
         tolerance exactly where it is today.
         """
-        if self._unsafe_volume:
+        if nominal_values is None:
             return None
-        values = []
-        for i in range(sbml_model.getNumSpecies()):
-            sp = sbml_model.getSpecies(i)
-            factor = self._species_unit_factor.get(sp.getId(), 1.0)
-            value = self._species_initial_value(sp) * factor
-            if np.isfinite(value) and value > 0.0:
-                values.append(value)
+        values = [v for v in nominal_values.values() if v > 0.0]
         return float(np.median(values)) if values else None
 
     @staticmethod
@@ -1584,13 +1668,20 @@ class BngsimSbmlModelNoTimeout(Model):
             raise ModelError(str(exc)) from exc
 
     def _effective_tolerances(self, sim):
-        """The ``(rtol, atol)`` every deterministic run of this model uses (#546).
+        """The ``(rtol, scalar atol)`` pair this model is measured in (#546).
 
         ``sbml_rtol`` / ``sbml_atol`` win outright when stated. Otherwise rtol is the
         backend's own default (read off the constructed ``Simulator`` so this tracks
         bngsim rather than a copy of its constant) and atol is derived from the model's
         typical species magnitude by :func:`_derive_atol` -- which can only tighten, so a
         model of order-one scale keeps the default pair exactly.
+
+        Under ADR-0105 this scalar is no longer always the *integration* tolerance: when
+        the per-species vector is in force it becomes the steady-state convergence cutoff
+        instead (:meth:`_run_tolerance_kwargs`), which is the one place a single number
+        about the model's magnitude is still the right shape. It remains the integration
+        tolerance everywhere the vector does not reach -- an older bngsim, an explicit
+        ``sbml_atol``, a model with no nominal state to read.
 
         The scale is the model's **nominal** one (``_compute_nominal_state_scale``, read
         off the document at load), not the state this run is about to integrate, so the
@@ -1625,6 +1716,121 @@ class BngsimSbmlModelNoTimeout(Model):
         self._tolerance_cache = (float(rtol), float(atol))
         return self._tolerance_cache
 
+    def _per_species_atol(self, sim, engine_model):
+        """The per-species ``atol`` vector for this model, or ``None`` (ADR-0105).
+
+        ``None`` means "there is nothing here a scalar does not already say", and every
+        route to it leaves ADR-0103's behaviour untouched:
+
+        * **the backend cannot take one** -- ``BNGSIM_HAS_PER_SPECIES_ATOL`` is a name
+          probe rather than a version floor, because the build that first carried
+          lanl/bngsim#196 declares the same version string as the wheel 25 commits behind
+          it;
+        * **``sbml_atol`` is stated** -- an explicit scalar is the documented off-switch
+          for this whole change, and it pins the pre-#196 ``CVodeSStolerances`` path
+          bit-for-bit, ulp included;
+        * **there is no nominal state to read** (a non-constant compartment volume makes
+          the unit factors parameter-dependent), so there is nothing to derive from;
+        * **the engine model's species do not line up** with the document's, so the
+          vector could not be ordered without guessing -- a mis-ordered vector assigns
+          one species' tolerance to another and nothing downstream would say so;
+        * **the vector is elementwise the scalar** -- true of 19 of the 23 subset-I
+          slugs, which is what "ADR-0103 had nothing to give back here" looks like: a
+          model the scalar derivation left at the backend default has no over-tightening
+          to undo. Handing CVODE a constant vector instead of the constant it already has
+          buys nothing and costs the ~1 ulp ``cvEwtSetSS``/``cvEwtSetSV`` difference #196
+          documents, so those models keep the scalar call they make today, byte for byte.
+          Measured: the same 100 box points under a uniform vector and under the scalar
+          fail identically, 39 and 39.
+
+        Ordered to the *engine* model's ``species_names`` rather than the document's:
+        those are the names bngsim indexes its state by, and are what the unit-factor
+        table is already keyed on elsewhere in this class. ``normalize_atol_vector``
+        (lanl/bngsim#212) takes the length/position contract here, once at setup, rather
+        than at the first ``run()`` -- which on a fit is a long way from where the vector
+        was built. Memoized against the ordering it was built for, so a later action with
+        a different species list rebuilds rather than silently reusing.
+        """
+        if not BNGSIM_HAS_PER_SPECIES_ATOL or getattr(self, '_config_atol', None) is not None:
+            return None
+        names = tuple(getattr(engine_model, 'species_names', None) or ())
+        cached = getattr(self, '_atol_vector_cache', None)
+        if cached is not None and cached[0] == names:
+            return cached[1]
+        vector = self._derive_per_species_atol(sim, names)
+        self._atol_vector_cache = (names, vector)
+        return vector
+
+    def _derive_per_species_atol(self, sim, names):
+        """Build (and validate, and log) the vector :meth:`_per_species_atol` memoizes.
+
+        The "says nothing a scalar does not" test is taken *before* the ordering one, so
+        the models that only ever reach the ordering fallback -- ones whose species are
+        all at or above one, where the vector is elementwise the default -- fall back
+        silently rather than warning about a difference that would not have existed.
+        """
+        nominal = getattr(self, '_nominal_species_values', None)
+        model_name = getattr(self, 'name', None)
+        if not names or not nominal:
+            return None
+        rtol, scalar_atol = self._effective_tolerances(sim)
+        default_atol = float(getattr(sim, '_atol', _BNGSIM_DEFAULT_ATOL))
+        by_species = dict(zip(nominal, _derive_atol_vector(
+            list(nominal.values()), scalar_atol, rtol, default_atol)))
+        if all(atol == scalar_atol for atol in by_species.values()):
+            return None
+        missing = set(names) - set(by_species)
+        if missing:
+            # Not a failure worth raising over -- the scalar is a correct tolerance for
+            # this model, just a less discriminating one -- but not silent either, because
+            # the alternative reading ("the vector is on") would be wrong. bngsim renames a
+            # species whose SBML id collides with an Antimony reserved word, which is how
+            # Smith_BMCSystBiol2013 gets here: its ``NULL``/``null`` load as
+            # ``_ant_NULL``/``_ant_null``.
+            logger.warning(
+                'bngsim SBML model %s: the engine model integrates %d species the SBML '
+                'document does not declare under those names (%s), so the per-species '
+                'absolute tolerance cannot be ordered against the state without guessing; '
+                'integrating at the scalar tolerance instead.',
+                model_name, len(missing), ', '.join(sorted(missing)[:4]))
+            return None
+        vector = [by_species[name] for name in names]
+        moved = sum(1 for atol in vector if atol != scalar_atol)
+        logger.debug(
+            'bngsim SBML model %s: per-species ODE absolute tolerance over %d species, '
+            '%d of them away from the %g a scalar derivation gives the whole model; '
+            'range [%g, %g], steady-state cutoff %g.',
+            model_name, len(vector), moved, scalar_atol, min(vector), max(vector),
+            scalar_atol)
+        return bngsim.normalize_atol_vector(
+            vector, len(names), names, where='the derived per-species sbml_atol')
+
+    def _run_tolerance_kwargs(self, sim, engine_model):
+        """The tolerance kwargs one deterministic ``Simulator.run`` takes (ADR-0105).
+
+        A vector ``atol`` travels with an explicit ``steady_state_tol``, and that pairing
+        is the whole of why this is not two independent decisions. bngsim falls its
+        steady-state cutoff back to the *scalar* atol when unset, "also when a per-species
+        atol is in force (issue #196): the criterion is a single norm over every species
+        and has no per-species reading to take" -- and the scalar it falls back to is the
+        Simulator's own ``1e-8``, not anything derived from the vector. Left alone, that
+        silently reverts ADR-0103's steady-state fix: on a model whose states are ~1e-8,
+        ``||dx/dt|| < 1e-8`` holds *at t = 0*, so every ``time = inf`` measurement
+        (ADR-0086) and every pre-equilibration phase (ADR-0052/0104) would return the
+        initial state and call it equilibrium -- looking, as it did before, like a
+        modelling problem rather than a tolerance one.
+
+        So ADR-0103's median-derived scalar does not retire. It stops being the
+        integration tolerance and becomes the convergence criterion, which keeps one
+        statement about the model's magnitude governing both and reproduces today's
+        steady-state behaviour exactly.
+        """
+        rtol, scalar_atol = self._effective_tolerances(sim)
+        vector = self._per_species_atol(sim, engine_model)
+        if vector is None:
+            return {'rtol': rtol, 'atol': scalar_atol}
+        return {'rtol': rtol, 'atol': vector, 'steady_state_tol': scalar_atol}
+
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
                         seed=None, timeout=None, sample_times=None, steady_state=False,
                         suffix=None, sim=None, carry_sensitivities=False):
@@ -1644,9 +1850,9 @@ class BngsimSbmlModelNoTimeout(Model):
         if carry_sensitivities:
             run_kwargs['carry_sensitivities'] = True
         if method != 'ssa':
-            # CVODE tolerances (#546). A stochastic run has none to set, so the ssa path
-            # is byte-identical to before.
-            run_kwargs['rtol'], run_kwargs['atol'] = self._effective_tolerances(sim)
+            # CVODE tolerances (#546, ADR-0105). A stochastic run has none to set, so the
+            # ssa path is byte-identical to before.
+            run_kwargs.update(self._run_tolerance_kwargs(sim, engine_model))
         if steady_state:
             # A steady-state measurement (ADR-0086, #521): relax to equilibrium
             # (early-stop on ||dx/dt||) with ``end_time`` only the max-time bound, rather
