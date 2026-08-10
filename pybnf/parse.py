@@ -71,6 +71,10 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'rhat_threshold', 'snooker_prob', 'kalman_burnin_frac',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
+                 # CMA-ES restart battery (job_type = cmaes, #550/ADR-0106): the TolFun
+                 # best-objective stagnation tolerance, a range in objective units
+                 # (unset it follows cmaes_stop_tol).
+                 'cmaes_tolfun',
                  # CMA-ES restart (job_type = cmaes, #498/ADR-0070): the IPOP / BIPOP
                  # geometric population-growth factor per restart (2.0 = doubling).
                  'cmaes_ipop_factor',

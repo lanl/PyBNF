@@ -48,6 +48,32 @@ All notable changes to PyBNF are documented below. This project adheres to
   wheel that predates it.
 
 ### Fixed
+- **The CMA-ES restart battery's TolFun trigger no longer gets more eager as the fit gets better
+  (#550, ADR-0106, amends ADR-0082).** ADR-0082 made TolFun's stagnation threshold *relative* to the
+  current objective, `frange <= cmaes_stop_tol * max(1, |f|)`. PyBNF minimizes a negative
+  log-likelihood, which is unbounded below, so `|f|` **grows** as the fit improves and that threshold
+  rises as CMA-ES approaches the optimum — while Hansen's window `10 + ceil(30N/lambda)` shrinks as
+  IPOP grows the population (30 generations at `lambda = 32`, 11 at `lambda ≈ 1900`). The two move in
+  opposite directions and compound, so a late restart must improve by *more* within *fewer*
+  generations than an early one, and IPOP's large-population restarts — the ones grown to do the
+  heavy lifting — were the ones cut off mid-descent. On `Elowitz_Nature2000` (Grein subset-I, k=21)
+  restart 3 was descending `OG` 53.0 → 26.4 → 5.105 and was killed at the bottom of that descent
+  because `0.001/generation × 11 generations = 0.0105` fell just under `1e-4 × 121.06 = 0.0121`;
+  across two fits **all 14 restarts** fired on TolFun and not one run ever converged. TolFun now
+  compares an **absolute** range in objective units, as Hansen's `tolfun` does (pycma's relative
+  variant `tolfunrel` normalizes by the run's *initial* median, a scale that does not drift with fit
+  quality either; neither reference form uses the current `|f|`). On that fit the threshold becomes
+  the configured `1e-4` and the descent clears it by a factor of 100.
+  **TolFun also gains its own key, `cmaes_tolfun`.** `cmaes_stop_tol` is a step length in the
+  parameter sampling space and TolFun is a range in objective units; no single value is right for
+  both, and reaching a TolFun that fired at all on the fit above meant declaring the search
+  distribution converged at `1e-4` in `u`, seven orders looser than the default. Unset, `cmaes_tolfun`
+  follows `cmaes_stop_tol`, so an existing config keeps the threshold magnitude it had — the only
+  change is dropping the `|f|` factor, which can only make TolFun fire less, and a fit whose
+  objective satisfies `|f| <= 1` is unchanged outright. The restart reason now also reports the
+  tolerance it used (`range 0.0105 over the last 11 generations, tolerance 0.0001`), so a restart's
+  arithmetic is checkable from the log. `cmaes_restarts = 0` (the default) is untouched: the battery
+  is still restart-gated (ADR-0070).
 - **A PEtab v1 problem whose parameter table merely *has* a prior column no longer loses its log
   estimation scale (#548).** `petab1to2_preserve_scale` re-injects the `parameterScale` that
   `petab.v2.petab1to2` drops, skipping any row that already carries a prior so a scale petab1to2

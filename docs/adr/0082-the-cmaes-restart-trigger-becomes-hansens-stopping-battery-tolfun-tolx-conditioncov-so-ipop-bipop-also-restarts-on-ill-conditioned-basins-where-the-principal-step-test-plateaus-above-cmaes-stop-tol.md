@@ -48,7 +48,11 @@ it is still a valid convergence signal) — and, **only when `cmaes_restarts > 0
 
 * **TolFun** — the best objective has stagnated: the range (max − min) of the best-per-generation value
   over the last `10 + ceil(30 N / lambda)` generations of *this run* is within `cmaes_stop_tol`
-  (relative, with an absolute floor of 1). This is the workhorse: it is **start-point- and
+  (relative, with an absolute floor of 1). **Amended by ADR-0106 / issue #550:** the relative form is
+  wrong on an objective that is unbounded below — `|f|` grows as the fit improves, so the threshold
+  rises as the run approaches the optimum and cuts off descending large-population restarts. The
+  threshold is now an absolute range in objective units, carried by its own key `cmaes_tolfun`
+  (defaulting to `cmaes_stop_tol`), as in the reference implementation. This is the workhorse: it is **start-point- and
   conditioning-independent**, firing precisely when the run stops improving even though the elongated
   principal step has plateaued above `cmaes_stop_tol`. It is what fires on the reproduction problems.
 * **TolX** — every coordinate standard deviation `sigma * sqrt(diag C)` and evolution-path component
@@ -80,7 +84,10 @@ as before.
 
 The tolerances are all "how small is negligible," so the battery reuses the existing `cmaes_stop_tol`:
 as the relative threshold for TolFun and the absolute (u-space) threshold for TolX — the same units and
-the same `1e-11` default as the principal-step test it complements. The two *structural* constants are
+the same `1e-11` default as the principal-step test it complements. (**Amended by ADR-0106 / issue
+#550:** they are not the same units. TolX and the principal-step test measure a length in the sampling
+space `u`; TolFun measures a range in objective units, and only the relative form disguised that. TolFun
+gains its own key, `cmaes_tolfun`, defaulting to `cmaes_stop_tol` so existing configs are unaffected.) The two *structural* constants are
 not user tuning knobs and are hardcoded to Hansen's standard values: the TolFun window
 `10 + ceil(30 N / lambda)`, and the ConditionCov threshold `1e14` (a float64-conditioning limit, the
 class constant `_COND_COV_MAX`). This keeps the config surface unchanged — the golden effective-config

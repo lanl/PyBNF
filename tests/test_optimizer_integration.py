@@ -515,6 +515,88 @@ def test_cmaes_restart_battery_conditioncov_fires_on_ill_conditioning(tmp_path):
     assert reason is not None and 'ill-conditioned' in reason
 
 
+# --------------------------------------------------------------------------- #
+# TolFun is an absolute objective range with its own knob (#550, ADR-0106)
+# --------------------------------------------------------------------------- #
+# #506 shipped TolFun as a RELATIVE test, frange <= cmaes_stop_tol * max(1, |f|). On a
+# likelihood objective -- unbounded below, so |f| GROWS as the fit improves -- that makes
+# the absolute threshold rise as the run gets better, and IPOP's late large-population
+# restarts (whose Hansen window 10 + ceil(30N/lambda) is simultaneously SHRINKING) are cut
+# off mid-descent: the trigger is most eager exactly where firing it costs the most. The
+# threshold is now an absolute range in objective units, carried by its own key -- TolFun
+# measures an objective range while cmaes_stop_tol measures a step length in sampling
+# space u, so no single value can be right for both.
+
+
+def _tolfun_state(alg, history):
+    """Put ``alg`` in an ill-conditioned polishing state where TolFun is the only battery
+    trigger that can fire -- the principal step and every coordinate step sit far above
+    the tolerance and the condition number stays below _COND_COV_MAX -- with
+    ``history`` as this run's best-per-generation record."""
+    alg.sigma = 1e-3
+    alg.d = np.array([1e4, 1e-2])          # principal = 10; cond = 1e12 < 1e14
+    alg.C = np.diag(alg.d ** 2)            # coord std = [10, 1e-5], not all below tol
+    alg.pc = np.zeros(alg.n)
+    alg.run_generation = 200
+    alg.run_maxgen = np.inf
+    alg._run_best_history = list(history)
+
+
+def test_cmaes_tolfun_does_not_scale_with_the_objective_magnitude(tmp_path):
+    """The #550 defect, at the decision point, in the reported arithmetic. A run in
+    sustained descent -- the best objective falling steadily by 0.0105 across the window
+    -- is NOT stagnant, but under the relative form its own quality raised the bar it was
+    measured against: at |f| = 121.06 with cmaes_stop_tol = 1e-4 the threshold was
+    1e-4 * 121.06 = 0.0121, above the 0.0105 the run had just achieved, so TolFun fired
+    and killed the descent. Against an absolute 1e-4 the same history is 100x clear of
+    the tolerance and the run keeps going."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-4)
+    # A negative log-likelihood descending past -121: unbounded below, so |f| grows as
+    # the fit improves -- the framing every problem in the benchmark collection uses.
+    hist = np.linspace(-121.0495, -121.06, alg._tolfun_window())
+    _tolfun_state(alg, hist)
+
+    frange = float(max(hist) - min(hist))
+    assert frange == pytest.approx(0.0105, abs=1e-6)
+    # The relative form would have fired on exactly this descent...
+    assert frange <= alg.stop_tol * max(1.0, abs(float(hist[-1])))
+    # ...and the absolute one does not: the threshold no longer follows |f| upward.
+    assert alg.tolfun == alg.stop_tol
+    assert alg._battery_stop_reason() is None
+    assert alg._run_stop_reason() is None
+
+
+def test_cmaes_tolfun_still_fires_on_a_genuinely_flat_history(tmp_path):
+    """The other half of #550: this is not "make TolFun less eager". At the same |f| and
+    the same tolerance, a run that has actually stopped improving -- a range three orders
+    below the tolerance rather than two above it -- still trips the trigger, and the
+    reason string now reports the threshold it was measured against, so the arithmetic of
+    a restart is checkable from the log."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-4)
+    _tolfun_state(alg, np.linspace(-121.0599993, -121.06, alg._tolfun_window()))
+
+    reason = alg._battery_stop_reason()
+    assert reason is not None and 'stagnated' in reason and 'tolerance' in reason
+
+
+def test_cmaes_tolfun_is_a_knob_of_its_own(tmp_path):
+    """cmaes_stop_tol is a step length in sampling space u; TolFun's is a range in
+    objective units. Sharing one key forced a fit that wanted a meaningful stagnation
+    threshold to loosen its convergence test by the same seven orders of magnitude (or
+    the reverse). cmaes_tolfun separates them: a stagnation threshold of 1e-3 in
+    objective units alongside the default 1e-11 convergence step."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11,
+                       cmaes_tolfun=1e-3)
+    assert alg.stop_tol == 1e-11 and alg.tolfun == 1e-3
+    # A range of 1e-4: stagnant on the objective, while the search distribution is
+    # nowhere near the 1e-11 convergence step the same key used to have to serve.
+    _tolfun_state(alg, np.linspace(-121.0599, -121.06, alg._tolfun_window()))
+
+    reason = alg._battery_stop_reason()
+    assert reason is not None and 'stagnated' in reason
+    assert alg.sigma * float(np.max(alg.d)) > alg.stop_tol   # not converged, by far
+
+
 # A shallow, strongly ANISOTROPIC local mode at the box center: steep along p1
 # (variance 0.01), and along p2 an enormous variance (1e5) so that within the box the
 # objective is essentially FLAT along p2 -- the run cannot converge that direction, its

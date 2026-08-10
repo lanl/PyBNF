@@ -5542,6 +5542,10 @@
     1e-11
    ],
    [
+    "cmaes_tolfun",
+    null
+   ],
+   [
     "constraint_scale",
     1.0
    ],
@@ -5866,6 +5870,10 @@
    [
     "cmaes_stop_tol",
     1e-11
+   ],
+   [
+    "cmaes_tolfun",
+    null
    ],
    [
     "constraint_scale",
@@ -6893,6 +6901,10 @@
    [
     "cmaes_stop_tol",
     1e-11
+   ],
+   [
+    "cmaes_tolfun",
+    null
    ],
    [
     "constraint_scale",
