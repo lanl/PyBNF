@@ -1285,6 +1285,26 @@ class BngsimSbmlModelNoTimeout(Model):
     def _data_with_headers(arr, headers):
         return Data.from_columns(arr, headers)
 
+    def _species_value_factors(self, species_names):
+        """Row of divisors taking a bngsim *concentration* to the PyBNF species value (#553).
+
+        The reciprocal of :attr:`_species_unit_factor`, broadcast over a trajectory's species
+        axis: the compartment size for an amount-declared (``hasOnlySubstanceUnits``) species
+        and ``1.0`` for every other one. bngsim reports every species column as a
+        concentration, but an amount-declared species' symbol *means its amount* -- in an SBML
+        formula and equally in the PEtab observable formulas PyBNF evaluates against these
+        columns -- so the column has to come back out of concentration units before anything
+        reads it.
+
+        This mirrors the single-value getter, which already returns
+        ``get_concentration(name) / self._species_unit_factor[name]``. Every factor is 1.0
+        for a concentration-valued species or a unit compartment, which is why this is a
+        no-op on every model that was already correct.
+        """
+        return np.array(
+            [self._species_unit_factor.get(name, 1.0) for name in species_names],
+            dtype=float)[np.newaxis, :]
+
     def _result_to_data(self, result, *, stochastic=False):
         """Convert a bngsim Result to a PyBNF Data object.
 
@@ -1299,7 +1319,7 @@ class BngsimSbmlModelNoTimeout(Model):
         species = np.asarray(result.species, dtype=float)
         arr = np.zeros((result.n_times, 1 + species.shape[1]))
         arr[:, 0] = result.time
-        arr[:, 1:] = species
+        arr[:, 1:] = species / self._species_value_factors(result.species_names)
         headers = ['time'] + list(result.species_names)
         data = self._data_with_headers(arr, headers)
         if self._sensitivity_request is not None and getattr(
@@ -1309,17 +1329,22 @@ class BngsimSbmlModelNoTimeout(Model):
         return data
 
     def _initial_state_derivative(self, engine_model, base_state, mut, name):
-        """Numerically differentiate initialized concentrations with respect to ``name``.
+        """Numerically differentiate the initialized state with respect to ``name``.
 
         SBML ``initialAssignment`` expressions are evaluated while an engine model is
         prepared, before bngsim's ODE sensitivity system starts. Re-prepare the model at
         two nearby values so a t=0-only experiment retains those assignment derivatives
         (for example ``Rec2(0) = ini_R1 * ini_R2fold`` in Schwen_PONE2014).
+
+        Both sides are converted out of concentration units before differencing (#553), so
+        the result is ``d(PyBNF species value)/d(name)`` and matches the units ``base_state``
+        arrives in -- which matters for the one-sided branches, where the two are mixed.
         """
         value = self._get_engine_value_if_present(engine_model, name)
         if value is None:
             return np.zeros_like(base_state)
         step = np.sqrt(np.finfo(float).eps) * max(1.0, abs(value))
+        value_factors = self._species_value_factors(engine_model.species_names)[0]
 
         states = {}
         for direction in (-1.0, 1.0):
@@ -1329,7 +1354,7 @@ class BngsimSbmlModelNoTimeout(Model):
                 state = np.asarray([
                     perturbed.get_concentration(species)
                     for species in engine_model.species_names
-                ], dtype=float)
+                ], dtype=float) / value_factors
                 if np.all(np.isfinite(state)):
                     states[direction] = state
             except Exception:
@@ -1356,9 +1381,11 @@ class BngsimSbmlModelNoTimeout(Model):
         differentiated through that expression by re-preparing the initialized model.
         """
         species_names = list(engine_model.species_names)
+        # Same concentration -> PyBNF-value conversion the integrated path applies (#553).
+        value_factors = self._species_value_factors(species_names)[0]
         state = np.asarray([
             engine_model.get_concentration(name) for name in species_names
-        ], dtype=float)
+        ], dtype=float) / value_factors
         data = self._data_with_headers(
             np.concatenate(([0.0], state))[np.newaxis, :], ['time'] + species_names)
 
@@ -1390,7 +1417,10 @@ class BngsimSbmlModelNoTimeout(Model):
                     d_ic[0, :, axis] = self._initial_state_derivative(
                         engine_model, state, mut, name)
                 elif name in species_index:
-                    d_ic[0, species_index[name], axis] = self._species_unit_factor[name]
+                    # d(PyBNF species value)/d(PyBNF IC value) for the species itself. The
+                    # concentration carries the unit factor and the reported value divides it
+                    # straight back out (#553), so the identity column is 1.0 in both units.
+                    d_ic[0, species_index[name], axis] = 1.0
         data.output_sensitivities = OutputSensitivities(
             selectors=selectors, param_names=list(req.params), ic_species=list(req.ic),
             d_param=d_param, d_ic=d_ic)
@@ -1411,10 +1441,15 @@ class BngsimSbmlModelNoTimeout(Model):
         selectors = ['species:%s' % name for name in species_names]
         param_names = list(result.sensitivity_params)
         ic_species = list(result.sensitivity_ic_species)
+        # ∂(concentration)/∂θ -> ∂(PyBNF species value)/∂θ, down the species axis, so the
+        # tensor stays in the units _result_to_data hands the value columns over in (#553).
+        value_factors = self._species_value_factors(species_names)[0][
+            np.newaxis, :, np.newaxis]
         d_param = None
         if param_names:
             d_param = np.asarray(
                 result.output_sensitivities(selectors, axis='parameter'), dtype=float)
+            d_param = d_param / value_factors
         d_ic = None
         if ic_species:
             d_ic = np.asarray(
@@ -1423,6 +1458,7 @@ class BngsimSbmlModelNoTimeout(Model):
             ic_factors = np.array(
                 [self._species_unit_factor[s] for s in ic_species], dtype=float)
             d_ic = d_ic * ic_factors[np.newaxis, np.newaxis, :]
+            d_ic = d_ic / value_factors
         return OutputSensitivities(
             selectors=selectors, param_names=param_names, ic_species=ic_species,
             d_param=d_param, d_ic=d_ic,

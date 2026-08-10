@@ -1451,6 +1451,41 @@ def test_amount_species_nonunit_compartment_matches_reload(tmp_path, _clear_engi
 
 
 @pytest.mark.bngsim_sbml
+def test_amount_species_column_reports_the_declared_amount(tmp_path, _clear_engine_cache):
+    """A ``hasOnlySubstanceUnits`` species' column is its AMOUNT, not amount/size (#553).
+
+    bngsim reports every species column as a concentration, but such a species' symbol
+    denotes its amount -- in SBML math and equally in the PEtab observable formulas PyBNF
+    evaluates against these columns -- so the bridge has to divide the unit factor back out
+    on the way in.
+
+    This pins the absolute value, which is the gap that let the defect through:
+    :func:`test_amount_species_nonunit_compartment_matches_reload` asserts the in-place and
+    reload paths agree, and they did -- both in concentration units, both off by ``1/size``.
+    Agreement between two paths cannot see a units error common to both.
+    """
+    xml_path = tmp_path / 'amt_units.xml'
+    xml_path.write_text(_AMOUNT_CONST_VOL_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '3', 'step': '3', 'method': 'ode'})
+
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert model._unsafe_volume is False
+    assert model._species_unit_factor['S2'] == 0.5      # 1 / size(=2)
+
+    out = model.execute(str(tmp_path), 'amt_units', 3)['time_course']
+
+    # S2 is declared initialAmount="4" in a size-2 compartment and is a boundary
+    # species, so it holds that amount for the whole run. Its concentration is 2.0;
+    # reading 2.0 here is the #553 regression.
+    npt.assert_allclose(np.asarray(out['S2'], dtype=float), 4.0, rtol=1e-9)
+    # Control: a concentration-declared species is untouched by the conversion.
+    assert abs(float(out['S0'][0]) - 10.0) < 1e-9
+
+
+@pytest.mark.bngsim_sbml
 def test_variable_volume_compartment_forces_reload(tmp_path, _clear_engine_cache):
     """An amount-based species in a non-constant-volume compartment can't be
     safely unit-converted in place, so the bridge falls back to a full reload --
@@ -1504,8 +1539,11 @@ def test_amount_species_initial_assignment_recompute_with_units(tmp_path, _clear
         assert fast_model._needs_structural_reload() is False
         assert fast_model._changes_touch_initials() is True
         fast = fast_model.execute(str(tmp_path), f'amt_ia_{int(k)}', 3)['time_course']
-        # S2(0) concentration = initialAmount(2*k_init) / size(2) = k_init.
-        assert abs(float(fast['S2'][0]) - k) < 1e-9
+        # S2 is hasOnlySubstanceUnits, so its column is the AMOUNT its
+        # initialAssignment sets: 2*k_init. (Before #553 this read the concentration
+        # amount/size = k_init; bngsim still stores the concentration internally, but
+        # the bridge divides the unit factor back out on the way into the Data.)
+        assert abs(float(fast['S2'][0]) - 2.0 * k) < 1e-9
 
         ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
             xml_path, xml_path, pset=ps, actions=(action,),
