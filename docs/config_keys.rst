@@ -1222,22 +1222,51 @@ Algorithm Options
   ``begin actions`` block instead — that is BioNetGen's own surface for them.
 
   Leave both unset unless you have a reason not to. ``sbml_rtol`` then takes the
-  backend default (``1e-8``), and ``sbml_atol`` is **derived from the model**: it is
-  set to ``sbml_rtol`` times the *median* strictly-positive species initial value in
-  the SBML file, clamped to at most the backend default (``1e-8``) and at least
-  ``1e-16``. Because the clamp only ever tightens, a model whose species are of order
-  one keeps the backend default exactly. The median, rather than the smallest species,
-  keeps one negligible transient intermediate from driving the tolerance for the whole
-  model.
+  backend default (``1e-8``), and the absolute tolerance is **derived from the model**
+  in two steps.
 
-  The derivation exists because a constant absolute tolerance is a statement about the
+  First a single number for the model: ``sbml_rtol`` times the *median* strictly-positive
+  species initial value in the SBML file, clamped to at most the backend default
+  (``1e-8``) and at least ``1e-16``. Because that clamp only ever tightens, a model whose
+  species are of order one keeps the backend default exactly. The median, rather than the
+  smallest species, keeps one negligible transient intermediate from driving the tolerance
+  for the whole model.
+
+  That number exists because a constant absolute tolerance is a statement about the
   model's units: CVODE weights each state by ``rtol*|y| + atol``, so ``atol = 1e-8``
   declares values below ``1e-8`` to be noise. That is true of a model in molecule
   counts and false of, say, a population-*fraction* epidemic model whose species sit
   around ``1e-7``, whose whole early trajectory then carries no significant digits —
-  and whose forward sensitivities, which a gradient fit reads, carry fewer still. Set
-  ``sbml_atol`` explicitly if your model lives below the ``1e-16`` floor, or if you
-  want a looser tolerance than the derivation picks.
+  and whose forward sensitivities, which a gradient fit reads, carry fewer still.
+
+  Then, **per species**, each one is released back toward the backend default as far as
+  its own initial value allows: species *i* is integrated at ``sbml_rtol`` times its own
+  initial value, but never below the model-wide number above and never above ``1e-8``.
+  A species whose initial value is at or below the model's median keeps the model-wide
+  number, as does one declared at zero.
+
+  The point of the second step is that one number over-charges the large species. A model
+  with principal species at ``10`` and one transient intermediate at ``1e-9`` gets a
+  tolerance that holds the former far tighter than ``sbml_rtol`` alone would, which costs
+  steps and sometimes the simulation, and buys nothing. Note the direction: this step only
+  ever *loosens*, so no species is integrated more tightly than the model-wide number, and
+  a model that simulates today cannot start failing. Resolving the *small* species better
+  than the model-wide number is deliberately not attempted — it was measured, and it
+  roughly doubled the failed simulations on the model it was meant to help.
+
+  The derivation is a property of the **model file**, not of the point being fitted: it
+  is read off the species initial values in the SBML document once, at load, and held
+  for the whole fit. A tolerance that moved with a fitted initial condition would put a
+  step in the objective wherever the derivation crossed a rounding boundary.
+
+  Set ``sbml_atol`` explicitly if your model lives below the ``1e-16`` floor, or if you
+  want a different tolerance from the one the derivation picks. It is a **single number**
+  and it replaces the whole derivation: stating it integrates every species at that value,
+  which is also the way to pin the pre-per-species behaviour exactly.
+
+  A bngsim build without per-species tolerance support stops after the first step and
+  integrates every species at the model-wide number, so an older bngsim runs every fit it
+  ran before.
 
   Default: unset (see above)
 

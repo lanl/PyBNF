@@ -5,6 +5,48 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- **An SBML model on `sbml_backend = bngsim` no longer charges every species for the tolerance its
+  smallest one needs (#549, ADR-0105, supersedes ADR-0103).** ADR-0103 derived a single `atol` from
+  the median species value because bngsim's `Simulator.run` took only a scalar, and it wrote down
+  what that cost: `Brannmark_JBC2010` reads `3.3e-10`, which holds its `IR`/`IRS`/`X` species at ~10
+  to `3.3e-11` *relative* — three decades tighter than the `rtol` that governs them — to buy a
+  resolution for a `1.76e-9` transient that the same ADR had already decided not to chase. Now that
+  lanl/bngsim#196 routes a vector to `CVodeSVtolerances`, that over-tightening is given back per
+  species: `atol_i = clamp(sbml_rtol * y_i, the model's scalar, 1e-8)`. Measured on 100 points
+  sampled from Brannmark's own fit box with the fit's sensitivity request applied, 39 dead
+  simulations become **33**, in 428 s rather than 576 s.
+  **The lower clamp is the change, and it is there because the obvious rule loses.** "Resolve each
+  species to `rtol` of its own magnitude", full stop — which is what #549 proposes — puts that
+  transient at `1.76e-17`, and on the same 100 points killed **91 of 100**: ADR-0103's withdrawn
+  *minimum* rule reappearing one species at a time. The `1e-16` floor #549 asks about rescued
+  nothing (91 either way), because the damage is done well above it. A tolerance below `rtol*|y|` is
+  inert until a species has decayed far below its nominal value, and what it then demands is that a
+  species which has decayed into nothing be resolved as if it had not; telling that apart from a
+  genuinely tiny species needs the trajectory, not the initial values. So every entry now lies in
+  `[the model's scalar, 1e-8]`: no species is integrated more tightly than PyBNF integrates it
+  today, and no model that runs today can start failing. A control confirms the mechanism is the
+  values and not the plumbing — the same scalar sent as a uniform vector reproduces the baseline
+  exactly, 39 and 39.
+  Over the 23-slug subset-I corpus 19 models take the same scalar call as today and the 4 that #546
+  tightened take vectors, which is the shape of a refund: only a model that was charged can receive
+  one. A species declared at zero has no magnitude of its own and falls out of the same expression
+  at the model's scalar, leaving it where ADR-0103 put it.
+  The derivation stays a property of the **model file** — read off the SBML document at load, held
+  for the whole fit, never re-derived from the fit point, which is why bngsim's state-reading `AUTO`
+  token is not used: a tolerance that moved with a fitted initial condition would put a step in the
+  objective wherever the derivation crossed a rounding boundary, and it would be invisible, since
+  the objective still looks correct and only the search behaves oddly. ADR-0103's median-derived
+  scalar does not retire either — it becomes the steady-state convergence cutoff, passed explicitly
+  whenever the vector is in force, because bngsim's own fallback for that cutoff is the Simulator's
+  `1e-8` rather than anything derived from the vector, and taking it would silently return every
+  `time = inf` measurement and every pre-equilibration phase to "equilibrium at t = 0" on a
+  small-scale model. `sbml_atol` remains a single number and remains the off-switch: stating it
+  integrates every species at that value and pins the pre-#196 code path bit-for-bit. A bngsim
+  without the capability keeps ADR-0103's scalar unchanged, detected by name (`bngsim.AUTO`) rather
+  than by version, because the build that first carried #196 declares the same version string as the
+  wheel that predates it.
+
 ### Fixed
 - **A PEtab v1 problem whose parameter table merely *has* a prior column no longer loses its log
   estimation scale (#548).** `petab1to2_preserve_scale` re-injects the `parameterScale` that
