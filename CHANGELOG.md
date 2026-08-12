@@ -5,6 +5,8 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+## [v1.7.0] - 2026-08-12
+
 ### Changed
 - **An SBML model on `sbml_backend = bngsim` no longer charges every species for the tolerance its
   smallest one needs (#549, ADR-0105, supersedes ADR-0103).** ADR-0103 derived a single `atol` from
