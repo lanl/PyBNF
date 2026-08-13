@@ -142,7 +142,7 @@ If the undead jobs become problematic, it is possible to kill them manually. Use
 .. _profiled_sigma_missing:
 
 My fitted noise scale is missing from ``sorted_params_final.txt``
-----------------------------------------------------------------
+-----------------------------------------------------------------
 
 You set :ref:`noise_profiling <noise_profiling>` ``= 1``, so that scale is no longer
 *searched*: PyBNF solves for it analytically at every evaluation instead of proposing values
