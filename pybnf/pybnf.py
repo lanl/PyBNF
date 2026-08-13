@@ -661,33 +661,40 @@ def main():
                           config.config['wall_time_refine_frac'],
                           format_duration(alg.budget.limit - alg.budget.reserve)))
 
-        # The record of which methods this run actually executes (#564/ADR-0107). Kept
-        # on the algorithm beside the budget, and written after every phase, so it is
-        # complete on disk even if a later phase raises.
-        alg.method_chain = method_chain.chain_for_run(alg.res_dir, config.config,
-                                                      budget=alg.budget, version=__version__)
-
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
             config.config['cluster_type'] = cmdline_args.cluster_type
         if cmdline_args.scheduler_file:
             config.config['scheduler_file'] = cmdline_args.scheduler_file
 
+        # Everything inside this branch is Algorithm surface. ``ModelCheck``
+        # (``job_type = check``) deliberately does not subclass Algorithm -- it has no
+        # res_dir, no trajectory, no completed_simulations and no stop_reason -- so a
+        # line that reads any of those belongs here and not above the branch, where it
+        # would run on both paths and take the checker down before it ever evaluated
+        # the model (#569).
         if config.config['fit_type'] != 'check':
+            # The record of which methods this run actually executes (#564/ADR-0107). Kept
+            # on the algorithm beside the budget, and written after every phase, so it is
+            # complete on disk even if a later phase raises.
+            alg.method_chain = method_chain.chain_for_run(alg.res_dir, config.config,
+                                                          budget=alg.budget, version=__version__)
             # Set up cluster
             cluster = Cluster(config, log_prefix, debug, cmdline_args.log_level)
             # Run the algorithm!
             logger.debug('Algorithm initialization')
             alg.run(cluster.client, resume=pending, debug=debug)
+
+            fit_status, fit_reason = _phase_status(alg)
+            _record_phase(alg, 'fit', config.config['fit_type'], fit_status, reason=fit_reason,
+                          simulations=alg.completed_simulations,
+                          best_objective=alg.trajectory.best_score() if len(alg.trajectory) else None)
         else:
-            # Run model checking
+            # Run model checking. No method chain: a check is one evaluation of the
+            # parameters as given, not a chain of search phases, and ModelCheck holds no
+            # res_dir to write the record into.
             logger.debug('Model checking initialization')
             alg.run_check(debug=debug)
-
-        fit_status, fit_reason = _phase_status(alg)
-        _record_phase(alg, 'fit', config.config['fit_type'], fit_status, reason=fit_reason,
-                      simulations=alg.completed_simulations,
-                      best_objective=alg.trajectory.best_score() if len(alg.trajectory) else None)
 
         _refine_best_fit(config, alg, cluster, debug)
 
