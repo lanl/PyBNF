@@ -5,6 +5,57 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **`wall_time_fit` no longer silently downgrades `refine = 1` to no refine at all (#564,
+  ADR-0107).** `refine = 1` requests a *method* — search globally, then polish the result with a
+  local optimizer — but a wall-clock-budgeted search runs until the clock stops, so it has no
+  reason to leave anything behind, and the polish (new work, forbidden once the budget is spent,
+  ADR-0093) never started. Not occasionally: **15 of 15 runs** in a benchmark campaign
+  (`Borghans_BiophysChem1997`) configured as `cmaes` + `refine = 1, refine_method = gntr` actually
+  ran plain `cmaes`. And the downgrade was invisible — ADR-0093's whole promise is that a budgeted
+  run "writes exactly what a converged one writes", so `sorted_params_final.txt` and
+  `information_criteria.txt` looked identical either way and the only trace was one line on stdout.
+  A harness that scores a directory could not tell which method it had measured.
+  A new global key **`wall_time_refine_frac`** (default `0.1`) holds that share of `wall_time_fit`
+  back from the search, so the refine runs on a slice the search was never allowed to spend. The
+  run's total is unchanged — one deadline still bounds the whole run, it is just partitioned rather
+  than first-come-first-served — and the split is stated on the console before the search starts.
+  The reserve is a floor, not a cap: a search that converges early hands everything it did not
+  spend to the polish. No reserve is taken when there is no refine to protect (no `refine`, no
+  budget, or a `refine_method` naming the algorithm the fit itself ran), so a run that asks for no
+  polish is byte-identical to before. `wall_time_refine_frac = 0` restores the old split, and the
+  resulting skip is now a `print0` warning that names the method that did *not* run, the method
+  that ran alone, and the key that would have made room.
+- **A refined run's `sorted_params_final.txt` describes the refined point (#564).** The refiner
+  wrote its result only to `sorted_params_refine_final.txt` while rewriting
+  `information_criteria.txt` from the same end-of-run tail, so two files in one `Results/`
+  disagreed about which parameter set they described — and the *conventional* name carried the
+  point the requested method chain did not end on. A refine's end-of-run output is the run's
+  end-of-run output, and is now written under both names; the `refine_`-prefixed file is unchanged.
+- **A bootstrap replicate's refine no longer writes into the main run's `Results/` (#564).**
+  `_refine_best_fit` redirected a replicate's `sim_dir` and `failed_logs_dir` to the
+  `Results-boot{N}` peers but not its `res_dir`, so every replicate's polish overwrote the *main*
+  fit's `sorted_params_refine_final.txt` and `stop_reason.txt`. The refiner now writes where the
+  fit it is polishing wrote.
+- **A refine's wall-time stop reason is appended to `Results/stop_reason.txt`, not written over the
+  fit's (#564).** Both phases share one Results directory; a run where the search hit the deadline
+  *and* the polish did has two facts to report, not one that replaces the other.
+
+### Added
+- **`Results/method_chain.json`: which methods a run actually executed (#564, ADR-0107).** Written
+  by every run — budget or no budget — it carries the chain the conf requested
+  (`requested_methods`), the chain that ran (`executed_methods`), and one entry per phase (the fit,
+  the refine, each bootstrap replicate) with its status (`completed` / `wall_time_expired` /
+  `skipped`), its stop reason, its elapsed seconds, its completed simulations, and the best
+  objective it reached. `requested_methods` longer than `executed_methods` is the machine-readable
+  form of a downgrade, so a scoring harness can assert on the method it measured in one line
+  instead of parsing stdout. A `bootstrap` phase records `replicates_requested` /
+  `replicates_completed`, because `bootstrap = 30` in a conf is worth nothing if the budget stopped
+  the run at 11. The file is rewritten after every phase (so a run whose refine raises still leaves
+  the record of the fit that happened), is strictly valid JSON (a non-finite objective is recorded
+  as `null`, never `Infinity`), and — like `stop_reason.txt` and `information_criteria.txt` — a
+  failure to write it is logged and swallowed rather than taking a finished run down.
+
 ## [v1.7.0] - 2026-08-12
 
 ### Changed

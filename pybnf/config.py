@@ -266,6 +266,7 @@ class Configuration:
         self.config = self._build_config(d)
         self._check_random_seed()
         self._check_wall_time_fit()
+        self._check_wall_time_refine_frac()
         self._check_edition()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
@@ -501,6 +502,28 @@ class Configuration:
                 f"would never fire.",
                 hint='Bound this job with its own budget keys (num_warmup / num_samples / '
                      'num_parallel), or remove wall_time_fit.')
+
+    def _check_wall_time_refine_frac(self):
+        """Validate the refine's share of the wall-clock budget (``wall_time_refine_frac``,
+        ADR-0107).
+
+        A fraction in [0, 1): the tail of ``wall_time_fit`` the search may not spend, so
+        that the refine ``refine = 1`` asked for actually runs (#564). 1 is excluded
+        because it would leave the search nothing at all -- a fit that never searches is
+        not what any conf means -- and a negative reserve is meaningless. The key is inert
+        without both ``wall_time_fit`` and ``refine = 1``, so it is validated whether or
+        not it is in play: a typo should be caught where it is written, not where it
+        happens to bite.
+        """
+        frac = self.config.get('wall_time_refine_frac', 0.0)
+        if isinstance(frac, (bool, np.bool_)) or not isinstance(frac, (int, float, np.integer, np.floating)) \
+                or not 0.0 <= float(frac) < 1.0:
+            raise PybnfError(f'Invalid wall_time_refine_frac {frac}',
+                             "Config key 'wall_time_refine_frac' must be a number in [0, 1): the share of "
+                             "wall_time_fit held back from the search so the refine can run "
+                             "(0.1, the default, reserves a tenth of the budget; 0 reserves nothing "
+                             "and lets the search spend it all).")
+        self.config['wall_time_refine_frac'] = float(frac)
 
     @staticmethod
     def _resolve_model_declarations(d):

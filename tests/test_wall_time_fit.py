@@ -1,9 +1,11 @@
-"""The fit's total wall-clock budget: ``wall_time_fit`` (#529, ADR-0093).
+"""The fit's total wall-clock budget: ``wall_time_fit`` (#529, ADR-0093), and the
+slice of it reserved for the refine (``wall_time_refine_frac``, #564, ADR-0107).
 
 Two layers are covered here — the stopwatch (:mod:`pybnf.budget`) and the
 configuration surface that admits or refuses the key. The *behavior* the budget
 drives (the run loop stopping and finalizing anyway) lives with the rest of the
-run-loop orchestration tests, in ``test_run_loop.py``.
+run-loop orchestration tests, in ``test_run_loop.py``; the artifacts a budgeted
+run leaves behind are in ``test_method_chain.py``.
 
 The clock is injected everywhere, so nothing here sleeps or depends on how fast
 the test machine is.
@@ -84,10 +86,87 @@ def test_format_duration_matches_the_run_time_line():
     assert budget_mod.format_duration(-5) == '0:00:00'
 
 
-def _conf(wall_time_fit, fit_type='de'):
+def _conf(wall_time_fit, fit_type='de', **extra):
     cfg = object.__new__(config.Configuration)
     cfg.config = {'wall_time_fit': wall_time_fit, 'fit_type': fit_type}
+    cfg.config.update(extra)
     return cfg
+
+
+# --------------------------------------------------------------------------- #
+# The refine's reserved slice of the budget (#564, ADR-0107)
+#
+# `refine = 1` asks for a METHOD -- search globally, then polish locally. A
+# wall-clock-budgeted search has no reason to leave anything behind, so unless the
+# budget holds a tail back the polish essentially never runs.
+# --------------------------------------------------------------------------- #
+def test_a_reserve_bounds_the_phase_while_the_limit_still_bounds_the_run():
+    clock = _Clock()
+    b = budget_mod.FitBudget(100.0, clock=clock, reserve=10.0)
+
+    assert b.remaining() == 90.0 and not b.expired()   # the search's share, not the run's
+    clock.advance(90.0)
+    assert b.expired() and b.remaining() == 0.0        # the search is done at 90 s
+    with budget_mod.spend_reserve(b):
+        assert not b.expired() and b.remaining() == 10.0   # ... the refine's tail is not
+    assert b.expired()   # and it is put back, for the next bootstrap replicate's search
+
+
+def test_a_search_that_converges_early_hands_its_leftovers_to_the_refine():
+    """The reserve is a floor under the refine, not a cap on it: the refine gets the
+    run's whole remaining time."""
+    clock = _Clock()
+    b = budget_mod.FitBudget(100.0, clock=clock, reserve=10.0)
+    clock.advance(20.0)   # the search stopped on its own criterion, 70 s early
+
+    with budget_mod.spend_reserve(b):
+        assert b.remaining() == 80.0
+
+
+def test_a_reserve_cannot_swallow_more_than_the_budget():
+    b = budget_mod.FitBudget(10.0, clock=_Clock(), reserve=99.0)
+    assert b.reserve == 10.0 and b.expired()
+
+
+def test_spend_reserve_is_a_no_op_on_an_unbudgeted_run():
+    with budget_mod.spend_reserve(None) as b:
+        assert b is None
+
+
+def test_spend_reserve_puts_the_reserve_back_even_when_the_phase_raises():
+    b = budget_mod.FitBudget(100.0, clock=_Clock(), reserve=10.0)
+    with pytest.raises(RuntimeError):
+        with budget_mod.spend_reserve(b):
+            raise RuntimeError('the refine blew up')
+    assert b.reserve == 10.0
+
+
+@pytest.mark.parametrize('overrides,expected', [
+    ({}, 150.0),                                        # the default tenth of the budget
+    ({'wall_time_refine_frac': 0.5}, 750.0),
+    ({'wall_time_refine_frac': 0.0}, 0.0),              # opt out: the pre-#564 split
+    ({'refine': 0}, 0.0),                               # no refine to protect
+    ({'wall_time_fit': 0}, 0.0),                        # no budget to divide
+    ({'refine_method': 'de'}, 0.0),                     # == fit_type: the refine is skipped
+])
+def test_the_reserve_is_taken_only_when_a_refine_will_actually_run(overrides, expected):
+    conf = {'wall_time_fit': 1500, 'fit_type': 'de', 'refine': 1, 'refine_method': 'sim',
+            'wall_time_refine_frac': 0.1}
+    conf.update(overrides)
+    assert budget_mod.refine_reserve_seconds(conf) == expected
+
+
+def test_from_config_sizes_the_reserve_it_builds_the_budget_with():
+    b = budget_mod.FitBudget.from_config(
+        _conf(1500, refine=1, refine_method='sim', wall_time_refine_frac=0.1),
+        clock=_Clock())
+    assert b.limit == 1500.0 and b.reserve == 150.0 and b.remaining() == 1350.0
+
+
+def test_a_fit_that_asks_for_no_refine_gets_the_ADR_0093_budget_exactly():
+    """Nothing about an unrefined run changes: the whole budget is the search's."""
+    b = budget_mod.FitBudget.from_config(_conf(1500), clock=_Clock())
+    assert b.reserve == 0.0 and b.remaining() == 1500.0
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +199,22 @@ def test_a_fit_type_that_cannot_honor_the_budget_refuses_it_rather_than_ignoring
 
 def test_a_fit_type_that_cannot_honor_the_budget_is_unaffected_when_none_is_asked_for():
     _conf(0, fit_type='hmc')._check_wall_time_fit()  # no budget named -> nothing to refuse
+
+
+@pytest.mark.parametrize('value', [0, 0.1, 0.5, 0.999])
+def test_valid_refine_fractions_are_accepted_and_normalized_to_float(value):
+    cfg = _conf(1500, wall_time_refine_frac=value)
+    cfg._check_wall_time_refine_frac()
+    assert cfg.config['wall_time_refine_frac'] == float(value)
+    assert isinstance(cfg.config['wall_time_refine_frac'], float)
+
+
+@pytest.mark.parametrize('value', [-0.1, 1, 1.0, 1.5, 'a tenth', True])
+def test_a_refine_fraction_outside_zero_to_one_is_refused(value):
+    """1 is excluded with the negatives: reserving the whole budget for the polish
+    would leave the search nothing at all, which is not what any conf means."""
+    with pytest.raises(printing.PybnfError, match='wall_time_refine_frac'):
+        _conf(1500, wall_time_refine_frac=value)._check_wall_time_refine_frac()
 
 
 def test_model_checking_strips_the_budget():
@@ -205,6 +300,76 @@ def _finished_de_fit(tmp_path, monkeypatch, **overrides):
     alg = algorithms.DifferentialEvolution(conf)
     H.drive(alg)
     return conf, alg
+
+
+def test_a_budgeted_fit_stops_early_so_the_refine_it_asked_for_can_run(tmp_path, monkeypatch):
+    """#564, the reported defect: `cmaes` + `refine = 1, refine_method = gntr` +
+    `wall_time_fit` ran plain `cmaes` in 15 of 15 benchmark runs. The search filled the
+    budget -- as a wall-clock-budgeted search always will -- and the polish, being new
+    work, never started.
+
+    With a reserve the search stops at its own share and the refine runs on the rest,
+    so the executed method chain is the requested one.
+    """
+    import types
+    from pybnf import pybnf as pybnf_main
+
+    H.install(monkeypatch)
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([2.0, -1.0], [1.0, 1.0]))
+    conf = H.make_config(tmp_path, 'de', tgt, exp, n_params=2, population_size=8,
+                         max_iterations=10 ** 6,   # unreachable: only the clock can stop it
+                         wall_time_fit=3600, refine=1, refine_method='sim',
+                         wall_time_refine_frac=0.1)
+
+    alg = _TickingDE(conf)
+    clock = _Clock()
+    alg.clock = clock
+    alg.budget = budget_mod.FitBudget.from_config(conf, clock=clock)
+    assert alg.budget.reserve == 360.0
+    H.drive(alg)
+
+    # The search stopped on the deadline, but on ITS deadline: short of wall_time_fit
+    # by the reserve, and saying so.
+    assert 3240.0 <= clock.t < 3600.0
+    assert 'reserved for the refine' in alg.stop_reason
+
+    left = []
+    monkeypatch.setattr(algorithms.SimplexAlgorithm, 'run',
+                        lambda self, client, resume=None, debug=False: left.append(self.budget.remaining()))
+    pybnf_main._refine_best_fit(conf, alg, types.SimpleNamespace(client=H.FakeClient()),
+                                debug=False)
+
+    assert left and left[0] > 0.0        # the refine ran, with time to spend
+    assert alg.budget.reserve == 360.0   # and the split is intact for a bootstrap replicate
+
+
+def test_opting_out_of_the_reserve_restores_the_old_first_come_first_served_split(tmp_path, monkeypatch):
+    """`wall_time_refine_frac = 0` is the pre-#564 behavior, kept reachable for anyone
+    who wants every second spent searching -- but now it is a choice the conf states,
+    not the only thing that could happen."""
+    import types
+    from pybnf import pybnf as pybnf_main
+
+    H.install(monkeypatch)
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([2.0, -1.0], [1.0, 1.0]))
+    conf = H.make_config(tmp_path, 'de', tgt, exp, n_params=2, population_size=8,
+                         max_iterations=10 ** 6, wall_time_fit=3600, refine=1,
+                         refine_method='sim', wall_time_refine_frac=0.0)
+
+    alg = _TickingDE(conf)
+    clock = _Clock()
+    alg.clock = clock
+    alg.budget = budget_mod.FitBudget.from_config(conf, clock=clock)
+    assert alg.budget.reserve == 0.0
+    H.drive(alg)
+    assert clock.t >= 3600.0
+
+    ran = []
+    monkeypatch.setattr(algorithms.SimplexAlgorithm, 'run',
+                        lambda self, client, resume=None, debug=False: ran.append(self))
+    pybnf_main._refine_best_fit(conf, alg, types.SimpleNamespace(client=H.FakeClient()),
+                                debug=False)
+    assert ran == []
 
 
 def test_a_spent_budget_skips_the_refine(tmp_path, monkeypatch):

@@ -1170,6 +1170,8 @@ Algorithm Options
 **refine**
   If 1, after fitting is completed, refine the best fit parameter set by a local search. The optimizer used is set by ``refine_method`` (Simplex by default). Set that optimizer's config keys in addition to the config for your main algorithm.
 
+  This asks for a *method* -- search globally, then polish locally -- so under a total wall-clock budget the refine is given a share of that budget up front rather than whatever the search happens to leave; see ``wall_time_refine_frac``. ``Results/method_chain.json`` records whether it ran.
+
   Default: 0
 
   Example:
@@ -1341,13 +1343,16 @@ Algorithm Options
 
   The clock starts when PyBNF starts, so configuration loading and network generation are
   inside the budget; pair it with ``parallel_count`` to reproduce a "N cores for T hours"
-  compute allocation. It bounds the run, not each phase: no ``refine`` and no further
-  bootstrap replicate begins once the budget is spent. Two things are deliberately outside
-  it -- one in-flight simulation may overrun the deadline by up to ``wall_time_sim`` before
-  it is abandoned, and finalizing re-simulates the best fit once to report it.
+  compute allocation. It bounds the run, not each phase: no further bootstrap replicate
+  begins once the budget is spent, and the ``refine`` gets the slice of the budget
+  ``wall_time_refine_frac`` holds back for it rather than a deadline of its own. Two
+  things are deliberately outside it -- one in-flight simulation may overrun the deadline
+  by up to ``wall_time_sim`` before it is abandoned, and finalizing re-simulates the best
+  fit once to report it.
 
   A fit stopped this way is *not* a converged fit; check ``Results/stop_reason.txt`` before
-  reading its results as a completed search.
+  reading its results as a completed search. ``Results/method_chain.json`` records which
+  methods actually ran, and why any requested phase did not.
 
   Not available for ``job_type = hmc`` (which samples in process, with no simulation loop
   for the budget to stop) -- naming it there is an error rather than a silent no-op.
@@ -1358,6 +1363,33 @@ Algorithm Options
 
     * ``wall_time_fit = 10800``   (3 hours)
     * ``wall_time_fit = 600``
+
+**wall_time_refine_frac**
+  The share of ``wall_time_fit`` held back from the search so that the ``refine`` can run.
+
+  ``refine = 1`` asks for a *method* -- search globally, then polish the result with a
+  local optimizer -- but a wall-clock-budgeted search has no reason to leave anything
+  behind: it runs until the clock stops. Without a reserve the polish is new work that
+  never starts, so ``wall_time_fit`` + ``refine = 1`` would silently execute the global
+  search alone. This key makes the phase split explicit: the search may spend
+  ``(1 - wall_time_refine_frac)`` of the budget, and the refine gets the rest.
+
+  The reserve is a floor, not a cap. A search that converges before its share is up hands
+  everything it did not spend to the refine, so the run's total is still ``wall_time_fit``
+  -- one deadline for the whole run.
+
+  Inert unless both ``wall_time_fit`` and ``refine = 1`` are set, and no reserve is taken
+  when ``refine_method`` names the algorithm the fit itself ran (which PyBNF skips anyway).
+  Set it to ``0`` to spend every second searching and accept that the refine may not run;
+  PyBNF then says so at every verbosity level, and records the downgrade in
+  ``Results/method_chain.json``.
+
+  Default: 0.1
+
+  Examples:
+
+    * ``wall_time_refine_frac = 0.1``   (a tenth of the budget for the polish)
+    * ``wall_time_refine_frac = 0``     (no reserve; the search may spend it all)
 
 **max_failed_simulations**
   Maximum number of simulation failures allowed before any successful simulation completes. If this many jobs fail (crash, not timeout) before the first success, PyBNF aborts. Increase this value if your model has a high failure rate at many parameter sets but can still succeed at others.

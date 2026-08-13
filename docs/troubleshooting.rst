@@ -59,6 +59,24 @@ A time limit is also enforced for network generation in BNGL models. The default
 
 Both of these bound one *unit of work*, not the fit. To bound the fit as a whole -- for a fixed compute allocation, or so a run that is not converging still leaves usable results -- set ``wall_time_fit`` (seconds). When it expires PyBNF stops launching work and writes its normal end-of-fit results for the best parameter set found so far, plus a ``Results/stop_reason.txt`` saying why it stopped. Killing the process externally instead leaves no such results.
 
+Which methods did my run actually execute?
+------------------------------------------
+Every run writes ``Results/method_chain.json``: the method chain the config asked for, the
+chain that ran, and one entry per phase (the fit, the refine, the bootstrap replicates)
+with its stop reason, its completed simulations, and the best objective it reached::
+
+    {
+      "job_type": "cmaes",
+      "requested_methods": ["cmaes", "gntr"],
+      "executed_methods": ["cmaes", "gntr"],
+      "phases": [ ... ]
+    }
+
+``requested_methods`` longer than ``executed_methods`` means a requested phase did not run,
+and the phase's ``status`` and ``reason`` say why. The usual cause is a ``wall_time_fit``
+that the search consumed; see ``wall_time_refine_frac``, which holds part of the budget
+back for the refine.
+
 .. note::
 
    For models simulated with the bngsim backend, ``wall_time_sim`` is honored

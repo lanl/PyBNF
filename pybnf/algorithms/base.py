@@ -117,6 +117,16 @@ class Algorithm(ABC):
     #: convergence (today: the wall-time budget). None for an ordinary run.
     stop_reason = None
 
+    #: Simulations the last :meth:`run` consumed results from -- what the wall-time stop
+    #: reason reports, kept so the run's phase record can report it too (#564). A class
+    #: attribute for the same reason ``budget`` is: an unpickled algorithm reads 0.
+    completed_simulations = 0
+
+    #: The run's executed-method record (``Results/method_chain.json``, #564/ADR-0107),
+    #: or None when nothing is keeping one. Like ``budget``, it is attached by
+    #: ``pybnf.main()`` and shared with the refiner, so one file describes the whole run.
+    method_chain = None
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
@@ -313,12 +323,15 @@ class Algorithm(ABC):
         'budget' is excluded too: a wall-clock deadline is meaningless once restored into
         a later process, and a resumed run is a new run of its own -- ``main()`` builds it
         a fresh budget from the same ``wall_time_fit``, so ``--resume`` grants another full
-        budget rather than inheriting an already-expired one (#529).
+        budget rather than inheriting an already-expired one (#529). 'method_chain' is
+        excluded for the same reason: it records the *phases this process executed*, and
+        ``main()`` builds the resumed run its own (#564).
 
         :param k:
         :return:
         """
-        return k not in set(['trajectory', 'calc_future', 'models_future', 'budget'])
+        return k not in set(['trajectory', 'calc_future', 'models_future', 'budget',
+                             'method_chain'])
 
     def __getstate__(self):
         return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
@@ -1003,7 +1016,17 @@ class Algorithm(ABC):
         if name == '':
             name = str(self.output_counter)
             self.output_counter += 1
+        alias = None
         if self.refine:
+            # A refine's END-OF-RUN output is the RUN's end-of-run output, so it is
+            # written under the conventional name too, not only the refine_-prefixed one.
+            # Historically sorted_params_final.txt kept the PRE-refine point while
+            # information_criteria.txt (which the refiner rewrites from the same tail)
+            # described the refined one -- two files in Results/ disagreeing about which
+            # parameter set they describe, with the conventional name carrying the point
+            # the user's requested method chain did not end on (#564).
+            if name == 'final':
+                alias = 'final'
             name = f'refine_{name}'
         filepath = f'{self.res_dir}/sorted_params_{name}.txt'
         logger.info(f'Outputting results to file {filepath}')
@@ -1017,6 +1040,11 @@ class Algorithm(ABC):
             if os.path.isfile(noname_filepath):
                 os.remove(noname_filepath)
             os.replace(filepath, noname_filepath)
+            # That single file is already the alias: everything collapses into it.
+        elif alias is not None:
+            alias_path = f'{self.res_dir}/sorted_params_{alias}.txt'
+            logger.info(f'Also outputting the refined results to {alias_path}')
+            self.trajectory.write_to_file(alias_path)
 
     def backup(self, pending_psets=()):
         """
@@ -1135,6 +1163,7 @@ class Algorithm(ABC):
         """
 
         self.stop_reason = None
+        self.completed_simulations = 0
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
@@ -1205,7 +1234,7 @@ class Algorithm(ABC):
             # call is exactly the historical one.
             pool_kwargs = {'timeout': self.budget.remaining()} if self.budget is not None else {}
             pool = core.as_completed(futures, with_results=True, raise_errors=False, **pool_kwargs)
-            self._drain_job_pool(client, pool, pending, backup_every, debug)
+            self.completed_simulations = self._drain_job_pool(client, pool, pending, backup_every, debug)
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
@@ -1310,9 +1339,17 @@ class Algorithm(ABC):
         different algorithms).
         """
         best = self.trajectory.best_score() if len(self.trajectory) else None
-        return ('Wall-time budget reached: stopped after %s (wall_time_fit = %d s) and %d completed '
+        # A held-back reserve means this phase stopped short of the run's own deadline,
+        # on purpose, to leave the refine something to run on (#564). Say so, or the
+        # elapsed time will not add up against wall_time_fit for anyone reading it.
+        allowance = ''
+        if self.budget.reserve > 0:
+            allowance = (', less %d s reserved for the refine (wall_time_refine_frac)'
+                         % int(round(self.budget.reserve)))
+        return ('Wall-time budget reached: %sstopped after %s (wall_time_fit = %d s%s) and %d completed '
                 'simulation(s), with a best objective of %s.'
-                % (format_duration(self.budget.elapsed()), int(self.budget.limit), sim_count,
+                % ('the refine ' if self.refine else '',
+                   format_duration(self.budget.elapsed()), int(self.budget.limit), allowance, sim_count,
                    ('%.10g' % best) if best is not None else 'n/a (no completed simulation)'))
 
     def _announce_stop_reason(self):
@@ -1323,6 +1360,11 @@ class Algorithm(ABC):
         artifacts a converged one writes, so the *presence* of this file -- and nothing
         in the scoreable outputs -- is what tells a downstream consumer the fit hit its
         deadline instead of its stop criterion. A no-op for an ordinary run.
+
+        A refine's reason is **appended** rather than written over the fit's: both phases
+        share one Results directory, and a run where the search hit the deadline AND the
+        polish did has two facts to report, not one that replaces the other (#564). The
+        per-phase, machine-readable form of the same thing is ``method_chain.json``.
         """
         if not self.stop_reason:
             return
@@ -1330,7 +1372,7 @@ class Algorithm(ABC):
         print1(self.stop_reason)
         path = str(Path(self.res_dir) / 'stop_reason.txt')
         try:
-            with open(path, 'w') as f:
+            with open(path, 'a' if self.refine else 'w') as f:
                 f.write(self.stop_reason + '\n')
         except Exception:
             logger.exception('Failed to write stop_reason.txt')

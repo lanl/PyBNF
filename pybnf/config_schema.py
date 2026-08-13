@@ -309,6 +309,14 @@ class GlobalConfig(PyBNFConfigModel):
     # logged, printed, and written to Results/stop_reason.txt. Cross-edition,
     # cross-fit_type (every fit that drives the shared run loop); see pybnf/budget.py.
     wall_time_fit: int = 0
+    # The share of wall_time_fit held back from the search so the post-fit refine can
+    # run (#564, ADR-0107). refine = 1 asks for a METHOD -- search globally, then polish
+    # locally -- and a wall-clock-budgeted search has no reason to leave anything behind,
+    # so without a reserve the polish essentially never runs. A fraction in [0, 1); 0
+    # restores the pre-#564 first-come-first-served split (the search may spend the whole
+    # budget and the refine is then skipped, loudly). Inert unless BOTH wall_time_fit and
+    # refine = 1 are set, so it changes nothing for a run that names no budget.
+    wall_time_refine_frac: float = 0.1
     normalization: Any = None
     # Model-scoped network-generation options for edition-2 synthesis (#473). When the
     # edition-2 surface strips the model's ``begin actions`` block, pybnf synthesizes a

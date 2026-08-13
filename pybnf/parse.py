@@ -69,6 +69,8 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
                  'rhat_threshold', 'snooker_prob', 'kalman_burnin_frac',
+                 # The share of wall_time_fit reserved for the refine phase (#564).
+                 'wall_time_refine_frac',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
                  # CMA-ES restart battery (job_type = cmaes, #550/ADR-0106): the TolFun
