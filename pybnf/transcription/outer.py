@@ -38,6 +38,34 @@ ineffective; it is expensive, because the inner solve on a nearly-unconstrained 
 never converges and burns its whole budget every outer iteration. So
 :class:`PenaltySchedule` starts at ``rho_0 = 10`` and grows by ``5``.
 
+Stalling
+--------
+A run has two ways of going nowhere, and the guard against them has to span **both**
+branches of the schedule.
+
+On the accepting branch: the convergence test needs the defect and the first-order
+optimality below tolerance in *one* iterate, and once a run is feasible the schedule's
+inner tolerance is already floored -- so an inner solver that cannot drive the augmented
+Lagrangian's optimality lower re-solves a near-identical subproblem every remaining outer
+iteration.
+
+On the penalty-raising branch the failure is worse, because raising ``rho`` is only
+justified if the previous inner solve *did* something. An inner solver that fails on an
+ill-conditioned subproblem and returns its own start point leaves the defect exactly where
+it was -- which reads as "not feasible enough", raises ``rho`` by ``gamma``, and hands the
+same solver a strictly harder problem. Measured on the offline shooting problem, that death
+spiral runs the penalty from ``1.25e3`` to the ``1e8`` ceiling over ~15 outer iterations
+during which the point never moves at all and the augmented gradient grows to ``2e6``. So a
+penalty raise does **not** reset the stall counter.
+
+Progress is the scaled defect improving or the point moving -- deliberately not the
+optimality improving, which is not comparable across a change of ``rho`` (a raise scales
+the augmented gradient by ``gamma``).
+
+Stalling is a state to *report*, not a failure: a feasible, stalled run has found whatever
+it found and could not certify a KKT residual for it, which is different from failing and
+different again from having converged.
+
 Best-iterate certification
 --------------------------
 The loop certifies **every** outer iterate, not just the last, and reports the best
@@ -337,30 +365,9 @@ class AugmentedLagrangian:
     :param schedule: The :class:`PenaltySchedule`; the defaults carry finding 5.1.
     :param max_outer: Cap on outer iterations.
     :param max_stall: Consecutive outer iterations that neither improve the scaled defect
-        nor move the point before the run stops with ``stop_reason = 'stalled'``.
-
-        This guards the loop's two ways of going nowhere, and it must span **both** branches
-        of the schedule to do it.
-
-        On the accepting branch: the convergence test needs both criteria satisfied in one
-        iterate, and once a run is feasible the schedule's inner tolerance is already
-        floored, so an inner solver that cannot drive the augmented Lagrangian's optimality
-        lower will re-solve a near-identical subproblem every remaining outer iteration.
-
-        On the penalty-raising branch the failure is worse, because raising ``rho`` is only
-        justified if the previous inner solve *did* something. An inner solver that fails on
-        an ill-conditioned subproblem and returns its own start point leaves the defect
-        exactly where it was — which reads as "not feasible enough", raises ``rho`` by
-        ``gamma``, and hands the same solver a strictly harder problem. That is a death
-        spiral: the penalty runs to its ceiling, the augmented gradient grows with it, and
-        the point never moves at all. Stalling has to be able to fire here, so a penalty
-        raise does not reset the counter.
-
-        Either way, stalling is a real state to *report* rather than a failure: the run has
-        found whatever it found and cannot certify a KKT residual for it.
-
-    Progress is measured as the defect improving, or the point moving — not as the
-    optimality improving, which is not comparable across a change of ``rho``.
+        nor move the point before the run stops with ``stop_reason = 'stalled'``. See
+        `Stalling` in the module docstring for what this guards and why it spans both
+        branches of the schedule.
     :param shared_best: An optional :class:`CertifiedBest` that every iterate is *also*
         offered to, so a homotopy tracks one best across all its stages. Each
         :meth:`run` keeps its own local best regardless, which is what

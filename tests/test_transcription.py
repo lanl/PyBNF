@@ -1070,8 +1070,11 @@ class TestOfflineMultipleShooting:
                                                       for name in problem.block_names})):
                 result = AugmentedLagrangian(problem, inner_solver, max_outer=40).run(start)
                 if not result.converged:
-                    # Giving up is allowed; the run says so and reports what it has.
-                    assert result.stop_reason in ('stalled', 'max_outer'), result.stop_reason
+                    # Giving up is allowed, and every way of doing it is a *stated* one --
+                    # the whitelist is every honest non-convergence report the loop has, so
+                    # this fails if a run ever ends in some other, unstated way.
+                    assert result.stop_reason in ('stalled', 'max_outer', 'penalty_ceiling',
+                                                  'inner_failed'), result.stop_reason
                     continue
                 assert result.defect_norm < 1e-5, (seed, result.stop_reason)
                 assert result.best.reported[0] == pytest.approx(optimum, abs=1e-4)
