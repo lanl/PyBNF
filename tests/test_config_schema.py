@@ -354,13 +354,14 @@ class TestRegistrySchemaSeam:
         # The gradient-based optimizers (#386/#481) land with their own schemas: trf
         # (trust-region least-squares) with TRFConfig, lbfgs (L-BFGS-B) with LBFGSConfig,
         # and gntr (general-objective Fisher/Gauss-Newton trust region) with GNTRConfig.
-        # profile_likelihood (#446/#466) lands with ProfileLikelihoodConfig.
+        # profile_likelihood (#446/#466) lands with ProfileLikelihoodConfig, and ms
+        # (multiple shooting, #563/ADR-0110) with MSConfig.
         # Only 'check' remains unmigrated. Each step extends this set -- a ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
         assert migrated == {'pso', 'de', 'ade', 'ss', 'sim', 'powell', 'cmaes',
                             'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf', 'lbfgs',
-                            'gntr', 'profile_likelihood'}
+                            'gntr', 'profile_likelihood', 'ms'}
         assert FIT_TYPE_REGISTRY['check'].schema is None
 
 

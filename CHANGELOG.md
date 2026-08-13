@@ -54,6 +54,44 @@ All notable changes to PyBNF are documented below. This project adheres to
   *and* the polish did has two facts to report, not one that replaces the other.
 
 ### Added
+- **Multiple shooting, `job_type = ms` (#563, ADR-0110).** The consumer of the
+  constrained-transcription layer below, and the thing #563 was actually asking for. Each scored
+  experiment's time course is cut at knots; segment *j* is integrated from its own start state —
+  segment 0's is the model's own initial conditions, and each interior knot carries an auxiliary
+  state that is searched, bounded and differentiated but is **never** a reported fit result — and
+  continuity `Phi_j(z_j, theta) - z_{j+1} = 0` is enforced by an augmented Lagrangian whose
+  subproblem is solved by `gntr`'s own Gauss-Newton trust-region step machine. Every reported
+  score comes from discarding the auxiliary states, re-simulating theta with ordinary single
+  shooting, and scoring *that*, so a run that leaves continuity unconverged scores as what it
+  actually is — and every certified iterate lands in the ordinary trajectory at that score, so
+  `sorted_params`, the best-fit simulations, the information criteria and the inference-data
+  sidecar are produced by the same code every other `job_type` uses.
+  Why it is worth the machinery: on `Borghans_BiophysChem1997` a correctly-shaped oscillator whose
+  period is wrong by more than about 3 % scores *worse than fitting no dynamics at all*, so under
+  single shooting the flat line is the ceiling on essentially the whole box and fifteen
+  independent global searches terminate at it. Over one short segment a period error cannot
+  accumulate: the information moves out of a residual term that saturates and into continuity
+  defects, which carry a direction.
+  The prototype's structural finding is what keeps the implementation small — a segment-start
+  state is an `IC` route with chain-rule factor 1, so the existing gradient/Fisher assembly builds
+  its column with no new residual math, and each segment is presented to it as an ordinary
+  *experiment*. The continuity block is the only new assembly surface. Knots are named by their
+  exact fraction of the horizon, so a coarser rung recognises a finer one's knots and the `4-2-1`
+  ladder *continues* rather than reseeds.
+  New keys `ms_segments`, `ms_coarsening`, `ms_penalty`, `ms_penalty_growth`, `ms_max_penalty`,
+  `ms_feasibility_tol`, `ms_optimality_tol`, `ms_inner_iterations`, `ms_aux_decades`,
+  `ms_max_iterations`, defaulted from ADR-0109's measurements rather than from taste. Requires the
+  bngsim SBML/Antimony backend (a knot carries the model's *state*, which the `.net` path's
+  observable columns cannot supply) and refuses, by name, a fit whose scored quantity is a
+  function of a whole series — an analytic per-series scale, a data normalization, a
+  cumulative-to-incident difference — since cutting the series would change it. An analytically
+  profiled noise scale (ADR-0108) is deliberately fine: it is profiled over pooled residuals, so
+  the segments pool the same ones, and the constraint terms never enter the likelihood.
+  What is *not* claimed: that multiple shooting improves the typical fit (48 paired starts:
+  24–24, medians tied at every radius, at 2–7x the simulations), or that it solves Borghans from
+  an uninformed start (0/24). The measured case is the tail and the robustness. Segment
+  simulations run serially on the master in this cut; parallelising them, and the acceptance
+  benchmark, are the follow-on work.
 - **A constrained-transcription layer, `pybnf.transcription` (#563, ADR-0109).** Infrastructure for
   restating a fit as a larger, better-conditioned problem with internal auxiliary variables and
   equality constraints that tie them back together — the reusable half of multiple shooting, which

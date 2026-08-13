@@ -132,6 +132,83 @@ For all three, ``<method>_max_iterations`` caps the iterations per start and def
 ``max_iterations``.
 
 
+.. _multiple_shooting:
+
+Multiple shooting (``job_type = ms``)
+--------------------------------------
+
+Every method above fits by **single shooting**: simulate the whole time course from the model's
+initial conditions and compare it with the data. On a model whose difficulty *is* horizon length,
+that transcription can put the answer out of reach of any search. The motivating case is an
+oscillator: on ``Borghans_BiophysChem1997``, a correctly-shaped trajectory whose period is wrong by
+more than about 3 % scores **worse than fitting no dynamics at all**, so a flat line is the ceiling
+on essentially the whole parameter box, and fifteen independent global searches terminate at it.
+
+``job_type = ms`` changes the transcription rather than the search. Each experiment's time course
+is cut at knots; each segment is integrated from its **own** start state, and continuity between
+segments is imposed as an equality constraint rather than assumed. Over one short segment a period
+error cannot accumulate, so the information moves out of a residual term that saturates and into
+continuity defects, which carry a direction. The segment-start states are internal to the method —
+searched, bounded and differentiated, but never reported as fit results.
+
+**The score you get is an ordinary one.** Every iterate is *certified*: the auxiliary states are
+discarded, the parameters are re-simulated with ordinary single shooting, and that score is what is
+reported and ranked. A run that leaves continuity unconverged therefore scores as what it actually
+is, and the number in ``sorted_params_final.txt`` is directly comparable with any other fit's.
+
+**The ladder is the mechanism.** A run does not fix a segment count; it solves a sequence of
+transcriptions, coarsening toward the ordinary unsegmented problem (``4 → 2 → 1`` by default) and
+warm-starting each rung from the previous one. The stage trace is printed as it goes, and on the
+motivating problem it *is* the result — every segmented stage scored worse than a flat line, and
+the coarsening is what converted them.
+
+**Requirements and limits.** ``ms`` needs everything the gradient path needs, plus the bngsim
+SBML/Antimony backend: a knot carries the model's **state**, and only that path reports species
+columns with matching initial-condition sensitivities. It refuses, by name and up front, a fit it
+would otherwise quietly change — a dose-response scan or pre-equilibration protocol (no time axis
+to cut, or a measured phase that already starts from a carried state), and any scored quantity that
+is a function of a whole series (an analytic per-series ``scale``, a data ``normalization``, a
+``cumulative`` column, or BPSL constraints). An analytically profiled noise scale
+(``noise_profiling = 1``) is fine and is the recommended pairing: it is profiled over the pooled
+data residuals, which continuity defects never enter. Segments are simulated serially, so ``ms``
+does not scale across a cluster the way the metaheuristics do, and a stopped run cannot be resumed
+with ``-r``.
+
+**Tuning.** The defaults come from measurement on the motivating problem, not from convention, and
+are worth leaving alone unless you have a reason:
+
+* ``ms_segments`` (default ``4``) — the **finest** rung of the ladder, and ``ms_coarsening``
+  (default ``2``) the factor between rungs. Starting with many short segments is the wrong end:
+  under partial observability an over-segmented stage is under-determined and routinely certifies
+  worse than its own start.
+* ``ms_penalty`` (default ``10``) and ``ms_penalty_growth`` (default ``5``) — the augmented
+  Lagrangian's initial penalty and its growth factor, capped at ``ms_max_penalty``. Deliberately
+  **tight**: a loose start was measured both worse *and* twice as expensive, because the inner
+  solve on a nearly-unconstrained subproblem never converges and burns its whole budget.
+* ``ms_feasibility_tol`` / ``ms_optimality_tol`` (both ``1e-6``) — the scaled continuity defect and
+  the projected-gradient optimality a run must reach together to report convergence. The optimality
+  tolerance is looser than ``gntr_grad_tol`` on purpose: it measures the *augmented* Lagrangian's
+  gradient, which carries a factor of the penalty.
+* ``ms_inner_iterations`` (default ``50``) — trust-region iterations per outer iteration; an
+  approximate inner solve is what the method is designed around. ``ms_max_iterations`` caps outer
+  iterations per rung and defaults to the global ``max_iterations``.
+* ``ms_aux_decades`` (default ``6``) — the half-width, in decades, of a segment-start state's box
+  around its own magnitude.
+
+A minimal run::
+
+    edition = 2
+    job_type = ms
+    sbml_backend = bngsim
+    model: model.xml
+    experiment: myexp, data: mydata.exp
+    noise_profiling = 1
+    output_dir = output/ms
+
+The design, the measurements behind each default, and what this cut deliberately leaves out are
+recorded in ADR-0109 (the reusable transcription layer) and ADR-0110 (this consumer).
+
+
 Profile likelihood (identifiability + confidence intervals)
 -----------------------------------------------------------
 

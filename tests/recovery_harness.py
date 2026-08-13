@@ -51,6 +51,7 @@ _ALGORITHMS = {
     'lbfgs': algorithms.LBFGSAlgorithm,   # gradient-based scalar quasi-Newton fallback (#386)
     'gntr': algorithms.GNTRAlgorithm,   # general-objective Fisher/Gauss-Newton trust region (#481)
     'profile_likelihood': algorithms.ProfileLikelihoodAlgorithm,   # PL identifiability (#446/#466)
+    'ms': algorithms.MultipleShootingAlgorithm,   # multiple shooting (#563/ADR-0110)
 }
 
 
