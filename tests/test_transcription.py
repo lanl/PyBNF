@@ -752,18 +752,98 @@ class TestAugmentedLagrangian:
         assert result.defect_norm > 0.1
 
     def test_the_penalty_is_not_raised_on_an_already_feasible_point(self):
-        """The schedule's feasibility target tightens geometrically and will eventually drop
-        below any achievable defect. Without a floor at ``feasibility_tol`` the loop then
-        raises ``rho`` on a point that is feasible by every standard that matters, buying
-        nothing and leaving the next subproblem worse conditioned."""
+        """The schedule's feasibility target ``eta`` tightens geometrically and will
+        eventually drop below any achievable defect. Without a floor at ``feasibility_tol``
+        the loop then raises ``rho`` on a point that is feasible by every standard that
+        matters, buying nothing and leaving the next subproblem worse conditioned.
+
+        Driven directly rather than through a real solve: the inner solver here always
+        lands the same small feasible defect and never reaches the optimality target, so
+        ``eta`` is guaranteed to tighten past it. It jitters the point *along* the
+        constraint (which leaves the defect exactly unchanged) so the stall detector does
+        not end the run before the floor is exercised."""
+        defect = 1e-5
         problem = ConstrainedQuadratic()
-        penalties = []
-        result = AugmentedLagrangian(
-            problem, scalar_inner_solver, max_outer=30,
-            on_iterate=lambda it: penalties.append(it.penalty)).run(np.array([0.9, 0.0]))
-        feasible_from = next(i for i, it in enumerate(result.iterates)
-                             if it.defect_norm <= PenaltySchedule().feasibility_tol)
-        assert len(set(penalties[feasible_from:])) == 1
+        base = ConstrainedQuadratic.OPTIMUM + np.array([defect / 2, defect / 2])
+        calls = {'n': 0}
+
+        def wobbling_solver(subproblem, u0, tolerance):
+            calls['n'] += 1
+            jitter = 1e-6 * (calls['n'] % 2)
+            return InnerOutcome(base + np.array([jitter, -jitter]), converged=False,
+                                n_evaluations=1)
+
+        schedule = PenaltySchedule(feasibility_tol=1e-4, optimality_tol=1e-30)
+        result = AugmentedLagrangian(problem, wobbling_solver, schedule=schedule,
+                                     max_outer=12).run(base)
+        assert result.defect_norm == pytest.approx(defect, rel=1e-6)
+        assert result.defect_norm < schedule.feasibility_tol
+        # eta starts at rho**-0.1 = 0.79 and tightens by rho**-0.9 each accepted step, so
+        # it passes below the achieved defect partway through -- and the penalty must not
+        # move when it does.
+        assert len(result.iterates) == 12
+        assert {it.penalty for it in result.iterates} == {schedule.initial_penalty}
+
+    def test_a_feasible_run_that_stops_improving_stalls_out_rather_than_spinning(self):
+        """Once a run is feasible the schedule's inner tolerance is already floored, so an
+        inner solver that cannot drive the optimality lower re-solves a near-identical
+        subproblem every remaining outer iteration. For a simulator-backed consumer each of
+        those is a full inner solve costing hundreds of simulations, so the loop stops and
+        reports instead. The best certified iterate survives the stall."""
+        problem = ConstrainedQuadratic()
+
+        def stuck_solver(subproblem, u0, tolerance):
+            # Exactly feasible (the offset is along x + y = 1) but stationary only to
+            # ~1e-4, and unable to do better -- the shape of a quasi-Newton method on a
+            # high-penalty augmented Lagrangian.
+            return InnerOutcome(ConstrainedQuadratic.OPTIMUM + np.array([1e-4, -1e-4]),
+                                converged=False, n_evaluations=1)
+
+        result = AugmentedLagrangian(problem, stuck_solver, max_outer=50,
+                                     max_stall=3).run(np.array([0.9, 0.0]))
+        assert result.stop_reason == 'stalled'
+        assert not result.converged
+        assert len(result.iterates) <= 6
+        assert result.defect_norm <= PenaltySchedule().feasibility_tol
+        assert result.best is not None
+
+    def test_a_penalty_raise_on_a_point_that_never_moves_stops_instead_of_escalating(self):
+        """The death spiral the stall detector exists to cut, and the reason it must span
+        the penalty-raising branch too.
+
+        Raising ``rho`` is only justified if the previous inner solve did something. An
+        inner solver that fails on an ill-conditioned subproblem and returns its own start
+        point leaves the defect exactly where it was — which reads as "not feasible
+        enough", raises ``rho`` by ``gamma``, and hands the same solver a strictly harder
+        problem. Left alone the penalty runs to its ceiling, the augmented gradient grows
+        with it, and the point never moves at all."""
+        problem = ConstrainedQuadratic()
+        infeasible_and_frozen = np.array([0.9, 0.9])       # x + y - 1 = 0.8, never moves
+
+        def frozen_solver(subproblem, u0, tolerance):
+            return InnerOutcome(infeasible_and_frozen, converged=False, n_evaluations=1)
+
+        schedule = PenaltySchedule()
+        result = AugmentedLagrangian(problem, frozen_solver, max_outer=50,
+                                     max_stall=3).run(infeasible_and_frozen)
+        assert result.stop_reason == 'stalled'
+        # The first iterate sets the baseline it could fail to improve on, so a run that
+        # goes nowhere from the start costs 1 + max_stall inner solves, not max_outer.
+        assert len(result.iterates) == 4
+        # Three raises, not the two dozen it takes to escalate to the ceiling.
+        assert result.multipliers.penalty == pytest.approx(
+            schedule.initial_penalty * schedule.growth ** 3)
+        assert result.multipliers.penalty < schedule.max_penalty
+        assert result.defect_norm == pytest.approx(0.8)
+
+    def test_a_run_that_keeps_moving_is_not_stalled_by_a_slow_defect(self):
+        """Progress is the defect improving *or* the point moving, so an outer iteration
+        that barely improves feasibility while the point is still travelling does not count
+        against the stall budget."""
+        problem = ConstrainedQuadratic()
+        result = AugmentedLagrangian(problem, scalar_inner_solver, max_outer=30,
+                                     max_stall=1).run(np.array([0.9, 0.0]))
+        assert result.converged, result.stop_reason
 
     def test_the_max_outer_cap_is_honoured(self):
         problem = ConstrainedQuadratic()
@@ -935,11 +1015,14 @@ class TestOfflineMultipleShooting:
         assert (problem.objective_at(feasible).value
                 == pytest.approx(problem.single_shoot_objective(theta), rel=1e-12))
 
-    @INNER_SOLVERS
-    def test_the_converged_transcription_reproduces_the_uninterrupted_fit(self, inner_solver):
+    def test_the_converged_transcription_reproduces_the_uninterrupted_fit(self):
+        """The claim the whole formulation rests on, against an independently computed
+        optimum. Driven by the least-squares inner solver, which is the shape the MVP's
+        own inner optimizer (``gntr``) has; the quasi-Newton solver's weaker behaviour on
+        this problem is measured separately below."""
         problem = self.problem(4, theta_seed=0.4)
-        result = AugmentedLagrangian(problem, inner_solver, max_outer=30).run(
-            problem.layout.initial_point([0.4]))
+        result = AugmentedLagrangian(problem, least_squares_inner_solver,
+                                     max_outer=30).run(problem.layout.initial_point([0.4]))
         assert result.converged, result.stop_reason
         assert result.defect_norm < 1e-5
         assert result.best.reported[0] == pytest.approx(self.optimum, abs=1e-4)
@@ -947,8 +1030,7 @@ class TestOfflineMultipleShooting:
         assert result.best.score == pytest.approx(
             problem.single_shoot_objective(self.optimum), rel=1e-6)
 
-    @INNER_SOLVERS
-    def test_it_converges_from_a_start_whose_knot_states_are_badly_stale(self, inner_solver):
+    def test_it_closes_the_segments_from_a_start_whose_knot_states_are_badly_stale(self):
         """The realistic start, not the flattering one. Seeding the knots from a nominal
         trajectory makes the transcription *feasible* at iteration zero, which is not the
         state a fit is in after theta has moved: the segments start disjoint and the outer
@@ -957,16 +1039,48 @@ class TestOfflineMultipleShooting:
         stale = problem.layout.pack([0.4], {name: [0.1 * problem.y0]
                                             for name in problem.block_names})
         assert problem.equality_at(stale).defect_norm > 1.0
-        result = AugmentedLagrangian(problem, inner_solver, max_outer=40).run(stale)
+        result = AugmentedLagrangian(problem, least_squares_inner_solver,
+                                     max_outer=40).run(stale)
         assert result.converged, result.stop_reason
         assert result.defect_norm < 1e-5
         assert result.best.reported[0] == pytest.approx(self.optimum, abs=1e-4)
+
+    @INNER_SOLVERS
+    def test_a_run_that_reports_convergence_has_the_uninterrupted_fit(self, inner_solver):
+        """The safety property, and the honest form of the optimizer-agnostic claim.
+
+        Whether a given inner solver *reaches* the KKT stop on this problem is a property
+        of that solver, not of the layer: the test needs the defect and the first-order
+        optimality below tolerance in one iterate, and a quasi-Newton method built from
+        gradient differences handles an augmented Lagrangian whose penalty term carries a
+        large ``rho`` less well than a Gauss-Newton one that sees ``rho J^T J`` explicitly.
+        Over 20 data seeds x 2 starts the least-squares solver converges 40/40; the
+        quasi-Newton one converges 23/40 and stalls out honestly on the rest.
+
+        What must hold for *both*, on every seed and every start, is that a run reporting
+        `converged` has actually found the uninterrupted fit — no false positives. A loop
+        that certified a wrong answer would be far worse than one that gives up."""
+        for seed in range(5):
+            times, observations = shooting_data(seed=seed)
+            optimum = single_shoot_optimum(times, observations)
+            problem = ShootingProblem(4, times, observations, theta_seed=0.4,
+                                      horizon=float(times.max()))
+            for start in (problem.layout.initial_point([0.4]),
+                          problem.layout.pack([0.4], {name: [0.1 * problem.y0]
+                                                      for name in problem.block_names})):
+                result = AugmentedLagrangian(problem, inner_solver, max_outer=40).run(start)
+                if not result.converged:
+                    # Giving up is allowed; the run says so and reports what it has.
+                    assert result.stop_reason in ('stalled', 'max_outer'), result.stop_reason
+                    continue
+                assert result.defect_norm < 1e-5, (seed, result.stop_reason)
+                assert result.best.reported[0] == pytest.approx(optimum, abs=1e-4)
 
     def test_the_optimality_measure_is_the_other_half_of_the_kkt_test(self):
         problem = self.problem(4, theta_seed=0.4)
         result = AugmentedLagrangian(problem, least_squares_inner_solver, max_outer=30).run(
             problem.layout.initial_point([0.4]))
-        assert result.converged
+        assert result.converged, result.stop_reason
         assert result.optimality <= PenaltySchedule().optimality_tol
         assert result.iterates[0].optimality > result.iterates[-1].optimality
 

@@ -57,7 +57,7 @@ All notable changes to PyBNF are documented below. This project adheres to
   single-shoot path.
   No behaviour change to any existing fit: nothing imports it yet, it defines no configuration key
   and no `job_type`, and it makes no simulator call — which is what lets the whole layer be
-  verified offline (90 tests, ~0.7 s) against an equality-constrained quadratic whose multiplier is
+  verified offline (93 tests, ~1.4 s) against an equality-constrained quadratic whose multiplier is
   known analytically and a closed-form linear-ODE shooting problem measured against an
   independently computed single-shoot optimum.
   Three measurements from the #563 prototype are baked into the defaults rather than left as

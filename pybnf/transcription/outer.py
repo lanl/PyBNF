@@ -336,6 +336,31 @@ class AugmentedLagrangian:
     :param inner_solver: The inner-solver callable (see the module docstring).
     :param schedule: The :class:`PenaltySchedule`; the defaults carry finding 5.1.
     :param max_outer: Cap on outer iterations.
+    :param max_stall: Consecutive outer iterations that neither improve the scaled defect
+        nor move the point before the run stops with ``stop_reason = 'stalled'``.
+
+        This guards the loop's two ways of going nowhere, and it must span **both** branches
+        of the schedule to do it.
+
+        On the accepting branch: the convergence test needs both criteria satisfied in one
+        iterate, and once a run is feasible the schedule's inner tolerance is already
+        floored, so an inner solver that cannot drive the augmented Lagrangian's optimality
+        lower will re-solve a near-identical subproblem every remaining outer iteration.
+
+        On the penalty-raising branch the failure is worse, because raising ``rho`` is only
+        justified if the previous inner solve *did* something. An inner solver that fails on
+        an ill-conditioned subproblem and returns its own start point leaves the defect
+        exactly where it was — which reads as "not feasible enough", raises ``rho`` by
+        ``gamma``, and hands the same solver a strictly harder problem. That is a death
+        spiral: the penalty runs to its ceiling, the augmented gradient grows with it, and
+        the point never moves at all. Stalling has to be able to fire here, so a penalty
+        raise does not reset the counter.
+
+        Either way, stalling is a real state to *report* rather than a failure: the run has
+        found whatever it found and cannot certify a KKT residual for it.
+
+    Progress is measured as the defect improving, or the point moving — not as the
+    optimality improving, which is not comparable across a change of ``rho``.
     :param shared_best: An optional :class:`CertifiedBest` that every iterate is *also*
         offered to, so a homotopy tracks one best across all its stages. Each
         :meth:`run` keeps its own local best regardless, which is what
@@ -347,14 +372,25 @@ class AugmentedLagrangian:
         produced, for progress logging.
     """
 
+    #: Relative improvement in the scaled defect that counts as progress for the stall
+    #: detector. Deliberately generous: the point is to catch a loop that has stopped
+    #: moving, not to police the rate at which it moves.
+    STALL_FACTOR = 0.9
+
+    #: Relative step below which an outer iterate counts as not having moved.
+    STALL_STEP = 1e-10
+
     def __init__(self, problem, inner_solver, schedule=None, max_outer=25, shared_best=None,
-                 stop_check=None, on_iterate=None):
+                 stop_check=None, on_iterate=None, max_stall=3):
         self.problem = problem
         self.inner_solver = inner_solver
         self.schedule = schedule or PenaltySchedule()
         self.max_outer = int(max_outer)
         if self.max_outer < 1:
             raise TranscriptionError('max_outer must be at least 1; got %r.' % max_outer)
+        self.max_stall = int(max_stall)
+        if self.max_stall < 1:
+            raise TranscriptionError('max_stall must be at least 1; got %r.' % max_stall)
         self.shared_best = shared_best
         self.stop_check = stop_check
         self.on_iterate = on_iterate
@@ -391,6 +427,8 @@ class AugmentedLagrangian:
         defect_norm = np.inf
         optimality = np.inf
         certified = True
+        prev_defect = np.inf
+        stalled_for = 0
 
         for iteration in range(1, self.max_outer + 1):
             if self.stop_check is not None and self.stop_check():
@@ -412,7 +450,10 @@ class AugmentedLagrangian:
             if not np.all(np.isfinite(outcome.point)):
                 stop_reason = 'inner_failed'
                 break
+            previous_point = u
             u = np.clip(outcome.point, layout.lower, layout.upper)
+            step = float(np.max(np.abs(u - previous_point))) / (
+                1.0 + float(np.max(np.abs(previous_point))))
 
             model = subproblem.at(u)
             outer_evals += 1
@@ -439,6 +480,22 @@ class AugmentedLagrangian:
                 converged = optimality <= self.schedule.optimality_tol or outcome.converged
                 stop_reason = 'unconstrained'
                 break
+
+            # Progress is the defect improving or the point moving. It is deliberately NOT
+            # the optimality improving: a penalty raise scales the augmented gradient by
+            # gamma, so optimality is not comparable across one.
+            if defect_norm < self.STALL_FACTOR * prev_defect or step > self.STALL_STEP:
+                stalled_for = 0
+            else:
+                stalled_for += 1
+                if stalled_for >= self.max_stall:
+                    stop_reason = 'stalled'
+                    break
+            # The running *best*, not the previous value: progress means beating what the
+            # run has already achieved. The two coincide for a deterministic inner solver
+            # (an unmoved point gives an unchanged defect); they differ for one that can
+            # return a worse point than it found, which is why this is the conservative form.
+            prev_defect = min(prev_defect, defect_norm)
 
             # A point already feasible to the run's own tolerance is accepted whatever the
             # schedule's current target says. Without this floor the geometrically

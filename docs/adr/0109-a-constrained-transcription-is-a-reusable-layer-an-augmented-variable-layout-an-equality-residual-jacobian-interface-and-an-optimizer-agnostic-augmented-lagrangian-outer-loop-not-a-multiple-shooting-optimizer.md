@@ -218,8 +218,23 @@ digits buy nothing a certificate does not already establish.
 `η` tightens geometrically and will eventually drop below any achievable defect; without this
 floor the loop then raises ρ on a point that is feasible by every standard that matters. On the
 offline shooting problem the floor holds the final ρ at `1.6e5` instead of running it to the `1e8`
-ceiling, and turns one of the two demonstration inner solvers from "stops at the penalty ceiling"
-into "converges".
+ceiling.
+
+**A run that goes nowhere stops, in either branch.** Raising ρ is only justified if the previous
+inner solve *did* something. An inner solver that fails on an ill-conditioned subproblem and
+returns its own start point leaves the defect exactly where it was — which reads as "not feasible
+enough", raises ρ by γ, and hands the same solver a strictly harder problem. Measured on the
+offline shooting problem, that death spiral runs the penalty from `1.25e3` to the `1e8` ceiling
+over ~15 outer iterations during which **the point never moves at all** and the augmented gradient
+grows to `2e6`. A stall detector spanning *both* branches — progress is the scaled defect
+improving or the point moving, and a penalty raise does not reset it — cuts that to
+`1 + max_stall` iterations and reports `stalled`, which is the accurate diagnosis. Progress is
+deliberately not measured by the optimality improving: a penalty raise scales the augmented
+gradient by γ, so optimality is not comparable across one.
+
+Stalling is a state to *report*, not a failure. A feasible, stalled run has found whatever it
+found and could not certify a KKT residual for it — different from having failed, and different
+again from having converged.
 
 ### 5. The homotopy is the mechanism, so it is in the MVP
 
@@ -319,7 +334,7 @@ the earlier record, so a later iterate must be strictly better to displace an es
 
 ## Verification
 
-`tests/test_transcription.py` — 90 tests, no simulator, ~0.7 s. Two closed-form consumers:
+`tests/test_transcription.py` — 93 tests, no simulator, ~1.4 s. Two closed-form consumers:
 
 * an equality-constrained quadratic whose KKT point is known **primally and dually**
   (`(x*, y*) = (0, 1)`, `λ* = 1`). Recovering λ* is what distinguishes an augmented Lagrangian from
@@ -339,20 +354,46 @@ twice. It is checked from a nominal start and from one whose knot states are sta
 magnitude (the realistic case: seeding knots from a nominal trajectory makes the transcription
 feasible at iteration zero, which is not the state a fit is in after θ has moved).
 
-Every claim about the outer loop is checked with **both** inner solvers — a quasi-Newton one
-stepping from the scalar form and a trust-region least-squares one stepping from the stacked
-residual — because "optimizer-agnostic" is a claim about the interface and one solver cannot
-demonstrate it.
+Both inner solvers — a quasi-Newton one stepping from the scalar form and a trust-region
+least-squares one stepping from the stacked residual — drive the same loop, because
+"optimizer-agnostic" is a claim about the interface and one solver cannot demonstrate it. They
+are held to *different* claims, and the difference is itself a finding worth recording.
+
+On the well-conditioned quadratic both converge and both recover `λ* = 1`. On the shooting
+problem they do not behave alike, measured over 30 data seeds × 2 starts (120 runs): the
+least-squares solver converges **60/60**, while the quasi-Newton one converges 36/60 and stalls
+out on the rest. That is a property of the solver, not of the layer — the KKT stop needs the
+defect and the first-order optimality below tolerance in *one* iterate, and a method built from
+gradient differences handles an augmented Lagrangian whose penalty term carries a large ρ less
+well than a Gauss-Newton method that sees `ρ JᵀJ` explicitly. It is a measured argument for the
+MVP's choice of `gntr` as the inner optimizer, not an incidental one.
+
+So the property required of **both**, on every seed and every start, is the safety one: a run
+that reports `converged` has actually found the uninterrupted fit. **0 false positives in 120
+runs**, and every non-converged run stops with `stalled` or `max_outer` — never silently. A loop
+that certified a wrong answer would be far worse than one that gives up.
+
+This was found by CI, not locally: the first revision asserted that *both* solvers converge on
+the shooting problem, which held on this machine and on three of four CI Python versions and
+failed on the fourth. The assertion was testing an inner solver's numerics under a particular
+BLAS; chasing it down is what surfaced the death-spiral bug above.
 
 The offline property itself is checked structurally rather than asserted: a test parses every
 module in the package and fails on any import outside `pybnf.printing`.
 
 The suite catches the mutations that matter, measured rather than assumed. Dropping `ρ` from the
-multiplier update — which turns the method into a plain penalty method — fails 7 tests; dropping
-the `λ/ρ` shift from the stacked residual fails 7; ignoring the constraint scales fails 11;
+multiplier update — which turns the method into a plain penalty method — fails 8 tests; dropping
+the `λ/ρ` shift from the stacked residual fails 8; ignoring the constraint scales fails 10;
 `gram()` losing its cross-block terms fails 2; `carry_over` reseeding a surviving block instead of
-carrying it fails 4; `CertifiedBest` keeping the last record instead of the best fails 3; and
+carrying it fails 4; `CertifiedBest` keeping the last record instead of the best fails 3;
+disabling the stall detector, or letting it count movement without the defect, fails 3; and
 removing the feasibility floor on penalty raises fails 1.
+
+One line is deliberately not mutation-covered: the stall detector's `prev_defect` is the running
+**best** rather than the previous value. For a deterministic inner solver the two coincide (an
+unmoved point gives an unchanged defect), so no test distinguishes them; the conservative form is
+kept for an inner solver that can return a worse point than it found, and the comment says so
+rather than a contrived test pretending to measure it.
 
 ## Consequences
 

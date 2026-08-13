@@ -11,7 +11,7 @@ every form PyBNF's existing optimizers consume, so that "optimizer-agnostic" is 
 of the interface rather than an aspiration.
 
 The three forms, and why the least-squares one is exact
-------------------------------------------------------
+-------------------------------------------------------
 * **scalar** -- ``value`` and ``gradient``, for a quasi-Newton method (``lbfgs``);
 * **least-squares** -- a stacked residual and Jacobian, for a trust-region least-squares
   method (``trf``);
