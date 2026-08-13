@@ -332,6 +332,13 @@ class Configuration:
         # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
         # attaches to the (already-built) objective here, after the normalization grid is compiled.
         self._attach_analytic_scale()
+        # Analytic noise profiling (ADR-0108, #562). Runs last of the objective-facing
+        # steps: it needs the fully built objective (whose per-observable noise specs it
+        # reads) and the loaded free parameters (which it partitions), and it must follow
+        # _check_variable_correspondence, which is a statement about the DECLARED variables
+        # -- profiling removes a declared parameter from the search, not from the .conf.
+        # A no-op (leaves self.variables untouched) unless noise_profiling = 1.
+        self._apply_noise_profiling()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
         # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
@@ -2715,6 +2722,98 @@ class Configuration:
                 f"'{type(self.obj).__name__}' (kl / wasserstein) does not have. Declare 'scale' "
                 f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
         self.obj._analytic_scale = analytic_scale
+
+    def _apply_noise_profiling(self):
+        """Resolve ``noise_profiling = 1`` and partition the free parameters (ADR-0108, #562).
+
+        Profiling replaces every estimated noise scale that IS a free parameter with its
+        closed-form MLE at each evaluation, so those parameters are no longer *searched*: they
+        are removed from :attr:`variables` (the list every algorithm builds its box, population
+        and PSets from) into :attr:`profiled_variables`, and their names are handed to the
+        objective, which solves for them per evaluation.
+
+        Three things deliberately do **not** change:
+
+        * the parameters stay **declared**. ``noise_profiling`` is a switch on an otherwise
+          valid .conf, so the same file runs with and without it (and the declaration is still
+          what ``required_free_noise_params`` validates against). Their bounds and prior become
+          inert -- which is the point: a profiled scale has no box to run into;
+        * they stay **estimated quantities**, so they keep counting in ``k`` for AIC/BIC/AICc
+          (``Algorithm._compute_information_criteria``). Only the *search* drops them;
+        * their fitted values are still reported -- as ``Results/profiled_noise.txt``, since a
+          value the fit solves for rather than proposes is not a coordinate of the best PSet.
+
+        Refusals (all pointed, all before the run starts): a non-per-point objective, an
+        estimated scale with no closed-form profile (each reason listed by
+        :meth:`~pybnf.objective.LikelihoodObjective.noise_profiling_plan`), a fit with nothing
+        to profile, and a **Bayesian sampler** -- profiling maximizes the nuisance out where a
+        posterior integrates it out, so a profiled sampler's draws would not be posterior draws.
+        """
+        self.profiled_noise_params = []
+        self.profiled_variables = []
+        if not self.config.get('noise_profiling'):
+            return
+        if not isinstance(self.obj, objective.LikelihoodObjective):
+            raise UnknownObjectiveFunctionError(
+                'noise_profiling needs a likelihood objective',
+                f"noise_profiling = 1 profiles out an estimated noise scale, but the objective "
+                f"'{type(self.obj).__name__}' has no per-point noise model to estimate one "
+                f"with. Use a likelihood objective (normal / lognormal / lnnormal / laplace) "
+                f"whose scale is declared 'fit <parameter>'.")
+        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
+        if entry is not None and entry.family == 'sampler':
+            raise PybnfError(
+                'noise_profiling is not available for a Bayesian sampler',
+                f"noise_profiling = 1 replaces each estimated noise scale by its maximum-"
+                f"likelihood value, which is a PROFILE, not a marginal: it maximizes the "
+                f"nuisance out where a posterior integrates it over its prior. Draws from "
+                f"'{self.config['fit_type']}' ({entry.display_name}) would therefore not be "
+                f"posterior draws, and the model parameters' credible intervals would be too "
+                f"narrow. Drop noise_profiling for this fit and sample the scale as a free "
+                f"parameter, or use it with an optimizer.")
+        names, refusals = self.obj.noise_profiling_plan()
+        if refusals:
+            listed = '\n  * '.join(refusals)
+            raise PybnfError(
+                'noise_profiling cannot profile every estimated noise scale in this fit',
+                f"noise_profiling = 1 applies to EVERY estimated noise scale in the fit -- "
+                f"profiling some while searching others would silently change what the searched "
+                f"ones mean -- and this fit has one it cannot profile:\n  * {listed}\n"
+                f"Declare those scales as 'fit <parameter>' free parameters (the only form with "
+                f"a closed-form profile), or drop noise_profiling and search them.")
+        if not names:
+            raise PybnfError(
+                'noise_profiling has nothing to profile in this fit',
+                "noise_profiling = 1 was set, but no observable in this fit estimates its noise "
+                "scale as a free parameter -- every scale is fixed (read from a data column, a "
+                "constant, or the measurement). There is no search dimension to remove. Drop "
+                "noise_profiling, or declare a scale with 'noise_model <obs> = <family>, "
+                "<scale> = fit <parameter>'.")
+        profiled = set(names)
+        declared = {v.name for v in self.variables}
+        missing = sorted(profiled - declared)
+        if missing:
+            # An invariant guard rather than a user-facing path: _load_variables already
+            # refuses an undeclared estimated noise parameter, and it and self.variables read
+            # the same config keys. Kept because the alternative failure -- a profiled name
+            # that no evaluation can solve for -- surfaces as a KeyError deep inside scoring.
+            raise PybnfError(
+                f"noise_profiling: noise parameter(s) {', '.join(missing)} are not free parameters",
+                f"noise_profiling = 1 profiles the estimated noise scale(s) "
+                f"{', '.join(missing)}, but they are not declared as free parameters. A profiled "
+                f"scale is still a declared, estimated parameter -- the switch removes it from "
+                f"the SEARCH, not from the .conf -- so declare each one, e.g. "
+                f"'loguniform_var = {missing[0]} 1e-3 1e3'.")
+        self.profiled_variables = [v for v in self.variables if v.name in profiled]
+        self.variables = [v for v in self.variables if v.name not in profiled]
+        self.profiled_noise_params = sorted(profiled)
+        self.obj._profiled_noise_params = frozenset(profiled)
+        print1('Analytic noise profiling: %d estimated noise scale(s) (%s) are profiled out '
+               'of the search (%d searched parameter(s) remain).'
+               % (len(self.profiled_noise_params), ', '.join(self.profiled_noise_params),
+                  len(self.variables)))
+        logger.info('noise_profiling: profiling %s; searching %s'
+                    % (self.profiled_noise_params, [v.name for v in self.variables]))
 
     def _qualitative_scale_param(self):
         """The free-parameter name that ``qualitative_scale = fit <param>`` ties every qualitative

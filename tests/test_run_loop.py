@@ -1167,7 +1167,8 @@ def test_the_budget_is_not_carried_into_a_pickled_backup(tmp_path):
 
 _END_OF_FIT_PATH = ['_copy_best_fit_sims', '_rerun_best_fit_to_save_data', '_emit_best_fit_bngl',
                     '_compute_information_criteria', '_emit_information_criteria',
-                    '_emit_inference_data', '_finalize_backup_pickle', '_teardown_sim_dir']
+                    '_emit_profiled_noise', '_emit_inference_data', '_finalize_backup_pickle',
+                    '_teardown_sim_dir']
 
 
 def test_a_budgeted_stop_runs_the_whole_end_of_fit_path(tmp_path, monkeypatch):

@@ -270,6 +270,7 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     # fixed parameters survive (a fixed-sigma fit never reads it -- harmless there).
     existing = getattr(objective, '_pset_values', None) or {}
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_noise(objective, experiments)
 
     rho_rows = []
     jac_rows = []
@@ -308,6 +309,34 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     return GradientResult(residual=rho, jacobian=jac, gradient=gradient,
                           param_names=names, least_squares_exact=least_squares_exact,
                           hessian=hessian)
+
+
+def _seed_profiled_noise(objective, experiments):
+    """Put every analytically profiled noise scale at its MLE before the point walk (ADR-0108,
+    #562), so the seams below differentiate the loss at ``sigma_hat(theta)`` -- the value the
+    fit's own scoring uses at this point.
+
+    A profiled scale is not among ``free_params`` (the search never carries it), so the
+    ``_pset_values`` seeding above cannot supply it; without this the noise sources would read a
+    stale value from a previous evaluation, or none at all. The gradient itself needs no new
+    term: ``sigma_hat`` minimizes the objective over the scale, so by the envelope theorem
+    ``d/dtheta NLL*(theta) = partial/partial theta NLL(theta, sigma)`` at ``sigma = sigma_hat``
+    -- which is exactly the assembled frozen-scale gradient with the profiled columns dropped
+    (``objective.noise_grad_point``).
+
+    A no-op for a fit that profiles nothing. A degenerate group (an unbounded or non-finite
+    profile) has no gradient to assemble, so it refuses rather than differentiating a value that
+    does not exist."""
+    if not getattr(objective, '_profiled_noise_params', None):
+        return
+    triples = [(sim_data, exp_data, rest[0] if rest else None)
+               for sim_data, exp_data, _routing, *rest in experiments]
+    if not objective._resolve_profiled_noise(triples):
+        raise GradientNotSupported(
+            "An analytically profiled noise scale (noise_profiling = 1, ADR-0108) is degenerate "
+            "at this point -- its group's residual is zero or not finite, so the profiled "
+            "likelihood has no finite value and no gradient. Score this point on the "
+            "gradient-free path, or drop noise_profiling for this fit.")
 
 
 def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
@@ -489,6 +518,7 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     # does, so the Fisher is formed at u (idempotent -- the gradient assembly already seeded it).
     existing = getattr(objective, '_pset_values', None) or {}
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_noise(objective, experiments)
 
     hessian = np.zeros((n_param, n_param))
     for sim_data, exp_data, routing, *rest in experiments:

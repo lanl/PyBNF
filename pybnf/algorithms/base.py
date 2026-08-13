@@ -127,6 +127,14 @@ class Algorithm(ABC):
     #: ``pybnf.main()`` and shared with the refiner, so one file describes the whole run.
     method_chain = None
 
+    #: The noise scales this fit profiled out of the search, at the best fit
+    #: (``{name: sigma_hat}``, ``noise_profiling = 1``, ADR-0108) -- captured by the
+    #: end-of-run tail when it scores the best point, and written to
+    #: ``Results/profiled_noise.txt``. Empty for a fit that profiles nothing (the default).
+    #: A **class** attribute, replaced rather than mutated, so an unpickled algorithm -- and
+    #: the run loop's own tail -- always read a well-defined empty map.
+    _profiled_noise = {}
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
@@ -159,7 +167,12 @@ class Algorithm(ABC):
         self.res_dir = str(Path(self.config.config['output_dir']) / 'Results')
         self.failed_logs_dir = str(Path(self.config.config['output_dir']) / 'FailedSimLogs')
 
-        # Generate a list of variable names
+        # Generate a list of variable names. Under noise_profiling (ADR-0108) this is the
+        # SEARCHED subset: the estimated noise scales the objective solves for analytically
+        # have been partitioned out into config.profiled_noise_params, so every algorithm
+        # builds its box, population and PSets over the reduced dimension without knowing
+        # profiling exists. They remain estimated parameters for AIC/BIC (see
+        # _compute_information_criteria) and are reported by _emit_profiled_noise.
         self.variables = self.config.variables
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
@@ -1256,6 +1269,7 @@ class Algorithm(ABC):
             self._rerun_best_fit_to_save_data(best_pset)
             self._emit_best_fit_bngl(best_pset, best_name)
             self._emit_information_criteria(self._compute_information_criteria(best_pset))
+            self._emit_profiled_noise()
             self._emit_inference_data()
         self._finalize_backup_pickle()
         self._teardown_sim_dir()
@@ -1545,8 +1559,18 @@ class Algorithm(ABC):
             # against exactly the data the fit's objective saw.
             res.normalize(self.config.config['normalization'])
             res.postprocess_data(self.config.postprocessing)
-            return likelihood_information_criteria(
-                self.objective, res.simdata, self.exp_data, best_pset, len(self.variables))
+            # An analytically profiled noise scale (ADR-0108) is still an ESTIMATED quantity,
+            # so it keeps counting in k -- only the search dropped it. Counting the searched
+            # variables alone would shift every AIC/BIC in a profiled fit relative to the same
+            # fit run without profiling, which is exactly the comparison k exists to support.
+            profiled = getattr(self.config, 'profiled_noise_params', ()) or ()
+            k = len(self.variables) + len(profiled)
+            ic = likelihood_information_criteria(
+                self.objective, res.simdata, self.exp_data, best_pset, k)
+            # The scoring call above put every profiled scale at its MLE for the best fit, so
+            # the objective now holds the values this fit estimated for the removed dimensions.
+            self._profiled_noise = dict(getattr(self.objective, '_profiled_noise', None) or {})
+            return ic
         except Exception:
             logger.exception('Failed to compute information criteria for the best fit')
             return None
@@ -1590,6 +1614,40 @@ class Algorithm(ABC):
         print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
                '(k=%d, n=%d, lnL=%.6g)'
                % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
+
+    def _emit_profiled_noise(self):
+        """Write ``Results/profiled_noise.txt`` for a fit that profiles a noise scale out of
+        the search (``noise_profiling = 1``, ADR-0108, #562).
+
+        A profiled scale is fitted, not proposed: it is not a coordinate of the best PSet, so
+        it appears in no ``sorted_params_*.txt`` row. This is where its estimate is reported --
+        the maximum-likelihood value over the points that share it, at the best fit -- so a
+        profiled run states every quantity it estimated, exactly as an unprofiled one does.
+
+        A no-op when nothing was profiled (the default) or when the end-of-run scoring that
+        produces the values did not run. Every failure is logged and swallowed: the run has
+        completed, and a report must never abort it."""
+        if not self._profiled_noise:
+            return
+        lines = [
+            '# Noise scales profiled out of the search analytically (noise_profiling = 1).',
+            '# Each value is the maximum-likelihood scale over the scored points that share',
+            '#   it, evaluated at the best fit -- the estimate for a parameter the search',
+            '#   never proposed, so it appears in no sorted_params_*.txt row. These ARE',
+            '#   estimated parameters: they are counted in k in information_criteria.txt.',
+            '# parameter\tvalue',
+        ]
+        lines += ['%s\t%.10g' % (name, value) for name, value in sorted(self._profiled_noise.items())]
+        path = str(Path(self.res_dir) / 'profiled_noise.txt')
+        try:
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception:
+            logger.exception('Failed to write profiled_noise.txt')
+            return
+        logger.info('Wrote profiled noise scales %s' % path)
+        print1('Profiled noise scale(s) at the best fit: %s'
+               % ', '.join('%s=%.6g' % (n, v) for n, v in sorted(self._profiled_noise.items())))
 
     def _emit_inference_data(self):
         """Write Results/inference_data.nc when ``output_inference_data`` is set (ADR-0055).
