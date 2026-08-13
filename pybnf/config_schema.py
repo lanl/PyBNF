@@ -290,6 +290,17 @@ class GlobalConfig(PyBNFConfigModel):
     # the location-scale families). Per-observable ``noise_model ... location =``
     # fields override it. Validated + applied in Configuration._load_obj_func.
     noise_location: Optional[str] = None
+    # Analytic noise profiling (ADR-0108, #562), likewise an objfunc/noise key. 1 removes every
+    # estimated noise scale that IS a free parameter (a FreeParameterSigma) from the search and
+    # replaces it, at every evaluation, with its closed-form MLE over the points that share it --
+    # so the fit searches 1..k fewer dimensions, no draw is ranked by how wrong its sampled sigma
+    # happens to be, and no sigma can run into a box bound. 0 (the default) is an exact no-op:
+    # an estimated scale stays an ordinary searched free parameter. Refused, with the reason, for
+    # an estimated scale with no closed form (a formula / prediction-formula / per-measurement
+    # sigma, a Student-t df, a MEAN on a log scale) and for a Bayesian sampler (a profile is not
+    # a marginal, so the posterior it would produce is not one). Resolved in
+    # Configuration._apply_noise_profiling.
+    noise_profiling: int = 0
 
     # --- simplex ---
     # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);

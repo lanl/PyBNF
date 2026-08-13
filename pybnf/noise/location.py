@@ -22,6 +22,15 @@ class LocationInterpretation:
     family's additive-space location parameter -- 0 for the median, the family's
     moment correction for the mean."""
 
+    #: Whether this interpretation's offset is identically 0 -- for **every** family on
+    #: **every** scale. True for the median (which commutes with the monotone transform),
+    #: False for the mean (whose moment correction is 0 only on the linear scale). Read as
+    #: a *static* property, without evaluating ``offset``: analytic noise profiling
+    #: (ADR-0108) needs to know at config time whether the location parameter moves with
+    #: the noise scale, and calling ``offset`` to find out would raise for the very corner
+    #: it is asking about (a log-Laplace mean needs ``b*ln(base) < 1``).
+    offset_always_zero = False
+
     def offset(self, noise_model, noise):
         raise NotImplementedError
 
@@ -33,6 +42,8 @@ class LocationInterpretation:
 
 
 class _Median(LocationInterpretation):
+    offset_always_zero = True
+
     def offset(self, noise_model, noise):
         return 0.0
 

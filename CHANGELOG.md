@@ -42,6 +42,42 @@ All notable changes to PyBNF are documented below. This project adheres to
   *and* the polish did has two facts to report, not one that replaces the other.
 
 ### Added
+- **`noise_profiling = 1`: profile an estimated noise scale out of the search analytically (#562,
+  ADR-0108).** ADR-0066 already profiles a declared column's optimal multiplicative **scale** out
+  of the fit; this is the other half of the same classical trick. Every noise parameter declared
+  `= fit <parameter>` is removed from the search and replaced, at each evaluation, by its
+  closed-form maximum-likelihood value over the scored points that share it — the weighted residual
+  RMS `sqrt(sum w r**2 / sum w)` for the Gaussian families (`normal` / `lognormal` / `lnnormal`),
+  the weighted mean absolute residual `sum w |r| / sum w` for `laplace`. Opt-in; `0` (the default)
+  is an exact no-op.
+  Why it matters beyond the dimension count: at a random point in the box the sampled scale is
+  nowhere near its optimum, so the `log sigma` term dominates and a global sampler ranks candidates
+  mostly by *how wrong their sigma happens to be* rather than by how well their dynamics fit. On
+  `Borghans_BiophysChem1997` every optimizer that can run it converges to the same attractor, and
+  that attractor is exactly the **no-dynamics solution** (a flat line at the best constant with
+  sigma at the residual RMS, `-51.204092` analytically and `-51.204092` reported). Across the
+  Grein et al. 2026 subset-I corpus a plain free-parameter sigma accounts for **32 parameters in 13
+  of 23 slugs** — 4 % to 33 % of the search. A profiled scale also has no box to run into, so a fit
+  can no longer optimize its sigma into an upper bound and absorb model misfit as "measurement
+  noise" (`Schwen_PONE2015`'s `IR_obs_std`).
+  The switch is all-or-nothing within a fit and is refused *before the run starts*, naming the
+  reason, for anything without a closed form: a `formula` / `prediction_formula` / per-measurement
+  sigma, a `student_t` `df`, the `neg_bin` dispersion, a `location = mean` prediction on a log
+  scale, one free parameter serving as the scale of two different families, or a fit with nothing
+  to profile. A **fixed** scale (a data column, `fix_at`, `relative`) is not searched, so it is
+  simply left alone. Refused for the Bayesian samplers too: profiling *maximizes* the nuisance out
+  where a posterior *integrates* it out, so the draws would not be posterior draws.
+  Profiled parameters stay declared (the same `.conf` runs with and without the key; their bounds
+  and prior become inert) and stay **estimated**, so they keep counting in `k` in
+  `information_criteria.txt` — otherwise every AIC/BIC would shift between the two runs. Their
+  fitted values are written to the new **`Results/profiled_noise.txt`** and echoed on the console,
+  since a value the fit solves for rather than proposes is not a coordinate of the best parameter
+  set and appears in no `sorted_params_*.txt` row.
+  Gradient support comes free by the envelope theorem — `job_type = lbfgs` and `gntr` consume the
+  exact scalar gradient with the sigma columns dropped, and no new forward sensitivity is needed.
+  `job_type = trf` refuses a profiled fit (as it already refused a searched free scale): under
+  profiling the least-squares residual norm is identically constant, so a trust-region residual
+  model carries no information about the parameters.
 - **`Results/method_chain.json`: which methods a run actually executed (#564, ADR-0107).** Written
   by every run — budget or no budget — it carries the chain the conf requested
   (`requested_methods`), the chain that ran (`executed_methods`), and one entry per phase (the fit,

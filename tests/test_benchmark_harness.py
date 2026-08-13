@@ -81,6 +81,10 @@ _EXCLUDE = frozenset({
     'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
     'qualitative_loss', 'qualitative_scale', 'generate_network', 'proposal', 'n_try',
     'kalman_burnin_frac', 'wall_time_fit', 'wall_time_refine_frac', 'sbml_rtol', 'sbml_atol',
+    # Post-freeze objfunc/noise key (#562): analytic noise profiling, off by default, and
+    # refused for the sampler fit_types this oracle covers -- so it says nothing about the
+    # synthesized configs this test compares. Excluded alongside its sibling noise_location.
+    'noise_profiling',
 })
 
 

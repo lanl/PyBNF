@@ -162,5 +162,29 @@ class Laplace(NoiseModel):
                 "use job_type = lbfgs.")
         return {'scale': 1.0 / noise ** 2.}
 
+    def supports_profiled_scale(self):
+        """A Laplace scale is profilable on the same condition as Gaussian's sigma -- an
+        identically zero location offset (a MEDIAN on any scale, or any location on the
+        LINEAR scale). The refused corner is likewise a MEAN on a log scale, where the
+        Laplace moment correction ``-ln(1 - b**2 t**2)/t`` moves the location with ``b``
+        (ADR-0108). ``bool(...)`` for the same reason as Gaussian's: ``ln_base`` is a numpy
+        scalar."""
+        return bool(self.location.offset_always_zero or self.additive_on.ln_base == 0.0)
+
+    def profile_statistic(self, prediction, observation):
+        """``|r|``, the absolute additive-space residual (ADR-0108) -- the L1 statistic, as
+        the Gaussian's is the L2 one. The gate above guarantees a zero location offset, so
+        ``r`` is free of ``b``."""
+        return abs(self.additive_on.forward(prediction) - self.additive_on.forward(observation))
+
+    def profiled_scale(self, stat_total, weight_total):
+        """``b_hat = Σ w |r| / Σ w`` -- the weighted mean absolute residual (ADR-0108).
+
+        The group's contribution is ``Σ w |r|/b + (Σ w) log(2 b)``, whose derivative
+        ``-Σ w |r|/b**2 + Σ w/b`` vanishes here. This is the least-absolute-deviation
+        twin of the Gaussian's residual RMS; note it is *not* the RMS, which is why the
+        two families cannot share one profiling group."""
+        return float(stat_total / weight_total)
+
     def log_normalizer(self, noise):
         return np.log(2. * noise)

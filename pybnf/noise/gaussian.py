@@ -118,6 +118,35 @@ class Gaussian(NoiseModel):
                 "path (job_type = gntr, #481) does not assemble this cut; use job_type = lbfgs.")
         return {'sigma': 2.0 / noise ** 2.}
 
+    def supports_profiled_scale(self):
+        """A Gaussian sigma is profilable whenever the location offset is identically 0 --
+        a MEDIAN on any scale, or any location on the LINEAR scale (where the moment
+        correction ``ln(base)*sigma**2/2`` vanishes because ``ln(base)`` is 0). A MEAN on a
+        log scale is the one refused corner: there ``mu = forward(pred) -
+        ln(base)*sigma**2/2`` moves the location with the scale, so the stationarity
+        condition is no longer the quadratic below (ADR-0108). ``bool(...)`` because
+        ``ln_base`` is a numpy scalar, and a predicate a caller may compare with ``is`` must
+        not come back as ``np.bool_``."""
+        return bool(self.location.offset_always_zero or self.additive_on.ln_base == 0.0)
+
+    def profile_statistic(self, prediction, observation):
+        """``r**2``, the squared additive-space residual (ADR-0108). The gate above
+        guarantees the location offset is 0 here, so ``mu`` is ``forward(prediction)``
+        and ``r`` carries no dependence on sigma -- which is exactly what makes
+        :meth:`profiled_scale` a closed form."""
+        residual = self.additive_on.forward(prediction) - self.additive_on.forward(observation)
+        return residual ** 2.
+
+    def profiled_scale(self, stat_total, weight_total):
+        """``sigma_hat = sqrt(Σ w r**2 / Σ w)`` -- the weighted residual RMS (ADR-0108).
+
+        The group's contribution to the objective is ``Σ w r**2/(2 sigma**2) + (Σ w) log
+        sigma`` (``data_fit`` plus the ``log sigma`` normalizer an estimated scale keeps,
+        each carrying the point's fit weight exactly as ``evaluate`` sums them), whose
+        derivative ``-Σ w r**2/sigma**3 + Σ w/sigma`` vanishes at this value. With unit
+        weights it is the textbook ``sqrt(Σ r**2/n)``."""
+        return float(np.sqrt(stat_total / weight_total))
+
     def log_normalizer(self, noise):
         return np.log(noise)
 

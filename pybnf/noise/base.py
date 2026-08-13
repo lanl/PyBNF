@@ -111,6 +111,50 @@ class NoiseModel(ABC):
         df-block (``'df'``)."""
         return {self.noise_params[0]: self.log_normalizer(noise)}
 
+    def supports_profiled_scale(self):
+        """Whether this family's **primary** noise parameter (``noise_params[0]``) has a
+        closed-form profile MLE -- the family-side precondition for analytic noise
+        profiling (``noise_profiling = 1``, ADR-0108, #562).
+
+        Profiling removes an estimated scale from the search by replacing it, at every
+        evaluation, with the value that minimizes the fit's own objective over that scale.
+        That is only a *closed form* when the per-point loss splits as ``t_i/g(sigma) +
+        (its normalizer)`` with the location parameter free of ``sigma`` -- true for the
+        **Gaussian** (``sigma_hat**2 = Σ w r**2 / Σ w``) and the **Laplace**
+        (``b_hat = Σ w |r| / Σ w``) whenever the location offset is identically zero, and
+        false for everything else in the menu (Student-t's ``sigma`` couples to ``df``;
+        the count family's dispersion has no closed form; a MEAN on a log scale moves the
+        location with the scale).
+
+        ``False`` on the base, so a family that has not derived the closed form is refused
+        with a pointed message rather than silently profiled with the wrong one. The pair
+        that answers ``True`` implements :meth:`profile_statistic` and
+        :meth:`profiled_scale`."""
+        return False
+
+    def profile_statistic(self, prediction, observation):
+        """The per-point sufficient statistic ``t_i`` whose weighted sum determines this
+        family's profiled scale (ADR-0108) -- ``r**2`` for the Gaussian, ``|r|`` for the
+        Laplace, with ``r`` the additive-space residual.
+
+        Deliberately takes no noise parameter: the whole point is that ``t_i`` is
+        scale-free, so one walk of the data yields ``Σ w t`` and :meth:`profiled_scale`
+        turns it into ``sigma_hat``. Defined only for a family whose
+        :meth:`supports_profiled_scale` is True; the base raises."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no closed-form profiled noise scale, so it has no '
+            f'profiling statistic (ADR-0108)')
+
+    def profiled_scale(self, stat_total, weight_total):
+        """The profiled MLE of this family's primary noise parameter from the group's
+        ``stat_total`` (``Σ w t_i``) and ``weight_total`` (``Σ w``) -- ADR-0108.
+
+        The *group* is the set of scored points that share one estimated scale, so this is
+        called once per group per evaluation, never per point. Defined only for a family
+        whose :meth:`supports_profiled_scale` is True; the base raises."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no closed-form profiled noise scale (ADR-0108)')
+
     def with_location(self, location):
         """Return a copy of this family reinterpreting the prediction as a different
         distributional summary -- the location axis (ADR-0011/0024/0031). Every noise

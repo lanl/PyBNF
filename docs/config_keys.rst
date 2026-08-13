@@ -393,6 +393,59 @@ Required Keys
     * ``noise_location = mean``
 
 
+.. _noise_profiling:
+
+**noise_profiling**
+  Profile every **estimated noise scale** out of the search analytically instead of
+  fitting it as an ordinary free parameter (``1`` to enable; default ``0``, off).
+  Applies to each noise parameter declared ``= fit <parameter>`` (a scale that *is* a
+  free parameter). At every evaluation such a scale is replaced by its closed-form
+  maximum-likelihood value over the scored points that share it -- the weighted residual
+  RMS ``sqrt(sum w r**2 / sum w)`` for a ``normal`` / ``lognormal`` / ``lnnormal``
+  observable, the weighted mean absolute residual ``sum w |r| / sum w`` for ``laplace``
+  -- so those dimensions leave the search entirely and every parameter set the fit
+  evaluates is scale-optimal by construction.
+
+  Why it helps: at a random point in the box the sampled scale is nowhere near its
+  optimum, so the ``log sigma`` term dominates and a global search ranks candidates
+  mostly by *how wrong their sigma happens to be* rather than by how well their dynamics
+  fit. It also removes 1 to k search dimensions, and a profiled scale has no box to run
+  into (a searched one can optimize into its upper bound and silently absorb model
+  misfit as "measurement noise").
+
+  The switch is **all-or-nothing** within a fit, and is refused before the run starts --
+  naming the reason -- when any estimated scale has no closed-form profile: a
+  ``formula`` / ``prediction_formula`` / per-measurement sigma, a ``student_t`` ``df``,
+  the ``neg_bin`` dispersion, or a ``location = mean`` prediction on a log scale. A
+  **fixed** scale (a data column, ``fix_at``, ``relative``) is not searched, so it is
+  simply left alone. Also refused for the Bayesian samplers (``mcmc``, ``pt``, ``am``,
+  ``dream``, ...): profiling *maximizes* the nuisance out where a posterior *integrates*
+  it out, so the draws would not be posterior draws.
+
+  The profiled parameters must still be **declared** as free parameters (the same
+  ``.conf`` runs with and without the key); their bounds and prior simply become inert.
+  They remain estimated quantities, so they keep counting in ``k`` in
+  ``Results/information_criteria.txt``, and their fitted values are written to
+  ``Results/profiled_noise.txt`` -- they are not coordinates of the best parameter set,
+  so they appear in no ``sorted_params_*.txt`` row.
+
+  Supported by every optimizer, including ``lbfgs`` and ``gntr``. ``job_type = trf``
+  refuses a profiled fit (as it already refuses a searched free scale): under profiling
+  the least-squares residual norm is constant, so a trust-region residual model carries
+  no information -- use ``lbfgs``.
+
+  See :ref:`normalization <normalization_key>` ``= scale`` for the same trick applied to
+  an unknown multiplicative scale on the data.
+
+  Example::
+
+    edition = 2
+    job_type = cmaes
+    noise_model = normal, sigma = fit sigma_obs
+    loguniform_var = sigma_obs 1e-3 1e3   # still declared; bounds now inert
+    noise_profiling = 1
+
+
 .. _noise_model_key:
 
 **noise_model**

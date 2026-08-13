@@ -139,6 +139,22 @@ If the undead jobs become problematic, it is possible to kill them manually. Use
 
 
 
+.. _profiled_sigma_missing:
+
+My fitted noise scale is missing from ``sorted_params_final.txt``
+----------------------------------------------------------------
+
+You set :ref:`noise_profiling <noise_profiling>` ``= 1``, so that scale is no longer
+*searched*: PyBNF solves for it analytically at every evaluation instead of proposing values
+for it. It is therefore not a coordinate of the best parameter set and appears in no
+``sorted_params_*.txt`` row.
+
+Its fitted value is in ``Results/profiled_noise.txt`` (and is echoed on the console at the end
+of the run). It is still an estimated parameter, so it is still counted in ``k`` in
+``Results/information_criteria.txt``. Drop ``noise_profiling`` if you want the scale searched
+as an ordinary free parameter and reported alongside the model parameters.
+
+
 PyBNF has encountered a fatal error
 -----------------------------------
 This error occurs when the scheduler loses connection with the cluster. The simulation data is generally backed up and the simulation can be resumed from the point it exited using the -r flag 'pybnf -c .conf -r'. 

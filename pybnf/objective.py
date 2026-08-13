@@ -170,6 +170,41 @@ class ObjectiveFunction:
     #: default means no column is scaled, so a job without ``scale`` is byte-identical.
     _scale_factors = {}
 
+    #: Analytic noise profiling (ADR-0108, #562): the estimated noise-scale free-parameter
+    #: names (:class:`~pybnf.noise.FreeParameterSigma`) this fit **profiles out** instead of
+    #: searching. Each is replaced, at every evaluation, by its closed-form MLE over the
+    #: scored points that share it, so the search never carries the dimension and every draw
+    #: is scale-optimal. The empty default is an exact no-op -- an estimated scale stays an
+    #: ordinary free parameter in the box. Populated from ``noise_profiling = 1`` at build.
+    _profiled_noise_params = frozenset()
+
+    #: The profiled scales ``{name: sigma_hat}`` from the most recent evaluation -- what the
+    #: fit *estimated* for each removed dimension, read back by the end-of-run report
+    #: (``Results/profiled_noise.txt``). Empty for a fit that profiles nothing.
+    _profiled_noise = {}
+
+    @staticmethod
+    def _experiments(sim_data_dict, exp_data_dict):
+        """The ``(sim_data, exp_data, data_key)`` triples this evaluation scores -- every
+        simulated model/suffix that has matching experimental data, the same pairing every
+        scoring walk makes. Built once so :meth:`_resolve_profiled_noise` profiles over
+        exactly the experiments the caller is about to walk (ADR-0108)."""
+        return [(sim_data_dict[m][s], exp_data_dict[m][s], s)
+                for m in sim_data_dict for s in sim_data_dict[m] if s in exp_data_dict[m]]
+
+    def _resolve_profiled_noise(self, experiments):
+        """Replace every analytically profiled noise scale with its closed-form MLE over the
+        points that share it, in the ``{name: value}`` map the noise sources read (ADR-0108).
+
+        ``experiments`` is an iterable of ``(sim_data, exp_data, data_key)`` -- the same
+        model/suffix pairs the caller is about to score. Returns ``True`` when scoring may
+        proceed and ``False`` when a profiled group is **degenerate** (see the override).
+
+        The base is the no-op ``True``: a non-likelihood objective estimates no noise
+        parameter, so there is nothing to profile. :class:`LikelihoodObjective` overrides it.
+        """
+        return True
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -213,6 +248,16 @@ class ObjectiveFunction:
                 # attached (the default), so every non-PEtab job is byte-identical.
                 if self.measurement:
                     self.measurement.apply(sim_data_dict, self._pset_values)
+                # Analytic noise profiling (ADR-0108, #562): put every profiled scale at its
+                # own MLE before the scoring loop reads it, so this evaluation is scale-optimal
+                # by construction. One extra walk of the scored points (never of the
+                # simulation); the ``_profiled_noise_params`` test short-circuits it to nothing
+                # -- not even the experiment list -- for a fit that profiles nothing. A
+                # degenerate group leaves the point unscoreable, exactly as a NaN/inf
+                # prediction does below.
+                if self._profiled_noise_params and not self._resolve_profiled_noise(
+                        self._experiments(sim_data_dict, exp_data_dict)):
+                    return None
                 for model in sim_data_dict:
                     for suffix in sim_data_dict[model]:
                         # Suffixes might exist in sim_data_dict that do not have experimental data.
@@ -1103,6 +1148,202 @@ class LikelihoodObjective(SummationObjective):
         names = family.noise_params
         return values[names[0]], {n: values[n] for n in names[1:]}
 
+    # ----------------------------------------------------------------- #
+    # Analytic noise profiling (ADR-0108, #562)
+    # ----------------------------------------------------------------- #
+
+    def noise_profiling_plan(self):
+        """What ``noise_profiling = 1`` would profile out of this objective, and why it
+        would refuse (ADR-0108, #562) -- the config-time gate, answered from the *declared*
+        noise specs rather than a walked point set, so a fit is refused before it starts.
+
+        Returns ``(names, refusals)``: ``names`` the sorted estimated free-parameter names
+        whose scale has a closed-form profile MLE, ``refusals`` a list of one-line reasons a
+        declared estimated scale is **not** profilable. A caller enables profiling only when
+        ``refusals`` is empty and ``names`` is not -- profiling *some* of a fit's estimated
+        scales while searching others would silently change what the remaining ones mean.
+
+        An estimated scale is profilable when all four hold:
+
+        * its source is a plain :class:`~pybnf.noise.FreeParameterSigma` -- σ *is* a free
+          parameter. A composite estimated σ (a ``formula`` / ``prediction_formula`` /
+          per-measurement source) has no closed form: its coefficients enter nonlinearly and
+          are not what the profile solves for;
+        * it is the family's **primary** noise parameter (``noise_params[0]``) -- Student-t's
+          ``df`` is a second estimated parameter the σ profile cannot hold optimal;
+        * the family supplies the closed form
+          (:meth:`~pybnf.noise.base.NoiseModel.supports_profiled_scale`: Gaussian / Laplace
+          off the log-scale MEAN corner);
+        * every observable sharing the name uses the **same family**. The group's MLE is one
+          expression over its points -- the Gaussian's residual RMS is not the Laplace's mean
+          absolute residual -- so a name that is a Gaussian sigma here and a Laplace scale
+          there has no single closed form.
+
+        A *fixed* source (a data column, a constant, a relative scale) is silently skipped:
+        it is not searched, so there is nothing to profile and nothing to refuse.
+        """
+        specs = [('the fit default noise model', self.noise, self._default_sources())]
+        specs += [("observable '%s'" % col, family, sources)
+                  for col, (family, sources) in sorted(self.overrides.items())]
+        names, refusals, seen_family = set(), [], {}
+        for label, family, sources in specs:
+            if family is None:
+                continue
+            primary = family.noise_params[0]
+            for param, source in sources.items():
+                if not source.estimated:
+                    continue
+                if not isinstance(source, FreeParameterSigma):
+                    refusals.append(
+                        "%s estimates its noise '%s' from a %s, which has no closed-form "
+                        "profile -- only a scale that IS a free parameter does"
+                        % (label, param, type(source).__name__))
+                    continue
+                if param != primary:
+                    refusals.append(
+                        "%s estimates the secondary noise parameter '%s' (%s) as free "
+                        "parameter '%s'; only a family's primary scale '%s' has a closed-form "
+                        "profile" % (label, param, type(family).__name__, source.name, primary))
+                    continue
+                if not family.supports_profiled_scale():
+                    refusals.append(
+                        "%s uses %s noise whose scale '%s' has no closed-form profile in this "
+                        "configuration (a MEAN prediction on a log scale moves the location "
+                        "with the scale; Student-t and the count family have no closed form "
+                        "at all)" % (label, type(family).__name__, source.name))
+                    continue
+                previous = seen_family.get(source.name)
+                if previous is not None and type(previous) is not type(family):
+                    refusals.append(
+                        "free parameter '%s' is the noise scale of more than one family (%s and "
+                        "%s), so the points that share it have no single closed-form profile"
+                        % (source.name, type(previous).__name__, type(family).__name__))
+                    continue
+                seen_family[source.name] = family
+                names.add(source.name)
+        return sorted(names), refusals
+
+    def _profiled_source_name(self, family, sources):
+        """The profiled free-parameter name this observable's primary noise scale reads, or
+        ``None`` when its scale is fixed, searched, or not profiled (ADR-0108). The one place
+        the runtime decides whether a scored point belongs to a profiling group."""
+        if family is None:
+            return None
+        source = sources.get(family.noise_params[0])
+        if isinstance(source, FreeParameterSigma) and source.name in self._profiled_noise_params:
+            return source.name
+        return None
+
+    def _is_profiled(self, source):
+        """Whether one noise source's scale is analytically profiled rather than searched
+        (ADR-0108) -- the gradient seams' test for "this parameter contributes no column"."""
+        return (isinstance(source, FreeParameterSigma)
+                and source.name in self._profiled_noise_params)
+
+    def _resolve_profiled_noise(self, experiments):
+        """Put every profiled noise scale at its closed-form MLE in ``_pset_values``, over the
+        scored points that share it (ADR-0108, #562). Overrides the base no-op.
+
+        ``experiments`` is an iterable of ``(sim_data, exp_data, data_key)``. One walk over
+        exactly the points the caller is about to score accumulates each group's ``(Σ w t,
+        Σ w)``; the family turns that pair into ``sigma_hat``
+        (:meth:`~pybnf.noise.base.NoiseModel.profiled_scale`). Every source then reads
+        ``sigma_hat`` from the pset map exactly as it read the searched parameter, so nothing
+        downstream -- scoring, the pointwise density, the gradient -- knows the difference.
+
+        Returns ``False`` (the evaluation is not scoreable, so the caller scores it the way it
+        scores a NaN prediction) when a group's statistic is not **finite and strictly
+        positive**:
+
+        * not finite -- a prediction outside the family's additive scale (a non-positive value
+          under a log family) makes the residual infinite. Without profiling that point scores
+          ``+inf``; with it, ``sigma_hat`` would be infinite and the whole group's score a NaN.
+        * zero -- every point in the group is matched *exactly*, so the profiled likelihood is
+          unbounded (``sigma_hat = 0``, ``log sigma_hat = -inf``). There is no finite objective
+          to report, and returning ``-inf`` would hand the optimizer a global minimum it can
+          reach only by degeneracy.
+
+        A profiled name that no scored point reads (an override shadows every observable the
+        default spec would have covered) is simply left out of the map -- nothing reads it, so
+        there is nothing to solve for.
+        """
+        if not self._profiled_noise_params:
+            return True
+        stats = {}
+        for sim_data, exp_data, data_key in experiments:
+            self._accumulate_profile_stats(sim_data, exp_data, data_key, stats)
+        # The accumulation walk set per-experiment scale factors (ADR-0066); the scoring loop
+        # recomputes them per experiment, so hand it back the empty state it starts from
+        # rather than whichever experiment happened to be walked last.
+        self._scale_factors = {}
+        values = {}
+        for name, (stat_total, weight_total, family) in stats.items():
+            if weight_total <= 0.0:
+                continue
+            if not np.isfinite(stat_total) or stat_total <= 0.0:
+                self._warn_degenerate_profile(name, stat_total)
+                return False
+            values[name] = family.profiled_scale(stat_total, weight_total)
+        self._pset_values.update(values)
+        self._profiled_noise = values
+        return True
+
+    def _accumulate_profile_stats(self, sim_data, exp_data, data_key, stats):
+        """Accumulate one experiment's ``{name: [Σ w t, Σ w, family]}`` profiling statistics
+        (ADR-0108). Walks exactly the points ``SummationObjective.evaluate`` scores -- same
+        independent variable, same comparable-column intersection, same ``_sim_row_for`` row
+        match, same NaN-observation and NaN/inf-prediction skips -- so the profile is taken
+        over the points the objective is about to sum, never a different set.
+
+        The per-series analytic scale (ADR-0066) is resolved first and read through the same
+        ``_prediction`` seam, so a scaled column profiles its noise from its *scaled*
+        prediction. That ordering is the right one: ``c*`` does not depend on σ, while the
+        residual σ is profiled from does depend on ``c*``."""
+        indvar = min(exp_data.cols, key=exp_data.cols.get)
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)
+        compare_cols.discard(indvar)
+        self._scale_factors = self._analytic_scale_factors(
+            sim_data, exp_data, indvar, compare_cols, data_key)
+        for rownum in range(exp_data.data.shape[0]):
+            sim_row = None
+            for col_name in sorted(compare_cols):
+                observation = exp_data.data[rownum, exp_data.cols[col_name]]
+                if np.isnan(observation):
+                    continue
+                family, sources = self._spec_for(col_name)
+                name = self._profiled_source_name(family, sources)
+                if name is None:
+                    continue
+                if sim_row is None:
+                    sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum,
+                                                show_warnings=False)
+                prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
+                if np.isnan(prediction) or np.isinf(prediction):
+                    continue
+                weight = exp_data.weights[rownum, exp_data.cols[col_name]]
+                entry = stats.setdefault(name, [0.0, 0.0, family])
+                entry[0] += weight * family.profile_statistic(prediction, observation)
+                entry[1] += weight
+
+    def _warn_degenerate_profile(self, name, stat_total):
+        """Say once why a profiled noise group left an evaluation unscoreable (ADR-0108).
+
+        Deduplicated through the shared ``warned`` set: the condition is a property of the
+        parameter set, so an optimizer that keeps proposing such points would otherwise print
+        one line per evaluation."""
+        key = 'degenerate-profile:%s' % name
+        if key in self.warned:
+            return
+        self.warned.add(key)
+        reason = ('every scored point matches its observation exactly, so the profiled '
+                  'likelihood is unbounded' if stat_total == 0.0 else
+                  'a prediction lies outside its noise family\'s scale, so the residual is '
+                  'not finite')
+        print1("Warning: the analytically profiled noise scale '%s' is degenerate for at least "
+               "one parameter set (%s). Those parameter sets score as failed simulations do; "
+               "the rest of the fit is unaffected." % (name, reason))
+
     #: A per-point likelihood can be left-one-out, so it supports LOO/WAIC (ADR-0056).
     supports_pointwise_log_likelihood = True
 
@@ -1133,6 +1374,12 @@ class LikelihoodObjective(SummationObjective):
         with np.errstate(all='ignore'):
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
+            # The densities are scored at the same profiled scales the fit scored (ADR-0108),
+            # so LOO/WAIC and information_criteria.txt describe the fit that ran. A degenerate
+            # group yields no points, which the consumers already treat as "no likelihood".
+            if self._profiled_noise_params and not self._resolve_profiled_noise(
+                    self._experiments(sim_data_dict, exp_data_dict)):
+                return [], np.array([], dtype=float)
             for model in sim_data_dict:
                 for suffix in sim_data_dict[model]:
                     if suffix in exp_data_dict[model]:
@@ -1224,6 +1471,12 @@ class LikelihoodObjective(SummationObjective):
         with np.errstate(all='ignore'):
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
+            # R = diag(sigma**2) is formed from the same profiled scales the fit scored
+            # (ADR-0108); a degenerate group has no variance to report, so the proposal
+            # degrades to its unsupported-objective path exactly as a non-Gaussian one does.
+            if self._profiled_noise_params and not self._resolve_profiled_noise(
+                    self._experiments(sim_data_dict, exp_data_dict)):
+                return None
             for model in sim_data_dict:
                 for suffix in sim_data_dict[model]:
                     if suffix in exp_data_dict[model]:
@@ -1413,6 +1666,18 @@ class LikelihoodObjective(SummationObjective):
         if not estimated:
             return None
         self._require_gradient_supported(col_name, family, sources)
+        # Analytic noise profiling (ADR-0108, #562): a profiled scale sits at its own MLE at
+        # every evaluation, so ∂L/∂σ is zero there and -- by the envelope theorem -- it
+        # contributes NO gradient column. The rest of this point's gradient is exactly the
+        # frozen-σ one the assembly already builds, evaluated at σ̂.
+        estimated = {name: src for name, src in estimated.items() if not self._is_profiled(src)}
+        if not estimated:
+            # An explicit zero rather than None: the assembly reads a non-None return as "this
+            # objective is not an exact least-squares model", which is precisely right under
+            # profiling -- the profiled residual norm ‖ρ‖² is the CONSTANT Σw (σ̂ divides it
+            # out), so a trust-region solver consuming the residual form would see a flat
+            # surface. The scalar gradient this vector rides on is exact; TRF refuses.
+            return np.zeros(len(index))
         # Each estimated source's declared free parameter(s) must be gradient free parameters --
         # a free sigma routes to NONE (its column lives only on the scalar path); a prediction
         # sigma's coefficients likewise. (Kept as the pre-ADR-0079 per-name check, now over the
@@ -1530,6 +1795,13 @@ class LikelihoodObjective(SummationObjective):
         if not estimated:
             return None
         self._require_gradient_supported(col_name, family, sources)
+        # A profiled scale (ADR-0108) is not a search coordinate, so it contributes no Fisher
+        # block. Nor does dropping it bias the location block the EFIM step is built from: the
+        # location↔scale cross-Fisher is 0 in expectation for these families (E[residual] = 0),
+        # which is exactly the term a profile Hessian would subtract.
+        estimated = {name: src for name, src in estimated.items() if not self._is_profiled(src)}
+        if not estimated:
+            return None
         # Each estimated source's declared free parameter(s) must be gradient free parameters --
         # mirrors the noise_grad_point guard (its sigma_sensitivity indexes them), so a missing
         # nuisance surfaces the same pointed error on the Fisher path as on the scalar path.
