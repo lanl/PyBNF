@@ -54,6 +54,31 @@ All notable changes to PyBNF are documented below. This project adheres to
   *and* the polish did has two facts to report, not one that replaces the other.
 
 ### Added
+- **A constrained-transcription layer, `pybnf.transcription` (#563, ADR-0109).** Infrastructure for
+  restating a fit as a larger, better-conditioned problem with internal auxiliary variables and
+  equality constraints that tie them back together — the reusable half of multiple shooting, which
+  will be its first consumer. Four pieces: an **augmented variable layout** that carries the fit's
+  reported free parameters and the transcription's internal blocks in one vector while keeping
+  them rigorously apart (an auxiliary state is searched, bounded, and differentiated; it is never
+  a reported fit result); an **equality residual/Jacobian interface** whose Jacobian is
+  block-sparse with a condensing seam left open, and whose defects are scaled so one penalty means
+  one thing across states of different magnitude; the augmented Lagrangian offered in all three
+  forms PyBNF's optimizers consume (scalar for `lbfgs`, an *exact* stacked least-squares residual
+  for `trf`, Gauss-Newton for `gntr`); and an **optimizer-agnostic augmented-Lagrangian outer
+  loop** with a transcription homotopy and best-iterate certification through the ordinary
+  single-shoot path.
+  No behaviour change to any existing fit: nothing imports it yet, it defines no configuration key
+  and no `job_type`, and it makes no simulator call — which is what lets the whole layer be
+  verified offline (93 tests, ~1.4 s) against an equality-constrained quadratic whose multiplier is
+  known analytically and a closed-form linear-ODE shooting problem measured against an
+  independently computed single-shoot optimum.
+  Three measurements from the #563 prototype are baked into the defaults rather than left as
+  tuning advice, each contradicting the plan that preceded it: the penalty schedule starts **tight**
+  (`rho0 = 10`, `gamma = 5` beat `0.1`/`3` on quality *and* halved the cost), the segment ladder is
+  the **mechanism** rather than a later refinement and starts in the middle (`4-2-1`, not
+  `8-4-2-1` — many short segments certified worse than their own start under partial
+  observability), and a run reports its **best certified** iterate rather than its last (on one
+  start the final stage held `-147.0` while an earlier iterate certified at `-196.3`).
 - **`noise_profiling = 1`: profile an estimated noise scale out of the search analytically (#562,
   ADR-0108).** ADR-0066 already profiles a declared column's optimal multiplicative **scale** out
   of the fit; this is the other half of the same classical trick. Every noise parameter declared
