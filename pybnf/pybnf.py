@@ -2,7 +2,8 @@
 
 
 from . import __version__
-from .budget import FitBudget, format_duration
+from . import method_chain
+from .budget import FitBudget, format_duration, spend_reserve
 from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
@@ -279,56 +280,122 @@ def _create_algorithm(config):
     return entry.cls(config, **entry.kwargs)
 
 
+def _record_phase(alg, phase, method, status, reason=None, simulations=None,
+                  best_objective=None, extra=None):
+    """Append one phase to the run's executed-method record, if it is keeping one.
+
+    A no-op when ``alg`` carries no :class:`~pybnf.method_chain.MethodChain` -- an
+    algorithm driven directly rather than through ``main()``.
+    """
+    chain = getattr(alg, 'method_chain', None)
+    if chain is None:
+        return
+    chain.record(phase, method, status, reason=reason, simulations=simulations,
+                 best_objective=best_objective,
+                 bootstrap_replicate=getattr(alg, 'bootstrap_number', None), extra=extra)
+
+
+def _phase_status(alg):
+    """Whether a finished phase ended on its own terms or on the wall-time budget.
+
+    ``Algorithm.stop_reason`` is set by exactly one thing -- the budget (#529); every
+    method's own stop criteria live on its runner objects -- so its presence is the
+    distinction, and its text is the explanation.
+    """
+    if alg.stop_reason:
+        return method_chain.WALL_TIME_EXPIRED, alg.stop_reason
+    return method_chain.COMPLETED, None
+
+
 def _refine_best_fit(config, alg, cluster, debug):
     """Refine the best-fit parameter set with the chosen local optimizer, if
     requested.
 
     A no-op unless ``refine == 1``; the refiner is the start-point optimizer named
-    by ``refine_method`` (Simplex / Powell / CMA-ES, #403/ADR-0015), dispatched
-    through the registry's ``refiner`` flag. Skipped (with a message) when the
-    original fit already used that same algorithm. Reuses the algorithm's generated
-    networks and trajectory so refinement continues from the existing best fit.
+    by ``refine_method`` (Simplex / Powell / CMA-ES / a gradient optimizer,
+    #403/ADR-0015), dispatched through the registry's ``refiner`` flag. Skipped (with
+    a message) when the original fit already used that same algorithm. Reuses the
+    algorithm's generated networks and trajectory so refinement continues from the
+    existing best fit.
+
+    ``refine = 1`` is a request for a *method* -- search globally, then polish
+    locally -- so under a wall-clock budget the refine runs on the slice of it the
+    search was forbidden to spend (``wall_time_refine_frac``, #564/ADR-0107), released
+    here by :func:`~pybnf.budget.spend_reserve`. Whether it ran, and on what terms, is
+    recorded in ``Results/method_chain.json`` either way.
     """
     logger = logging.getLogger(__name__)
     if config.config['refine'] != 1:
-        return
-    if alg.budget is not None and alg.budget.expired():
-        # A refine is new work, and the budget's whole contract is that no new work
-        # starts once it is spent (#529). The fit itself has already finalized, so the
-        # run's outputs are complete -- just unpolished.
-        logger.info('Wall-time budget spent; skipping the refine of the best fit')
-        print1('Wall-time budget spent, so the best fit was not refined.')
         return
     logger.debug('Refinement requested for best fit parameter set')
     method = config.config['refine_method']
     entry = FIT_TYPE_REGISTRY[method]   # validated by Configuration._check_refine_method
     refiner_cls = entry.cls
     name = entry.display_name
+    # Checked before the budget: this is not a refine the clock cost anyone, and it is
+    # the more useful thing to be told (no reserve was taken for it either).
     if config.config['fit_type'] == method:
+        skipped = (f"You specified refine=1 with refine_method={method}, but that is the algorithm you just ran."
+                   "\nSkipping refine.")
         logger.debug(f'Cannot refine further if the {name} algorithm was used for the original fit')
-        print1(f"You specified refine=1 with refine_method={method}, but that is the algorithm you just ran."
-               "\nSkipping refine.")
+        print1(skipped)
+        _record_phase(alg, 'refine', method, method_chain.SKIPPED,
+                      reason='refine_method %s is the algorithm the fit itself ran' % method)
         return
-    logger.debug(f'Refining further using the {name} algorithm')
-    print1(f"Refining the best fit by the {name} algorithm")
-    config.config[refiner_cls.START_POINT_KEY] = alg.trajectory.best_fit()
-    refiner = refiner_cls(config, refine=True)
-    refiner.model_list = alg.model_list  # Reuse already-generated networks
-    refiner.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-    refiner.budget = alg.budget  # One deadline for the whole run, not one per phase
-    if alg.bootstrap_number is not None:
-        # During bootstrapping the replicate's fit wrote to per-replicate working dirs
-        # (Simulations-boot{N} etc.) that alg.reset(bootstrap=N) (re)creates for every
-        # replicate and retry, so point the refiner at those same, existing dirs.
-        # Otherwise it defaults to the shared output_dir/Simulations, which the *main*
-        # fit's own refinement already deleted at teardown (it is a leaf Simplex run).
-        # Every replicate refine then tries os.mkdir under that missing parent; the
-        # FileNotFoundError reads as OSError, which the job's mkdir-retry loop treats as
-        # a name collision and walks to _rerun999 before giving up -> FailedSimulation.
-        # The whole refine then scores inf and never polishes the replicate's fit.
-        refiner.sim_dir = alg.sim_dir
-        refiner.failed_logs_dir = alg.failed_logs_dir
-    refiner.run(cluster.client, debug=debug)
+    reserve = alg.budget.reserve if alg.budget is not None else 0.0
+    # Everything from here runs with the reserve released: this is the phase it was
+    # held back FOR, so "is the budget spent?" must be asked of the refine's own share
+    # of it, not of the search's -- otherwise the reserve buys the refine nothing and
+    # #564 stands unfixed. Inside the block the budget is the run's whole remaining
+    # time: the reserve, plus whatever a search that converged early left behind.
+    with spend_reserve(alg.budget):
+        if alg.budget is not None and alg.budget.expired():
+            # Reachable only when the run reserved nothing for this phase
+            # (wall_time_refine_frac = 0) or the search overran the reserve anyway --
+            # one in-flight simulation may outlive the deadline by up to wall_time_sim
+            # (ADR-0093). Either way the requested method chain did NOT run, so say so
+            # at every verbosity: a silent downgrade to a different method is the defect
+            # the reserve exists to prevent.
+            reason = ('the wall-time budget was spent before the refine could start'
+                      if reserve <= 0 else
+                      'the search overran the %d s reserved for the refine'
+                      % int(round(reserve)))
+            logger.info('Wall-time budget spent; skipping the refine of the best fit')
+            print0('Warning: %s, so the best fit was NOT refined by the %s algorithm -- this run '
+                   'executed %s alone.\nRaise wall_time_refine_frac (the share of wall_time_fit held '
+                   'back for the refine) to make room for it.'
+                   % (reason, name, config.config['fit_type']))
+            _record_phase(alg, 'refine', method, method_chain.SKIPPED, reason=reason)
+            return
+        logger.debug(f'Refining further using the {name} algorithm')
+        print1(f"Refining the best fit by the {name} algorithm")
+        config.config[refiner_cls.START_POINT_KEY] = alg.trajectory.best_fit()
+        refiner = refiner_cls(config, refine=True)
+        refiner.model_list = alg.model_list  # Reuse already-generated networks
+        refiner.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+        refiner.budget = alg.budget  # One deadline for the whole run, not one per phase
+        # The refine's outputs belong beside the fit's, in the directory that fit wrote to.
+        # For the main fit that is the default the refiner already builds; for a bootstrap
+        # replicate it is Results-boot{N}, and taking the default there would overwrite the
+        # MAIN run's sorted_params_refine_final.txt (and stop_reason.txt) once per replicate.
+        refiner.res_dir = alg.res_dir
+        if alg.bootstrap_number is not None:
+            # During bootstrapping the replicate's fit wrote to per-replicate working dirs
+            # (Simulations-boot{N} etc.) that alg.reset(bootstrap=N) (re)creates for every
+            # replicate and retry, so point the refiner at those same, existing dirs.
+            # Otherwise it defaults to the shared output_dir/Simulations, which the *main*
+            # fit's own refinement already deleted at teardown (it is a leaf Simplex run).
+            # Every replicate refine then tries os.mkdir under that missing parent; the
+            # FileNotFoundError reads as OSError, which the job's mkdir-retry loop treats as
+            # a name collision and walks to _rerun999 before giving up -> FailedSimulation.
+            # The whole refine then scores inf and never polishes the replicate's fit.
+            refiner.sim_dir = alg.sim_dir
+            refiner.failed_logs_dir = alg.failed_logs_dir
+        refiner.run(cluster.client, debug=debug)
+    status, reason = _phase_status(refiner)
+    _record_phase(alg, 'refine', method, status, reason=reason,
+                  simulations=refiner.completed_simulations,
+                  best_objective=refiner.trajectory.best_score() if len(refiner.trajectory) else None)
 
 
 def _run_bootstrapping(config, alg, cluster, debug):
@@ -400,6 +467,8 @@ def _run_bootstrapping(config, alg, cluster, debug):
                         completed_bootstrap_runs, num_to_bootstrap)
             print0('Wall-time budget spent; stopping after %d of %d bootstrap replicates.'
                    % (completed_bootstrap_runs, num_to_bootstrap))
+            _record_bootstrap_total(config, alg, completed_bootstrap_runs, num_to_bootstrap,
+                                    method_chain.WALL_TIME_EXPIRED)
             return
         # A rejected replicate is retried with a *fresh* resample: bumping the retry
         # count advances the RNG sub-stream reset() derives. Without it, reset() keys
@@ -420,6 +489,10 @@ def _run_bootstrapping(config, alg, cluster, debug):
         logger.info(f'Beginning bootstrap run {completed_bootstrap_runs}')
         print0(f"Beginning bootstrap run {completed_bootstrap_runs}")
         alg.run(cluster.client, debug=debug)
+        status, reason = _phase_status(alg)
+        _record_phase(alg, 'fit', config.config['fit_type'], status, reason=reason,
+                      simulations=alg.completed_simulations,
+                      best_objective=alg.trajectory.best_score() if len(alg.trajectory) else None)
 
         _refine_best_fit(config, alg, cluster, debug)
 
@@ -447,7 +520,25 @@ def _run_bootstrapping(config, alg, cluster, debug):
                                  "function values.  Check 'bootstrap_max_obj' configuration key")
 
     # bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
+    _record_bootstrap_total(config, alg, completed_bootstrap_runs, num_to_bootstrap,
+                            method_chain.COMPLETED)
     print0('Bootstrapping complete')
+
+
+def _record_bootstrap_total(config, alg, completed, requested, status):
+    """Record how many bootstrap replicates the run actually produced.
+
+    The replicates themselves are recorded one by one as they run; this is the single
+    field a consumer can assert on -- ``bootstrap = 30`` in the conf is worth nothing
+    if the budget stopped the run at 11 (#564).
+    """
+    chain = getattr(alg, 'method_chain', None)
+    if chain is None:
+        return
+    chain.record('bootstrap', config.config['fit_type'], status,
+                 reason=None if completed >= requested else
+                 'the wall-time budget was spent after %d of %d replicates' % (completed, requested),
+                 extra={'replicates_requested': requested, 'replicates_completed': completed})
 
 
 def _reap_running_sims():
@@ -558,6 +649,23 @@ def main():
                         alg.budget.limit, format_duration(alg.budget.remaining()))
             print1('Wall-time budget for this fit: %s (wall_time_fit = %d s).'
                    % (format_duration(alg.budget.limit), alg.budget.limit))
+            if alg.budget.reserve > 0:
+                # State the phase split up front. It is the difference between the
+                # method the conf requests and the method a budgeted run executes, so
+                # it belongs on the console before the search starts, not in a
+                # post-mortem (#564).
+                logger.info('Reserving %d s of the budget for the refine', alg.budget.reserve)
+                print1('  of which %s is reserved for the refine (wall_time_refine_frac = %g), '
+                       'leaving %s to search.'
+                       % (format_duration(alg.budget.reserve),
+                          config.config['wall_time_refine_frac'],
+                          format_duration(alg.budget.limit - alg.budget.reserve)))
+
+        # The record of which methods this run actually executes (#564/ADR-0107). Kept
+        # on the algorithm beside the budget, and written after every phase, so it is
+        # complete on disk even if a later phase raises.
+        alg.method_chain = method_chain.chain_for_run(alg.res_dir, config.config,
+                                                      budget=alg.budget, version=__version__)
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
@@ -575,6 +683,11 @@ def main():
             # Run model checking
             logger.debug('Model checking initialization')
             alg.run_check(debug=debug)
+
+        fit_status, fit_reason = _phase_status(alg)
+        _record_phase(alg, 'fit', config.config['fit_type'], fit_status, reason=fit_reason,
+                      simulations=alg.completed_simulations,
+                      best_objective=alg.trajectory.best_score() if len(alg.trajectory) else None)
 
         _refine_best_fit(config, alg, cluster, debug)
 

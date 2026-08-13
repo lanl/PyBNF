@@ -364,6 +364,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -804,6 +808,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -1256,6 +1264,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -1660,6 +1672,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -2214,6 +2230,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -2778,6 +2798,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -3296,6 +3320,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -3736,6 +3764,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -4188,6 +4220,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -4515,6 +4551,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -4905,6 +4945,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -5202,6 +5246,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -5469,6 +5517,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -5788,6 +5840,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -6118,6 +6174,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -6455,6 +6515,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -6816,6 +6880,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -7183,6 +7251,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -7530,6 +7602,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -7912,6 +7988,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -8247,6 +8327,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -8586,6 +8670,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -8921,6 +9009,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -9260,6 +9352,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -9581,6 +9677,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -9897,6 +9997,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -10241,6 +10345,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -10621,6 +10729,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -10993,6 +11105,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -11314,6 +11430,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
@@ -11649,6 +11769,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -11979,6 +12103,10 @@
     3600
    ],
    [
+    "wall_time_refine_frac",
+    0.1
+   ],
+   [
     "wall_time_sim",
     0
    ],
@@ -12290,6 +12418,10 @@
    [
     "wall_time_gen",
     3600
+   ],
+   [
+    "wall_time_refine_frac",
+    0.1
    ],
    [
     "wall_time_sim",
