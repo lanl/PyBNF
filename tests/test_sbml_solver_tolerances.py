@@ -879,9 +879,34 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
 
     The other half of the regression: without this, a future change that quietly stopped
     deriving the tolerance would leave the test above passing on some unrelated accuracy
-    margin. Here the same model, same roots, same difference-quotient sensitivity path,
-    integrated at the old default, is wrong by more than 10% on every column -- the same
-    order as the 26% #546 measured on Giordano's worst.
+    margin. Same model, same roots, same difference-quotient sensitivity path (``k`` is
+    still declined for the analytic RHS -- "uses unsupported construct: if() conditional"
+    -- so this is the CVODES internal quotient inheriting the state solve's accuracy),
+    integrated at the old default instead of the derived one.
+
+    **Two claims, because one number is not portable across backend versions (#566).**
+    At least one column is corrupted outright -- 3.8e-01 measured, the order #546 saw on
+    Giordano's worst (26%) -- and it is not one unlucky column: *every* column blows the
+    sibling's ``< 1e-4`` budget by more than two decades, which is what makes the pair a
+    pair. Neither half can be satisfied by an accuracy regime that satisfies the other.
+
+    The thresholds are re-derived rather than inherited, because the original single
+    ``min(errs) > 0.1`` never had the margin this file asks for. Measured::
+
+        bngsim 0.12.2   [1.28e-01, 1.41e-01, 3.84e-01]    min 1.28e-01
+        bngsim 0.13.0   [8.50e-02, 3.95e-02, 3.79e-01]    min 3.95e-02
+
+    A ``> 0.1`` bar cleared 0.12.2's tightest column by **1.28x**. Anything that improved
+    the state solve was going to flip it, and 0.13.0 did: it lands the integrator step
+    *on* a fixed time discontinuity so its root can fire (lanl/bngsim#305) instead of
+    stepping over it -- a real improvement to precisely this shape, a rate law switching
+    at fixed times. Both versions still decline the analytic RHS, so the path under test
+    is unchanged and nothing here is being papered over; the loose-tolerance case is
+    simply less catastrophic than it was.
+
+    So each threshold now sits a decade under the *worse* of the two measurements -- the
+    rule the two-scale test above states -- and both hold across the declared
+    ``bngsim>=0.12.2,<1`` range rather than on the one release that drew them.
     """
     model = _piecewise_model(tmp_path, atol=_BNGSIM_DEFAULT_ATOL)
     model.enable_output_sensitivities(params=['k0', 'k1', 'k2'])
@@ -893,7 +918,11 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
 
     errs = [np.max(np.abs(got[:, j] - oracle[:, j])) / np.max(np.abs(oracle[:, j]))
             for j in range(3)]
-    assert min(errs) > 0.1, f'expected the old default to be badly wrong, got {errs}'
+    # 3.8e-01 measured on the worst column.
+    assert max(errs) > 1e-2, f'expected the old default to corrupt a column, got {errs}'
+    # 3.9e-02 measured on the tightest -- still 390x the 1e-4 the derived tolerance is
+    # held to next door, so no single accuracy regime can satisfy both halves.
+    assert min(errs) > 1e-3, f'expected every column to blow the 1e-4 budget, got {errs}'
 
 
 # --- config surface -------------------------------------------------------------- #
