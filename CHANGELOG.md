@@ -6,6 +6,18 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **`job_type = check` runs again (#569).** #564's method-chain record was built from
+  `alg.res_dir` on a line that ran before the `job_type != 'check'` branch nine lines below it, so
+  every check run died in setup with `AttributeError: 'ModelCheck' object has no attribute
+  'res_dir'` — no objective value at all, not merely a noisy tail. `ModelCheck` deliberately does
+  not subclass `Algorithm`, so it has no `res_dir`, and none of `stop_reason`,
+  `completed_simulations` or `trajectory` either; the fit-phase recording that reads all three was
+  above the branch too. Both now sit inside it, with the boundary stated in a comment so the next
+  addition to `main()` lands on the correct side of it. A check run still writes no
+  `method_chain.json`: it is one evaluation of the parameters as given, not a chain of search
+  phases. The regression test that was missing — a `job_type = check` job driven end to end
+  through `main()` — now guards the path; every existing check test called `run_check()` directly,
+  which is why two commits landed on top of the break.
 - **`wall_time_fit` no longer silently downgrades `refine = 1` to no refine at all (#564,
   ADR-0107).** `refine = 1` requests a *method* — search globally, then polish the result with a
   local optimizer — but a wall-clock-budgeted search runs until the clock stops, so it has no

@@ -32,11 +32,16 @@ that was correct but brittle and has since been made explicit. The score is
 unchanged: an empty pset means the fallback loop never ran anyway.)
 ``test_objective_call_uses_explicit_four_arg_convention`` pins the call shape.
 """
+import json
 import logging
 import os
+import sys
 
+import pytest
 
-from .context import algorithms, pset
+from .context import algorithms, printing, pset
+
+import pybnf.pybnf as pybnf_main
 
 
 # --------------------------------------------------------------------------- #
@@ -428,3 +433,69 @@ def test_constraints_counted_reported_and_itemized(monkeypatch, capsys):
     # Each cset itemized against (simdata, sim_dir).
     for cset in csets:
         assert cset.itemized_calls == [(result.simdata, '/the/sim/dir')]
+
+
+# =========================================================================== #
+# main(): the whole check path, end to end
+# =========================================================================== #
+def _write_check_job(tmp_path):
+    """A complete, simulator-free ``job_type = check`` job in ``tmp_path``.
+
+    The model is an ``AnalyticalModel`` menu target scored through ``objective =
+    score`` (edition 2's spelling of ``objfunc = direct_pass``), so the run needs no
+    BNGL/SBML backend -- and it is zero-dimensional, which is the honest shape for a
+    checker: a check job has no free parameters, so there are no coordinates to bind,
+    and the NLL is an exact 0.0. That makes the objective the run reports a fixed
+    number the test can assert on.
+    """
+    (tmp_path / 'g.target').write_text(
+        json.dumps({'type': 'gaussian', 'mean': [], 'variance': []}))
+    (tmp_path / 'target.exp').write_text('# index\tscore\n0\t0\n')
+    (tmp_path / 'check.conf').write_text('edition = 2\n'
+                                         'model = g.target : target.exp\n'
+                                         'output_dir = out\n'
+                                         'objective = score\n'
+                                         'job_type = check\n')
+
+
+def test_a_check_job_run_through_main_reports_an_objective_value(tmp_path, monkeypatch, capsys):
+    """#569: ``main()`` built the run's method-chain record (#564) unconditionally,
+    from ``alg.res_dir`` -- an ``Algorithm`` attribute ``ModelCheck`` does not have,
+    and never will, since it deliberately does not subclass ``Algorithm``. The line
+    sat *above* the ``fit_type != 'check'`` branch, so the check path reached it first
+    and died in setup with an ``AttributeError``: the job produced no objective value
+    at all, and two commits landed on top of the break.
+
+    Driven through ``main()`` on purpose. Every other test in this file calls
+    ``run_check()`` directly, which is exactly why nothing caught a fit type that
+    could no longer start -- ``run_check`` was never the part that was broken.
+    """
+    _write_check_job(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # -L none keeps the run from writing a log file; -o skips the overwrite prompt.
+    monkeypatch.setattr(sys, 'argv', ['pybnf', '-c', 'check.conf', '-o', '-L', 'none'])
+    # main() writes both of these as a side effect. Setting them through monkeypatch
+    # first registers the undo, so one end-to-end test cannot change the verbosity or
+    # the live-sim registry that every later test in the session runs under.
+    monkeypatch.setattr(printing, 'verbosity', printing.verbosity)
+    monkeypatch.setenv('PYBNF_SIM_REGISTRY', '')
+    # main()'s teardown rm -rf's ~/dask-worker-space. Nothing in this run creates one,
+    # and a test has no business reaching into the developer's home directory.
+    monkeypatch.setattr(pybnf_main, '_cleanup_dask_workspace', lambda: None)
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            pybnf_main.main()
+    finally:
+        # init_logging attaches a handler and drops the root level to DEBUG.
+        root.handlers[:] = handlers
+        root.setLevel(level)
+
+    # Exit 0, not the exit 1 an unhandled exception in main() produces.
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    assert 'Objective value is 0.0' in out
+    assert 'unknown error occurred' not in out
+
