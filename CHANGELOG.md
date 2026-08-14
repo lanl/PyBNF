@@ -6,6 +6,27 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **`job_type = ms` no longer dies on a fit with a measurement-model formula observable (#578).**
+  Multiple shooting was unusable on essentially the whole PEtab-imported corpus — including its
+  own motivating problem, `Borghans_BiophysChem1997` — failing on the first outer iteration with
+  `Measurement model 'Ca' would shadow an existing simulation-output column`. The setup was all
+  correct (noise profiling, the `4-2-1` ladder, knot placement); it died the moment the loop
+  asked for a second evaluation.
+  The measurement layer materializes each `observable: <id>, formula: ...` column *into the
+  trajectory in place* (ADR-0036) and deliberately refuses a column that already exists. Every
+  ordinary fit satisfies that for free, because the propose/score loop scores a freshly
+  simulated `Data` every time. Multiple shooting caches its segment trajectories per point — so
+  that one augmented-model evaluation costs one pass of segment simulations rather than two —
+  and the outer loop then re-evaluates at the point the inner solver finished at, which is a
+  cache hit on those very objects.
+  Fixed at the cause: the assembled objective is now memoized on the point, so each simulated
+  trajectory is scored exactly once. That also removes a redundant gradient/Fisher assembly per
+  outer iteration, the larger of the two costs. Sound because the objective at a point does not
+  depend on the multipliers — only the augmented model combines them.
+  The shooting suite structurally could not see this: its fixtures score native columns (a
+  species, an observable), so the measurement layer never ran. The regression tests use a
+  formula-observable fixture, and both fail with the exact production error when the memo is
+  removed.
 - **`job_type = check` runs again (#569).** #564's method-chain record was built from
   `alg.res_dir` on a line that ran before the `job_type != 'check'` branch nine lines below it, so
   every check run died in setup with `AttributeError: 'ModelCheck' object has no attribute
