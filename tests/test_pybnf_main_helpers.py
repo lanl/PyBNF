@@ -54,6 +54,7 @@ _DISPATCH = [
     ('trf', 'TRFAlgorithm'),
     ('lbfgs', 'LBFGSAlgorithm'),
     ('gntr', 'GNTRAlgorithm'),
+    ('ms', 'MultipleShootingAlgorithm'),
     ('profile_likelihood', 'ProfileLikelihoodAlgorithm'),
     ('ade', 'AsynchronousDifferentialEvolution'),
     ('dream', 'DreamAlgorithm'),
@@ -93,7 +94,7 @@ def test_only_mh_and_sa_are_deprecated():
 
 def test_families_partition_the_codes():
     fam = {code: e.family for code, e in FIT_TYPE_REGISTRY.items()}
-    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes', 'trf', 'lbfgs', 'gntr', 'profile_likelihood'}
+    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes', 'trf', 'lbfgs', 'gntr', 'ms', 'profile_likelihood'}
     assert {c for c, f in fam.items() if f == 'sampler'} == {'mh', 'pt', 'am', 'dream', 'p_dream', 'hmc'}
     assert {c for c, f in fam.items() if f == 'checker'} == {'check'}
 

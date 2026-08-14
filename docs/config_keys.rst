@@ -215,7 +215,8 @@ Required Keys
   taking the same values as :ref:`fit_type <fit_type>` above. It replaces ``fit_type``
   because that name was a misnomer -- the key selects across point-estimate
   *optimizers* (``de`` / ``ade`` / ``pso`` / ``ss`` / ``sim`` / ``powell`` / ``cmaes``
-  / ``sa``, and the gradient-based :ref:`trf / lbfgs / gntr <gradient_fitting>`), Bayesian
+  / ``sa``, and the gradient-based :ref:`trf / lbfgs / gntr <gradient_fitting>` plus
+  :ref:`multiple shooting <multiple_shooting>`, ``ms``), Bayesian
   *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``, and the
   gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), the
   :ref:`profile-likelihood <gradient_fitting>` identifiability analysis
@@ -432,7 +433,10 @@ Required Keys
   Supported by every optimizer, including ``lbfgs`` and ``gntr``. ``job_type = trf``
   refuses a profiled fit (as it already refuses a searched free scale): under profiling
   the least-squares residual norm is constant, so a trust-region residual model carries
-  no information -- use ``lbfgs``.
+  no information -- use ``lbfgs``. It is the recommended pairing for :ref:`multiple
+  shooting <multiple_shooting>` (``job_type = ms``): a profiled scale is defined by the
+  data residuals alone, which continuity defects never enter, so the reported objective
+  stays comparable to a single-shoot one.
 
   See :ref:`normalization <normalization_key>` ``= scale`` for the same trick applied to
   an unknown multiplicative scale on the data.

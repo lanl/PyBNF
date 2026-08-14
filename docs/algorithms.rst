@@ -788,7 +788,10 @@ optimizers driven by exact forward parameter sensitivities:
 
 All three converge far faster than the metaheuristics near a good fit, and the same
 sensitivity machinery drives profile-likelihood identifiability analysis
-(``job_type = profile_likelihood``). These methods, the noise families and
+(``job_type = profile_likelihood``) and :ref:`multiple shooting <multiple_shooting>`
+(``job_type = ms``) — which changes the fit's *transcription* rather than its search,
+cutting each time course into segments joined by continuity constraints so that a long
+horizon stops hiding the answer from every optimizer. These methods, the noise families and
 constraints they support, and the capability gate that decides when a gradient fit
 is possible are documented in full on the :ref:`gradient-based fitting
 <gradient_fitting>` page.

@@ -60,6 +60,13 @@ from .optimizers.cmaes import CMAESAlgorithm as CMAESAlgorithm
 from .optimizers.trf import TRFAlgorithm as TRFAlgorithm
 from .optimizers.lbfgs import LBFGSAlgorithm as LBFGSAlgorithm
 from .optimizers.gntr import GNTRAlgorithm as GNTRAlgorithm
+# Multiple shooting (#563, ADR-0110): the first consumer of the constrained-transcription
+# layer (pybnf/transcription, ADR-0109). A GradientOptimizer for its gates, routings and
+# start points, but it drives its own search -- a segment is not a PSet evaluation -- so it
+# overrides run() the way hmc does. Importing the leaf runs its @register_fit_type.
+from .optimizers.multiple_shooting import (
+    MultipleShootingAlgorithm as MultipleShootingAlgorithm,
+)
 # Profile likelihood (#446/#466): a standalone new-era job_type that reuses the same
 # gradient path -- a multi-start TRF polish to the optimum, then one adaptive re-optimized
 # profile per parameter for confidence intervals + identifiability. Importing the leaf runs

@@ -1251,6 +1251,22 @@ class Algorithm(ABC):
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
+        self._finalize_run()
+
+    def _finalize_run(self):
+        """The end-of-fit path: stop reason, final parameter sets, best-fit artifacts,
+        teardown.
+
+        Reached the same way however the search ended -- the algorithm's own stop
+        criterion, an exhausted job pool, or the wall-time budget -- because a budgeted run
+        is a *finished* run whose search was cut short and writes exactly what a converged
+        one writes (ADR-0093). Split out of :meth:`run` so a method that does **not** drive
+        the propose/score loop still writes the same artifacts every other fit type does,
+        rather than forking the tail: today that is ``job_type = ms``, whose unit of work is
+        a trajectory segment rather than a PSet evaluation and which therefore overrides
+        :meth:`run` (as ``hmc`` does, for the same reason). Everything here reads
+        :attr:`trajectory` and :attr:`stop_reason` and nothing about how they were filled.
+        """
         self._announce_stop_reason()
 
         # Write the final parameter sets, then copy the best simulations into the results

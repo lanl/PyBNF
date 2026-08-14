@@ -23,4 +23,5 @@ PyBNF Module References
    printing
    priors
    pset
+   shooting
    transcription

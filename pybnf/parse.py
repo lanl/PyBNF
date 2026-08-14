@@ -54,6 +54,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # cycle budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
                'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations',
                'gntr_max_iterations',
+               # multiple shooting (job_type = ms, #563/ADR-0110): the finest rung of the
+               # coarsening ladder and the factor between rungs, the per-outer-iteration
+               # inner-solve cap, and the outer-iteration budget per rung (a runtime-guarded
+               # RUNTIME_KEY, defaulting to max_iterations).
+               'ms_segments', 'ms_coarsening', 'ms_inner_iterations', 'ms_max_iterations',
                # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
                # per chain per generation (n_try = 1 is the classic single-try engine).
                'n_try',
@@ -90,6 +95,12 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'trf_grad_tol', 'trf_step_tol', 'lbfgs_grad_tol', 'lbfgs_step_tol',
                  'lbfgs_c1', 'lbfgs_backtrack',
                  'gntr_grad_tol', 'gntr_step_tol', 'gntr_ridge',
+                 # multiple shooting (job_type = ms, #563/ADR-0110): the augmented-Lagrangian
+                 # penalty schedule (rho_0, gamma, the ceiling), the KKT feasibility +
+                 # optimality tolerances the outer loop stops on, and the half-width in
+                 # decades of an auxiliary segment-start state's box.
+                 'ms_penalty', 'ms_penalty_growth', 'ms_max_penalty',
+                 'ms_feasibility_tol', 'ms_optimality_tol', 'ms_aux_decades',
                  # HMC (job_type = hmc, ADR-0059): NUTS dual-averaging target acceptance.
                  'target_accept',
                  # profile likelihood (job_type = profile_likelihood, #446/#466): confidence
