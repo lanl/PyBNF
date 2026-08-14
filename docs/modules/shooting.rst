@@ -39,6 +39,9 @@ The segment-simulation seam
 .. automodule:: pybnf.shooting.bngsim_backend
    :members:
 
+.. automodule:: pybnf.shooting.net_backend
+   :members:
+
 The transcription
 =================
 

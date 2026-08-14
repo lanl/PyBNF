@@ -55,6 +55,7 @@ The fit type that runs all of it is :mod:`pybnf.algorithms.optimizers.multiple_s
 
 from .backend import SegmentBackend, SegmentSimulationFailed, SegmentTrace, trace_from_data
 from .bngsim_backend import BngsimSegmentBackend
+from .net_backend import NetSegmentBackend
 from .driver import coarsening_stages, feasible_ladder, run_multiple_shooting
 from .grid import SegmentGrid
 from .problem import (
@@ -73,6 +74,7 @@ __all__ = [
     'BngsimSegmentBackend',
     'GaussNewtonSolver',
     'MultipleShootingProblem',
+    'NetSegmentBackend',
     'SegmentBackend',
     'SegmentGrid',
     'SegmentSimulationFailed',

@@ -162,16 +162,11 @@ warm-starting each rung from the previous one. The stage trace is printed as it 
 motivating problem it *is* the result — every segmented stage scored worse than a flat line, and
 the coarsening is what converted them.
 
-**Requirements and limits.** ``ms`` needs everything the gradient path needs, plus the bngsim
-SBML/Antimony backend: a knot carries the model's **state**, and that is the one PyBNF backend
-whose trajectory columns *are* the species and whose sensitivity selectors name them on both
-axes. A ``.net`` model is a reaction network with the same kind of state — and bngsim will
-return both its species trajectory and the matching ``d(species)/d(species₀)`` — but PyBNF's
-net backend builds its trajectory from observables and expressions and requests the same
-selectors, so a segment would come back carrying neither the state at the knot nor its
-derivative. Extending ``ms`` there is adapter work rather than a modelling obstacle; it is not
-free, since a net segment would need both selector families on one run and a combinatorially
-expanded network makes the auxiliary block ``(m-1)×n_species`` wide. It refuses, by name and up front, a fit it
+**Requirements and limits.** ``ms`` needs everything the gradient path needs, plus a model
+with an enumerated ODE state to restart from — which means either bngsim path. A knot carries
+the model's **state**, so both a generated network (``.net``, via BNGL) and an SBML/Antimony
+model with ``sbml_backend = bngsim`` are supported; a network-free (NFsim) model never
+enumerates a state and is refused. It refuses, by name and up front, a fit it
 would otherwise quietly change — a dose-response scan or pre-equilibration protocol (no time axis
 to cut, or a measured phase that already starts from a carried state), and any scored quantity that
 is a function of a whole series (an analytic per-series ``scale``, a data ``normalization``, a
@@ -180,6 +175,15 @@ is a function of a whole series (an analytic per-series ``scale``, a data ``norm
 data residuals, which continuity defects never enter. Segments are simulated serially, so ``ms``
 does not scale across a cluster the way the metaheuristics do, and a stopped run cannot be resumed
 with ``-r``.
+
+**A note on size, for network models.** The transcription's width scales with the model's
+**state**, not with the number of fitted parameters: the finest rung adds
+``(m − 1) × n_species`` internal variables per experiment, and the initial-condition
+sensitivity system is ``n_species`` wide. On a handful of species that is nothing; on a
+combinatorially expanded reaction network it can dwarf the fit's own dimension
+(``egfr_ground.net``, 356 species, at ``m = 4`` adds ~1068). A run prints the number it is
+adding as it starts, so the cost is visible before it is paid; lower ``ms_segments`` if it is
+more than the problem warrants.
 
 **Tuning.** The defaults come from measurement on the motivating problem, not from convention, and
 are worth leaving alone unless you have a reason:

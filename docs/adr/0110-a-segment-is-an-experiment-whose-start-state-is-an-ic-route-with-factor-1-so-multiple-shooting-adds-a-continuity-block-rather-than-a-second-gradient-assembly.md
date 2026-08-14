@@ -152,27 +152,10 @@ Beyond the gradient path's own (edition 2, a forward-sensitivity backend, differ
 dynamics), three classes are refused, each because segmenting would change *what is being
 fitted* rather than how it is searched:
 
-* **A model whose state this cut's backend cannot surface.** The state at a knot is the ODE
-  state vector, and of PyBNF's backends only the bngsim SBML/Antimony one puts species
-  columns and initial-condition sensitivities on the same run.
-
-  This is a limit of the adapter, not of the model, and the ADR is explicit about which
-  because the distinction changes where the follow-on work goes. A `.net` file is a reaction
-  network with exactly the same kind of state as an SBML model, and bngsim returns both its
-  species trajectory and `d(species)/d(species_0)` when asked — verified directly against
-  bngsim 0.12.2 on `tests/bngl_files/e2e_ode_decay.net`, where
-  `output_sensitivities(['species:S()'], axis='ic')` comes back fine. What is missing is on
-  PyBNF's side: `BngsimModel._build_data` assembles `time + observables + expressions`, and
-  the net backend's sensitivity request names `observable:` / `expression:` selectors, so a
-  segment simulation would carry neither the state at the knot nor its derivative.
-
-  Closing it is an adapter change, and not a free one: an experiment scores *observables*,
-  so a net segment needs both selector families on one run, and on a combinatorially expanded
-  network the auxiliary block is `(m - 1) x n_species` wide while the initial-condition
-  sensitivity system is `n_species` wide — so the transcription's cost scales with the
-  expanded species count rather than with the number of fitted parameters, which is a real
-  reason to scope it deliberately rather than assume it. This cut does not do it, and the
-  gate says so in those terms rather than telling a user their model has no state.
+* **A model with no enumerated state to restart from.** The state at a knot is the ODE state
+  vector. A network-free (NFsim) model never enumerates one, and a non-bngsim backend
+  exposes neither the state nor its forward sensitivities. Both bngsim paths are supported —
+  see decision 8.
 * **An experiment that is not a plain measured time course.** A dose-response scan has no
   time axis to cut; a pre-equilibration protocol's measured phase already begins from a
   carried state that is not the model's own; a relaxation to steady state has no fixed
@@ -217,6 +200,45 @@ shooting's median run ended after **8 simulations** because its start point did 
 — comes from the transcription, not from partial scoring: a short span integrates at
 parameter points where the whole horizon does not. An evaluation is still all-or-nothing,
 exactly as the prototype's was.
+
+### 8. Two backends, differing only in what a simulation returns (#577)
+
+The first cut of this ADR refused the `.net` path, and justified it with a claim that was
+simply wrong: that a rule-based model's observables are "sums over species, from which the
+state is not recoverable", and that its state "is not a vector a fit can carry at every
+knot". A `.net` file is a fully expanded reaction network with exactly the same kind of ODE
+state an SBML model has, and bngsim returns both its species trajectory and
+`d(species)/d(species_0)` when asked. Probed directly on
+`tests/bngl_files/e2e_ode_decay.net`, a mixed selector list comes back from one run:
+
+```
+output_sensitivities(['observable:Stot', 'species:S()'], axis='parameter')  ->  (11, 2, 1)
+output_sensitivities(['observable:Stot', 'species:S()'], axis='ic')         ->  (11, 2, 1)
+```
+
+The real asymmetry was one level down, and is the whole of what the second backend exists
+for: **on the SBML path the columns an experiment scores and the columns a continuity row
+differences are the same columns; on the `.net` path they are not.** `_build_data` assembles
+`time + observables + expressions` and the net backend's sensitivity request names
+`observable:` / `expression:` selectors, so a segment carried neither the state at the knot
+nor its derivative — because nothing asked.
+
+`pybnf/shooting/net_backend.py` asks, for both families together. One tensor carries the
+observable/expression rows the data terms read and the species rows the continuity block
+reads, requested in a single call so a segment is still **one integration**; the segment's
+`Data` carries the species columns alongside the observable ones, with a collision refused
+rather than silently overwritten (a species column shadowing an observable would change what
+the fit scores). Nothing in the net backend is modified — this composes `_build_data`, the
+engine clone, the mutant copy and the species-initializer sync from outside — so every
+ordinary `.net` fit is untouched.
+
+What remains true, and is the model's property rather than the method's: the auxiliary block
+is `(m - 1) x n_species` wide and the initial-condition sensitivity system is `n_species`
+wide, so the transcription scales with the **expanded** species count rather than with the
+number of fitted parameters. `egfr_ground.net` (356 species) at `m = 4` adds ~1068 auxiliary
+variables. That is inherent to writing multiple shooting on the state of a rule-based model;
+this cut reports the added width when a run starts rather than letting a user infer it from
+the run time, and leaves a size policy to measurement.
 
 ## What this is not
 
@@ -296,6 +318,19 @@ Jacobian or a mis-routed auxiliary column would move the answer. The decay model
 reproduce the ordinary answer on a problem where the ordinary transcription was never the
 difficulty. Its setup half (experiment resolution, request widening, ladder construction, and
 one gate) runs in default CI; the fit itself is in the opt-in `recovery` tier.
+
+`tests/test_shooting_net.py` — 11 tests, the `.net` peer (#577). Its own three primitives (a
+mid-trajectory restart rejoining to `1e-6`, the end-knot `d_ic` / `d_param` against the closed
+form, a feasible seeded transcription scoring its own certificate), the assembled gradient and
+continuity Jacobian against central differences, and the property that is specific to this
+backend: one segment's `Data` carries the observable columns *and* the species columns, its
+tensor carries both selector families, and the observable columns are the net backend's own
+and unchanged — checked against the analytic decay, because a segment that quietly rescored
+something else would still look self-consistent. Plus the scalar path staying tensor-free, the
+action resolution and its refusals (non-ODE, `continue=>1`), and the request widening. And
+**end to end**: `job_type = ms` on a BNGL model — BNGL → BNG2.pl → `.net` → `BngsimModel`, the
+genuine net path — recovering `k` and `S(0)` to better than 2 %, ladder `4-2-1`, certified
+`1.16e-12`.
 
 What is **not** verified here: an `ms` fit on the motivating model. That is the acceptance
 benchmark, which is separate work, and no claim about Borghans is made from this change.

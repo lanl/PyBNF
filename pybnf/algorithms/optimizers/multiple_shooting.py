@@ -35,11 +35,13 @@ dynamics), multiple shooting refuses three further classes of fit, each because 
 transcription would otherwise change the quantity being fitted rather than the way it is
 searched:
 
-* **a model whose state this cut's backend cannot surface** -- the state at a knot is the
-  ODE state vector, and of PyBNF's backends only the bngsim SBML/Antimony one puts species
-  columns and initial-condition sensitivities on the same run. A ``.net`` model has the same
-  kind of state and bngsim will return it; PyBNF's net adapter does not ask for it. See
-  :mod:`pybnf.shooting.bngsim_backend` for what closing that would take;
+* **a model with no enumerated state to restart from** -- the state at a knot is the ODE
+  state vector, which a network-free (NFsim) model never enumerates and a non-bngsim backend
+  does not expose. Both bngsim paths are supported, through two backends that differ only in
+  what a simulation *returns*: :mod:`pybnf.shooting.bngsim_backend` for SBML/Antimony, whose
+  trajectory columns already are the species, and :mod:`pybnf.shooting.net_backend` for
+  ``.net``, which asks for the observable and species selector families together so one
+  integration serves both the data terms and the continuity block (#577);
 * **an experiment that is not a plain measured time course** -- a dose-response scan has no
   time axis to cut, and a pre-equilibration protocol's measured phase already begins from a
   carried state that is not the model's own;
@@ -63,6 +65,7 @@ from ...registry import register_fit_type
 from ...shooting import (
     BngsimSegmentBackend,
     GaussNewtonSolver,
+    NetSegmentBackend,
     ShootingExperiment,
     feasible_ladder,
     run_multiple_shooting,
@@ -71,6 +74,49 @@ from ...shooting.grid import KNOT
 from ...transcription import PenaltySchedule, coarsening_ladder
 
 logger = logging.getLogger('pybnf.algorithms')
+
+
+def _is_sbml_path(model):
+    """Whether this model is on the bngsim SBML/Antimony backend, whose trajectory columns
+    *are* its species (:mod:`pybnf.shooting.bngsim_backend`)."""
+    return (hasattr(model, '_run_simulation') and hasattr(model, '_result_to_data')
+            and hasattr(model, 'species_names'))
+
+
+def _is_net_path(model):
+    """Whether this model is on the bngsim ``.net`` backend -- an expanded reaction network
+    whose species this cut reads alongside its observables
+    (:mod:`pybnf.shooting.net_backend`, #577).
+
+    A network-free (NFsim) model reuses the same ``_build_data`` but enumerates no species,
+    so the engine model's species list is what tells the two apart rather than the class.
+    """
+    engine = getattr(model, '_engine_model', None)
+    if engine is None or not hasattr(model, '_build_data'):
+        return False
+    try:
+        return len(list(engine.species_names)) > 0
+    except Exception:
+        return False
+
+
+def _state_names(model):
+    """The species a knot carries, whichever bngsim path this model is on.
+
+    The SBML/Antimony wrapper exposes them as a property; the ``.net`` wrapper keeps them on
+    its engine model. One accessor so the request-widening and the gate agree on what "the
+    state" is.
+    """
+    if _is_sbml_path(model):
+        return list(model.species_names)
+    return list(model._engine_model.species_names)
+
+
+def _flag(value):
+    try:
+        return bool(int(float(str(value).strip().strip('"\''))))
+    except (TypeError, ValueError):
+        return False
 
 
 class MSConfig(PyBNFConfigModel):
@@ -201,6 +247,15 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                    % (', '.join(str(m) for m in dropped),
                       '-'.join(str(m) for m in rungs)))
         print1('Multiple-shooting ladder: %s' % '-'.join(str(m) for m in rungs))
+        # The transcription's width, stated up front. It scales with the model's *state*
+        # (the auxiliary block is (m-1) x n_species per experiment), not with the number of
+        # fitted parameters, so on an expanded reaction network it can dwarf the fit's own
+        # dimension -- which a user should hear from the run rather than infer from its
+        # duration (#577).
+        added = sum((spec.grid(rungs[0]).n_knots) * len(spec.backend.state_names)
+                    for spec in specs)
+        print1('  finest rung adds %i internal auxiliary variable(s) to this fit\'s %i free '
+               'parameter(s)' % (added, len(self.variables)))
         for spec in specs:
             print2(spec.grid(rungs[0]).describe())
 
@@ -269,8 +324,7 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             self._require_carryable_state(model)
             self._request_state_sensitivities(model)
             for suffix, exp_data in self.exp_data.get(model.name, {}).items():
-                action, mutant = self._resolve_action(model, suffix)
-                self._require_simple_time_course(model, action, suffix)
+                backend = self._make_backend(model, suffix)
                 label = str(suffix)
                 if KNOT in label:
                     raise PybnfError(
@@ -286,11 +340,8 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                         "to be re-evaluated at every fit point (#530)." % suffix,
                         hint='Fit this model with job_type = gntr, which resolves the '
                              'routing per evaluation.')
-                specs.append(ShootingExperiment(
-                    (model.name, suffix),
-                    BngsimSegmentBackend(model, action, mutant, suffix,
-                                         timeout=self.config.config['wall_time_sim']),
-                    exp_data, routing, label=label, start=0.0))
+                specs.append(ShootingExperiment((model.name, suffix), backend, exp_data,
+                                                routing, label=label, start=0.0))
         if not specs:
             raise PybnfError('Multiple shooting found no scored experiment to segment.')
         return specs
@@ -317,12 +368,30 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         request = getattr(model, '_sensitivity_request', None)
         params = list(getattr(request, 'params', None) or [])
         ic = list(getattr(request, 'ic', None) or [])
-        for state in model.species_names:
+        for state in _state_names(model):
             if state not in ic:
                 ic.append(state)
         model.enable_output_sensitivities(params=params, ic=ic)
 
-    def _resolve_action(self, model, suffix):
+    def _make_backend(self, model, suffix):
+        """The segment simulator for one scored ``(model, condition)`` pair.
+
+        Two backends, because the two model paths differ in *what a simulation returns*,
+        not in whether they have a state (#577). The SBML/Antimony path reports its species
+        as the trajectory's columns with ``species:`` sensitivity selectors on both axes; the
+        ``.net`` path reports observables and expressions, so its backend asks for both
+        selector families on one run and appends the species columns itself.
+        """
+        timeout = self.config.config['wall_time_sim']
+        if _is_sbml_path(model):
+            action, mutant = self._resolve_sbml_action(model, suffix)
+            self._require_simple_time_course(model, action, suffix)
+            return BngsimSegmentBackend(model, action, mutant, suffix, timeout=timeout)
+        sim_params, mutant = self._resolve_net_action(model, suffix)
+        self._require_simple_net_action(sim_params, suffix)
+        return NetSegmentBackend(model, sim_params, mutant, suffix, timeout=timeout)
+
+    def _resolve_sbml_action(self, model, suffix):
         """The ``(action, condition)`` pair whose output is scored under ``suffix``.
 
         The same pairing :meth:`~pybnf.bngsim_sbml_model.BngsimSbmlModelNoTimeout.execute`
@@ -340,34 +409,84 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             "Multiple shooting could not resolve which simulation of model '%s' produces "
             "the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
 
+    def _resolve_net_action(self, model, suffix):
+        """The ``(parsed simulate action, condition)`` pair scored under ``suffix``.
+
+        The ``.net`` peer of :meth:`_resolve_sbml_action`. A net model's actions are raw
+        BNGL ``simulate()`` lines rather than objects, so each is parsed the way
+        ``_execute_actions`` parses it and matched on the same
+        ``action suffix + mutant suffix`` key.
+
+        The wildtype is appended rather than assumed present: ``BngsimModel.execute`` runs
+        the base actions *before* its mutant loop rather than as an empty-suffix member of
+        it (which is where the SBML path puts it), so a model with conditions declared still
+        scores its unperturbed run under the bare action suffix.
+        """
+        from ...bngsim_model.parsing import _parse_simulate_action
+        from ...pset import MutationSet
+        conditions = list(getattr(model, 'mutants', []) or [])
+        if not any(getattr(m, 'suffix', '') == '' for m in conditions):
+            conditions.append(MutationSet())
+        for mutant in conditions:
+            for line in getattr(model, 'actions', []) or []:
+                sim_params = _parse_simulate_action(str(line).strip())
+                if sim_params is None:
+                    continue
+                if sim_params.get('suffix', 'time_course') + mutant.suffix == suffix:
+                    return sim_params, mutant
+        raise PybnfError(
+            "Multiple shooting could not resolve which simulate() action of model '%s' "
+            "produces the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
+
     # --- gates ------------------------------------------------------------- #
     def _require_carryable_state(self, model):
-        """Refuse a model whose state this cut's backends cannot surface.
+        """Refuse a model whose state no segment backend can surface.
 
-        Not a statement about the model: a ``.net`` file is a reaction network with the same
-        kind of ODE state an SBML model has, and bngsim returns both its species trajectory
-        and its ``d(species)/d(species_0)`` when asked. The gap is in PyBNF's net adapter,
-        which builds its ``Data`` from observables and expressions and requests
-        ``observable:`` / ``expression:`` sensitivity selectors, so a segment simulation
-        would come back carrying neither the state at the knot nor its derivative. The
-        message says which of those it is, because "your model has no state" would send a
-        user looking in the wrong place.
+        Both bngsim paths qualify (#577): the SBML/Antimony one reports species columns and
+        ``species:`` sensitivity selectors directly, and the ``.net`` one is a reaction
+        network with the same kind of ODE state whose species trajectory and
+        ``d(species)/d(species_0)`` bngsim returns when asked -- which
+        :mod:`pybnf.shooting.net_backend` does. What is left over is a backend with no
+        expanded network to carry at all (network-free NFsim) or no bngsim seam (a
+        RoadRunner/SBML model), and the message names that rather than implying the model
+        has no state.
         """
-        if hasattr(model, '_run_simulation') and hasattr(model, 'species_names') \
-                and hasattr(model, '_result_to_data'):
+        if _is_sbml_path(model) or _is_net_path(model):
             return
         raise PybnfError(
             "Multiple shooting (job_type = ms) restarts a simulation from the model's own "
-            "state at each knot, and PyBNF's backend for model '%s' does not surface that "
-            "state: its trajectory carries observables and expressions rather than species, "
-            "and its forward-sensitivity request names the same selectors, so a segment "
-            "would return neither the state at a knot nor its d(state)/d(state). The model "
-            "itself has a perfectly good state -- this is a limitation of the backend "
-            "adapter, not of the model." % getattr(model, 'name', '?'),
-            hint=['Simulate the model through the bngsim SBML/Antimony path (an SBML model '
-                  'needs \'sbml_backend = bngsim\'), whose species columns and '
+            "state at each knot, and model '%s' uses a backend that has no such state to "
+            "restart from -- a network-free (NFsim) model never enumerates one, and a "
+            "non-bngsim backend exposes neither the state nor its forward sensitivities."
+            % getattr(model, 'name', '?'),
+            hint=['Simulate the model through bngsim -- a generated network (.net) or an '
+                  'SBML model with \'sbml_backend = bngsim\' -- whose species and '
                   'initial-condition sensitivities are what a knot carries.',
                   'Or fit with job_type = gntr, which needs no segment transcription.'])
+
+    def _require_simple_net_action(self, sim_params, suffix):
+        """Refuse a ``.net`` ``simulate()`` action that is not a plain measured time course.
+
+        The ``.net`` peer of :meth:`_require_simple_time_course`, on the parsed action rather
+        than an action object.
+        """
+        method = str(sim_params.get('method', 'ode')).strip().strip('"\'')
+        reason = None
+        if method != 'ode':
+            reason = ('it requests method=%r, which is not deterministic ODE integration '
+                      'and so carries no forward sensitivities' % method)
+        elif _flag(sim_params.get('continue', 0)):
+            reason = ("it continues from a previous action's end state rather than from "
+                      "the model's own initial conditions")
+        elif sim_params.get('stop_if'):
+            reason = ('a stop_if condition can end it before its horizon, so its knots are '
+                      'not placed on a span it is guaranteed to reach')
+        if reason is None:
+            return
+        raise PybnfError(
+            "Multiple shooting (job_type = ms) segments a measured time course, and "
+            "experiment '%s' cannot be segmented: %s." % (suffix, reason),
+            hint='Fit with job_type = gntr, which needs no segment transcription.')
 
     def _require_simple_time_course(self, model, action, suffix):
         """Refuse an experiment that is not a plain measured time course."""

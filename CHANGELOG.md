@@ -81,11 +81,13 @@ All notable changes to PyBNF are documented below. This project adheres to
   New keys `ms_segments`, `ms_coarsening`, `ms_penalty`, `ms_penalty_growth`, `ms_max_penalty`,
   `ms_feasibility_tol`, `ms_optimality_tol`, `ms_inner_iterations`, `ms_aux_decades`,
   `ms_max_iterations`, defaulted from ADR-0109's measurements rather than from taste. Requires the
-  bngsim SBML/Antimony backend — a knot carries the model's *state*, and that is the one PyBNF
-  backend whose trajectory columns and sensitivity selectors are the species; a `.net` model has
-  the same kind of state and bngsim will return it, but PyBNF's net adapter does not ask for it,
-  so extending `ms` there is adapter work rather than a modelling obstacle — and refuses, by
-  name, a fit whose scored quantity is a
+  bngsim backend — a knot carries the model's *state*, so both a generated network (`.net`) and
+  an SBML/Antimony model are supported, through two backends that differ only in what a
+  simulation returns: on the SBML path the columns an experiment scores and the columns a
+  continuity row differences are the same columns, and on the `.net` path they are not, so that
+  backend asks for the observable and species selector families together and one integration
+  still serves both (#577). A network-free (NFsim) model enumerates no state and is refused. It
+  also refuses, by name, a fit whose scored quantity is a
   function of a whole series — an analytic per-series scale, a data normalization, a
   cumulative-to-incident difference — since cutting the series would change it. An analytically
   profiled noise scale (ADR-0108) is deliberately fine: it is profiled over pooled residuals, so
