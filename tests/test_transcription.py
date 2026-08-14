@@ -868,14 +868,60 @@ class TestAugmentedLagrangian:
         assert len(result.iterates) == 2
         assert result.best is not None       # the work already done is still reported
 
-    def test_a_non_finite_inner_point_stops_rather_than_propagating(self):
+    def test_a_non_finite_inner_point_stops_but_still_reports_what_it_earned(self):
+        """A non-finite inner point ends the run and does **not** propagate -- but the run
+        still reports the certificate it already holds (#581).
+
+        This assertion was inverted until #581: the run stopped with ``best is None`` and a
+        caller saw "no fit at all" from a point whose reported parameters certify perfectly
+        well. That was inconsistent with the ``stopped`` branch immediately above, which has
+        always reported the work already done, and the inconsistency was the bug: a
+        certificate is a *reconstruction through the ordinary unsegmented path*, so it does
+        not care that the augmented model at this point is non-finite.
+        """
         def broken_solver(subproblem, u0, tolerance):
             return InnerOutcome(np.full(subproblem.size, np.nan), converged=False)
 
         result = AugmentedLagrangian(ConstrainedQuadratic(), broken_solver).run(
             np.array([0.9, 0.0]))
         assert result.stop_reason == 'inner_failed'
-        assert result.best is None
+        assert result.best is not None
+        assert np.isfinite(result.best.score)
+        # The augmented model genuinely had nothing to offer, and the record says so rather
+        # than inventing a defect norm or an optimality it never measured.
+        assert not np.isfinite(result.best.defect_norm)
+        assert not np.isfinite(result.best.optimality)
+
+    def test_a_point_whose_augmented_model_is_non_finite_still_certifies(self):
+        """#581's shape exactly, offline: the objective blows up while the *reconstruction*
+        succeeds.
+
+        This is what a real fit hits when a parameter point's trajectory integrates fine but
+        its forward sensitivities overflow -- measured on ``Borghans_BiophysChem1997``, where
+        1 of 8 oscillating box draws produced ``m=4: inf`` and no reported fit at all, while
+        the discarded certificate was ``-150.70078``, the same value ``gntr`` reports from
+        that identical start.
+        """
+        class OverflowingSensitivities(ShootingProblem):
+            def objective_at(self, u):
+                model = super().objective_at(u)
+                return ObjectiveModel(np.inf, np.full(len(model.gradient), np.nan))
+
+        problem = OverflowingSensitivities(4, *shooting_data(n=17), theta_seed=0.5)
+        start = problem.layout.initial_point([0.5])
+        # A solver that hands the point straight back, which is what any real one does when
+        # the local model it was given is not finite: there is no step to take.
+        result = AugmentedLagrangian(
+            problem, lambda sub, u0, tol: InnerOutcome(u0, converged=False),
+            max_outer=5).run(start)
+
+        assert result.stop_reason == 'inner_failed'
+        assert result.best is not None, 'the certificate at the start point was discarded'
+        assert np.isfinite(result.best.score)
+        # And it is the ordinary single-shoot reconstruction, not the augmented objective.
+        assert result.best.certificate.certified
+        assert result.best.score == pytest.approx(
+            problem.certify(problem.layout.reported_of(start)).objective)
 
     def test_an_inner_solver_that_breaks_the_contract_refuses_loudly(self):
         result = AugmentedLagrangian(ConstrainedQuadratic(),
