@@ -512,6 +512,8 @@ class AugmentedLagrangian:
             inner_evals += outcome.n_evaluations
 
             if not np.all(np.isfinite(outcome.point)):
+                self._record(self._certify_unusable(iteration, u, multipliers.penalty, m),
+                             iterates, best)
                 stop_reason = 'inner_failed'
                 break
             previous_point = u
@@ -522,6 +524,8 @@ class AugmentedLagrangian:
             model = subproblem.at(u)
             outer_evals += 1
             if not model.is_finite():
+                self._record(self._certify_unusable(iteration, u, multipliers.penalty, m),
+                             iterates, best)
                 stop_reason = 'inner_failed'
                 break
             defect_norm = model.defect_norm
@@ -532,12 +536,7 @@ class AugmentedLagrangian:
 
             record = self._certify(iteration, u, model, multipliers.penalty, optimality)
             certified = certified and record.certificate.certified
-            iterates.append(record)
-            best.offer(record)
-            if self.shared_best is not None:
-                self.shared_best.offer(record)
-            if self.on_iterate is not None:
-                self.on_iterate(record)
+            self._record(record, iterates, best)
 
             if m == 0:
                 # No constraints: the transcription already *is* the ordinary problem, and
@@ -592,6 +591,59 @@ class AugmentedLagrangian:
                            converged, stop_reason, certified, inner_evals, outer_evals,
                            defect_norm, optimality, defect_rms=defect_rms,
                            worst_defects=worst_defects)
+
+    def _record(self, record, iterates, best):
+        """Enter one certified iterate: keep it, rank it, and tell the caller.
+
+        Factored out because the *unusable* branches have to do exactly this too (#581) --
+        an iterate that is not offered to ``best`` is an iterate the run cannot report, and
+        forgetting one of these four steps on one branch is precisely how that bug arose.
+        """
+        if record is None:
+            return
+        iterates.append(record)
+        best.offer(record)
+        if self.shared_best is not None:
+            self.shared_best.offer(record)
+        if self.on_iterate is not None:
+            self.on_iterate(record)
+
+    def _certify_unusable(self, iteration, u, penalty, n_constraints):
+        """Certify the reported parameters at a point whose *augmented* model is not finite.
+
+        The augmented model and the certificate are different computations, and the second
+        can succeed where the first fails (#581): certification discards every auxiliary
+        state and re-simulates the reported parameters through the fit's **ordinary
+        unsegmented** path, which needs no continuity block, no auxiliary bounds, and --
+        crucially -- no forward sensitivities. A parameter point whose trajectory integrates
+        perfectly well while its ``d(state)/d(theta)`` overflows makes the augmented model
+        non-finite and the certificate perfectly good.
+
+        Before this, such a point ended the run having reported *nothing*, because the
+        bail-out returned before any iterate was certified -- so a run holding a fit it had
+        already earned printed "No simulation completed, so there is no best fit to report".
+        On a single-start run, which is every ``refine_method = ms``, that was the whole
+        result. Measured on ``Borghans_BiophysChem1997``: 1 of 8 oscillating box draws, where
+        the discarded certificate was ``-150.70078`` -- the same number ``gntr`` reports from
+        the identical start.
+
+        The recorded iterate carries ``inf`` for every quantity the augmented model would
+        have supplied, because those genuinely are not available; only the certificate is.
+        """
+        reported = self.problem.layout.reported_of(u)
+        certificate = self.problem.certify(reported)
+        if certificate is None:
+            # A transcription that cannot reconstruct has nothing to offer here: the
+            # augmented objective is the only score it could report, and that is the number
+            # this branch has just established is not finite.
+            return None
+        if not isinstance(certificate, Certificate):
+            raise TranscriptionError(
+                'TranscriptionProblem.certify must return a Certificate or None; got %r.'
+                % type(certificate).__name__)
+        return CertifiedIterate(self.problem.name, iteration, reported, u, certificate,
+                                np.inf, np.inf, np.inf, penalty, np.inf,
+                                defect_rms=np.inf, n_constraints=n_constraints)
 
     def _certify(self, iteration, u, model, penalty, optimality):
         """Reconstruct this iterate's reported parameters and wrap it as a
