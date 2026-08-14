@@ -59,7 +59,6 @@ dominant cost. Stated here rather than discovered from a benchmark table.
 """
 
 import queue
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from .backend import SegmentSimulationFailed, trace_from_data
