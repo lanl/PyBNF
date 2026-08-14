@@ -252,7 +252,7 @@ def _stage(backend, n_segments):
 # The fit type, end to end
 # ---------------------------------------------------------------------------
 
-def _ms_config(tmp_path, **overrides):
+def _ms_config(tmp_path, observables=None, obs_column='S', **overrides):
     """A real edition-2 ``job_type = ms`` configuration over the decay SBML model.
 
     Zero-noise data simulated from the model at its true parameters, so the fit has an
@@ -260,6 +260,10 @@ def _ms_config(tmp_path, **overrides):
     monotone, and single shooting fits it in a handful of iterations -- which is the point:
     a method that changes the transcription has to reproduce the ordinary answer on a
     problem where the ordinary transcription was never the difficulty.
+
+    ``observables`` routes the fit through a **measurement-model formula** column (ADR-0036)
+    instead of scoring the species directly -- the path #578 broke, and the one this
+    module's other fixtures never take.
     """
     xml = Path(tmp_path) / 'decay.xml'
     xml.write_text(_DECAY_SBML)
@@ -268,18 +272,19 @@ def _ms_config(tmp_path, **overrides):
         str(xml), str(xml), pset=_pset(), actions=(action,))
     data = truth.execute(str(tmp_path), 'truth', 0)['time_course']
     t = np.asarray(data['time'])
-    column = np.asarray(data['S'])
+    species = np.asarray(data['S'])
+    column = 2.0 * species if observables else species
     sd = max(0.02 * float(np.max(column)), 1e-6)
     exp = Path(tmp_path) / 'tc.exp'
     exp.write_text('\n'.join(
-        ['# time\tS\tS_SD'] + ['%.12g\t%.12g\t%.12g' % (ti, ci, sd)
-                               for ti, ci in zip(t, column)]) + '\n')
+        ['# time\t%s\t%s_SD' % (obs_column, obs_column)]
+        + ['%.12g\t%.12g\t%.12g' % (ti, ci, sd) for ti, ci in zip(t, column)]) + '\n')
 
     free = {'k': ('uniform_var', 1e-2, 3.0), 'S': ('uniform_var', 10.0, 300.0)}
     return H.make_newera_config(
         tmp_path, str(xml), str(exp), free, 'tc', 'ms', objective='chi_sq',
         random_seed=1234, population_size=1, max_iterations=12, sbml_backend='bngsim',
-        **overrides)
+        observables=observables, **overrides)
 
 
 def test_the_fit_type_builds_its_experiments_and_widens_the_ic_request(tmp_path):
@@ -298,6 +303,54 @@ def test_the_fit_type_builds_its_experiments_and_widens_the_ic_request(tmp_path)
     # The ladder the defaults ask for, ending unsegmented.
     rungs, dropped = feasible_ladder(specs)
     assert rungs == (4, 2, 1) and dropped == ()
+
+
+def test_a_formula_observable_is_scored_once_per_simulated_trajectory(tmp_path):
+    """A scored column that is a **measurement-model formula** (ADR-0036) is materialised
+    into the trajectory *in place*, and materialising it twice is refused by design. Every
+    ordinary fit satisfies that for free -- the propose/score loop scores a freshly
+    simulated ``Data`` each time -- but multiple shooting caches its segment trajectories
+    per point, and the outer loop re-evaluates at the point the inner solver finished at.
+    Before #578 the second evaluation re-scored the same objects and the whole fit died with
+    "would shadow an existing simulation-output column".
+
+    This is the regression the rest of the shooting suite structurally cannot see: its
+    fixtures score native columns (a species, an observable), so the measurement layer never
+    runs at all. Here the scored column is ``Ca = 2*S``, so it does.
+    """
+    pytest.importorskip('petab')       # the measurement layer needs the formula math extra
+    alg = H.build(_ms_config(tmp_path, observables={'Ca': '2*S'}, obs_column='Ca'), 'ms')
+    alg._setup_gradient_path()
+    problem = seed_stage(alg._build_specs(), 2, alg.objective, alg.variables,
+                         alg._pset_from_u, alg._param_vec(alg.start_psets[0]))
+    u = problem.layout.initial_point(alg._param_vec(alg.start_psets[0]))
+
+    first = problem.objective_at(u)
+    second = problem.objective_at(u)          # the call that used to raise
+    assert np.isfinite(first.value)
+    assert second.value == first.value
+    np.testing.assert_array_equal(second.gradient, first.gradient)
+
+
+def test_a_formula_observable_survives_the_outer_loop(tmp_path):
+    """The same defect, through the loop that actually triggers it: the outer loop's
+    re-evaluation at the inner solver's final iterate is a cache hit on already-scored
+    trajectories. Runs a couple of outer iterations rather than asserting a fit quality --
+    what is under test is that the run proceeds at all."""
+    pytest.importorskip('petab')
+    from pybnf.shooting import GaussNewtonSolver
+    from pybnf.transcription import AugmentedLagrangian
+
+    alg = H.build(_ms_config(tmp_path, observables={'Ca': '2*S'}, obs_column='Ca'), 'ms')
+    alg._setup_gradient_path()
+    start = alg._param_vec(alg.start_psets[0])
+    problem = seed_stage(alg._build_specs(), 2, alg.objective, alg.variables,
+                         alg._pset_from_u, start)
+    loop = AugmentedLagrangian(problem, GaussNewtonSolver(max_iterations=8), max_outer=3)
+    result = loop.run(problem.layout.initial_point(start))
+
+    assert result.iterates                      # it got past the first outer iteration
+    assert result.best is not None and np.isfinite(result.best_score)
 
 
 def test_the_fit_type_refuses_a_series_wide_transform(tmp_path):

@@ -231,6 +231,12 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
 
         self._cache_key = None
         self._cache = None
+        # The assembled objective at the last point asked for. Separate from the trace cache
+        # above because it must survive an interleaved `equality_at` at another point, and
+        # because it is what guarantees each simulated trajectory is scored once (#578; see
+        # :meth:`objective_at`).
+        self._objective_key = None
+        self._objective_model = None
         self.n_certifications = 0
 
     # -- identity ---------------------------------------------------------------
@@ -331,6 +337,37 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
     # -- the objective ----------------------------------------------------------
 
     def objective_at(self, u):
+        """The fit's objective and its derivatives at ``u``, memoised on the point.
+
+        The memo is not an optimisation first — it is what keeps this method **scoring each
+        simulated trajectory exactly once** (#578). Scoring goes through
+        ``objective.evaluate_multiple``, which asks the measurement layer to materialise
+        every ``observable: <id>, formula: ...`` column *into the trajectory in place*
+        (ADR-0036), and that materialisation deliberately refuses a column that already
+        exists. Every ordinary fit satisfies it for free: the propose/score loop scores a
+        freshly simulated :class:`~pybnf.data.Data` each time. Multiple shooting does not,
+        because :meth:`_traces` caches the segment trajectories per point so that one
+        augmented-model evaluation costs one pass of segment simulations rather than two --
+        and the outer loop then re-evaluates at the point the inner solver finished at, which
+        is a cache hit on the very same objects.
+
+        Memoising the assembled model rather than copying the trajectories fixes that at the
+        cause: the second call returns the first call's answer instead of re-scoring
+        anything. It also removes a redundant gradient/Fisher assembly per outer iteration,
+        which is the larger of the two costs. Sound because this method does not depend on
+        the multipliers -- only
+        :class:`~pybnf.transcription.augmented.AugmentedModel` combines them -- so the
+        objective at a point is a property of the point alone.
+        """
+        u = np.asarray(u, dtype=float).reshape(-1)
+        key = u.tobytes()
+        if self._objective_key == key:
+            return self._objective_model
+        model = self._build_objective(u)
+        self._objective_key, self._objective_model = key, model
+        return model
+
+    def _build_objective(self, u):
         cached = self._traces(u)
         if cached is None:
             return self._unusable_objective()
