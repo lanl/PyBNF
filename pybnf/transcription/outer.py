@@ -66,6 +66,16 @@ Stalling is a state to *report*, not a failure: a feasible, stalled run has foun
 it found and could not certify a KKT residual for it, which is different from failing and
 different again from having converged.
 
+The defect report
+-----------------
+The aggregate scaled defect norm says *how far* an iterate is from feasible; it does not say
+*where*. Every iterate therefore also carries the largest individual scaled defects by name
+(:data:`WORST_DEFECTS` of them) and their RMS, which for multiple shooting reads
+``experiment1@1/2::Z_state`` -- the knot that did not close and the state it did not close
+in. That is the "report scaled continuity defects" (plural) the issue asks for, and it is
+stated here rather than in the consumer because the *scaling* is what makes the numbers
+comparable across states of different magnitude, and the scaling lives in this layer.
+
 Best-iterate certification
 --------------------------
 The loop certifies **every** outer iterate, not just the last, and reports the best
@@ -252,14 +262,25 @@ def projected_gradient_norm(point, gradient, lower, upper):
     return float(np.max(np.abs(step)))
 
 
+#: How many individual scaled defects an iterate carries for the report. A defect list is
+#: one entry per (knot, state), so a big model at a fine rung has thousands of them; the
+#: *worst* few are what answers "which knot did not close, and in which state", and keeping
+#: every iterate's whole vector would grow a run's memory with the model's state count for
+#: numbers nobody reads. The aggregate :attr:`~CertifiedIterate.defect_norm` and
+#: :attr:`~CertifiedIterate.defect_rms` are kept in full alongside.
+WORST_DEFECTS = 8
+
+
 class CertifiedIterate:
     """One outer iterate, with the certificate earned by its reported parameters."""
 
     __slots__ = ('stage', 'iteration', 'reported', 'point', 'certificate', 'defect_norm',
-                 'objective_value', 'augmented_value', 'penalty', 'optimality')
+                 'objective_value', 'augmented_value', 'penalty', 'optimality',
+                 'defect_rms', 'worst_defects', 'n_constraints')
 
     def __init__(self, stage, iteration, reported, point, certificate, defect_norm,
-                 objective_value, augmented_value, penalty, optimality):
+                 objective_value, augmented_value, penalty, optimality,
+                 defect_rms=0.0, worst_defects=(), n_constraints=0):
         self.stage = stage
         self.iteration = int(iteration)
         self.reported = np.array(reported, dtype=float, copy=True)
@@ -270,16 +291,37 @@ class CertifiedIterate:
         self.augmented_value = float(augmented_value)
         self.penalty = float(penalty)
         self.optimality = float(optimality)
+        #: Root-mean-square scaled defect, the aggregate companion to the infinity norm.
+        self.defect_rms = float(defect_rms)
+        #: The largest individual scaled defects as ``(name, value)``, worst first --
+        #: :meth:`~pybnf.transcription.equality.EqualityModel.worst`. For multiple shooting
+        #: a name is ``'<experiment>@<fraction>::<state>'``, so this says *which knot* did
+        #: not close and *in which state* rather than only how far off the worst one was.
+        self.worst_defects = tuple((str(name), float(value)) for name, value in worst_defects)
+        #: How many constraints there were in total, so a report that lists only the worst
+        #: few can say so ("the 8 largest of 1068") rather than reading as the whole set.
+        self.n_constraints = int(n_constraints)
 
     @property
     def score(self):
         """The ranking key: the certified objective."""
         return self.certificate.objective
 
+    def defect_report(self, count=None):
+        """The per-constraint defect breakdown, as one line, or ``''`` when there are no
+        constraints (the unsegmented rung of a ladder)."""
+        return _format_defects(self.worst_defects, count)
+
     def __repr__(self):
         return 'CertifiedIterate(%s #%i, certified=%.6g, defect=%.3g, opt=%.3g)' % (
             self.stage, self.iteration, self.certificate.objective, self.defect_norm,
             self.optimality)
+
+
+def _format_defects(worst, count=None):
+    """``'a::x 1.2e-03, a::y -4.5e-04'`` -- shared by the iterate and the run result."""
+    items = list(worst) if count is None else list(worst)[:int(count)]
+    return ', '.join('%s %.3g' % (name, value) for name, value in items)
 
 
 class CertifiedBest:
@@ -319,7 +361,8 @@ class OuterResult:
     """What one augmented-Lagrangian run produced."""
 
     def __init__(self, stage, iterates, best, final_point, multipliers, converged, stop_reason,
-                 certified, n_inner_evaluations, n_outer_evaluations, defect_norm, optimality):
+                 certified, n_inner_evaluations, n_outer_evaluations, defect_norm, optimality,
+                 defect_rms=0.0, worst_defects=()):
         self.stage = stage
         self.iterates = tuple(iterates)
         self.best = best
@@ -334,6 +377,10 @@ class OuterResult:
         #: Projected-gradient first-order optimality at :attr:`final_point`, measured under
         #: the last multipliers -- the other half of the KKT test the defect norm starts.
         self.optimality = float(optimality)
+        #: RMS scaled defect at :attr:`final_point`.
+        self.defect_rms = float(defect_rms)
+        #: The largest individual scaled defects at :attr:`final_point`, worst first.
+        self.worst_defects = tuple((str(name), float(value)) for name, value in worst_defects)
 
     @property
     def n_evaluations(self):
@@ -351,6 +398,14 @@ class OuterResult:
                 % (self.stage, len(self.iterates), self.stop_reason, self.defect_norm,
                    self.optimality, best, self.n_evaluations,
                    '' if self.certified else ' [UNCERTIFIED]'))
+
+    def defect_report(self, count=None):
+        """The per-constraint defect breakdown at :attr:`final_point`, as one line.
+
+        The aggregate :attr:`defect_norm` says *how far* from continuous the transcription
+        ended; this says *where*. Empty when there are no constraints, which is the
+        unsegmented rung of a ladder rather than a degenerate case."""
+        return _format_defects(self.worst_defects, count)
 
     def __repr__(self):
         return 'OuterResult(%s, %s, best=%.6g)' % (self.stage, self.stop_reason, self.best_score)
@@ -436,6 +491,8 @@ class AugmentedLagrangian:
         certified = True
         prev_defect = np.inf
         stalled_for = 0
+        defect_rms = 0.0
+        worst_defects = ()
 
         for iteration in range(1, self.max_outer + 1):
             if self.stop_check is not None and self.stop_check():
@@ -468,6 +525,8 @@ class AugmentedLagrangian:
                 stop_reason = 'inner_failed'
                 break
             defect_norm = model.defect_norm
+            defect_rms = model.equality.defect_rms
+            worst_defects = model.equality.worst(WORST_DEFECTS)
             optimality = projected_gradient_norm(u, model.gradient, layout.lower,
                                                  layout.upper)
 
@@ -531,7 +590,8 @@ class AugmentedLagrangian:
 
         return OuterResult(self.problem.name, iterates, best.record, u, multipliers,
                            converged, stop_reason, certified, inner_evals, outer_evals,
-                           defect_norm, optimality)
+                           defect_norm, optimality, defect_rms=defect_rms,
+                           worst_defects=worst_defects)
 
     def _certify(self, iteration, u, model, penalty, optimality):
         """Reconstruct this iterate's reported parameters and wrap it as a
@@ -553,4 +613,6 @@ class AugmentedLagrangian:
                 % type(certificate).__name__)
         return CertifiedIterate(self.problem.name, iteration, reported, u, certificate,
                                 model.defect_norm, model.objective_value, model.value, penalty,
-                                optimality)
+                                optimality, defect_rms=model.equality.defect_rms,
+                                worst_defects=model.equality.worst(WORST_DEFECTS),
+                                n_constraints=model.equality.n_constraints)

@@ -45,6 +45,8 @@ The pieces
   :mod:`~pybnf.shooting.bngsim_backend`, its implementation against bngsim;
 * :mod:`~pybnf.shooting.problem` -- the transcription itself: the ``IC``-routed objective
   assembly, the continuity block, and the certified reconstruction;
+* :mod:`~pybnf.shooting.parallel` -- the segment pass: serial, or across warm
+  engine+simulator lanes, with the measured cost model that decides which;
 * :mod:`~pybnf.shooting.solver` -- the Gauss-Newton inner solver, which is ``gntr``'s runner
   driven synchronously;
 * :mod:`~pybnf.shooting.driver` -- the ladder.
@@ -57,7 +59,15 @@ from .backend import SegmentBackend, SegmentSimulationFailed, SegmentTrace, trac
 from .bngsim_backend import BngsimSegmentBackend
 from .net_backend import NetSegmentBackend
 from .driver import coarsening_stages, feasible_ladder, run_multiple_shooting
-from .grid import SegmentGrid
+from .grid import (
+    EQUAL_OBSERVATIONS,
+    EQUAL_TIME,
+    EXPLICIT,
+    PLACEMENTS,
+    SegmentGrid,
+    max_segments,
+)
+from .parallel import SERIAL, SegmentPool, SegmentTask
 from .problem import (
     AUX_DECADES,
     STATE_FLOOR,
@@ -70,6 +80,11 @@ from .solver import GaussNewtonSolver
 
 __all__ = [
     'AUX_DECADES',
+    'EQUAL_OBSERVATIONS',
+    'EQUAL_TIME',
+    'EXPLICIT',
+    'PLACEMENTS',
+    'SERIAL',
     'STATE_FLOOR',
     'BngsimSegmentBackend',
     'GaussNewtonSolver',
@@ -77,12 +92,15 @@ __all__ = [
     'NetSegmentBackend',
     'SegmentBackend',
     'SegmentGrid',
+    'SegmentPool',
     'SegmentSimulationFailed',
+    'SegmentTask',
     'SegmentTrace',
     'SegmentedExperiment',
     'ShootingExperiment',
     'coarsening_stages',
     'feasible_ladder',
+    'max_segments',
     'run_multiple_shooting',
     'seed_stage',
     'trace_from_data',

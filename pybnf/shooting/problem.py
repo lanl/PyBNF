@@ -73,8 +73,9 @@ from ..transcription import (
     TranscriptionProblem,
     VariableBlock,
 )
-from .backend import SegmentSimulationFailed, trace_from_data
-from .grid import SegmentGrid
+from .backend import SegmentSimulationFailed
+from .grid import EQUAL_TIME, SegmentGrid, max_segments
+from .parallel import SERIAL, SegmentTask
 
 #: Floor under a state magnitude, so a species that is identically zero over the whole
 #: horizon still gets a strictly positive constraint scale and a finite auxiliary box. The
@@ -111,10 +112,15 @@ class ShootingExperiment:
     :param label: The label its knots are named under. Defaults to the suffix.
     :param start: Where the simulation starts. Defaults to the first measurement time; a
         time course whose first measurement is after ``t = 0`` should pass ``0.0``.
+    :param placement: How this experiment's knots are placed -- one of
+        :data:`~pybnf.shooting.grid.PLACEMENTS`. Fixed for the whole fit, so every rung of
+        the ladder places its knots by the same rule and their fractions mean one thing.
+    :param knots: Explicit knot times for the finest rung, which force
+        ``placement = 'explicit'``.
     """
 
     def __init__(self, key, backend, exp_data, routing, times=None, label=None, start=None,
-                 horizon=None):
+                 horizon=None, placement=EQUAL_TIME, knots=None):
         self.key = (str(key[0]), str(key[1]))
         self.backend = backend
         self.exp_data = exp_data
@@ -125,11 +131,19 @@ class ShootingExperiment:
         self.label = str(label if label is not None else self.key[1])
         self.start = start
         self.horizon = horizon
+        self.placement = str(placement)
+        self.knots = tuple(float(t) for t in (knots or ()))
 
     def grid(self, n_segments):
         """This experiment's knots at one segment count."""
         return SegmentGrid(self.times, n_segments, label=self.label, start=self.start,
-                           horizon=self.horizon)
+                           horizon=self.horizon, placement=self.placement,
+                           knots=self.knots or None)
+
+    @property
+    def max_segments(self):
+        """The finest rung this experiment's data supports under its own placement."""
+        return max_segments(self.times, self.placement, self.knots or None)
 
     @property
     def state_names(self):
@@ -195,11 +209,15 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
     :param scales: ``{experiment key: per-state constraint scale}`` -- the magnitude each
         continuity defect is measured against.
     :param name: The stage label for the trace (``'m=4'``).
+    :param pool: The :class:`~pybnf.shooting.parallel.SegmentPool` that runs this stage's
+        segment passes. Defaults to the serial one, so a caller that does not ask for lanes
+        gets exactly the behaviour that shipped with ADR-0110.
     """
 
     def __init__(self, experiments, objective, variables, pset_from_u, blocks, scales,
-                 name=None):
+                 name=None, pool=None):
         self.experiments = list(experiments)
+        self._pool = pool or SERIAL
         self.objective = objective
         self.variables = list(variables)
         self._pset_from_u = pset_from_u
@@ -277,39 +295,29 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
         together) and a segment simulation is the expensive thing here. ``None`` when any
         segment failed to integrate: the caller turns that into a non-finite local model,
         which is the signal the inner solver's trust region backs off on.
+
+        The pass itself belongs to :class:`~pybnf.shooting.parallel.SegmentPool` -- the
+        segments of one point are independent (each is one span from a state the
+        transcription already knows, with no data flowing between them), so whether they run
+        one at a time or several at once is a scheduling decision and not a property of the
+        transcription. This method's job is to say *which* spans, from *which* states.
         """
         u = np.asarray(u, dtype=float).reshape(-1)
         key = u.tobytes()
         if self._cache_key == key:
             return self._cache
         pset = self._pset_from_u(self._layout.reported_of(u))
-        traces = []
-        ok = True
+        tasks, shape = [], []
         for experiment in self.experiments:
-            per_segment = []
+            shape.append(experiment.grid.n_segments)
             for segment in range(experiment.grid.n_segments):
                 times, _rows = experiment.grid.sample_times(segment)
-                try:
-                    data = experiment.backend.simulate(
-                        pset, times, self._knot_state(u, experiment, segment))
-                    trace = trace_from_data(data, experiment.state_names)
-                except SegmentSimulationFailed:
-                    trace, ok = None, False
-                else:
-                    if not trace.is_finite():
-                        ok = False
-                per_segment.append(trace)
-                if not ok:
-                    # One unusable segment makes the whole local model unusable, so the
-                    # rest of this point's segments are work whose answer is already
-                    # decided. Stopping here is what keeps a search that has wandered into
-                    # a non-integrable corner from paying m simulations per rejected trial.
-                    break
-            traces.append(per_segment)
-            if not ok:
-                break
+                tasks.append(SegmentTask(experiment.backend, times,
+                                         self._knot_state(u, experiment, segment),
+                                         experiment.state_names))
+        flat, ok = self._pool.run(pset, tasks)
         self._cache_key = key
-        self._cache = (pset, traces) if ok else None
+        self._cache = (pset, _regroup(flat, shape)) if ok else None
         return self._cache
 
     def _free_params(self, u, pset):
@@ -546,7 +554,7 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
 # ---------------------------------------------------------------------------
 
 def seed_stage(specs, n_segments, objective, variables, pset_from_u, reported,
-               aux_decades=AUX_DECADES, name=None):
+               aux_decades=AUX_DECADES, name=None, pool=None):
     """Build one rung of the ladder, with its auxiliary states seeded from ``reported``.
 
     Each experiment is simulated **once**, unsegmented, at the incoming parameters, and the
@@ -582,7 +590,7 @@ def seed_stage(specs, n_segments, objective, variables, pset_from_u, reported,
                                         initial))
         staged.append(experiment)
     return MultipleShootingProblem(staged, objective, variables, pset_from_u, blocks, scales,
-                                   name=name or ('m=%i' % n_segments))
+                                   name=name or ('m=%i' % n_segments), pool=pool)
 
 
 def _seed_knots(experiment, pset, nominal):
@@ -617,6 +625,15 @@ def _seed_knots(experiment, pset, nominal):
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+def _regroup(flat, shape):
+    """A flat per-segment list back into one list per experiment."""
+    out, start = [], 0
+    for n in shape:
+        out.append(flat[start:start + n])
+        start += n
+    return out
+
 
 def _fold_route(route, trace):
     """``d(end state)/d(one free parameter)``: the route's contributions, summed.

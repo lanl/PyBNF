@@ -54,6 +54,7 @@ from .outer import (
     CertifiedIterate,
     InnerOutcome,
     OuterResult,
+    WORST_DEFECTS,
     PenaltySchedule,
     projected_gradient_norm,
 )
@@ -79,6 +80,7 @@ __all__ = [
     'CertifiedIterate',
     'InnerOutcome',
     'OuterResult',
+    'WORST_DEFECTS',
     'PenaltySchedule',
     'projected_gradient_norm',
     'HomotopyResult',

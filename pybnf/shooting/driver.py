@@ -29,8 +29,6 @@ about, and its last rung is the one whose objective needs no certification becau
 the certificate.
 """
 
-import numpy as np
-
 from ..transcription import PenaltySchedule, coarsening_ladder, run_homotopy
 from .problem import AUX_DECADES, seed_stage
 from .solver import GaussNewtonSolver
@@ -39,16 +37,20 @@ from .solver import GaussNewtonSolver
 def feasible_ladder(specs, ladder=None):
     """The requested ladder, clamped to what the data can support.
 
-    A segment count above an experiment's own measurement count places knots between
+    A segment count above what an experiment's data supports places knots between
     observations everywhere and leaves segments with nothing to fit -- a transcription whose
     auxiliary states are determined by continuity alone in *every* segment, which is not the
     method, it is an ODE solver with extra variables. Rungs above that are dropped and the
     caller is told which (a silent cap would read as "we ran the ladder you asked for").
 
+    The ceiling is the experiment's own, because it depends on the knot placement: equal
+    time needs one measurement per segment, equal observations needs two, and an explicit
+    knot list *is* the finest rung (:func:`~pybnf.shooting.grid.max_segments`).
+
     Returns ``(rungs, dropped)``.
     """
     rungs = tuple(int(m) for m in (coarsening_ladder() if ladder is None else ladder))
-    limit = min((len(np.unique(spec.times)) for spec in specs), default=1)
+    limit = min((spec.max_segments for spec in specs), default=1)
     kept = tuple(m for m in rungs if m <= max(1, limit))
     dropped = tuple(m for m in rungs if m not in kept)
     if 1 not in kept:
@@ -59,12 +61,12 @@ def feasible_ladder(specs, ladder=None):
 
 
 def coarsening_stages(specs, rungs, objective, variables, pset_from_u,
-                      aux_decades=AUX_DECADES):
+                      aux_decades=AUX_DECADES, pool=None):
     """One stage factory per rung, in the order ``run_homotopy`` will run them."""
     def factory(n_segments):
         def build(reported):
             return seed_stage(specs, n_segments, objective, variables, pset_from_u, reported,
-                              aux_decades=aux_decades)
+                              aux_decades=aux_decades, pool=pool)
         return build
     return [factory(m) for m in rungs]
 
@@ -72,7 +74,7 @@ def coarsening_stages(specs, rungs, objective, variables, pset_from_u,
 def run_multiple_shooting(specs, objective, variables, pset_from_u, reported_start,
                           ladder=None, schedule=None, inner_solver=None, max_outer=25,
                           aux_decades=AUX_DECADES, stop_check=None, on_iterate=None,
-                          on_stage=None):
+                          on_stage=None, pool=None):
     """Solve one fit by multiple shooting, down the coarsening ladder.
 
     :param specs: The :class:`~pybnf.shooting.problem.ShootingExperiment`\\ s -- one per
@@ -91,6 +93,8 @@ def run_multiple_shooting(specs, objective, variables, pset_from_u, reported_sta
     :param stop_check: The wall-clock-budget seam, passed to the outer loop *and* to the
         default inner solver, so a deadline lands inside a long inner solve rather than
         after it.
+    :param pool: The :class:`~pybnf.shooting.parallel.SegmentPool` every rung's segment
+        passes run through. Defaults to the serial one.
 
     Returns the :class:`~pybnf.transcription.homotopy.HomotopyResult`, whose ``best`` is the
     best **certified** iterate over the whole ladder -- not its last, which on one prototype
@@ -100,7 +104,7 @@ def run_multiple_shooting(specs, objective, variables, pset_from_u, reported_sta
     if inner_solver is None:
         inner_solver = GaussNewtonSolver(stop_check=stop_check)
     stages = coarsening_stages(specs, rungs, objective, variables, pset_from_u,
-                               aux_decades=aux_decades)
+                               aux_decades=aux_decades, pool=pool)
     return run_homotopy(stages, inner_solver, reported_start,
                         schedule=schedule or PenaltySchedule(), max_outer=max_outer,
                         stop_check=stop_check, on_iterate=on_iterate, on_stage=on_stage)

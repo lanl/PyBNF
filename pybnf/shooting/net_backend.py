@@ -42,6 +42,8 @@ the state of a rule-based model, not something this backend can arrange away, so
 it from the run time.
 """
 
+import threading
+
 import numpy as np
 
 from ..data import Data, OutputSensitivities
@@ -54,9 +56,12 @@ class NetSegmentBackend(SegmentBackend):
 
     :param model: The :class:`~pybnf.bngsim_model.net_model.BngsimModel`. This backend
         **owns** it, assigning the parameter set in place rather than deep-copying per
-        evaluation -- sound because the whole multiple-shooting driver runs single-threaded
-        on the master (a segment is not a :class:`~pybnf.pset.PSet` evaluation and never
-        reaches a worker).
+        evaluation -- sound because the multiple-shooting driver runs on the master (a
+        segment is not a :class:`~pybnf.pset.PSet` evaluation and never reaches a worker),
+        and because the writes to it happen once per point under this backend's lock, before
+        any segment of that point runs. A *lane* is one such per-point clone plus its engine
+        and ``Simulator``, and two segments cannot share one (see
+        :mod:`pybnf.shooting.parallel`).
     :param sim_params: The parsed ``simulate()`` action this experiment is measured by, as
         :func:`~pybnf.bngsim_model.parsing._parse_simulate_action` returns it.
     :param mutant: The ``MutationSet`` (condition) it is measured under.
@@ -74,10 +79,9 @@ class NetSegmentBackend(SegmentBackend):
         self._states = tuple(model._engine_model.species_names)
         self._nominal = self._declared_state()
         self.n_simulations = 0
-        self._point = None          # identity of the PSet the prepared engine holds
-        self._prepared = None       # the per-point model copy (base or mutant)
-        self._engine = None
-        self._sim = None
+        self._point = None          # identity of the PSet the prepared lanes hold
+        self._lanes = []            # one (model copy, engine, Simulator) per lane
+        self._lock = threading.RLock()
 
     # -- the contract -----------------------------------------------------------
 
@@ -89,12 +93,35 @@ class NetSegmentBackend(SegmentBackend):
     def nominal_state(self):
         return self._nominal
 
-    def simulate(self, pset, sample_times, initial_state=None):
+    def open_lanes(self, pset, n_lanes):
+        """Build up to ``n_lanes`` model-copy + engine + simulator triples at ``pset``.
+
+        The ``.net`` peer of
+        :meth:`~pybnf.shooting.bngsim_backend.BngsimSegmentBackend.open_lanes`, and the more
+        expensive of the two: a lane here is a whole cloned PyBNF model, so the cost model in
+        :mod:`pybnf.shooting.parallel` tilts further toward serial on a small network and
+        further toward parallel on a large one, where the ``n_species``-wide
+        initial-condition sensitivity system dominates a segment.
+        """
+        wanted = max(1, int(n_lanes))
+        with self._lock:
+            self._sync_point(pset)
+            for lane in range(wanted):
+                try:
+                    self._context(lane)
+                except (PybnfError, SegmentSimulationFailed):
+                    return max(1, lane)
+            return wanted
+
+    def simulate(self, pset, sample_times, initial_state=None, lane=0):
         times = [float(t) for t in np.asarray(sample_times, dtype=float).reshape(-1)]
         if len(times) < 2:
             raise PybnfError('A multiple-shooting segment needs at least two output times; '
                              'got %r.' % (times,))
-        prepared, engine, sim = self._prepare(pset)
+        with self._lock:
+            self._sync_point(pset)
+            prepared, engine, sim = self._context(lane)
+            self.n_simulations += 1
         if initial_state:
             for name, value in initial_state.items():
                 if name not in self._state_set:
@@ -105,30 +132,47 @@ class NetSegmentBackend(SegmentBackend):
                 engine.set_concentration(name, float(value))
             engine.save_concentrations()
         engine.reset()
-        self.n_simulations += 1
         try:
             result = sim.run(t_span=(times[0], times[-1]), n_points=len(times),
                              sample_times=times, **self._run_kwargs())
             data = self._data_with_state(prepared, result)
         except Exception as exc:
-            # A non-integrable point is a property of the point, not of the run. The
-            # prepared engine is dropped: whatever state a failed solve left it in is not
-            # one to restart the next segment from.
-            self._point = None
+            # A non-integrable point is a property of the point, not of the run. That lane
+            # is dropped -- whatever state a failed solve left it in is not one to restart
+            # another segment from -- but only that lane, because a parallel pass has other
+            # segments still running in the others.
+            self._drop_lane(lane)
             raise SegmentSimulationFailed('%s: %s' % (type(exc).__name__, exc)) from exc
         if not np.all(np.isfinite(np.asarray(data.data, dtype=float))):
             raise SegmentSimulationFailed('the segment produced a non-finite trajectory')
         return data
 
-    # -- one engine + one simulator per parameter point --------------------------
+    # -- one engine + one simulator per parameter point, per lane ----------------
 
     @property
     def _state_set(self):
         return set(self._states)
 
-    def _prepare(self, pset):
-        """The per-point model copy, engine model and ``Simulator``, built once and reused
-        across that point's segments.
+    def _sync_point(self, pset):
+        """Point this backend's lanes at ``pset``, discarding any built for another."""
+        if self._point is pset:
+            return
+        self._lanes = []
+        self.model.param_set = pset
+        # The per-action sensitivity gate (#475) reads this: without it a scored
+        # experiment's segments would run sensitivity-free and the assembly would find no
+        # tensor to differentiate.
+        self.model._current_action_suffix = self.sim_params.get('suffix', 'time_course')
+        self._point = pset
+
+    def _drop_lane(self, lane):
+        with self._lock:
+            if 0 <= lane < len(self._lanes):
+                self._lanes[lane] = None
+
+    def _context(self, lane):
+        """Lane ``lane``'s model copy, engine model and ``Simulator``, built on demand and
+        reused across that point's segments.
 
         Mirrors ``BngsimModel.execute``'s preamble -- apply the parameter set, re-derive the
         species initial concentrations from it (a free parameter that only seeds an IC is a
@@ -137,13 +181,10 @@ class NetSegmentBackend(SegmentBackend):
         ``MutationSet`` goes through it too, so there is one code path rather than a special
         case that could drift from it.
         """
-        if self._point is pset and self._engine is not None:
-            return self._prepared, self._engine, self._sim
-        self.model.param_set = pset
-        # The per-action sensitivity gate (#475) reads this: without it a scored
-        # experiment's segments would run sensitivity-free and the assembly would find no
-        # tensor to differentiate.
-        self.model._current_action_suffix = self.sim_params.get('suffix', 'time_course')
+        while len(self._lanes) <= lane:
+            self._lanes.append(None)
+        if self._lanes[lane] is not None:
+            return self._lanes[lane]
         try:
             prepared = self.model._get_mutant_model_bngsim(self.mutant)
             engine = prepared._engine_model
@@ -167,8 +208,8 @@ class NetSegmentBackend(SegmentBackend):
             raise SegmentSimulationFailed(
                 'the model could not be prepared at this point (%s: %s)'
                 % (type(exc).__name__, exc)) from exc
-        self._point, self._prepared, self._engine, self._sim = pset, prepared, engine, sim
-        return prepared, engine, sim
+        self._lanes[lane] = (prepared, engine, sim)
+        return self._lanes[lane]
 
     def _run_kwargs(self):
         """The action's own tolerances and this fit's ``wall_time_sim``, as the ordinary

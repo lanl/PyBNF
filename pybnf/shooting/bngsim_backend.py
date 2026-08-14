@@ -42,7 +42,16 @@ keeps one engine model and one ``Simulator`` per parameter point and restarts th
 knot. The restart is what distinguishes this from the pre-equilibration protocol (ADR-0052),
 which runs a second phase on the same simulator *without* a reset precisely so the state
 carries over.
+
+It is also why running two segments at once needs *two* of them: the restart is a mutation
+of the simulator's own state, so a second segment sharing it would integrate from the
+first's start knot. ``open_lanes`` builds one engine+simulator pair per lane at a point, on
+the calling thread, and each lane is then claimed by one segment for the whole of its
+integration (:mod:`pybnf.shooting.parallel`, which also carries the cost model that decides
+whether extra lanes are worth their preparation).
 """
+
+import threading
 
 import numpy as np
 
@@ -56,8 +65,12 @@ class BngsimSegmentBackend(SegmentBackend):
     :param model: The PyBNF model object, already built and with its sensitivity request
         applied (``enable_output_sensitivities``). This backend **owns** it: it assigns the
         parameter set in place rather than deep-copying per evaluation, which is sound
-        because the whole multiple-shooting driver runs single-threaded on the master (a
-        segment is not a :class:`~pybnf.pset.PSet` evaluation and never reaches a worker).
+        because the multiple-shooting driver runs on the master (a segment is not a
+        :class:`~pybnf.pset.PSet` evaluation and never reaches a worker) and because the two
+        places that *write* to the model -- the parameter set and the action suffix -- are
+        done once per point under this backend's lock, before any segment runs. The
+        integration path itself only reads the model, which is what lets several segments of
+        one point run at once on separate lanes.
     :param action: The ``TimeCourse`` action this experiment is measured by.
     :param mutant: The ``MutationSet`` (condition) it is measured under.
     :param suffix: The full output suffix, ``action.suffix + mutant.suffix``.
@@ -83,9 +96,13 @@ class BngsimSegmentBackend(SegmentBackend):
         self._states = tuple(model.species_names)
         self._nominal = _nominal_state(model, self._states)
         self.n_simulations = 0
-        self._point = None          # identity of the PSet the prepared engine holds
-        self._engine = None
-        self._sim = None
+        self._point = None          # identity of the PSet the prepared lanes hold
+        self._lanes = []            # one (engine, Simulator) pair per lane; None = dead
+        # Guards the lane list and the simulation counter. Preparation and counting are the
+        # only shared state a parallel pass touches -- the integration itself runs on a
+        # lane's own engine and reads the model without mutating it, which is what makes
+        # threads sound here (pybnf.shooting.parallel).
+        self._lock = threading.RLock()
 
     # -- the contract -----------------------------------------------------------
 
@@ -97,12 +114,33 @@ class BngsimSegmentBackend(SegmentBackend):
     def nominal_state(self):
         return self._nominal
 
-    def simulate(self, pset, sample_times, initial_state=None):
+    def open_lanes(self, pset, n_lanes):
+        """Build up to ``n_lanes`` engine+simulator pairs at ``pset``; return how many.
+
+        Called on the master before a parallel pass, so every lane a worker can claim is
+        already built and no thread ever enters the construction path. A lane that cannot be
+        built is not an error here -- the pass simply runs at the width that succeeded, and
+        the failure resurfaces as a failed segment if it was going to.
+        """
+        wanted = max(1, int(n_lanes))
+        with self._lock:
+            self._sync_point(pset)
+            for lane in range(wanted):
+                try:
+                    self._context(pset, lane)
+                except SegmentSimulationFailed:
+                    return max(1, lane)
+            return wanted
+
+    def simulate(self, pset, sample_times, initial_state=None, lane=0):
         times = [float(t) for t in np.asarray(sample_times, dtype=float).reshape(-1)]
         if len(times) < 2:
             raise PybnfError('A multiple-shooting segment needs at least two output times; '
                              'got %r.' % (times,))
-        engine, sim = self._prepare(pset)
+        with self._lock:
+            self._sync_point(pset)
+            engine, sim = self._context(pset, lane)
+            self.n_simulations += 1
         if initial_state:
             for name, value in initial_state.items():
                 if not self.model._set_engine_value_if_present(engine, name, float(value)):
@@ -112,7 +150,6 @@ class BngsimSegmentBackend(SegmentBackend):
                             getattr(self.model, 'name', '?'), name))
             engine.save_concentrations()
         engine.reset()
-        self.n_simulations += 1
         try:
             result = self.model._run_simulation(
                 engine, times[-1], len(times), method=self.method, timeout=self.timeout,
@@ -120,33 +157,49 @@ class BngsimSegmentBackend(SegmentBackend):
             data = self.model._result_to_data(result)
         except Exception as exc:
             # A non-integrable point is a property of the point, not of the run: hand it
-            # back as a failed segment so the inner solver's trust region shrinks. The
-            # prepared engine is dropped, because whatever state a failed CVODE call left
-            # it in is not one to restart the next segment from.
-            self._point = None
+            # back as a failed segment so the inner solver's trust region shrinks. The lane
+            # is dropped -- whatever state a failed CVODE call left it in is not one to
+            # restart another segment from -- but only *that* lane, because a parallel pass
+            # has other segments still running in the others.
+            self._drop_lane(lane)
             raise SegmentSimulationFailed('%s: %s' % (type(exc).__name__, exc)) from exc
         if not np.all(np.isfinite(np.asarray(data.data, dtype=float))):
             raise SegmentSimulationFailed('the segment produced a non-finite trajectory')
         return data
 
-    # -- one engine + one simulator per parameter point --------------------------
+    # -- one engine + one simulator per parameter point, per lane ----------------
 
-    def _prepare(self, pset):
-        """The engine model and ``Simulator`` for ``pset``, built once and reused across
-        that point's segments (see the module docstring on why that matters).
+    def _sync_point(self, pset):
+        """Point this backend's lanes at ``pset``, discarding any built for another.
 
         Keyed on the PSet's *identity*: the caller
         (:meth:`~pybnf.shooting.problem.MultipleShootingProblem._traces`) builds one PSet per
         augmented evaluation and simulates every segment from it, so identity is exactly the
         right granularity and needs no hashing of the parameter vector.
         """
-        if self._point is pset and self._engine is not None:
-            return self._engine, self._sim
+        if self._point is pset:
+            return
+        self._lanes = []
         self.model.param_set = pset
         # The per-action sensitivity gate (#475/#482) reads this: without it a scored
         # experiment's segments would run sensitivity-free and the assembly would find no
         # tensor to differentiate.
         self.model._current_action_suffix = self.suffix
+        self._point = pset
+
+    def _context(self, pset, lane):
+        """Lane ``lane``'s engine model and ``Simulator``, built on demand.
+
+        The #563 prototype measured that constructing a sensitivity-bearing ``Simulator``
+        costs ~230 ms cold and ~17 ms warm against ~50 ms for the integration itself, which
+        is why one is kept per point rather than built per segment -- and why a *lane* is
+        not free (:mod:`pybnf.shooting.parallel` has the cost model that follows from it).
+        """
+        del pset
+        while len(self._lanes) <= lane:
+            self._lanes.append(None)
+        if self._lanes[lane] is not None:
+            return self._lanes[lane]
         try:
             engine = self.model._engine_model_for_action(mut=self.mutant)
             sim = self.model._make_simulator(engine, self.method)
@@ -155,11 +208,17 @@ class BngsimSegmentBackend(SegmentBackend):
             raise SegmentSimulationFailed(
                 'the model could not be prepared at this point (%s: %s)'
                 % (type(exc).__name__, exc)) from exc
-        self._point, self._engine, self._sim = pset, engine, sim
-        return engine, sim
+        self._lanes[lane] = (engine, sim)
+        return self._lanes[lane]
+
+    def _drop_lane(self, lane):
+        with self._lock:
+            if 0 <= lane < len(self._lanes):
+                self._lanes[lane] = None
 
     def __repr__(self):
-        return 'BngsimSegmentBackend(%r, states=%i)' % (self.suffix, len(self._states))
+        return 'BngsimSegmentBackend(%r, states=%i, lanes=%i)' % (
+            self.suffix, len(self._states), len(self._lanes))
 
 
 def _nominal_state(model, states):

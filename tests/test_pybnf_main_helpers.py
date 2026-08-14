@@ -103,21 +103,39 @@ def test_refiners_are_the_start_point_optimizers():
     """The ``refiner`` flag (refine_method targets, #403/ADR-0015) marks the
     start-point local optimizers: Simplex, Powell, CMA-ES, and the gradient-based
     methods (#386/#481) -- TRF (trust-region least-squares), L-BFGS-B (scalar quasi-Newton),
-    and GNTR (general-objective Fisher/Gauss-Newton trust region)."""
-    assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {'sim', 'powell', 'cmaes', 'trf', 'lbfgs', 'gntr'}
+    and GNTR (general-objective Fisher/Gauss-Newton trust region).
+
+    Plus multiple shooting (``ms``, #563/ADR-0111), which is the least obvious member and
+    the reason this set is pinned. Seeded at one point it runs its ``4 -> 2 -> 1`` ladder
+    from that point and its last rung *is* the unsegmented local solve, so it is a polish --
+    and ``refine = 1, refine_method = ms`` is the "global search, then let the transcription
+    convert the basin" pairing #563's acceptance benchmark asks for as its fourth arm.
+    """
+    assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {
+        'sim', 'powell', 'cmaes', 'trf', 'lbfgs', 'gntr', 'ms'}
 
 
 def test_box_start_optimizers_are_a_subset_of_refiners():
     """The ``start_from_box`` flag (#404/ADR-0017) marks the start-point optimizers
     that may *also* run as a standalone search over a bounded-prior box: the derivative-free
     local methods -- CMA-ES (the global covariance-adaptation search) plus Simplex and Powell,
-    which learned box/global-start mode + concurrent multi-start (#498/ADR-0072) -- and the
+    which learned box/global-start mode + concurrent multi-start (#498/ADR-0072) -- the
     bounded gradient methods (#386/#481) -- TRF, L-BFGS-B, and GNTR, whose box IS the
-    parameter bounds they project/reflect into. It is a strict subset of the refiners: a box
-    optimizer is a refiner that learned a second start mode."""
+    parameter bounds they project/reflect into -- and multiple shooting (#563), which has
+    always drawn its starts from the box.
+
+    The two sets happen to be coextensive today; the invariant that matters and is asserted
+    is the containment. A box optimizer is a refiner that learned a second start mode, so
+    ``start_from_box`` without ``refiner`` would be a classification with no meaning -- and
+    ``refiner`` without ``start_from_box`` is the trap ``ms`` fell into first: ``refiner`` is
+    what ``config._load_variables`` reads to classify a fit type as *start-point*, and a
+    start-point type that is not also ``start_from_box`` may not be given bounded priors at
+    all, which would have made every standalone ``loguniform_var`` multiple-shooting fit a
+    configuration error.
+    """
     box = {c for c, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
     refiners = {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner}
-    assert box == {'cmaes', 'sim', 'powell', 'trf', 'lbfgs', 'gntr'}
+    assert box == {'cmaes', 'sim', 'powell', 'trf', 'lbfgs', 'gntr', 'ms'}
     assert box <= refiners
 
 
