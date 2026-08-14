@@ -35,9 +35,11 @@ dynamics), multiple shooting refuses three further classes of fit, each because 
 transcription would otherwise change the quantity being fitted rather than the way it is
 searched:
 
-* **a model whose state it cannot carry** -- the state at a knot is the ODE state vector,
-  and only the bngsim SBML/Antimony path reports species columns with initial-condition
-  sensitivities on the same axis (:mod:`pybnf.shooting.bngsim_backend`);
+* **a model whose state this cut's backend cannot surface** -- the state at a knot is the
+  ODE state vector, and of PyBNF's backends only the bngsim SBML/Antimony one puts species
+  columns and initial-condition sensitivities on the same run. A ``.net`` model has the same
+  kind of state and bngsim will return it; PyBNF's net adapter does not ask for it. See
+  :mod:`pybnf.shooting.bngsim_backend` for what closing that would take;
 * **an experiment that is not a plain measured time course** -- a dose-response scan has no
   time axis to cut, and a pre-equilibration protocol's measured phase already begins from a
   carried state that is not the model's own;
@@ -340,15 +342,28 @@ class MultipleShootingAlgorithm(GradientOptimizer):
 
     # --- gates ------------------------------------------------------------- #
     def _require_carryable_state(self, model):
-        """Refuse a model whose state a knot cannot carry."""
+        """Refuse a model whose state this cut's backends cannot surface.
+
+        Not a statement about the model: a ``.net`` file is a reaction network with the same
+        kind of ODE state an SBML model has, and bngsim returns both its species trajectory
+        and its ``d(species)/d(species_0)`` when asked. The gap is in PyBNF's net adapter,
+        which builds its ``Data`` from observables and expressions and requests
+        ``observable:`` / ``expression:`` sensitivity selectors, so a segment simulation
+        would come back carrying neither the state at the knot nor its derivative. The
+        message says which of those it is, because "your model has no state" would send a
+        user looking in the wrong place.
+        """
         if hasattr(model, '_run_simulation') and hasattr(model, 'species_names') \
                 and hasattr(model, '_result_to_data'):
             return
         raise PybnfError(
             "Multiple shooting (job_type = ms) restarts a simulation from the model's own "
-            "state at each knot, and model '%s' uses a backend that does not expose one: "
-            "its trajectory reports observables (sums over species), from which the state "
-            "cannot be recovered." % getattr(model, 'name', '?'),
+            "state at each knot, and PyBNF's backend for model '%s' does not surface that "
+            "state: its trajectory carries observables and expressions rather than species, "
+            "and its forward-sensitivity request names the same selectors, so a segment "
+            "would return neither the state at a knot nor its d(state)/d(state). The model "
+            "itself has a perfectly good state -- this is a limitation of the backend "
+            "adapter, not of the model." % getattr(model, 'name', '?'),
             hint=['Simulate the model through the bngsim SBML/Antimony path (an SBML model '
                   'needs \'sbml_backend = bngsim\'), whose species columns and '
                   'initial-condition sensitivities are what a knot carries.',

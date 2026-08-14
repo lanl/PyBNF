@@ -152,12 +152,27 @@ Beyond the gradient path's own (edition 2, a forward-sensitivity backend, differ
 dynamics), three classes are refused, each because segmenting would change *what is being
 fitted* rather than how it is searched:
 
-* **A model whose state a knot cannot carry.** The state at a knot is the ODE state vector,
-  and only the bngsim SBML/Antimony path reports species columns with initial-condition
-  sensitivities on the same axis. The `.net` path reports `observable:` selectors —
-  observables are sums *over* species, from which the state is not recoverable — and a
-  rule-based model's state is not a vector a fit can carry at every knot. Refused by name
-  rather than discovered later as a missing selector.
+* **A model whose state this cut's backend cannot surface.** The state at a knot is the ODE
+  state vector, and of PyBNF's backends only the bngsim SBML/Antimony one puts species
+  columns and initial-condition sensitivities on the same run.
+
+  This is a limit of the adapter, not of the model, and the ADR is explicit about which
+  because the distinction changes where the follow-on work goes. A `.net` file is a reaction
+  network with exactly the same kind of state as an SBML model, and bngsim returns both its
+  species trajectory and `d(species)/d(species_0)` when asked — verified directly against
+  bngsim 0.12.2 on `tests/bngl_files/e2e_ode_decay.net`, where
+  `output_sensitivities(['species:S()'], axis='ic')` comes back fine. What is missing is on
+  PyBNF's side: `BngsimModel._build_data` assembles `time + observables + expressions`, and
+  the net backend's sensitivity request names `observable:` / `expression:` selectors, so a
+  segment simulation would carry neither the state at the knot nor its derivative.
+
+  Closing it is an adapter change, and not a free one: an experiment scores *observables*,
+  so a net segment needs both selector families on one run, and on a combinatorially expanded
+  network the auxiliary block is `(m - 1) x n_species` wide while the initial-condition
+  sensitivity system is `n_species` wide — so the transcription's cost scales with the
+  expanded species count rather than with the number of fitted parameters, which is a real
+  reason to scope it deliberately rather than assume it. This cut does not do it, and the
+  gate says so in those terms rather than telling a user their model has no state.
 * **An experiment that is not a plain measured time course.** A dose-response scan has no
   time axis to cut; a pre-equilibration protocol's measured phase already begins from a
   carried state that is not the model's own; a relaxation to steady state has no fixed

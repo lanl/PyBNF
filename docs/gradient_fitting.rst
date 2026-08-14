@@ -163,8 +163,15 @@ motivating problem it *is* the result — every segmented stage scored worse tha
 the coarsening is what converted them.
 
 **Requirements and limits.** ``ms`` needs everything the gradient path needs, plus the bngsim
-SBML/Antimony backend: a knot carries the model's **state**, and only that path reports species
-columns with matching initial-condition sensitivities. It refuses, by name and up front, a fit it
+SBML/Antimony backend: a knot carries the model's **state**, and that is the one PyBNF backend
+whose trajectory columns *are* the species and whose sensitivity selectors name them on both
+axes. A ``.net`` model is a reaction network with the same kind of state — and bngsim will
+return both its species trajectory and the matching ``d(species)/d(species₀)`` — but PyBNF's
+net backend builds its trajectory from observables and expressions and requests the same
+selectors, so a segment would come back carrying neither the state at the knot nor its
+derivative. Extending ``ms`` there is adapter work rather than a modelling obstacle; it is not
+free, since a net segment would need both selector families on one run and a combinatorially
+expanded network makes the auxiliary block ``(m-1)×n_species`` wide. It refuses, by name and up front, a fit it
 would otherwise quietly change — a dose-response scan or pre-equilibration protocol (no time axis
 to cut, or a measured phase that already starts from a carried state), and any scored quantity that
 is a function of a whole series (an analytic per-series ``scale``, a data ``normalization``, a

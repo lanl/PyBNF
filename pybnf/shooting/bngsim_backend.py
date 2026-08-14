@@ -8,18 +8,28 @@ convert the result -- so a segment is simulated by exactly the machinery a whole
 is, with two differences: it starts at a knot instead of at ``t = 0``, and its initial state
 is supplied rather than read off the model.
 
-Why this backend, and not the ``.net`` one
--------------------------------------------
+Why the SBML/Antimony path, and what the ``.net`` path would need
+------------------------------------------------------------------
 Multiple shooting is written on the model's **state**: a knot carries the ODE state vector,
 a continuity row is a difference of states, and the continuity Jacobian is
-``d(state)/d(state)``. The bngsim SBML/Antimony path reports its species as the trajectory's
-own columns and its forward-sensitivity selectors are ``species:<name>`` on both axes, so
-the state and its two derivatives come off one run. The ``.net`` path reports
-``observable:<name>`` selectors -- observables are *sums over* species, from which the state
-is not recoverable -- and a reaction network's state is the whole species list, which for a
-rule-based model is not a vector a fit can carry at every knot. That is a real limit, and
-``job_type = ms`` refuses the ``.net`` backend by name rather than failing later at a
-missing selector.
+``d(state)/d(state)``. The bngsim SBML/Antimony path hands all of that over on one run --
+its trajectory's columns *are* the species, and its forward-sensitivity selectors are
+``species:<name>`` on both axes.
+
+A ``.net`` model is a reaction network with exactly the same kind of state, and bngsim
+returns both its species trajectory and its ``d(species)/d(species_0)`` when asked. What is
+missing is on PyBNF's side: the net backend's ``Data`` carries ``time + observables +
+expressions`` (:meth:`~pybnf.bngsim_model.net_model.BngsimModel._build_data`) and its
+sensitivity request names ``observable:`` / ``expression:`` selectors, so neither the state
+at a knot nor its derivative is in what a segment simulation would return. Closing that is
+an adapter change rather than a modelling obstacle -- and it is not free: an experiment
+scores *observables*, so a net segment needs both selector families on one run, and on a
+combinatorially expanded network the auxiliary block is ``(m - 1) x n_species`` wide and the
+initial-condition sensitivity system is ``n_species`` wide, so the transcription's cost
+scales with the expanded species count rather than with the number of fitted parameters.
+
+This cut does not close it. ``job_type = ms`` refuses the net backend up front, naming the
+gap, rather than failing later at a missing selector.
 
 Simulator reuse
 ---------------
