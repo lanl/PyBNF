@@ -41,6 +41,7 @@ from pybnf.transcription import (
     Multipliers,
     ObjectiveModel,
     PenaltySchedule,
+    WORST_DEFECTS,
     TranscriptionError,
     TranscriptionProblem,
     VariableBlock,
@@ -1210,6 +1211,57 @@ class TestLadder:
             coarsening_ladder(4, factor=1)
         with pytest.raises(TranscriptionError, match='end at 1 or above'):
             coarsening_ladder(4, stop=0)
+
+
+# ---------------------------------------------------------------------------
+# The defect report (#563: "report scaled continuity defects", plural)
+# ---------------------------------------------------------------------------
+
+class TestDefectReport:
+
+    def test_every_iterate_names_the_constraints_it_did_not_satisfy(self):
+        """The aggregate norm says how far from feasible an iterate is; this says *where*.
+        Carried per iterate rather than only for the last, because the run's answer is its
+        best certified iterate and that is usually not the last one."""
+        problem = ShootingProblem(4, *shooting_data(n=17), theta_seed=0.5)
+        start = problem.layout.initial_point([0.5])
+        start = _stale(problem, start, factor=3.0)
+        result = AugmentedLagrangian(problem, least_squares_inner_solver,
+                                     max_outer=1).run(start)
+
+        first = result.iterates[0]
+        assert first.n_constraints == problem.n_constraints
+        assert len(first.worst_defects) <= WORST_DEFECTS
+        # Named, worst first, and the largest agrees with the norm the loop stops on.
+        names, values = zip(*first.worst_defects)
+        assert all(name in problem.constraint_names for name in names)
+        assert abs(values[0]) == pytest.approx(first.defect_norm)
+        assert list(np.abs(values)) == sorted(np.abs(values), reverse=True)
+        assert first.defect_rms <= first.defect_norm + 1e-12
+        assert names[0] in first.defect_report()
+
+    def test_the_run_result_reports_the_defects_at_the_point_it_stopped(self):
+        problem = ShootingProblem(4, *shooting_data(n=17), theta_seed=0.5)
+        result = AugmentedLagrangian(problem, least_squares_inner_solver,
+                                     max_outer=40).run(problem.layout.initial_point([0.5]))
+        assert len(result.worst_defects) <= WORST_DEFECTS
+        assert abs(result.worst_defects[0][1]) == pytest.approx(result.defect_norm)
+        assert result.defect_report()
+
+    def test_an_unconstrained_problem_reports_nothing_rather_than_a_zero(self):
+        """The one-segment rung of a ladder has no knots, so it has no defects -- which is a
+        different fact from "every defect was zero" and reads differently in a report."""
+        empty = CertifiedIterate('m=1', 1, [0.0], [0.0], Certificate.accept(1.0), 0.0, 1.0,
+                                 1.0, 10.0, 0.0)
+        assert empty.defect_report() == ''
+        assert empty.n_constraints == 0
+
+
+def _stale(problem, u, factor=2.0):
+    u = np.array(u, dtype=float, copy=True)
+    for block in problem.layout.blocks:
+        u[problem.layout.slice_of(block.name)] *= factor
+    return u
 
 
 # ---------------------------------------------------------------------------

@@ -121,6 +121,24 @@ class SegmentBackend(ABC):
     #: :meth:`simulate`.
     n_simulations = 0
 
+    def open_lanes(self, pset, n_lanes):
+        """Prepare up to ``n_lanes`` independent simulation contexts at ``pset``; return how
+        many are actually available (at least 1).
+
+        A *lane* is whatever state :meth:`simulate` restarts to run one span -- for the
+        bngsim backends, a warm engine model and ``Simulator``. Two segments cannot share
+        one, because a segment is run by resetting that state to its own start knot, so a
+        second segment on the same object would integrate from the first's start. Lanes are
+        what makes :class:`~pybnf.shooting.parallel.SegmentPool` able to run ``L`` segments
+        of one experiment at once.
+
+        Called on the **calling thread**, before any worker starts, because preparing a lane
+        is where a backend touches the model it owns. The default implementation offers one
+        lane, which is the serial behaviour and needs no preparation of its own.
+        """
+        del pset, n_lanes
+        return 1
+
     @property
     @abstractmethod
     def state_names(self):
@@ -143,7 +161,7 @@ class SegmentBackend(ABC):
         """
 
     @abstractmethod
-    def simulate(self, pset, sample_times, initial_state=None):
+    def simulate(self, pset, sample_times, initial_state=None, lane=0):
         """Integrate one span and return its :class:`~pybnf.data.Data`.
 
         :param pset: The reported parameter set, exactly as an ordinary evaluation would
@@ -153,6 +171,9 @@ class SegmentBackend(ABC):
         :param initial_state: ``{state name: value}`` overriding the model's own initial
             conditions, or ``None`` for the first segment, which starts from the model as
             configured.
+        :param lane: Which of the contexts :meth:`open_lanes` prepared to run in. ``0`` is
+            the only one a serial pass ever uses, and the only one a backend that offers no
+            lanes has to honour. A caller must never run two segments in one lane at once.
 
         Raises :class:`SegmentSimulationFailed` for a point that does not integrate.
         """

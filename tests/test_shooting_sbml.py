@@ -31,8 +31,10 @@ from pybnf.gradient import IC, PARAM, ExperimentRouting, ParamRoute
 from pybnf.objective import ChiSquareObjective
 from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter, MutationSet, PSet, TimeCourse
+from pybnf.algorithms.optimizers.multiple_shooting import MultipleShootingAlgorithm
 from pybnf.shooting import (
     BngsimSegmentBackend,
+    SegmentPool,
     ShootingExperiment,
     feasible_ladder,
     seed_stage,
@@ -208,11 +210,64 @@ def test_one_simulator_is_reused_across_a_points_segments(tmp_path):
     backend, _model, _action = _backend(tmp_path)
     first = _pset()
     backend.simulate(first, np.linspace(0.0, 5.0, 6), None)
-    prepared = backend._sim
+    prepared = backend._lanes[0]
     backend.simulate(first, np.linspace(5.0, 10.0, 6), {'S': 20.0})
-    assert backend._sim is prepared
+    assert backend._lanes[0] is prepared
     backend.simulate(_pset(k=0.35), np.linspace(0.0, 5.0, 6), None)
-    assert backend._sim is not prepared
+    assert backend._lanes[0] is not prepared
+
+
+def test_extra_lanes_are_independent_simulators_at_the_same_point(tmp_path):
+    """A lane is what makes two segments runnable at once, so the lanes of one point have to
+    be *different* simulators holding the *same* parameters -- and a new point has to discard
+    every one of them, not just lane 0."""
+    backend, _model, _action = _backend(tmp_path)
+    point = _pset()
+    assert backend.open_lanes(point, 3) == 3
+    lanes = [backend._lanes[i] for i in range(3)]
+    assert len({id(sim) for _engine, sim in lanes}) == 3
+    assert len({id(engine) for engine, _sim in lanes}) == 3
+
+    # Same parameters in every lane: a segment must not depend on which one ran it.
+    times = np.linspace(0.0, 5.0, 6)
+    reference = np.asarray(backend.simulate(point, times, None, lane=0)['S'], dtype=float)
+    for lane in (1, 2):
+        other = np.asarray(backend.simulate(point, times, None, lane=lane)['S'], dtype=float)
+        np.testing.assert_allclose(other, reference, rtol=0.0, atol=0.0)
+
+    backend.simulate(_pset(k=0.35), times, None)
+    assert backend._lanes[0] is not lanes[0]
+    assert len(backend._lanes) == 1     # the other point's lanes were discarded, not reused
+
+
+def test_a_parallel_segment_pass_reproduces_the_serial_one_exactly(tmp_path):
+    """The claim that makes the scheduler safe to turn on: lanes change *when* segments are
+    integrated and nothing else.
+
+    Checked on the objective, its gradient and the continuity Jacobian rather than on a
+    trajectory, because those are what a step is taken from -- and at knots deliberately
+    stale, so the defects are nonzero and the comparison has something to disagree about.
+    """
+    backend, _model, _action = _backend(tmp_path)
+    serial = _stage(backend, 4)
+    u = serial.layout.initial_point(_start_u())
+    u = _stale_knots(serial, u)
+    reference = (serial.objective_at(u), serial.equality_at(u))
+
+    parallel_backend, _m, _a = _backend(tmp_path)
+    pool = SegmentPool(4)
+    try:
+        parallel = _stage(parallel_backend, 4, pool=pool)
+        assert pool.parallel
+        got = (parallel.objective_at(u), parallel.equality_at(u))
+    finally:
+        pool.close()
+
+    assert got[0].value == reference[0].value
+    np.testing.assert_array_equal(got[0].gradient, reference[0].gradient)
+    np.testing.assert_array_equal(got[1].residual, reference[1].residual)
+    np.testing.assert_array_equal(got[1].jacobian.to_dense(),
+                                  reference[1].jacobian.to_dense())
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +283,16 @@ def _start_u():
     return [0.4, 120.0]          # both parameters are linear, so u == theta
 
 
-def _stage(backend, n_segments):
+def _stale_knots(stage, u, factor=1.7):
+    """Push every auxiliary block off the seeded (feasible) trajectory, so the continuity
+    defects are nonzero and a comparison has something to disagree about."""
+    u = np.array(u, dtype=float, copy=True)
+    for block in stage.layout.blocks:
+        u[stage.layout.slice_of(block.name)] += np.log10(factor)
+    return u
+
+
+def _stage(backend, n_segments, pool=None):
     times, obs = _observations()
     exp_data = Data.from_columns(
         np.column_stack([times, obs, np.full(len(obs), SIGMA)]), ['time', 'S', 'S_SD'])
@@ -245,7 +309,7 @@ def _stage(backend, n_segments):
         return PSet([v.set_value(v.from_sampling_space(u[i])) for i, v in enumerate(free)])
 
     return seed_stage([spec], n_segments, ChiSquareObjective(), free, pset_from_u,
-                      np.asarray(_start_u(), dtype=float))
+                      np.asarray(_start_u(), dtype=float), pool=pool)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +417,69 @@ def test_a_formula_observable_survives_the_outer_loop(tmp_path):
     assert result.best is not None and np.isfinite(result.best_score)
 
 
+def test_the_fit_type_carries_equal_observation_placement_to_its_experiments(tmp_path):
+    """``ms_knot_placement`` reaches the grid through the real config surface, not just the
+    constructor: the key is parsed, validated against ``MSConfig``, and the knots it produces
+    are the data's own quantiles rather than the horizon's."""
+    alg = H.build(_ms_config(tmp_path, ms_knot_placement='equal_observations'), 'ms')
+    alg._setup_gradient_path()
+    specs = alg._build_specs()
+    grid = specs[0].grid(2)
+    assert grid.placement == 'equal_observations'
+    assert [len(grid.rows_in(j)) for j in range(2)] == [6, 5]
+
+
+def test_explicit_knots_replace_the_segment_count(tmp_path):
+    """"A segment count **or** explicit knots": supplying the times fixes the finest rung at
+    ``len(ms_knots) + 1``, so a stale ``ms_segments`` cannot silently win."""
+    alg = H.build(_ms_config(tmp_path, ms_knots='2 5 8', ms_segments=4), 'ms')
+    assert alg.placement == 'explicit'
+    assert alg.n_segments == 4          # three knots -> four segments, which agrees here
+    alg._setup_gradient_path()
+    grid = alg._build_specs()[0].grid(4)
+    np.testing.assert_allclose(grid.knot_times, (2.0, 5.0, 8.0))
+
+    other = H.build(_ms_config(tmp_path, ms_knots='2 5', ms_segments=8), 'ms')
+    assert other.n_segments == 3        # the knots win, and run() says so
+
+
+def test_the_parallel_segment_key_reaches_the_pool(tmp_path):
+    alg = H.build(_ms_config(tmp_path, ms_parallel_segments=3), 'ms')
+    assert alg.pool.n_lanes == 3 and alg.pool.parallel
+    assert H.build(_ms_config(tmp_path), 'ms').pool.parallel is False
+
+
+def test_ms_is_a_registered_refiner_that_starts_from_the_injected_point(tmp_path):
+    """Arm 4 of #563's acceptance benchmark -- a global search followed by a
+    multiple-shooting polish -- is ``refine_method = ms``, so ``ms`` has to be a registered
+    refiner *and* has to actually begin from the point it is handed rather than re-scattering
+    across the box."""
+    from pybnf.registry import FIT_TYPE_REGISTRY
+    entry = FIT_TYPE_REGISTRY['ms']
+    assert entry.refiner and entry.start_from_box
+
+    config = _ms_config(tmp_path)
+    injected = PSet([FreeParameter('k', 'uniform_var', 1e-2, 3.0, value=0.123),
+                     FreeParameter('S', 'uniform_var', 10.0, 300.0, value=222.0)])
+    config.config[MultipleShootingAlgorithm.START_POINT_KEY] = injected
+    alg = MultipleShootingAlgorithm(config, refine=True)
+
+    assert alg.n_starts == 1            # a refine polishes one point; it does not re-scatter
+    assert alg.start_psets[0]['k'] == pytest.approx(0.123)
+    assert alg.start_psets[0]['S'] == pytest.approx(222.0)
+
+
+def test_a_cmaes_fit_may_name_ms_as_its_refiner(tmp_path):
+    """The config half of the same arm: ``refine_method = ms`` passes validation on a fit
+    that is not itself ``ms``, and ``MSConfig``'s keys come along as a coherent group rather
+    than sitting in the config as unrecognised extras."""
+    config = _ms_config(tmp_path, job_type='cmaes', refine=1, refine_method='ms',
+                        ms_segments=2)
+    assert config.config['refine_method'] == 'ms'
+    assert config.config['ms_segments'] == 2
+    assert config.config['ms_penalty'] == 10.0      # the whole group, defaults included
+
+
 def test_the_fit_type_refuses_a_series_wide_transform(tmp_path):
     """A normalized fit is refused up front, by name: a normalizer is computed over the
     whole series, so the segments would be normalized differently from the fit that was
@@ -381,6 +508,43 @@ def test_ms_recovers_the_decay_rate_and_initial_condition(tmp_path, monkeypatch)
     rec = H.best_params(alg, ['k', 'S'])
     assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02
     assert abs(rec['S'] - TRUE_S0) / TRUE_S0 < 0.02
+
+    # "Report scaled continuity defects": the run says how nearly the transcription that
+    # produced the reported fit joined up, beside the fit itself.
+    report = (Path(alg.res_dir) / 'continuity_defects.txt').read_text()
+    fields = dict(line.split('\t', 1) for line in report.splitlines()
+                  if line.strip() and not line.startswith('#') and '\t' in line)
+    assert fields['stage'] in ('m=4', 'm=2', 'm=1')
+    assert float(fields['certified_objective']) == pytest.approx(
+        alg.trajectory.best_score(), rel=1e-9)
+    assert float(fields['scaled_defect_norm_inf']) >= 0.0
+
+
+@pytest.mark.recovery
+def test_parallel_segments_reach_the_same_answer_as_serial(tmp_path, monkeypatch):
+    """The scheduler is an implementation of the same pass, so a run with lanes has to land
+    where the serial run lands -- end to end, through the real fit type and the real config
+    key rather than at the problem level.
+
+    The decay model is far too small for lanes to *pay* (a lane costs more to prepare than
+    the integration it saves; see :mod:`pybnf.shooting.parallel`), which is beside the point
+    here: what is under test is that turning them on does not change the fit.
+    """
+    H.install(monkeypatch)
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    serial = H.build(_ms_config(tmp_path / 'a'), 'ms')
+    H.drive(serial)
+    parallel = H.build(_ms_config(tmp_path / 'b', ms_parallel_segments=4), 'ms')
+    H.drive(parallel)
+
+    assert parallel.pool.parallel
+    assert (parallel.homotopies[0].best_score
+            == pytest.approx(serial.homotopies[0].best_score, rel=1e-9))
+    got = H.best_params(parallel, ['k', 'S'])
+    want = H.best_params(serial, ['k', 'S'])
+    assert got['k'] == pytest.approx(want['k'], rel=1e-6)
+    assert got['S'] == pytest.approx(want['S'], rel=1e-6)
 
 
 def _central_difference(fun, u, step=1e-5):

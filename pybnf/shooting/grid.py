@@ -6,16 +6,33 @@ things that are easy to get subtly wrong are testable in isolation: which segmen
 point belongs to, and whether a coarser grid's knots are recognisably *the same knots* as a
 finer grid's.
 
-Equal time, because the alternative needs information a fit does not have
---------------------------------------------------------------------------
-The #563 prototype cut ``[0, T]`` into ``m`` equal spans and solved the motivating problem
-that way, so that is what ships. The obvious refinements -- knots at the data's own
-quantiles, or at the features of a nominal trajectory (a burst, a peak) -- are *start-point
-dependent*: they place the transcription's structure using a trajectory the fit has not
-established yet, and on the motivating problem the nominal trajectory is exactly what is in
-question (an oscillator whose period is wrong everywhere except a 3 % window). Equal spans
-place the knots using only the experiment's own time axis, which is a fact rather than a
-guess. ``knot_times`` is a plain attribute, so a future consumer can hand in its own.
+Three placements, and one of them is the default for a measured reason
+----------------------------------------------------------------------
+The issue asks for "a segment count or explicit knots; default to generic equal-time or
+equal-observation segments", and all three are here:
+
+``equal_time`` (the default)
+    ``[start, horizon]`` cut into ``m`` equal spans. This is what the #563 prototype solved
+    the motivating problem with, and it is the default because it places the knots using
+    only the experiment's own time axis -- a fact rather than a guess. The obvious
+    refinements that read a *trajectory* (knots at a burst, at a peak) are start-point
+    dependent: they place the transcription's structure using dynamics the fit has not
+    established, and on the motivating problem those dynamics are exactly what is in
+    question (an oscillator whose period is wrong everywhere except a 3 % window).
+
+``equal_observations``
+    Cut so each segment owns the same number of measurements. It reads the data's own time
+    axis and nothing else, so it is not start-point dependent either -- what it uses is the
+    *sampling*, not the dynamics. It is the right placement when a time course is sampled
+    unevenly, where equal spans leave some segments with nothing to fit and the auxiliary
+    states of those segments are determined by continuity alone (ADR-0109 finding 5.2's
+    under-determination, arrived at through the sampling rather than through ``m``). It
+    needs at least two measurements per segment, so its own segment ceiling is half
+    ``equal_time``'s.
+
+explicit knots
+    The caller supplies the times. Nothing here second-guesses them; they are validated for
+    order and for lying strictly inside the horizon, and the run reports them.
 
 Names, because the homotopy transfers by name
 ---------------------------------------------
@@ -26,11 +43,19 @@ here is load-bearing: a knot must get the same name at every segment count that 
 the ``4 -> 2 -> 1`` ladder reseeds instead of continuing and the coarsening (the mechanism,
 ADR-0109 finding 5.2) buys nothing.
 
-Naming a knot by its **exact fraction of the horizon** does that. At ``m = 4`` the knots are
-``1/4, 1/2, 3/4``; at ``m = 2``, ``1/2`` -- and ``Fraction(2, 4) == Fraction(1, 2)``, so the
-surviving knot carries its solved state down the ladder while ``1/4`` and ``3/4`` are
-discarded, which is what coarsening *is*. Exact rational arithmetic rather than a rounded
-float, so ``1/3`` and ``0.333333`` can never be two names for one knot (or one name for two).
+Naming a knot by its **exact fraction of the segment count** does that: knot ``i`` of ``m``
+is ``Fraction(i, m)``. At ``m = 4`` the knots are ``1/4, 1/2, 3/4``; at ``m = 2``, ``1/2`` --
+and ``Fraction(2, 4) == Fraction(1, 2)``, so the surviving knot carries its solved state
+down the ladder while ``1/4`` and ``3/4`` are discarded, which is what coarsening *is*.
+Exact rational arithmetic rather than a rounded float, so ``1/3`` and ``0.333333`` can never
+be two names for one knot (or one name for two).
+
+The fraction is an **ordinal**, not a claim about where the knot sits. Under ``equal_time``
+the two coincide, which is why the naming reads so naturally there; under the other two
+placements ``exp1@1/2`` is "the knot halfway along this grid's knot list", which is exactly
+what carry-over needs to match on and is independent of what time it landed at. Every
+placement therefore maps *the same fraction* to *the same knot*, at every rung -- which is
+the whole property the ladder rests on.
 
 Which segment owns a data point
 -------------------------------
@@ -54,6 +79,39 @@ from ..printing import PybnfError
 #: one does not.
 KNOT = '@'
 
+#: Knots at equal spans of the experiment's own time axis. The default, and what the #563
+#: prototype solved the motivating problem with.
+EQUAL_TIME = 'equal_time'
+
+#: Knots placed so every segment owns the same number of measurements.
+EQUAL_OBSERVATIONS = 'equal_observations'
+
+#: Knots supplied by the caller (``ms_knots``), rather than derived from a rule.
+EXPLICIT = 'explicit'
+
+PLACEMENTS = (EQUAL_TIME, EQUAL_OBSERVATIONS, EXPLICIT)
+
+#: Measurements a segment needs under :data:`EQUAL_OBSERVATIONS`. Two rather than one,
+#: because a knot is placed *at* a measurement (that point then belongs to the later
+#: segment, read at ``dt = 0``), so a one-observation-per-segment grid would put the last
+#: knot on the horizon itself and leave a zero-length final segment.
+OBSERVATIONS_PER_SEGMENT = 2
+
+
+def max_segments(times, placement=EQUAL_TIME, knots=None):
+    """The finest segment count ``times`` can support under ``placement``.
+
+    Above it a rung is not the method: knots fall between observations everywhere and the
+    auxiliary states of segments with no data are determined by continuity alone.
+    :func:`~pybnf.shooting.driver.feasible_ladder` drops rungs above this and reports it.
+    """
+    if placement == EXPLICIT:
+        return max(1, len(knots or ()) + 1)
+    unique = len(np.unique(np.asarray(times, dtype=float).reshape(-1)))
+    if placement == EQUAL_OBSERVATIONS:
+        return max(1, unique // OBSERVATIONS_PER_SEGMENT)
+    return max(1, unique)
+
 
 class SegmentGrid:
     """The knots of one experiment's time course at one segment count.
@@ -68,9 +126,15 @@ class SegmentGrid:
         first measurement is after the model's ``t = 0`` still integrates from ``0``, so a
         caller that knows the simulation's own start passes it.
     :param horizon: The horizon's end. Defaults to ``max(times)``.
+    :param placement: One of :data:`PLACEMENTS`. See the module docstring.
+    :param knots: Explicit knot times, which force ``placement = 'explicit'``. These are the
+        **finest** rung's knots: a coarser rung of the same ladder keeps the sublist its own
+        fractions select, so a ``4 -> 2 -> 1`` ladder over three explicit knots keeps the
+        middle one at ``m = 2`` -- by the same fraction identity every other placement uses.
     """
 
-    def __init__(self, times, n_segments, label='exp', start=None, horizon=None):
+    def __init__(self, times, n_segments, label='exp', start=None, horizon=None,
+                 placement=EQUAL_TIME, knots=None):
         self.times = np.asarray(times, dtype=float).reshape(-1)
         if self.times.size == 0:
             raise PybnfError('A multiple-shooting segment grid needs at least one '
@@ -83,6 +147,11 @@ class SegmentGrid:
         if KNOT in self.label:
             raise PybnfError("A multiple-shooting experiment label may not contain %r, the "
                              "knot-name separator; got %r." % (KNOT, self.label))
+        self.placement = EXPLICIT if knots else str(placement)
+        if self.placement not in PLACEMENTS:
+            raise PybnfError('Unknown multiple-shooting knot placement %r; expected one of '
+                             '%s.' % (placement, ', '.join(PLACEMENTS)))
+        self.explicit_knots = tuple(float(t) for t in (knots or ()))
         self.start = float(np.min(self.times) if start is None else start)
         self.horizon = float(np.max(self.times) if horizon is None else horizon)
         if not self.horizon > self.start:
@@ -94,13 +163,15 @@ class SegmentGrid:
                 'Experiment %r has measurement times outside its own [%g, %g] horizon.'
                 % (self.label, self.start, self.horizon))
 
-        span = self.horizon - self.start
-        #: Each interior knot's exact fraction of the horizon -- the identity
-        #: :meth:`~pybnf.transcription.layout.AugmentedLayout.carry_over` matches on.
+        #: Each interior knot's exact fraction of the segment count -- the identity
+        #: :meth:`~pybnf.transcription.layout.AugmentedLayout.carry_over` matches on. An
+        #: ordinal, not a claim about where the knot sits (see the module docstring); under
+        #: :data:`EQUAL_TIME` the two coincide.
         self.fractions = tuple(Fraction(i, self.n_segments)
                                for i in range(1, self.n_segments))
         #: Interior knot times (``m - 1`` of them; empty at ``m = 1``).
-        self.knot_times = tuple(self.start + float(f) * span for f in self.fractions)
+        self.knot_times = self._place()
+        self._check_knots()
         #: Each segment's start time: the horizon's start, then every interior knot.
         self.starts = (self.start,) + self.knot_times
         #: Each segment's end time.
@@ -109,6 +180,69 @@ class SegmentGrid:
         self.segment_of = np.clip(
             np.searchsorted(np.asarray(self.starts, dtype=float), self.times, side='right') - 1,
             0, self.n_segments - 1)
+
+    # -- placement --------------------------------------------------------------
+
+    def _place(self):
+        """Map each fraction to a knot time under this grid's placement rule."""
+        if not self.fractions:
+            return ()
+        if self.placement == EQUAL_TIME:
+            span = self.horizon - self.start
+            return tuple(self.start + float(f) * span for f in self.fractions)
+        if self.placement == EQUAL_OBSERVATIONS:
+            unique = np.unique(self.times)
+            n = len(unique)
+            # Segment j owns unique[round(j n / m) : round((j+1) n / m)], so knot j sits at
+            # unique[round(j n / m)] -- a *measurement* time, which by this module's
+            # half-open convention belongs to the later segment and is read at dt = 0 from
+            # that knot's own auxiliary state. Balanced by construction, and it is the same
+            # index at every rung whose fraction coincides, which is what carries over.
+            return tuple(float(unique[int(round(float(f) * n))]) for f in self.fractions)
+        # Explicit: the fractions select from the finest rung's own list. At the finest
+        # rung that is the whole list in order; at a rung whose fraction i/m equals a finest
+        # fraction j/M it is knot j - 1, which is exactly the knot that carries over.
+        finest = len(self.explicit_knots) + 1
+        return tuple(self.explicit_knots[
+            min(max(int(round(float(f) * finest)) - 1, 0), finest - 2)]
+            for f in self.fractions)
+
+    def _check_knots(self):
+        """Knots must be strictly increasing and lie strictly inside the horizon.
+
+        A repeated or out-of-order knot is a zero-length or negative-length segment, which
+        no simulator can integrate and which would otherwise surface as an opaque failure
+        several layers down. The message names the placement, because the fix differs: for a
+        derived placement it is a segment count the data cannot support, and for an explicit
+        one it is the supplied list.
+        """
+        bad = None
+        previous = self.start
+        for time in self.knot_times:
+            if not previous < time:
+                bad = time
+                break
+            previous = time
+        if bad is None and self.knot_times and not self.knot_times[-1] < self.horizon:
+            bad = self.knot_times[-1]
+        if bad is None:
+            return
+        if self.placement == EXPLICIT:
+            raise PybnfError(
+                'The explicit multiple-shooting knots for experiment %r are not strictly '
+                'increasing inside its own (%g, %g) horizon: %s.'
+                % (self.label, self.start, self.horizon,
+                   ', '.join('%g' % t for t in self.explicit_knots)),
+                hint='Supply knot times in increasing order, each strictly between the '
+                     'experiment\'s first and last measurement.')
+        raise PybnfError(
+            'Multiple shooting cannot cut experiment %r into %i segments by %s: the knots '
+            'it places are not strictly increasing inside its (%g, %g) horizon.'
+            % (self.label, self.n_segments, self.placement.replace('_', ' '),
+               self.start, self.horizon),
+            hint='Lower ms_segments, or use the default ms_knot_placement = equal_time, '
+                 'which needs one measurement per segment rather than %i.'
+                 % OBSERVATIONS_PER_SEGMENT)
 
     # -- identity ---------------------------------------------------------------
 
@@ -174,10 +308,12 @@ class SegmentGrid:
             return ('%s: 1 segment over [%g, %g] (the ordinary unsegmented problem)'
                     % (self.label, self.start, self.horizon))
         counts = [len(self.rows_in(j)) for j in range(self.n_segments)]
-        return ('%s: %i segments over [%g, %g], knots at %s, %s data point(s) per segment'
-                % (self.label, self.n_segments, self.start, self.horizon,
-                   ', '.join('%g' % t for t in self.knot_times),
-                   '/'.join(str(c) for c in counts)))
+        return ('%s: %i segments over [%g, %g] by %s, knots at %s, %s data point(s) per '
+                'segment' % (self.label, self.n_segments, self.start, self.horizon,
+                             self.placement.replace('_', ' '),
+                             ', '.join('%g' % t for t in self.knot_times),
+                             '/'.join(str(c) for c in counts)))
 
     def __repr__(self):
-        return 'SegmentGrid(%r, m=%i, knots=%i)' % (self.label, self.n_segments, self.n_knots)
+        return 'SegmentGrid(%r, m=%i, knots=%i, %s)' % (self.label, self.n_segments,
+                                                        self.n_knots, self.placement)

@@ -32,6 +32,8 @@ single-shoot reconstruction -- and it has the motivating problem's hard corner: 
 no data term at all, so half the auxiliary variables are determined by continuity alone.
 """
 
+import threading
+
 import numpy as np
 import pytest
 from scipy.optimize import least_squares
@@ -42,12 +44,17 @@ from pybnf.objective import ChiSquareObjective
 from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter, PSet
 from pybnf.shooting import (
+    EQUAL_OBSERVATIONS,
+    EQUAL_TIME,
+    EXPLICIT,
     GaussNewtonSolver,
     SegmentBackend,
     SegmentGrid,
+    SegmentPool,
     SegmentSimulationFailed,
     ShootingExperiment,
     feasible_ladder,
+    max_segments,
     run_multiple_shooting,
     seed_stage,
 )
@@ -72,9 +79,21 @@ class TwoStateBackend(SegmentBackend):
     :meth:`simulate` therefore runs unmodified.
     """
 
-    def __init__(self):
+    def __init__(self, n_lanes=1):
         self.n_simulations = 0
         self.fail_beyond = None    # |k| above which this "model" refuses to integrate
+        self._n_lanes = int(n_lanes)
+        #: Lanes currently mid-integration, so a test can assert that a scheduler never puts
+        #: two segments in one lane at once -- the invariant a stateful simulator needs and
+        #: this closed-form one cannot notice being violated.
+        self.busy = set()
+        self.max_concurrent = 0
+        self.collisions = 0
+        #: An optional :class:`threading.Barrier` every simulation waits on, which turns
+        #: "did these actually overlap?" from a timing observation into a deterministic one:
+        #: a pass that runs its segments one at a time cannot get past it.
+        self.barrier = None
+        self._lock = threading.Lock()
 
     @property
     def state_names(self):
@@ -84,8 +103,25 @@ class TwoStateBackend(SegmentBackend):
     def nominal_state(self):
         return np.array([1.0, W0])
 
-    def simulate(self, pset, sample_times, initial_state=None):
-        self.n_simulations += 1
+    def open_lanes(self, pset, n_lanes):
+        return min(int(n_lanes), self._n_lanes)
+
+    def simulate(self, pset, sample_times, initial_state=None, lane=0):
+        with self._lock:
+            self.n_simulations += 1
+            if lane in self.busy:
+                self.collisions += 1
+            self.busy.add(lane)
+            self.max_concurrent = max(self.max_concurrent, len(self.busy))
+        try:
+            if self.barrier is not None:
+                self.barrier.wait()
+            return self._simulate(pset, sample_times, initial_state)
+        finally:
+            with self._lock:
+                self.busy.discard(lane)
+
+    def _simulate(self, pset, sample_times, initial_state=None):
         k = float(pset['k'])
         if self.fail_beyond is not None and abs(k) > self.fail_beyond:
             raise SegmentSimulationFailed('the closed-form backend refuses |k| > %g'
@@ -153,7 +189,8 @@ def make_spec(times, obs, backend=None):
                               routing, label='exp1', start=0.0)
 
 
-def build_stage(n_segments, start_u=(0.4, 0.8), seed=4, backend=None, log_space=False):
+def build_stage(n_segments, start_u=(0.4, 0.8), seed=4, backend=None, log_space=False,
+                pool=None):
     """One rung, seeded at ``start_u``, plus the pieces a caller needs to poke at it.
 
     ``start_u`` is in **sampling space**, so under ``log_space`` it is ``log10(theta)``.
@@ -162,7 +199,7 @@ def build_stage(n_segments, start_u=(0.4, 0.8), seed=4, backend=None, log_space=
     free = variables(log_space=log_space)
     spec = make_spec(times, obs, backend=backend)
     problem = seed_stage([spec], n_segments, ChiSquareObjective(), free,
-                         pset_from_u_for(free), np.asarray(start_u, dtype=float))
+                         pset_from_u_for(free), np.asarray(start_u, dtype=float), pool=pool)
     return problem, spec, free
 
 
@@ -219,6 +256,89 @@ class TestSegmentGrid:
     def test_a_label_may_not_contain_the_knot_separator(self):
         with pytest.raises(PybnfError, match='knot-name separator'):
             SegmentGrid(np.linspace(0, 1, 3), 2, label='a%sb' % KNOT)
+
+
+# ---------------------------------------------------------------------------
+# Where the knots go (#563: "a segment count or explicit knots; default to generic
+# equal-time or equal-observation segments")
+# ---------------------------------------------------------------------------
+
+#: An unevenly sampled course: 8 points crowded into the first fifth of the horizon, 2 in
+#: the rest. Equal *time* leaves a segment with nothing to fit; equal *observations* does
+#: not. That difference is the whole reason the second placement exists.
+_BURSTY = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 5.0, 10.0])
+
+
+class TestKnotPlacement:
+
+    def test_equal_time_is_the_default_and_cuts_the_horizon_evenly(self):
+        grid = SegmentGrid(np.linspace(0.0, 8.0, 17), 4, label='e', start=0.0)
+        assert grid.placement == EQUAL_TIME
+        np.testing.assert_allclose(grid.knot_times, (2.0, 4.0, 6.0))
+
+    def test_equal_observations_balances_the_data_where_equal_time_does_not(self):
+        """The measured difference, on one unevenly sampled course rather than in the
+        abstract: equal spans leave a segment empty, equal observations do not."""
+        by_time = SegmentGrid(_BURSTY, 2, label='e', start=0.0, placement=EQUAL_TIME)
+        by_data = SegmentGrid(_BURSTY, 2, label='e', start=0.0,
+                              placement=EQUAL_OBSERVATIONS)
+        assert [len(by_time.rows_in(j)) for j in range(2)] == [8, 2]
+        assert [len(by_data.rows_in(j)) for j in range(2)] == [5, 5]
+
+    def test_every_placement_names_a_knot_the_same_way_so_the_ladder_carries_it(self):
+        """The property the homotopy rests on, which is *not* automatic once the knot time
+        stops being a fraction of the horizon: the coarse grid's knot must be the same knot,
+        by name and by time, as the fine grid's."""
+        for placement in (EQUAL_TIME, EQUAL_OBSERVATIONS):
+            fine = SegmentGrid(_BURSTY, 4, label='e', start=0.0, placement=placement)
+            mid = SegmentGrid(_BURSTY, 2, label='e', start=0.0, placement=placement)
+            assert mid.block_names == ('e@1/2',)
+            assert set(mid.block_names) < set(fine.block_names)
+            # Same name *and* same time -- a name that carried over onto a different knot
+            # would reseed the ladder with a state belonging somewhere else.
+            assert mid.knot_times[0] == fine.knot_times[fine.block_names.index('e@1/2')]
+
+    def test_explicit_knots_are_used_as_given(self):
+        grid = SegmentGrid(np.linspace(0.0, 8.0, 17), 4, label='e', start=0.0,
+                           knots=[0.5, 1.0, 7.0])
+        assert grid.placement == EXPLICIT
+        np.testing.assert_allclose(grid.knot_times, (0.5, 1.0, 7.0))
+        assert grid.block_names == ('e@1/4', 'e@1/2', 'e@3/4')
+
+    def test_a_coarser_rung_keeps_the_explicit_knot_its_fraction_names(self):
+        times = np.linspace(0.0, 8.0, 17)
+        fine = SegmentGrid(times, 4, label='e', start=0.0, knots=[0.5, 1.0, 7.0])
+        mid = SegmentGrid(times, 2, label='e', start=0.0, knots=[0.5, 1.0, 7.0])
+        assert mid.block_names == ('e@1/2',)
+        assert mid.knot_times == (1.0,)     # the fine grid's e@1/2, not its first or last
+        assert mid.knot_times[0] == fine.knot_times[fine.block_names.index('e@1/2')]
+
+    def test_out_of_order_explicit_knots_are_refused_by_name(self):
+        with pytest.raises(PybnfError, match='not strictly increasing'):
+            SegmentGrid(np.linspace(0.0, 8.0, 17), 3, label='e', start=0.0,
+                        knots=[5.0, 2.0])
+
+    def test_an_explicit_knot_outside_the_horizon_is_refused(self):
+        with pytest.raises(PybnfError, match='not strictly increasing'):
+            SegmentGrid(np.linspace(0.0, 8.0, 17), 2, label='e', start=0.0, knots=[9.0])
+
+    def test_an_unknown_placement_is_refused(self):
+        with pytest.raises(PybnfError, match='knot placement'):
+            SegmentGrid(np.linspace(0.0, 8.0, 17), 2, label='e', placement='at_the_peaks')
+
+    def test_each_placement_declares_the_segment_count_its_data_supports(self):
+        """The ceiling ``feasible_ladder`` drops rungs against, and it is not one number:
+        equal time needs a measurement per segment, equal observations two, and an explicit
+        list *is* the finest rung."""
+        times = np.linspace(0.0, 1.0, 10)
+        assert max_segments(times, EQUAL_TIME) == 10
+        assert max_segments(times, EQUAL_OBSERVATIONS) == 5
+        assert max_segments(times, EXPLICIT, knots=[0.3, 0.6]) == 3
+
+    def test_equal_observations_refuses_a_count_the_sampling_cannot_support(self):
+        with pytest.raises(PybnfError, match='equal observations'):
+            SegmentGrid(np.linspace(0.0, 1.0, 4), 4, label='e', start=0.0,
+                        placement=EQUAL_OBSERVATIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -533,3 +653,112 @@ class TestLadder:
         spec = make_spec(times, obs)
         rungs, _dropped = feasible_ladder([spec], ladder=(8,))
         assert rungs[-1] == 1
+
+
+# ---------------------------------------------------------------------------
+# The segment pass: serial, or across lanes (#563, "segment simulations can run in
+# parallel")
+# ---------------------------------------------------------------------------
+
+class TestSegmentPool:
+
+    def test_lanes_change_when_a_segment_runs_and_nothing_else(self):
+        """The claim the scheduler has to earn: the objective, its gradient, the continuity
+        residual and its Jacobian come back **exactly** equal, not merely close.
+
+        Exactly, because a segment pass is not an approximation of another segment pass --
+        the same spans are integrated from the same states, only on different threads. A
+        tolerance here would hide a lane mix-up, which is the failure this parallelisation
+        can actually have.
+        """
+        serial, _spec, _free = build_stage(4, backend=TwoStateBackend(n_lanes=4))
+        u = _stale(serial, serial.layout.initial_point([0.45, 0.85]))
+        want = (serial.objective_at(u), serial.equality_at(u))
+
+        pool = SegmentPool(4)
+        try:
+            parallel, _s, _f = build_stage(4, backend=TwoStateBackend(n_lanes=4), pool=pool)
+            got = (parallel.objective_at(u), parallel.equality_at(u))
+        finally:
+            pool.close()
+
+        assert got[0].value == want[0].value
+        np.testing.assert_array_equal(got[0].gradient, want[0].gradient)
+        np.testing.assert_array_equal(got[1].residual, want[1].residual)
+        np.testing.assert_array_equal(got[1].jacobian.to_dense(), want[1].jacobian.to_dense())
+
+    def test_two_segments_never_share_a_lane_at_once(self):
+        """A lane is a stateful simulator restarted at its segment's knot, so two segments
+        in one lane at one time is silent corruption rather than an error. With more
+        segments than lanes the scheduler must make a segment *wait*."""
+        backend = TwoStateBackend(n_lanes=2)
+        pool = SegmentPool(4)
+        try:
+            problem, _spec, _free = build_stage(8, backend=backend, pool=pool)
+            problem.objective_at(problem.layout.initial_point([0.45, 0.85]))
+        finally:
+            pool.close()
+        assert backend.collisions == 0
+        assert backend.max_concurrent <= 2      # capped by what the backend offered
+
+    def test_a_parallel_pass_really_overlaps(self):
+        """The whole point, asserted rather than assumed -- and deterministically.
+
+        A barrier of four is the proof: all four segments of one point must be inside
+        :meth:`simulate` at the same moment for any of them to return. A pass that ran them
+        one at a time would block there and fail on the barrier's own timeout, not on a
+        timing heuristic that happens to be true on a fast machine.
+        """
+        backend = TwoStateBackend(n_lanes=4)
+        pool = SegmentPool(4)
+        try:
+            problem, _spec, _free = build_stage(4, backend=backend, pool=pool)
+            # Armed only after seeding, which runs one unsegmented simulation on the calling
+            # thread -- a party of four would have nothing to wait with.
+            backend.barrier = threading.Barrier(4, timeout=30)
+            problem.objective_at(problem.layout.initial_point([0.45, 0.85]))
+        finally:
+            pool.close()
+        assert backend.max_concurrent == 4
+
+    def test_a_failed_segment_still_makes_the_whole_point_unusable(self):
+        """Parallel gives up the serial pass's short-circuit, not its verdict."""
+        backend = TwoStateBackend(n_lanes=4)
+        backend.fail_beyond = 0.5
+        pool = SegmentPool(4)
+        try:
+            problem, _spec, _free = build_stage(4, backend=backend, pool=pool)
+            model = problem.objective_at(problem.layout.initial_point([1.5, 0.85]))
+        finally:
+            pool.close()
+        assert not np.isfinite(model.value)
+
+    def test_a_serial_pool_opens_no_threads(self):
+        pool = SegmentPool(1)
+        assert not pool.parallel
+        problem, _spec, _free = build_stage(4, pool=pool)
+        problem.objective_at(problem.layout.initial_point([0.45, 0.85]))
+        assert pool._executor is None
+        pool.close()
+
+    def test_a_backend_that_offers_one_lane_is_still_correct(self):
+        """The default :meth:`SegmentBackend.open_lanes` says "one", and a pool asked for
+        more must honour that rather than run two segments in the one context."""
+        backend = TwoStateBackend(n_lanes=1)
+        pool = SegmentPool(4)
+        try:
+            problem, _spec, _free = build_stage(4, backend=backend, pool=pool)
+            model = problem.objective_at(problem.layout.initial_point([0.45, 0.85]))
+        finally:
+            pool.close()
+        assert np.isfinite(model.value)
+        assert backend.collisions == 0
+        assert backend.max_concurrent == 1
+
+
+def _stale(problem, u, factor=1.6):
+    """Knots pushed off the seeded (feasible) trajectory, so the defects are nonzero."""
+    u = np.array(u, dtype=float, copy=True)
+    for block in problem.layout.blocks:
+        u[problem.layout.slice_of(block.name)] += np.log10(factor)
+    return u

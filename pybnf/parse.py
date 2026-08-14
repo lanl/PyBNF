@@ -58,7 +58,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # coarsening ladder and the factor between rungs, the per-outer-iteration
                # inner-solve cap, and the outer-iteration budget per rung (a runtime-guarded
                # RUNTIME_KEY, defaulting to max_iterations).
+               # ms_parallel_segments is how many of a point's segments are integrated at
+               # once, on warm engine+simulator lanes (1 = serially on the master).
                'ms_segments', 'ms_coarsening', 'ms_inner_iterations', 'ms_max_iterations',
+               'ms_parallel_segments',
                # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
                # per chain per generation (n_try = 1 is the classic single-try engine).
                'n_try',
@@ -114,7 +117,12 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  # leaves rtol at the backend default and DERIVES atol from the model's
                  # own state scale; stating either pins it.
                  'sbml_rtol', 'sbml_atol']
-multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
+multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari',
+               # multiple shooting (job_type = ms, #563): explicit knot times for the
+               # finest rung, in the experiments' own independent-variable units. Supplying
+               # them fixes the finest segment count at len(ms_knots) + 1, so it replaces
+               # ms_segments rather than accompanying it.
+               'ms_knots']
 # The prior-family var keywords are derived from the registry (ADR-0010): each
 # family yields {base}_var (linear) + log{base}_var (log10). Bounded-support
 # families (b_var_def_keys) take the optional b/u flag in the grammar and have
@@ -133,6 +141,9 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'outlier_method', 'refine_method', 'noise_location',
               # CMA-ES restart schedule (job_type = cmaes, #498/ADR-0070): ipop | bipop.
               'cmaes_restart_strategy',
+              # multiple shooting (job_type = ms, #563): where the knots go --
+              # equal_time | equal_observations. Explicit knots come from ms_knots.
+              'ms_knot_placement',
               # Global qualitative (BPSL) penalty-family override:
               # auto | hinge | probit | logit.
               'qualitative_loss']

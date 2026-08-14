@@ -42,6 +42,12 @@ The segment-simulation seam
 .. automodule:: pybnf.shooting.net_backend
    :members:
 
+The segment pass
+================
+
+.. automodule:: pybnf.shooting.parallel
+   :members:
+
 The transcription
 =================
 

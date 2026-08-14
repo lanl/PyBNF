@@ -156,6 +156,13 @@ discarded, the parameters are re-simulated with ordinary single shooting, and th
 reported and ranked. A run that leaves continuity unconverged therefore scores as what it actually
 is, and the number in ``sorted_params_final.txt`` is directly comparable with any other fit's.
 
+Beside it, ``Results/continuity_defects.txt`` records how nearly the transcription that produced
+that fit joined up: the scaled defect norm and RMS, and the largest individual defects named by
+**knot and state** (``myexp@1/2::Z_state``). The numbers are scaled by each state's own magnitude,
+so one of them means the same thing across states spanning orders of magnitude and across models.
+A converged run usually finishes on the unsegmented rung, which has no knots at all; the file says
+so rather than being absent.
+
 **The ladder is the mechanism.** A run does not fix a segment count; it solves a sequence of
 transcriptions, coarsening toward the ordinary unsegmented problem (``4 → 2 → 1`` by default) and
 warm-starting each rung from the previous one. The stage trace is printed as it goes, and on the
@@ -172,9 +179,16 @@ to cut, or a measured phase that already starts from a carried state), and any s
 is a function of a whole series (an analytic per-series ``scale``, a data ``normalization``, a
 ``cumulative`` column, or BPSL constraints). An analytically profiled noise scale
 (``noise_profiling = 1``) is fine and is the recommended pairing: it is profiled over the pooled
-data residuals, which continuity defects never enter. Segments are simulated serially, so ``ms``
-does not scale across a cluster the way the metaheuristics do, and a stopped run cannot be resumed
-with ``-r``.
+data residuals, which continuity defects never enter. ``ms`` drives its own search on the master
+rather than across a cluster the way the metaheuristics do (a segment is not a parameter-set
+evaluation), and a stopped run cannot be resumed with ``-r``.
+
+**As a refiner.** ``refine_method = ms`` runs multiple shooting as the polish phase of another
+fit — ``job_type = cmaes`` with ``refine = 1, refine_method = ms`` is a global search followed by
+a multiple-shooting solve seeded at its best basin, which is the pairing the method's motivation
+argues for: the search finds a basin, and the transcription is what converts it. The refine starts
+from that one point rather than re-scattering across the box, and ``wall_time_refine_frac``
+reserves it a share of ``wall_time_fit`` so a long search cannot consume the refine's budget.
 
 **A note on size, for network models.** The transcription's width scales with the model's
 **state**, not with the number of fitted parameters: the finest rung adds
@@ -205,6 +219,35 @@ are worth leaving alone unless you have a reason:
   iterations per rung and defaults to the global ``max_iterations``.
 * ``ms_aux_decades`` (default ``6``) — the half-width, in decades, of a segment-start state's box
   around its own magnitude.
+
+**Where the knots go.** By default the horizon is cut into equal spans, which uses only the
+experiment's own time axis. Two alternatives:
+
+* ``ms_knot_placement = equal_observations`` cuts so every segment owns the same number of
+  measurements. Use it on an unevenly sampled course, where equal spans can leave a segment with
+  no data at all and its start states determined by continuity alone. It needs at least two
+  measurements per segment, so its segment ceiling is half the default's.
+* ``ms_knots = 2.5 5.0 7.5`` names the knot times outright, in the experiments' own
+  independent-variable units. This **replaces** ``ms_segments``: the finest rung becomes
+  ``len(ms_knots) + 1``, and the ladder coarsens by keeping the sub-list each rung's own knot
+  fractions select. A run whose ``ms_segments`` disagrees says which one it used.
+
+None of the three reads a trajectory. Placing knots at the features of a nominal simulation (a
+burst, a peak) is tempting and is deliberately not offered: it would put the transcription's
+structure where the *start point* says the dynamics are, and on the problem this method exists for
+those dynamics are exactly what is in question.
+
+**Running segments in parallel.** ``ms_parallel_segments`` (default ``1``) integrates that many of
+a point's segments at once, on independent warm engine+simulator *lanes*. The answer is unchanged —
+bit-identically so; only the scheduling differs. The default is 1 on a measurement rather than out
+of caution: bngsim does release the GIL during integration (four threads integrate Borghans
+segments 2.7× faster than one), but a lane has to be *built* at every parameter point, and on a
+small model that preparation (~4 ms) costs more than the integration it saves (~1–2 ms). Raise it
+when a single segment's integration is the expensive thing, which is a property of the model's
+state count rather than of the fit. Two caveats: the serial pass stops at the first segment that
+fails to integrate and a parallel one cannot, so a search over an uninformed box (where most points
+do not integrate) will report more simulations; and lanes are per experiment, so ``L`` of them cost
+``L`` model preparations per point.
 
 A minimal run::
 

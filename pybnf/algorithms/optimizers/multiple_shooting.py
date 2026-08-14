@@ -56,16 +56,22 @@ searched:
 """
 
 import logging
-from typing import ClassVar
+from pathlib import Path
+from typing import ClassVar, Literal
+
+from pydantic import Field
 
 from .gradient_base import GradientOptimizer
 from ...config_schema import PyBNFConfigModel
 from ...printing import PybnfError, print0, print1, print2
 from ...registry import register_fit_type
 from ...shooting import (
+    EQUAL_TIME,
+    EXPLICIT,
     BngsimSegmentBackend,
     GaussNewtonSolver,
     NetSegmentBackend,
+    SegmentPool,
     ShootingExperiment,
     feasible_ladder,
     run_multiple_shooting,
@@ -150,6 +156,24 @@ class MSConfig(PyBNFConfigModel):
     is what notices a solver that has stopped achieving anything). Like every other local
     method's, ``ms_max_iterations`` is runtime-guarded -- it defaults to the global
     ``max_iterations`` when unset -- and bounds the outer iterations per rung.
+
+    ``ms_parallel_segments`` is how many of a point's segments are integrated at once, and
+    it defaults to **1** on a measurement rather than on caution. bngsim releases the GIL
+    inside CVODE -- four threads on four warm lanes integrate Borghans segments 2.7x faster
+    than one, bit-identically -- but a lane is an engine+simulator pair that has to be built
+    at every parameter point, and on that model preparing one (~4.1 ms) costs *more* than
+    the integration it saves (~1-2.3 ms). Parallel segments pay when a segment's integration
+    is the expensive thing, which is a property of the model's state count rather than of
+    the fit; :mod:`pybnf.shooting.parallel` carries the cost model and the numbers.
+
+    ``ms_knot_placement`` and ``ms_knots`` are the "a segment count **or** explicit knots;
+    default to generic equal-time **or** equal-observation segments" the issue asks for.
+    ``equal_time`` is the default because it uses only the experiment's own time axis;
+    ``equal_observations`` uses only its sampling; and ``ms_knots`` names the times outright,
+    which *replaces* ``ms_segments`` (the finest rung is then ``len(ms_knots) + 1``). None of
+    the three reads a trajectory, which is deliberate: a placement derived from nominal
+    dynamics would put the transcription's structure where the fit has not established
+    anything, and on the motivating problem those dynamics are exactly what is in question.
     """
 
     ms_segments: int = 4
@@ -161,17 +185,35 @@ class MSConfig(PyBNFConfigModel):
     ms_optimality_tol: float = 1e-6
     ms_inner_iterations: int = 50
     ms_aux_decades: float = 6.0
+    ms_knot_placement: Literal['equal_time', 'equal_observations'] = 'equal_time'
+    ms_knots: list = Field(default_factory=list)
+    ms_parallel_segments: int = 1
 
     RUNTIME_KEYS: ClassVar[frozenset] = frozenset({'ms_max_iterations'})
 
 
-# Neither `refiner` nor `start_from_box`: those two flags classify the *start-point*
-# optimizers, which take a `var` / `logvar` point (ADR-0015/0017). `ms` draws every variable
-# from its prior like the population optimizers do, and it is not a local polish -- so it is
-# in the "everything else" category, and multi-start over a bounded box comes from
-# `_is_box_start`, which reads the priors rather than the registry.
+# The same pair of flags `gntr` carries, and for the same reasons.
+#
+# `refiner=True` makes `refine = 1, refine_method = ms` a search followed by a
+# multiple-shooting polish -- the fourth arm of #563's acceptance benchmark, and the shape
+# the issue's own motivation argues for: a global search finds a basin, and the
+# transcription is what converts it. Nothing in the seam needed adding. `_refine_best_fit`
+# injects the search's best fit under `START_POINT_KEY`, which `_resolve_start_pset` already
+# prefers over every other source, and `_resolve_n_starts` already returns 1 for an injected
+# start (a refine polishes one point; it does not re-scatter). Beyond passing
+# `_check_refine_method`, the flag buys the coherent-group config pull-in: an `ms` refiner's
+# keys are validated against `MSConfig` on the searching fit's config rather than sitting in
+# it as unrecognised extras.
+#
+# `start_from_box=True` is then required rather than optional, and the first cut of this
+# registration was wrong to omit it: `refiner` is what `_load_variables` reads to classify a
+# fit_type as *start-point*, and a start-point fit_type that is not also `start_from_box`
+# may not be given bounded priors at all. `ms` has always drawn its starts from the box
+# (`_is_box_start` reads the priors), so without the second flag adding the first would have
+# made every standalone `uniform_var` / `loguniform_var` multiple-shooting fit -- which is
+# every one that exists -- a configuration error.
 @register_fit_type('ms', family='optimizer', display_name='Multiple Shooting',
-                   schema=MSConfig)
+                   schema=MSConfig, refiner=True, start_from_box=True)
 class MultipleShootingAlgorithm(GradientOptimizer):
     """The multiple-shooting fit type.
 
@@ -191,10 +233,18 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         super().__init__(config, refine=refine)
         self.max_outer = config.config.get('ms_max_iterations',
                                            config.config['max_iterations'])
-        self.n_segments = int(config.config['ms_segments'])
+        self.knots = tuple(float(t) for t in (config.config.get('ms_knots') or ()))
+        self.placement = (EXPLICIT if self.knots
+                          else str(config.config.get('ms_knot_placement', EQUAL_TIME)))
+        # Explicit knots *are* the finest rung, so they set the segment count rather than
+        # sitting alongside it. Refusing a contradictory ms_segments would be pedantic (the
+        # knots are unambiguous); silently ignoring it would not be, so it is reported.
+        self.n_segments = (len(self.knots) + 1 if self.knots
+                           else int(config.config['ms_segments']))
         self.coarsening = int(config.config['ms_coarsening'])
         self.inner_iterations = int(config.config['ms_inner_iterations'])
         self.aux_decades = float(config.config['ms_aux_decades'])
+        self.pool = SegmentPool(config.config.get('ms_parallel_segments', 1))
         self.schedule = PenaltySchedule(
             initial_penalty=config.config['ms_penalty'],
             growth=config.config['ms_penalty_growth'],
@@ -204,9 +254,10 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         self.homotopies = []
 
     def _start_banner(self):
-        return ('Running multiple shooting: coarsening ladder from %i segment(s), up to %i '
-                'outer iteration(s) per rung, from %i start point(s)'
-                % (self.n_segments, self.max_outer, self.n_starts))
+        return ('Running multiple shooting: coarsening ladder from %i segment(s) placed by '
+                '%s, up to %i outer iteration(s) per rung, from %i start point(s)'
+                % (self.n_segments, self.placement.replace('_', ' '), self.max_outer,
+                   self.n_starts))
 
     def _make_runner(self, u0):
         """Never called: this fit type does not drive per-start step machines through the
@@ -237,6 +288,14 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         print2(self._start_banner())
 
         self._setup_gradient_path()
+        if self.knots and 'ms_segments' in self.config.config \
+                and int(self.config.config['ms_segments']) != self.n_segments:
+            # No silent override: ms_knots fixes the finest rung, so an ms_segments that
+            # disagrees with it did not take effect and the run says which one won.
+            print1('ms_knots supplies %i explicit knot(s), which fixes the finest rung at '
+                   '%i segment(s); the configured ms_segments = %s was not used.'
+                   % (len(self.knots), self.n_segments,
+                      self.config.config['ms_segments']))
         specs = self._build_specs()
         rungs, dropped = feasible_ladder(
             specs, coarsening_ladder(start=self.n_segments, factor=self.coarsening))
@@ -259,6 +318,22 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         for spec in specs:
             print2(spec.grid(rungs[0]).describe())
 
+        print1('  %s' % self.pool.describe())
+        try:
+            self._run_starts(specs, rungs)
+        finally:
+            # The thread pool outlives a single start, so it is closed once the ladder is
+            # done -- including when a budget or an error ends the run early, since a live
+            # pool would keep the interpreter's non-daemon threads alive past the fit.
+            self.pool.close()
+
+        if self._budget_spent():
+            self.stop_reason = self._wall_time_stop_reason(self.completed_simulations)
+        self._finalize_run()
+        self._emit_continuity_defects()
+
+    def _run_starts(self, specs, rungs):
+        """Drive the ladder from every start point, newest result first in the log."""
         for index, start in enumerate(self.start_psets):
             if self._budget_spent():
                 break
@@ -269,7 +344,8 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                 self._param_vec(start), ladder=rungs, schedule=self.schedule,
                 inner_solver=solver, max_outer=self.max_outer,
                 aux_decades=self.aux_decades, stop_check=self._budget_spent,
-                on_iterate=self._record_iterate, on_stage=self._report_stage)
+                on_iterate=self._record_iterate, on_stage=self._report_stage,
+                pool=self.pool)
             # Segment integrations, not augmented-model evaluations: one evaluation is m
             # integrations plus the certification's, and reporting evaluations would
             # understate the cost by the factor the method is judged on.
@@ -284,10 +360,6 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                 print0('Warning: some of this run\'s scores did not go through the '
                        'ordinary single-shoot path and are not comparable with an '
                        'ordinary fit\'s.')
-
-        if self._budget_spent():
-            self.stop_reason = self._wall_time_stop_reason(self.completed_simulations)
-        self._finalize_run()
 
     def _record_iterate(self, record):
         """Enter one certified outer iterate in the ordinary trajectory.
@@ -310,6 +382,9 @@ class MultipleShootingAlgorithm(GradientOptimizer):
 
     def _report_stage(self, stage):
         print2('  %s' % stage.outer.summary())
+        report = stage.outer.defect_report()
+        if report:
+            print2('    worst scaled continuity defect(s): %s' % report)
 
     # --- the experiments --------------------------------------------------- #
     def _build_specs(self):
@@ -341,7 +416,9 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                         hint='Fit this model with job_type = gntr, which resolves the '
                              'routing per evaluation.')
                 specs.append(ShootingExperiment((model.name, suffix), backend, exp_data,
-                                                routing, label=label, start=0.0))
+                                                routing, label=label, start=0.0,
+                                                placement=self.placement,
+                                                knots=self.knots or None))
         if not specs:
             raise PybnfError('Multiple shooting found no scored experiment to segment.')
         return specs
@@ -556,6 +633,13 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                      'whole trajectory.')
 
     # --- reporting --------------------------------------------------------- #
+    def _best_homotopy(self):
+        """The start whose ladder produced this run's best certified fit, or ``None``."""
+        finished = [h for h in self.homotopies if h.best is not None]
+        if not finished:
+            return None
+        return min(finished, key=lambda h: h.best_score)
+
     def best_stage_trace(self):
         """The stage trace of the start that produced the run's best certified fit.
 
@@ -563,10 +647,77 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         coarsening is converting the segmented stages, which is the mechanism the method
         rests on. ``None`` before any start has run.
         """
-        finished = [h for h in self.homotopies if h.best is not None]
-        if not finished:
-            return None
-        return min(finished, key=lambda h: h.best_score).trace()
+        homotopy = self._best_homotopy()
+        return None if homotopy is None else homotopy.trace()
+
+    def _emit_continuity_defects(self):
+        """Write ``Results/continuity_defects.txt``: how nearly the transcription that
+        produced the reported fit joined up, per knot.
+
+        The issue asks a multiple-shooting run to "report scaled continuity defects", and
+        the plural is the point. The aggregate norm says how far from continuous the run
+        ended; this says *which knot* did not close and *in which state* -- which is the
+        difference between a fit whose one unobserved species drifts at a single knot and
+        one whose whole transcription never converged.
+
+        The numbers are **scaled** (ADR-0109): each defect is divided by its state's own
+        magnitude, so one number means the same thing across states spanning orders of
+        magnitude, and the norm is comparable across models. The row this describes is the
+        run's best *certified* iterate -- the reported fit -- so the file pairs with
+        ``sorted_params_final.txt`` rather than describing some other point.
+
+        The unsegmented rung of a ladder has no constraints, and that is where a converged
+        run usually finishes; the file says so rather than being absent, because "no
+        constraints at the reported fit" and "this run never wrote a report" are different
+        facts. Every failure is logged and swallowed: the run has completed, and a report
+        must never abort it.
+        """
+        homotopy = self._best_homotopy()
+        if homotopy is None:
+            return
+        best = homotopy.best
+        lines = [
+            '# Scaled continuity defects at the best certified iterate (job_type = ms).',
+            '# A continuity defect is c_j = Phi_j(z_j, theta) - z_{j+1}, the gap between the',
+            '#   state a segment integrates to and the state the next segment starts from,',
+            '#   divided by that state\'s own magnitude. Scaling is what makes one number',
+            '#   mean one thing across states of different size (ADR-0109), so the norms',
+            '#   below are dimensionless and comparable across models.',
+            '# The iterate described here is the fit reported in sorted_params_final.txt:',
+            '#   its objective is an ordinary single-shoot reconstruction, and these defects',
+            '#   say how nearly the transcription it came from joined up.',
+            'stage\t%s' % best.stage,
+            'outer_iteration\t%i' % best.iteration,
+            'certified_objective\t%.10g' % best.certificate.objective,
+            'n_constraints\t%i' % best.n_constraints,
+            'scaled_defect_norm_inf\t%.10g' % best.defect_norm,
+            'scaled_defect_rms\t%.10g' % best.defect_rms,
+        ]
+        if not best.n_constraints:
+            lines.append('# This iterate came from the unsegmented rung (m = 1), which has no')
+            lines.append('#   knots and therefore no continuity constraints to violate.')
+        else:
+            lines.append('# The %i largest of %i, worst first.'
+                         % (min(len(best.worst_defects), best.n_constraints),
+                            best.n_constraints))
+            lines.append('# knot\tstate\tscaled_defect')
+            for name, value in best.worst_defects:
+                knot, _, state = name.partition('::')
+                lines.append('%s\t%s\t%.10g' % (knot, state or '-', value))
+        path = str(Path(self.res_dir) / 'continuity_defects.txt')
+        try:
+            Path(self.res_dir).mkdir(parents=True, exist_ok=True)
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception:
+            logger.exception('Failed to write continuity_defects.txt')
+            return
+        logger.info('Wrote scaled continuity defects %s' % path)
+        report = best.defect_report()
+        print1('Scaled continuity defect at the best certified fit (%s): norm %.3g, rms %.3g'
+               % (best.stage, best.defect_norm, best.defect_rms))
+        if report:
+            print1('  worst knot(s): %s' % report)
 
     def start_run(self):
         raise PybnfError('job_type = ms drives its own search and does not use the '
