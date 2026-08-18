@@ -94,13 +94,33 @@ downstream machinery just works: the run prints AIC/BIC/AICc, and an
 `output_inference_data = 1` Bayesian run (`job_type = mh`/`dream`) gets a
 `log_likelihood` group for `az.loo` / `az.compare`.
 
-## Scope (phase 1)
+## Gradient fitting (phase 2)
 
-The engine here is **quadrature over the stored trajectory** — gradient-free, so use
-`de` / `pso` / `ss` / `mh` / `dream`. A gradient method (`trf`/`lbfgs`/`gntr`/`hmc`/
-`ms`) is refused with a pointer, as is a prediction-dependent `σ`, a count family, a
-per-observable time prior, and combining `time_error` with `noise_profiling`. The
-augmented-ODE engine that lifts the gradient restriction is phase 2 (ADR-0112).
+Phase 2 (ADR-0113) adds the gradient `dz_k/dθ`, so a **gradient** fit works too —
+[`marginal_gradient.conf`](marginal_gradient.conf) is `estimate_sigma_t.conf` with
+`job_type = lbfgs`:
+
+```bash
+pybnf -c marginal_gradient.conf
+```
+
+It recovers the same optimum in far fewer simulations. The trick is that PyBNF already
+stores `∂y(τ)/∂θ` at every grid node (its forward-sensitivity tensor), so `dz_k/dθ` is
+just the same quadrature you already run, weighted by that sensitivity — **no augmented
+ODE**. (The paper augments the ODE only because its solver returns sensitivities of ODE
+*states* alone; PyBNF does not have that limitation.) The gradient is the *exact*
+derivative of the quadrature value, so the optimizer walks precisely the surface the
+objective reports. `lbfgs` and `gntr` are supported; `trf` still needs an exact
+least-squares residual, which `−log z_k` (the log of an integral) never is.
+
+## Scope
+
+Still refused, each with a pointer: a prediction-dependent `σ`, a count family, a
+per-observable time prior, combining `time_error` with `noise_profiling`, and the
+gradient methods `trf` (no least-squares residual — use `lbfgs`), `hmc` (a JAX
+analytic-model sampler, not the sensitivity-tensor path), and `ms` (the shooting
+layer). Solver-controlled integration error — the augmented ODE's *other* benefit —
+stays a follow-up (ADR-0113); phase 2 keeps the phase-1 grid (`t_end:` / `n_steps:`).
 
 ## The test
 

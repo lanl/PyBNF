@@ -69,7 +69,11 @@ import numpy as np
 from .gradient_base import GradientOptimizer
 from .trf import _TRFRunner, _UnusableModel
 from ...config_schema import PyBNFConfigModel
-from ...gradient import assemble_constraint_hessian, assemble_gradient_and_fisher_hessian
+from ...gradient import (
+    assemble_constraint_hessian,
+    assemble_gradient_and_fisher_hessian,
+    assemble_marginal_time_gradient,
+)
 from ...printing import PybnfError
 from ...registry import register_fit_type
 
@@ -136,7 +140,15 @@ class GNTRAlgorithm(GradientOptimizer):
                            grad_tol=self.grad_tol, step_tol=self.step_tol, ridge=self.ridge)
 
     def _assemble_objective_gradient(self, experiments, free_params):
-        """Build the scalar/residual gradient and data-fit EFIM in one point walk (#488)."""
+        """Build the scalar/residual gradient and data-fit EFIM in one point walk (#488).
+
+        A **marginal-time** objective (``time_error``, ADR-0113) has no matched-row Fisher; its
+        Gauss-Newton curvature is the per-datum-score outer product ``Σ_k w_k g_k g_kᵀ`` (the
+        empirical Fisher), assembled alongside the scalar gradient by the sensitivity-chaining
+        assembler with ``include_fisher=True``."""
+        if getattr(self.objective, 'marginalizes_time', False):
+            return assemble_marginal_time_gradient(
+                self.objective, experiments, free_params, include_fisher=True)
         return assemble_gradient_and_fisher_hessian(self.objective, experiments, free_params)
 
     def _attach_curvature(self, grad, res, experiments, free_params, routings):

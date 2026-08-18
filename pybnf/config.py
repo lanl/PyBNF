@@ -2765,10 +2765,29 @@ class Configuration:
             obj._cumulative_cols = cumulative_cols
         return obj
 
-    #: Fit types whose search consumes an analytic objective gradient, which phase-1
-    #: marginalization cannot supply (dz_k/dθ needs augmented-ODE sensitivities; ADR-0112 "the
-    #: gradient is an integral, not an envelope"). Refused under a time_error clause until phase 2.
-    _TIME_ERROR_GRADIENT_FIT_TYPES = frozenset({'trf', 'lbfgs', 'gntr', 'hmc', 'ms'})
+    #: Gradient fit types the marginal-time objective still cannot serve, each for its own reason
+    #: (phase 2 lifted ``lbfgs`` / ``gntr``; ADR-0113). ``trf`` needs an *exact least-squares
+    #: residual*, which ``−log z_k`` (the log of an integral) never is; ``hmc`` is PyBNF's
+    #: JAX/analytic-model NUTS path, which does not consume the bngsim forward-sensitivity tensor
+    #: the marginal-time gradient rides; ``ms`` (multiple shooting) is the ``shooting/``
+    #: transcription layer with its own gradient assembly, not wired to a marginal-time objective.
+    _TIME_ERROR_GRADIENT_UNSUPPORTED = frozenset({'trf', 'hmc', 'ms'})
+
+    #: The per-fit-type diagnosis + redirect for the still-refused gradient methods above.
+    _TIME_ERROR_GRADIENT_REASON = {
+        'trf': ("job_type = trf needs an exact least-squares residual, but the marginal-time "
+                "objective's per-datum term −log z_k is the log of an integral, never a sum of "
+                "squares. Use job_type = lbfgs (the scalar gradient) or gntr (its Gauss-Newton "
+                "Fisher), both of which phase 2 supports for time_error (ADR-0113)."),
+        'hmc': ("job_type = hmc is PyBNF's JAX/analytical-model NUTS sampler, which differentiates "
+                "an analytic likelihood rather than the bngsim forward-sensitivity tensor the "
+                "marginal-time gradient rides, so it cannot fit a simulator time_error posterior. "
+                "Use a gradient-free sampler (dream / mh) for uncertainty, or job_type = lbfgs / "
+                "gntr for a gradient MAP fit (ADR-0113)."),
+        'ms': ("job_type = ms (multiple shooting) is a trajectory-transcription optimizer with its "
+               "own gradient assembly, not wired to the marginal-time objective. Use job_type = "
+               "lbfgs or gntr for a gradient time_error fit (ADR-0113)."),
+    }
 
     @staticmethod
     def _maybe_marginalize_time(config, obj, ed):
@@ -2812,14 +2831,14 @@ class Configuration:
                 f"density (a column-joint profile objective, or a score / expression / callable "
                 f"target).")
 
+        # Phase 2 (ADR-0113) lifted lbfgs / gntr: the marginal-time objective assembles its own
+        # dz_k/dθ by sensitivity-chaining over the stored trajectory (no augmented ODE). The
+        # remaining gradient methods each refuse for their own reason (see the table above).
         fit_type = config.get('fit_type')
-        if fit_type in Configuration._TIME_ERROR_GRADIENT_FIT_TYPES:
+        if fit_type in Configuration._TIME_ERROR_GRADIENT_UNSUPPORTED:
             raise UnknownObjectiveFunctionError(
-                f'job_type = {fit_type} is not yet supported with time_error',
-                f"The marginal-time objective is gradient-free in phase 1 (dz_k/dθ needs "
-                f"augmented-ODE sensitivities, ADR-0112 phase 2). Use a gradient-free method "
-                f"(de / pso / ss / mh / dream / ...) for a time_error fit; '{fit_type}' is "
-                f"refused until phase 2 lifts this.")
+                f'job_type = {fit_type} is not supported with time_error',
+                Configuration._TIME_ERROR_GRADIENT_REASON[fit_type])
 
         if config.get('noise_profiling'):
             raise UnknownObjectiveFunctionError(

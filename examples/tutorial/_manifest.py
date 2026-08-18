@@ -1176,6 +1176,11 @@ EXAMPLES = (
                       note='time_error = truncated_normal, sigma_t fixed -> recovers k'),
             ConfCheck('estimate_sigma_t.conf', recover={'k': 1.0}, tol=0.12, marker='slow',
                       note='sigma_t estimated jointly -> still recovers k'),
+            # Phase 2 (ADR-0113): the SAME marginalization fit by a GRADIENT method (lbfgs),
+            # which assembles dz_k/dtheta by chaining the stored forward-sensitivity tensor --
+            # recovers k with no augmented ODE. Proves the gradient path is wired end-to-end.
+            ConfCheck('marginal_gradient.conf', recover={'k': 1.0}, tol=0.12, marker='slow',
+                      note='job_type = lbfgs on the marginal-time objective -> recovers k'),
             # The cautionary sibling: trusting the reported times drags k off the truth (~1.36),
             # so the marginalization above is provably not vacuous.
             ConfCheck('standard.conf', recover={'k': 1.0}, dragged_min_err=0.2, marker='slow',
