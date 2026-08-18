@@ -75,8 +75,8 @@ Three optimizers consume the gradient, all opt-in via ``job_type``:
   or an estimated constraint scale) is refused with a pointer to ``lbfgs``, which fits it.
 
 The **marginal-time** objective — a ``time_error`` clause that integrates an uncertain measurement
-time out of the likelihood (see :doc:`noise_models`) — is also gradient-fittable, via ``lbfgs`` or
-``gntr``. Its per-datum contribution :math:`-\log z_k` is the log of an integral, so it rides the
+time out of the likelihood (the marginalization method of Vanhoefer et al., bioRxiv
+2026.05.09.724053; see :doc:`noise_models`) — is also gradient-fittable, via ``lbfgs`` or ``gntr``. Its per-datum contribution :math:`-\log z_k` is the log of an integral, so it rides the
 scalar-gradient path (like Laplace / count) and ``trf`` refuses it; its parameter gradient is
 assembled by quadrature over the same forward-sensitivity trajectory the objective value uses, so no
 extra ODE states are introduced. Worked example: tutorial lesson ``49_measurement_time_uncertainty``.

@@ -14,6 +14,11 @@ points whose true sampling times were perturbed from the reported ones (`τ_k ~
 TruncNormal(t_k, σ_t = 0.5)`; see [`regenerate_data.py`](regenerate_data.py)). Three
 fits, one contrast.
 
+The marginalization approach this lesson demonstrates is from Vanhoefer, Nakonecnij,
+Binder & Hasenauer, *Efficient Bayesian inference for ordinary differential equation
+models from experimental data with uncertain measurement times*, bioRxiv
+[2026.05.09.724053](https://doi.org/10.64898/2026.05.09.724053).
+
 ## 1. The biased baseline — trust the times
 
 [`standard.conf`](standard.conf) is an ordinary Gaussian fit at the reported times:

@@ -252,6 +252,10 @@ value quadrature uses. ``job_type = trf`` is refused — the log of an integral 
 not a least-squares residual, so use ``lbfgs``. Worked example: tutorial lesson
 ``49_measurement_time_uncertainty``.
 
+The marginalization method is due to Vanhoefer et al., *Efficient Bayesian inference
+for ODE models from experimental data with uncertain measurement times*
+(bioRxiv 2026.05.09.724053).
+
 Choosing per observable
 -----------------------
 
