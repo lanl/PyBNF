@@ -52,6 +52,7 @@ from ...gradient import (
     apply_routings,
     assemble_constraint_gradient,
     assemble_gaussian_gradient,
+    assemble_marginal_time_gradient,
     route_for_model,
 )
 from ...printing import PybnfError, print1, print2
@@ -618,7 +619,16 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         The base ``trf`` / ``lbfgs`` path needs only the scalar gradient and residual model.
         ``gntr`` overrides this seam to assemble those values and its Fisher Hessian in one
         scored-point pass (#488).
+
+        A **marginal-time** objective (``time_error``, ADR-0113) scores each datum by an integral
+        over the trajectory rather than at a matched row, so it assembles its own scalar gradient
+        by sensitivity-chaining over the stored trajectory (``assemble_marginal_time_gradient``)
+        instead of the matched-row Gaussian path. It is never a sum of squares, so the result is
+        ``least_squares_exact = False`` -- ``lbfgs`` consumes its scalar gradient; ``trf`` (which
+        needs an exact residual) refuses it and points at ``lbfgs``.
         """
+        if getattr(self.objective, 'marginalizes_time', False):
+            return assemble_marginal_time_gradient(self.objective, experiments, free_params)
         return assemble_gaussian_gradient(self.objective, experiments, free_params)
 
     def _attach_curvature(self, grad, res, experiments, free_params, routings):

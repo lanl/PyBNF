@@ -29,9 +29,16 @@ clause; a noise scale that is **constant / free / a data column** (``fix_at`` / 
 ``read_exp_file`` -- σ does not vary with the latent time τ). A **per-observable** time prior, a
 **prediction-dependent σ** (``relative`` / ``formula`` / ``prediction_formula``, whose σ would
 vary across the integration window), and a **count family** integrand are deferred to follow-ups
-and refused at build. Phase 2 (the augmented ODE that gives error-controlled integration and
-``dz_k/dθ`` for gradient methods) is a separate ADR; the gradient seam raises
-``NotImplementedError`` pointing at it.
+and refused at build.
+
+Phase 2 (ADR-0113, issue #588) adds the gradient ``dz_k/dθ`` -- lifting the phase-1 gradient
+refusal for ``lbfgs`` / ``gntr`` -- **without** augmenting the ODE. The paper (Vanhoefer et al.)
+augments the model with a state ``z_k`` only because its solver (AMICI/CVODES) returns
+sensitivities of ODE *states* alone; PyBNF's forward-sensitivity engine (#447) already delivers
+``∂y(τ)/∂θ`` at every stored grid node, so ``dz_k/dθ`` is a Python quadrature over the same nodes
+this module already integrates. See :meth:`MarginalizedTimeObjective.marginal_gradient` (the
+per-experiment gradient) and :func:`pybnf.gradient.marginal_time.assemble_marginal_time_gradient`
+(the assembler that routes it into the ``lbfgs`` / ``gntr`` step).
 
 Storage / dispatch. The clause is parsed by ``parse.py`` onto the ``noise_model`` line and
 stored under its own ``('time_error', observable)`` structural key -- the ``cumulative`` pattern,
@@ -47,6 +54,9 @@ import numpy as np
 
 from ..printing import PybnfError
 from ..objective import SummationObjective
+
+#: ``np.trapz`` was renamed ``np.trapezoid`` in numpy 2.0; support both (the gradient quadrature).
+_trapz = np.trapezoid if hasattr(np, 'trapezoid') else np.trapz
 
 
 # ============================================================================================
@@ -71,8 +81,8 @@ class TimeErrorPrior(ABC):
     def unnormalized_density(self, tau_grid, t_k, sigma_t):
         """The prior's *un-normalized* density ``∝ p(τ | t_k)`` evaluated on ``tau_grid``
         (a 1-D array of quadrature nodes). The normalizer (which folds the ``[t_0, t_max]``
-        truncation) is applied separately by :meth:`log_normalizer`, so a caller can keep the
-        integrand in the un-normalized-times-kernel form the augmented ODE (phase 2) also uses.
+        truncation) is applied separately by :meth:`log_normalizer`, keeping the integrand in the
+        kernel-times-normalizer form both the value and its σ_t gradient (phase 2) accumulate.
         """
 
     @abstractmethod
@@ -80,6 +90,25 @@ class TimeErrorPrior(ABC):
         """``log`` of the constant that turns :meth:`unnormalized_density` into a proper density
         over ``[t_0, t_max]``. For the truncated normal this is where ``erf`` (via
         ``scipy.stats.norm.cdf``) enters, in Python -- never in the model."""
+
+    def d_density_d_sigma_t(self, tau_grid, t_k, sigma_t, t0, tmax):
+        """``∂ p(τ | t_k) / ∂ σ_t`` over ``tau_grid`` -- the *normalized* time prior's
+        derivative w.r.t. its scale, the term the phase-2 gradient (ADR-0113) needs for a datum
+        whose ``sigma_t`` is estimated (``sigma_t = fit``).
+
+        Unlike :meth:`unnormalized_density` (which factors the ``σ_t``-dependent normalizer out
+        so the same kernel can feed a phase-2 augmented ODE), this returns the derivative of the
+        *whole* density ``p = unnormalized_density · exp(log_normalizer)``, so the truncation's
+        own ``σ_t``-dependence (the ``erf`` normalizer, differentiated in Python) is included.
+        Only a member whose scale is a smooth parameter of a fixed-support density overrides it;
+        the base refuses, so a family whose ``σ_t`` moves the support edges (``uniform``) is a
+        gradient-free-only ``sigma_t = fit`` -- caught at build under a gradient ``job_type``."""
+        from ..gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "time_error family '%s' has no analytic ∂p/∂σ_t, so an *estimated* timing scale "
+            "(sigma_t = fit) under it cannot be fit by a gradient method (ADR-0113). Hold the "
+            "scale (sigma_t = fix_at <w>), use time_error = truncated_normal, or a gradient-free "
+            "job_type." % (self.name,))
 
 
 class TruncatedNormalTimeError(TimeErrorPrior):
@@ -104,6 +133,31 @@ class TruncatedNormalTimeError(TimeErrorPrior):
                 'The truncation interval [t_0, t_max] contains no probability mass for this '
                 'measurement. Widen the support or check the reported time.')
         return -0.5 * np.log(2.0 * np.pi) - np.log(sigma_t) - np.log(z)
+
+    def d_density_d_sigma_t(self, tau_grid, t_k, sigma_t, t0, tmax):
+        """``∂ p(τ | t_k) / ∂ σ_t`` for the truncated normal (ADR-0113). With the kernel
+        ``g(τ) = exp(−½ z²)``, ``z = (τ−t_k)/σ_t``, and the normalizer ``C = exp(log_normalizer)
+        = 1/(√(2π) σ_t Z)``, ``Z = Φ(a) − Φ(b)``, ``a = (tmax−t_k)/σ_t``, ``b = (t0−t_k)/σ_t``:
+
+            ∂g/∂σ_t     = g · z²/σ_t                              (∂(−½z²)/∂σ_t = z²/σ_t)
+            ∂log C/∂σ_t = −1/σ_t − (∂Z/∂σ_t)/Z
+            ∂Z/∂σ_t     = −(1/σ_t²)·[ φ(a)(tmax−t_k) − φ(b)(t0−t_k) ]
+            ∂p/∂σ_t     = C·[ ∂g/∂σ_t + g·∂log C/∂σ_t ]
+
+        ``φ`` is the standard-normal pdf; every special function stays in Python (ADR-0112). Fully
+        vectorized in ``τ`` -- one call over the whole quadrature grid, like the density itself."""
+        from scipy.stats import norm
+        tau = np.asarray(tau_grid, dtype=float)
+        g = self.unnormalized_density(tau, t_k, sigma_t)          # exp(−½ z²)
+        log_c = self.log_normalizer(t_k, sigma_t, t0, tmax)       # raises if support is empty
+        c = np.exp(log_c)
+        z = (tau - t_k) / sigma_t
+        a, b = (tmax - t_k) / sigma_t, (t0 - t_k) / sigma_t
+        big_z = norm.cdf(a) - norm.cdf(b)                          # > 0 (log_normalizer checked)
+        dZ_dsigma = -(norm.pdf(a) * (tmax - t_k) - norm.pdf(b) * (t0 - t_k)) / sigma_t ** 2
+        dlogc_dsigma = -1.0 / sigma_t - dZ_dsigma / big_z
+        dg_dsigma = g * z ** 2 / sigma_t
+        return c * (dg_dsigma + g * dlogc_dsigma)
 
 
 class UniformTimeError(TimeErrorPrior):
@@ -399,16 +453,121 @@ class MarginalizedTimeObjective(SummationObjective):
             return float('-inf')
         return float(logsumexp(terms[finite]))
 
-    # -- phase-2 seam (a separate ADR) ---------------------------------------------------------
+    # -- phase-2 gradient: dz_k/dθ by sensitivity-chaining over the stored trajectory (ADR-0113) -
 
-    def gradient_contribution(self, *args, **kwargs):
-        """``d(−log z_k)/dθ`` needs ``∂y(τ)/∂θ`` across the whole window -- the sensitivity the
-        augmented-ODE engine produces, not the forward trajectory phase 1 has (ADR-0112 "the
-        gradient is an integral, not an envelope"). Phase 1 is gradient-free; ``config.py``
-        refuses a gradient ``job_type`` under a ``time_error`` clause before a fit starts."""
-        raise NotImplementedError(
-            'ADR-0112 phase 2: dz_k/dθ via augmented-ODE sensitivities. Phase 1 is gradient-free; '
-            'job_type = trf/lbfgs/gntr/hmc is refused at build (see docs/adr/0112-*.md).')
+    #: True: this objective assembles its own scalar gradient (and, for ``gntr``, a per-datum-score
+    #: Fisher) via :meth:`marginal_gradient`, so a gradient fit routes to
+    #: :func:`pybnf.gradient.marginal_time.assemble_marginal_time_gradient` rather than the
+    #: matched-row :func:`~pybnf.gradient.assembly.assemble_gaussian_gradient`. The marginal-time
+    #: contribution ``−log z_k`` is never a sum of squares (it is the log of an integral), so it
+    #: rides the **scalar** gradient path entirely -- ``least_squares_exact`` is always ``False``,
+    #: exactly like the Laplace / count families (ADR-0113).
+    marginalizes_time = True
+
+    def marginal_gradient(self, sim_data, exp_data, raw_sens, index, n_param, include_fisher=False):
+        """This experiment's native-space contribution to ``∇_θ (−Σ_k log z_k)`` -- the phase-2
+        gradient (ADR-0113, issue #588), by quadrature over the *stored* trajectory and its
+        *stored forward-sensitivity tensor* ``∂y(τ)/∂θ``.
+
+        The paper (Vanhoefer et al.) augments the ODE with a state ``z_k`` because its solver
+        (AMICI/CVODES) returns sensitivities of ODE *states* only; PyBNF's forward-sensitivity
+        engine (#447) already delivers ``∂y(τ)/∂θ`` at every stored grid node, so ``dz_k/dθ`` is a
+        Python quadrature over the same nodes phase 1 integrates -- no model augmentation. Because
+        the trapezoid is a θ-independent *linear* functional of the integrand, the vector returned
+        here is the **exact** derivative of :meth:`evaluate`'s quadrature value: the optimizer
+        walks precisely the surface the objective reports.
+
+        Per scored datum ``(t_k, ȳ_k)`` in column ``c``, with ``w(τ) = p(ȳ_k|y_c(τ)) p(τ|t_k)``
+        the phase-1 integrand and ``z_k = ∫ w dτ``::
+
+            ∂z_k/∂θ   = ∫ w · (∂log p(ȳ_k|y)/∂y) · (∂y_c(τ)/∂θ) dτ          # model parameters
+                      + Σ_estimated-σ  (∫ w · ∂log p/∂σ dτ) · (∂σ/∂θ)        # a fit noise scale
+                      + (∫ exp(log p(ȳ_k|y)) · ∂p(τ|t_k)/∂σ_t dτ) · e[σ_t]   # a fit timing scale
+            ∂(−log z_k)/∂θ = −(1/z_k) ∂z_k/∂θ
+
+        The observation factors reuse each family's own derivatives -- ``∂log p/∂y =
+        −d_data_fit_d_prediction`` and ``∂log p/∂σ = −d_nll_d_noise_params`` (both already
+        vectorized in the prediction, ADR-0056/#454) -- and the timing factor reuses the prior's
+        ``∂p/∂σ_t`` (:meth:`TimeErrorPrior.d_density_d_sigma_t`, the erf normalizer differentiated
+        in Python, never in the model). ``raw_sens(col, row) -> (n_param,)`` is the assembly's
+        forward-sensitivity accessor; ``S = ∂y_c/∂θ`` is read once per column and reused across
+        that column's data rows.
+
+        Returns ``(grad, hessian)`` in **native** parameter space (the assembler applies the one
+        ``dθ/du`` sampling transform, ADR-0029). ``hessian`` is ``None`` unless ``include_fisher``,
+        else the per-datum-score outer product ``Σ_k w_k g_k g_kᵀ`` -- the empirical Fisher /
+        Gauss-Newton curvature ``gntr`` consumes (PSD by construction). Returns ``None`` if a datum
+        is unscoreable (``z_k`` underflowed), matching :meth:`evaluate`'s ``None`` contract."""
+        indvar = min(exp_data.cols, key=exp_data.cols.get)
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)
+        compare_cols.discard(indvar)
+        tau_grid = np.asarray(sim_data[indvar], dtype=float)
+        t0, tmax = self._resolve_support(tau_grid)
+        pset_values = getattr(self, '_pset_values', {})
+        sigma_t = self.sigma_t_source.value(pset_values)
+        sigma_t_param = self.sigma_t_source.required_free_param()   # None, or the free-param name
+
+        grad = np.zeros(n_param)
+        hessian = np.zeros((n_param, n_param)) if include_fisher else None
+        sens_cache = {}   # col_name -> (n_grid, n_param) ∂y_c(τ)/∂θ, reused across data rows
+
+        for rownum in range(exp_data.data.shape[0]):
+            t_k = exp_data.data[rownum, exp_data.cols[indvar]]
+            for col_name in sorted(compare_cols):
+                y_bar = exp_data.data[rownum, exp_data.cols[col_name]]
+                if np.isnan(y_bar):
+                    continue
+                weight = exp_data.weights[rownum, exp_data.cols[col_name]]
+                noise_model, sources = self._spec_for(col_name)
+                sigma, extra = self._resolve_noise_scalar(sources, noise_model, exp_data, rownum, col_name)
+                y_traj = np.asarray(sim_data[col_name], dtype=float)
+                if np.any(np.isnan(y_traj)) or np.any(np.isinf(y_traj)):
+                    return None
+
+                # phase-1 integrand w(τ) = exp(log p(ȳ_k|y(τ))) · p(τ|t_k), in log space then linear
+                log_obs = np.asarray(noise_model.log_density(y_traj, y_bar, sigma, extra), dtype=float)
+                kernel = self.time_prior.unnormalized_density(tau_grid, t_k, sigma_t)
+                log_norm = self.time_prior.log_normalizer(t_k, sigma_t, t0, tmax)
+                with np.errstate(divide='ignore'):
+                    log_integrand = log_obs + np.log(kernel) + log_norm
+                log_z_k = self._log_trapezoid(tau_grid, log_integrand)
+                if not np.isfinite(log_z_k):
+                    return None                              # unscoreable datum (evaluate -> None)
+                z_k = np.exp(log_z_k)
+                w = np.exp(log_integrand)                    # the z_k integrand, >= 0
+
+                dz = np.zeros(n_param)
+                # (a) model parameters: ∂log p/∂y · ∂y_c(τ)/∂θ, integrated over the window.
+                sens = sens_cache.get(col_name)
+                if sens is None:
+                    sens = np.array([raw_sens(col_name, row) for row in range(tau_grid.size)])
+                    sens_cache[col_name] = sens
+                dlogp_dy = -np.asarray(
+                    noise_model.d_data_fit_d_prediction(y_traj, y_bar, sigma, extra), dtype=float)
+                dz += _trapz((w * dlogp_dy)[:, None] * sens, tau_grid, axis=0)
+
+                # (b) an estimated noise scale (fit σ): ∂log p/∂σ · ∂σ/∂θ (σ is τ-independent here,
+                #     so its chain factors out of the integral -- phase-1 admits only such σ).
+                estimated = [n for n in noise_model.noise_params if sources[n].estimated]
+                if estimated:
+                    dnll = noise_model.d_nll_d_noise_params(y_traj, y_bar, sigma, extra)
+                    for name in estimated:
+                        dz_dsigma = float(_trapz(w * (-np.asarray(dnll[name], dtype=float)), tau_grid))
+                        dz += dz_dsigma * np.asarray(sources[name].sigma_sensitivity(
+                            self, None, None, exp_data, rownum, col_name, raw_sens, index), dtype=float)
+
+                # (c) an estimated timing scale (fit σ_t): only the time prior carries σ_t; the
+                #     observation factor exp(log p) does not, so ∂z_k/∂σ_t = ∫ exp(log p) ∂p/∂σ_t dτ.
+                if sigma_t_param is not None:
+                    dp_dsigmat = self.time_prior.d_density_d_sigma_t(tau_grid, t_k, sigma_t, t0, tmax)
+                    dz[index[sigma_t_param]] += float(_trapz(np.exp(log_obs) * dp_dsigmat, tau_grid))
+
+                g_k = -(1.0 / z_k) * dz                      # the per-datum score ∂(−log z_k)/∂θ
+                grad += weight * g_k
+                if include_fisher:
+                    hessian += weight * np.outer(g_k, g_k)
+        return grad, hessian
 
     # -- noise-scalar resolution: share the existing SigmaSource path --------------------------
 

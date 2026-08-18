@@ -49,6 +49,7 @@ from .assembly import (
     assemble_gradient_and_fisher_hessian,
     assemble_gaussian_gradient,
 )
+from .marginal_time import assemble_marginal_time_gradient
 
 __all__ = [
     'GradientNotSupported',
@@ -70,6 +71,7 @@ __all__ = [
     'GradientResult',
     'assemble_gaussian_gradient',
     'assemble_gradient_and_fisher_hessian',
+    'assemble_marginal_time_gradient',
     'assemble_constraint_gradient',
     'assemble_fisher_hessian',
     'assemble_constraint_hessian',

@@ -336,8 +336,14 @@ recovers `θ_true` with calibrated intervals) lands as the tutorial lesson; the 
 test here asserts the weaker, robust claim that the marginal *reduces* the bias a systematic
 timing offset induces in the standard fit.
 
-## Phase 2 (proposed)
+## Phase 2 (accepted — ADR-0113)
 
-The augmented ODE that upgrades the engine behind the identical clause — error-controlled
-integration and `dz_k/dθ` sensitivities — remains a separate ADR, adding the gradient `job_type`s
-the phase-1 refusal table turns away and realizing the paper's scalability claims.
+Phase 2 adds `dz_k/dθ` and lifts the gradient refusal for `lbfgs`/`gntr` — but **not** via the
+augmented ODE this ADR sketched. PyBNF's forward-sensitivity engine (#447) already stores
+`∂y(τ)/∂θ` at every grid node (AMICI, which the paper uses, returns sensitivities of ODE *states*
+only, which is the sole reason the paper has to make `z_k` a state), so `dz_k/dθ` is a Python
+quadrature over the same stored trajectory this engine integrates — no model augmentation, no
+model-language kernel renderer, no `erf` in the model. See **ADR-0113**, which supersedes this
+section's "augmented ODE" framing while keeping the identical clause. The `trf`/`hmc`/`ms` methods
+stay refused (each for its own reason), and error-controlled integration — the augmented ODE's
+*other* benefit — is filed there as an orthogonal follow-up.

@@ -338,10 +338,20 @@ class TestConfigDispatch:
                          'time_error = truncated_normal, sigma_t = fix_at 0')
         assert type(obj) is objective.LikelihoodObjective
 
-    @pytest.mark.parametrize('ft', ['trf', 'lbfgs', 'gntr', 'hmc', 'ms'])
-    def test_gradient_job_types_refused(self, ft):
-        with pytest.raises(PybnfError, match='gradient-free|not yet supported'):
+    @pytest.mark.parametrize('ft', ['trf', 'hmc', 'ms'])
+    def test_unsupported_gradient_job_types_refused(self, ft):
+        # Phase 2 (ADR-0113) still refuses these, each for its own reason: trf needs an exact
+        # least-squares residual, hmc is the JAX/analytic path, ms is the shooting layer.
+        with pytest.raises(PybnfError, match='not supported with time_error'):
             _build_obj(_WHOLE, fit_type=ft)
+
+    @pytest.mark.parametrize('ft', ['lbfgs', 'gntr'])
+    def test_supported_gradient_job_types_build(self, ft):
+        # Phase 2 lifted lbfgs / gntr: the marginal-time objective now assembles its own
+        # dz_k/dθ by sensitivity-chaining, so these build a MarginalizedTimeObjective (ADR-0113).
+        obj = _build_obj(_WHOLE, fit_type=ft)
+        assert isinstance(obj, MarginalizedTimeObjective)
+        assert obj.marginalizes_time is True
 
     def test_noise_profiling_collision_refused(self):
         with pytest.raises(PybnfError, match='noise_profiling'):
