@@ -90,7 +90,11 @@ All notable changes to PyBNF are documented below. This project adheres to
   quadrature over the stored trajectory, reusing every noise family's normalized `log_density`
   (ADR-0056) as the integrand and the gradient-free optimizers/samplers (`de`/`pso`/`ss`/`mh`/
   `dream`/…) unchanged — nothing is added to the model file. Edition-2 only. The `σ_t → 0` limit
-  is the standard likelihood (a `fix_at 0` clause short-circuits to it). Deferred and refused at
+  is the standard likelihood (a `fix_at 0` clause short-circuits to it). LOO/WAIC and
+  `information_criteria.txt` work out of the box: the marginal per-observation `log z_k` **is** a
+  normalized per-observation log-likelihood, so the objective reports it through the same
+  `evaluate_pointwise` hook the per-point families use (`Σ_k log z_k = −score`), and an estimated
+  `σ_t` is already counted in `k`. Deferred and refused at
   build with a reason: a per-observable time prior, a prediction-dependent `σ`, the count family,
   and every gradient `job_type` (`trf`/`lbfgs`/`gntr`/`hmc`/`ms` — phase 2's augmented-ODE
   sensitivities are what those need); `noise_profiling` (which *maximizes* a scale out) is refused

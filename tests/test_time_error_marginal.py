@@ -21,6 +21,7 @@ from scipy.stats import norm, truncnorm, laplace
 
 from pybnf import data, objective
 from pybnf.config import Configuration
+from pybnf.objective import likelihood_information_criteria
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
 from pybnf.measurement.time_error import (
@@ -246,6 +247,65 @@ class TestRecovery:
         assert theta_std > theta_true + 0.5                                 # standard is badly biased high
         assert abs(theta_marg - theta_true) < abs(theta_std - theta_true)   # marginal is better
         assert abs(theta_marg - theta_true) < 0.5 * abs(theta_std - theta_true)   # ...by a lot (>=50%)
+
+
+# --------------------------------------------------------------------------------------------
+# Pointwise log-likelihood + information criteria (LOO/WAIC/IC integration, ADR-0056/0112)
+# --------------------------------------------------------------------------------------------
+
+class TestPointwiseAndIC:
+    def _fixture(self):
+        obj = _marginal('gaussian', ('sigma', ('fix_at', '0.1')), 'truncated_normal', ('fit', 'st__FREE'))
+        sim = {'m': {'y': _sim(1.0)}}
+        exp = {'m': {'y': _exp([(0.5, 0.61), (2.0, 0.14), (4.0, 0.02)])}}
+        return obj, sim, exp, [_Param('st__FREE', 0.3)]
+
+    def test_supports_pointwise_flag(self):
+        # The gate the recorder and the IC run-tail both key off.
+        assert MarginalizedTimeObjective.supports_pointwise_log_likelihood is True
+
+    def test_pointwise_sums_to_negative_score(self):
+        # The per-observation log z_k decompose the objective: Σ log z_k == −score (weights = 1).
+        obj, sim, exp, pset = self._fixture()
+        _ids, vals = obj.evaluate_pointwise(sim, exp, pset)
+        score = obj.evaluate_multiple(sim, exp, pset=pset)
+        assert np.isclose(vals.sum(), -score)
+
+    def test_pointwise_ids_are_per_observation_and_stable(self):
+        # One id per (model/suffix/observable@time); the id set is fixed by the data, so it is
+        # identical across draws (the rectangular chain×draw×obs array the bridge needs).
+        obj, sim, exp, pset = self._fixture()
+        ids, vals = obj.evaluate_pointwise(sim, exp, pset)
+        assert ids == ['m/y/y@time=0.5', 'm/y/y@time=2', 'm/y/y@time=4']
+        ids2, vals2 = obj.evaluate_pointwise(sim, exp, [_Param('st__FREE', 0.8)])
+        assert ids2 == ids                       # stable across draws
+        assert not np.allclose(vals, vals2)      # ...but the values move with σ_t
+
+    def test_information_criteria_computes(self):
+        obj, sim, exp, pset = self._fixture()
+        ic = likelihood_information_criteria(obj, sim, exp, pset, k=1)
+        assert ic is not None
+        assert ic.n == 3 and ic.k == 1
+        assert np.isfinite(ic.aic) and np.isfinite(ic.bic)
+        # lnL is the summed marginal log-likelihood; AIC = 2k − 2lnL.
+        assert np.isclose(ic.aic, 2 * 1 - 2 * ic.log_likelihood)
+
+    def test_pointwise_values_are_normalized_densities(self):
+        # Each value is a real log-density (log_density-based), not −eval_point: at a tight,
+        # resolved σ_t it tends to the pointwise normalized density at the reported time.
+        obj = _marginal('gaussian', ('sigma', ('fix_at', '0.1')), 'truncated_normal', ('fix_at', '0.02'))
+        sim = {'m': {'y': _sim(1.0)}}
+        exp = {'m': {'y': _exp([(2.0, 0.14)])}}
+        _ids, vals = obj.evaluate_pointwise(sim, exp, pset=[])
+        ref = obj.noise.log_density(float(np.exp(-2.0)), 0.14, 0.1)
+        assert np.isclose(vals[0], ref, atol=2e-2)
+
+    def test_pointwise_skips_nan_observation(self):
+        obj = _marginal('gaussian', ('sigma', ('fix_at', '0.1')), 'truncated_normal', ('fix_at', '0.5'))
+        sim = {'m': {'y': _sim(1.0)}}
+        exp = {'m': {'y': _exp([(0.5, 0.61), (2.0, float('nan')), (4.0, 0.02)])}}
+        ids, vals = obj.evaluate_pointwise(sim, exp, pset=[])
+        assert len(ids) == 2 and len(vals) == 2   # the NaN datum is not a scored point
 
 
 # --------------------------------------------------------------------------------------------

@@ -219,6 +219,18 @@ counts an estimated `σ_t` (and any time-prior parameter) among the estimated qu
 plots them on one waterfall; PyBNF gets the same nesting for free, so an LRT between them is well
 posed.
 
+This is **implemented** by the two hooks the entire pointwise machinery gates on:
+`MarginalizedTimeObjective.supports_pointwise_log_likelihood = True` and an `evaluate_pointwise`
+that records `log z_k` per datum (its `_pointwise_suffix` is the pointwise twin of `evaluate`'s
+loop — same point set, deterministic sorted-column order, the same
+`model/suffix/observable@time=t_k` id format the per-point `LikelihoodObjective` emits). Nothing
+else changed: the MCMC recorder (`record_pointwise_loglik` → `log_likelihood.txt`), the
+`InferenceData` bridge, and the run-tail `_compute_information_criteria` all consume those two
+hooks unchanged, and `k = len(variables)` already includes an estimated `σ_t` (it is a declared
+free parameter). The pointwise values decompose the objective exactly — `Σ_k log z_k = −score`
+(unit weights) — while remaining the full normalized densities LOO/WAIC need, not `−score`'s
+constant-dropped terms.
+
 ## The refusals
 
 `time_error` is refused, naming the reason, when:
@@ -276,9 +288,10 @@ away, and is where the paper's scalability claims are realized.
 
 * `pybnf/measurement/time_error.py` — `TimeErrorPrior` (`truncated_normal` + `uniform`),
   `TimeErrorSource` (`fit` / `fix_at`), `MarginalizedTimeObjective` (the trajectory-integrating
-  objective, with `_log_trapezoid` doing the log-space quadrature), and the two builders
-  (`build_time_error_spec`, `build_time_error_objective`). The phase-2 gradient seam
-  (`gradient_contribution`) raises `NotImplementedError` naming this ADR.
+  objective, with `_log_trapezoid` doing the log-space quadrature and `evaluate_pointwise` the
+  per-observation `log z_k` for LOO/WAIC/IC), and the two builders (`build_time_error_spec`,
+  `build_time_error_objective`). The phase-2 gradient seam (`gradient_contribution`) raises
+  `NotImplementedError` naming this ADR.
 * `pybnf/parse.py` — the `nm_time_error_field` / `nm_sigma_t_field` grammar and the ploop branch
   that stores `('time_error', observable)` and enforces both-or-neither.
 * `pybnf/config.py` — `_maybe_marginalize_time` (a `@staticmethod` over `config`, so the

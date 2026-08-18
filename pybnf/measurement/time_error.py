@@ -230,6 +230,12 @@ class MarginalizedTimeObjective(SummationObjective):
     constant of the integrand and ``y(τ)`` is the full column, so ``_sim_row_for`` is not used.
     """
 
+    #: The marginal per-observation contribution ``log z_k`` *is* a genuine normalized
+    #: per-observation log-likelihood, so LOO/WAIC and information_criteria.txt work unchanged
+    #: (ADR-0056, ADR-0112): ``evaluate_pointwise`` records ``log z_k`` per datum, and ``k``
+    #: already counts an estimated ``σ_t`` (it is a declared free parameter, like a fitted σ).
+    supports_pointwise_log_likelihood = True
+
     def __init__(self, ind_var_rounding=0, overrides=None, noise=None, sigma_source=None,
                  sigma_sources=None, time_prior=None, sigma_t_source=None, support=None):
         super().__init__(ind_var_rounding)
@@ -281,6 +287,69 @@ class MarginalizedTimeObjective(SummationObjective):
                     return None
                 func_value += (-log_z_k) * exp_data.weights[rownum, exp_data.cols[col_name]]
         return func_value
+
+    # -- pointwise log-likelihood: log z_k per datum, for LOO/WAIC/IC (ADR-0056, ADR-0112) -----
+
+    def evaluate_pointwise(self, sim_data_dict, exp_data_dict, pset):
+        """The per-observation marginal log-likelihoods ``log z_k`` this fit assigns the data
+        under ``pset`` -- the pointwise decomposition LOO/WAIC and information_criteria.txt
+        consume (ADR-0056, ADR-0112).
+
+        Returns ``(ids, values)``: ``ids`` the stable per-point labels
+        (``model/suffix/observable@indvar=value``, the same format the per-point
+        :class:`~pybnf.objective.LikelihoodObjective` emits), ``values`` the matching genuine,
+        *unweighted* marginal per-observation log-likelihoods
+        ``log ∫ p(ȳ_k | y(τ)) p(τ | t_k) dτ`` -- already normalized (the integrand is
+        ``NoiseModel.log_density``), the honest density ``az.loo`` needs. Mirrors ``evaluate``'s
+        per-evaluation setup (the ``{name: value}`` map a ``FreeParameterSigma`` /
+        ``FreeParameterTimeError`` reads, and the measurement-model layer), so the densities are
+        scored against exactly the data ``evaluate`` saw. The emitted point set is fixed by the
+        *experimental* data (a NaN observation or one outside the family's observation domain is
+        skipped -- both data-only conditions), so every recorded draw yields the same ids in the
+        same order: the rectangular ``chain x draw x obs`` array the bridge needs."""
+        self._pset_values = {p.name: p.value for p in pset}
+        ids, values = [], []
+        with np.errstate(all='ignore'):
+            if self.measurement:
+                self.measurement.apply(sim_data_dict, self._pset_values)
+            sigma_t = self.sigma_t_source.value(self._pset_values)
+            for model in sim_data_dict:
+                for suffix in sim_data_dict[model]:
+                    if suffix in exp_data_dict[model]:
+                        self._pointwise_suffix(sim_data_dict[model][suffix],
+                                               exp_data_dict[model][suffix],
+                                               '%s/%s' % (model, suffix), sigma_t, ids, values)
+        return ids, np.array(values, dtype=float)
+
+    def _pointwise_suffix(self, sim_data, exp_data, prefix, sigma_t, ids, values):
+        """Append ``(id, log z_k)`` for every scored point of one model/suffix -- the pointwise
+        twin of :meth:`evaluate`'s loop. Columns are walked in sorted order so the obs axis is
+        deterministic across draws; a NaN observation or one outside its family's
+        ``observation_in_domain`` (#523) is skipped (both data-only). Unlike ``evaluate``, a
+        draw-dependent NaN/inf in the *trajectory* is NOT a skip -- it would change the id set
+        between draws -- so the point keeps its id and records whatever (possibly non-finite)
+        value the integral yields; the recorder / IC consumer already handle a non-finite row."""
+        indvar = min(exp_data.cols, key=exp_data.cols.get)
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)
+        compare_cols.discard(indvar)
+        tau_grid = np.asarray(sim_data[indvar], dtype=float)
+        t0, tmax = self._resolve_support(tau_grid)
+        for rownum in range(exp_data.data.shape[0]):
+            t_k = exp_data.data[rownum, exp_data.cols[indvar]]
+            for col_name in sorted(compare_cols):
+                observation = exp_data.data[rownum, exp_data.cols[col_name]]
+                if np.isnan(observation):
+                    continue
+                noise_model, sources = self._spec_for(col_name)
+                if not noise_model.observation_in_domain(observation):
+                    continue
+                sigma, extra = self._resolve_noise_scalar(sources, noise_model, exp_data, rownum, col_name)
+                y_traj = np.asarray(sim_data[col_name], dtype=float)
+                log_z_k = self._log_marginal_contribution(
+                    noise_model, y_traj, observation, sigma, extra, tau_grid, t_k, sigma_t, t0, tmax)
+                values.append(log_z_k)
+                ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, t_k))
 
     # -- the one-dimensional integral (ADR-0112, phase 1) --------------------------------------
 
