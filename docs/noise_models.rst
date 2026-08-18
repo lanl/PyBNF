@@ -219,6 +219,39 @@ to the noise family and composes with any per-point model (``normal``,
 recognized only by ``objfunc = neg_bin_dynamic``, is a compatibility bridge for
 the same transform and is deliberately not widened to other families.
 
+Measurement-time uncertainty
+----------------------------
+
+When the *reported* time of a measurement is itself uncertain — sample-handling
+delays, imperfect synchronization, reporting error — scoring the prediction at
+the reported time mistakes the timing spread for measurement noise and biases the
+fit. A ``time_error`` clause on the ``noise_model`` line treats the true sampling
+time as a latent variable with a known distribution ``p(τ | t_k)`` and
+**integrates it out** of the likelihood: each datum contributes the log of
+``∫ p(ȳ_k | y(τ)) p(τ | t_k) dτ`` rather than ``p(ȳ_k | y(t_k))``::
+
+    noise_model = gaussian, sigma = fix_at 0.05, time_error = truncated_normal, sigma_t = fit st__FREE
+
+``time_error`` names the timing-error distribution (``truncated_normal`` or
+``uniform``); ``sigma_t`` sources its scale exactly as a noise scale is sourced
+(``fix_at <w>`` to hold it, ``fit <param>`` to estimate it — one extra search
+dimension for the whole fit, not one per observation). It is **edition-2 only**
+and reuses whichever noise family the line names as the integrand.
+
+Because a marginalized datum matches no single simulated row, the experiment is
+simulated on a **dense grid** over the support rather than only at the reported
+times: give the ``experiment:`` line a ``t_end:`` (the support, set past the last
+data point so the prior is not truncated) and an ``n_steps:`` (the quadrature
+resolution). Keep ``n_steps`` fine relative to ``sigma_t`` — a timing prior
+narrower than the grid spacing is under-resolved.
+
+Every gradient-free optimizer and sampler drives it, and a **gradient** fit is
+supported too (``job_type = lbfgs`` or ``gntr``): the marginal contribution's
+parameter gradient is assembled from the same forward-sensitivity trajectory the
+value quadrature uses. ``job_type = trf`` is refused — the log of an integral is
+not a least-squares residual, so use ``lbfgs``. Worked example: tutorial lesson
+``49_measurement_time_uncertainty``.
+
 Choosing per observable
 -----------------------
 

@@ -94,9 +94,9 @@ downstream machinery just works: the run prints AIC/BIC/AICc, and an
 `output_inference_data = 1` Bayesian run (`job_type = mh`/`dream`) gets a
 `log_likelihood` group for `az.loo` / `az.compare`.
 
-## Gradient fitting (phase 2)
+## Gradient fitting
 
-Phase 2 (ADR-0113) adds the gradient `dz_k/dθ`, so a **gradient** fit works too —
+A **gradient** fit works too: PyBNF assembles the gradient `dz_k/dθ`, so
 [`marginal_gradient.conf`](marginal_gradient.conf) is `estimate_sigma_t.conf` with
 `job_type = lbfgs`:
 
@@ -120,7 +120,7 @@ per-observable time prior, combining `time_error` with `noise_profiling`, and th
 gradient methods `trf` (no least-squares residual — use `lbfgs`), `hmc` (a JAX
 analytic-model sampler, not the sensitivity-tensor path), and `ms` (the shooting
 layer). Solver-controlled integration error — the augmented ODE's *other* benefit —
-stays a follow-up (ADR-0113); phase 2 keeps the phase-1 grid (`t_end:` / `n_steps:`).
+is not implemented; the marginal fit keeps the explicit grid (`t_end:` / `n_steps:`).
 
 ## The test
 

@@ -74,6 +74,13 @@ Three optimizers consume the gradient, all opt-in via ``job_type``:
   noise block is not diagonal — a free-dispersion / median count family, an estimated Student-t df,
   or an estimated constraint scale) is refused with a pointer to ``lbfgs``, which fits it.
 
+The **marginal-time** objective — a ``time_error`` clause that integrates an uncertain measurement
+time out of the likelihood (see :doc:`noise_models`) — is also gradient-fittable, via ``lbfgs`` or
+``gntr``. Its per-datum contribution :math:`-\log z_k` is the log of an integral, so it rides the
+scalar-gradient path (like Laplace / count) and ``trf`` refuses it; its parameter gradient is
+assembled by quadrature over the same forward-sensitivity trajectory the objective value uses, so no
+extra ODE states are introduced. Worked example: tutorial lesson ``49_measurement_time_uncertainty``.
+
 All three run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
 scheduler job) rather than through a blocking ``scipy`` driver, so backup/resume work exactly as for
 every other ``job_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``

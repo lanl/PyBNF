@@ -91,6 +91,9 @@ Objectives and noise models
   (``noise_model = lognormal, location = mean``).
 - `43. Custom objective <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/43_custom_objective>`__
   — bring your own objective: a custom Python callable (``objective = callable``).
+- `49. Measurement-time uncertainty <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/49_measurement_time_uncertainty>`__
+  — when the reported sampling times are uncertain, integrate the latent time out
+  of the likelihood (``time_error`` / ``sigma_t``).
 
 Data, experiments and protocols
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

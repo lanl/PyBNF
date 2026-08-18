@@ -2778,7 +2778,7 @@ class Configuration:
         'trf': ("job_type = trf needs an exact least-squares residual, but the marginal-time "
                 "objective's per-datum term −log z_k is the log of an integral, never a sum of "
                 "squares. Use job_type = lbfgs (the scalar gradient) or gntr (its Gauss-Newton "
-                "Fisher), both of which phase 2 supports for time_error (ADR-0113)."),
+                "Fisher), both of which support time_error (ADR-0113)."),
         'hmc': ("job_type = hmc is PyBNF's JAX/analytical-model NUTS sampler, which differentiates "
                 "an analytic likelihood rather than the bngsim forward-sensitivity tensor the "
                 "marginal-time gradient rides, so it cannot fit a simulator time_error posterior. "
@@ -2812,8 +2812,8 @@ class Configuration:
         if per_obs:
             raise UnknownObjectiveFunctionError(
                 'a per-observable time_error clause is not yet supported',
-                f"time_error was declared per observable ({', '.join(per_obs)}); phase 1 supports "
-                f"only a whole-fit clause ('noise_model = <family>, ..., time_error = <shape>, "
+                f"time_error was declared per observable ({', '.join(per_obs)}); only a whole-fit "
+                f"clause is supported ('noise_model = <family>, ..., time_error = <shape>, "
                 f"sigma_t = <source>'). Per-observable time priors are a follow-up (ADR-0112).")
         if ('time_error', None) not in config:
             # Only per-observable keys existed, already rejected above; defensive.
