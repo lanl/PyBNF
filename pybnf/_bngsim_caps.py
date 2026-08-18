@@ -218,6 +218,24 @@ BNGSIM_HAS_PER_SPECIES_ATOL = bool(
 )
 
 
+# An absolute tolerance that follows the **trajectory** rather than the initial state:
+# ``Simulator.run(atol=TrackingAtol(...))`` installs a ``CVodeWFtolerances`` error-weight
+# function computing ``clamp(rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)`` at the
+# state actually being integrated (lanl/bngsim#213). A vector read off initial values
+# cannot see a species that starts at order one and decays to nothing; this can, and it
+# is what ADR-0105 named as the half it could not reach.
+#
+# A name probe again, and for the same reason as ``BNGSIM_HAS_PER_SPECIES_ATOL``: the
+# capability arrived without a version bump that identifies it, and the cost of guessing
+# wrong is a ``TrackingAtol`` handed to a ``run`` that does not know the type. ``#557``
+# refuses ``sbml_atol = tracking`` outright when this is False rather than quietly
+# integrating at something else -- a tolerance mode that silently did not apply is the
+# failure that looks like a modelling result.
+BNGSIM_HAS_TRACKING_ATOL = bool(
+    BNGSIM_AVAILABLE and hasattr(bngsim, 'TrackingAtol')
+)
+
+
 def event_sens_min_version():
     """The bngsim version whose forward sensitivities survive a discrete event (#536)."""
     return '%d.%d.%d' % _BNGSIM_EVENT_SENS_VERSION

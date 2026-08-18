@@ -94,6 +94,7 @@ from pybnf.bngsim_sbml_model import (
     _derive_atol_vector,
 )
 from pybnf.printing import PybnfError
+from pybnf.pset import ModelError
 from pybnf.pset import FreeParameter, PSet, TimeCourse
 
 from .context import config
@@ -241,6 +242,17 @@ _ZERO_SEEDED_SBML = _TWO_SCALE_SBML.replace(
     'hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>\n'
     '      <species id="Big" compartment="c" initialConcentration="1.0" ')
 
+# The same three-species spread lifted six decades, so every species starts far ABOVE
+# one: ``X`` at 1e+07, ``Mid`` at 1e+04, ``Tiny`` at 1e-03, median 1e+04. This is
+# ``Weber_BMC2015``'s shape and the case ADR-0103's ceiling discards (#557) -- the
+# derivation computes 1e-04 for it and hands it 1e-08 instead. It is also the case
+# ADR-0105's vector cannot rescue, since the vector clamps into ``[scalar, default]``,
+# which here collapses to the single point 1e-08.
+_LARGE_SPREAD_SBML = (_WIDE_SPREAD_SBML
+                      .replace('initialConcentration="1e-2"', 'initialConcentration="1e4"')
+                      .replace('initialConcentration="1e-9"', 'initialConcentration="1e-3"')
+                      .replace('initialConcentration="10"', 'initialConcentration="1e7"'))
+
 K0, K1, K2, T1, T2, X0 = 0.7, 0.2, 0.5, 2.0, 5.0, 1e-8
 KB, BIG0 = 1e-3, 1.0
 T_END, N_STEPS = 8.0, 32
@@ -251,6 +263,11 @@ T_END, N_STEPS = 8.0, 32
 _TWO_SCALE_SCALAR = 5e-9
 _WIDE_SPREAD_SCALAR = 1e-10
 _WIDE_T_END = 80.0
+
+# ``_LARGE_SPREAD_SBML``'s two answers: what ADR-0103's ceiling hands it, and what its own
+# median asks for (``rtol * 1e4``). The gap between them is the whole of #557.
+_LARGE_SPREAD_CLAMPED = _BNGSIM_DEFAULT_ATOL
+_LARGE_SPREAD_LOOSENED = 1e-4
 
 
 def _stage_widths(t):
@@ -967,3 +984,444 @@ def test_config_rejects_a_nonpositive_tolerance(key):
 
     with pytest.raises(PybnfError, match='positive'):
         cfg._load_simulators()
+
+
+# --- #557: the ceiling is a no-regression rule, so it is liftable on request ----- #
+@pytest.mark.parametrize('scale, clamped, loosened', [
+    # Below the backend default's own scale: the ceiling never bound, so lifting it
+    # changes nothing and every model ADR-0103 was written for is untouched.
+    (3.667e-7, 3.667e-15, 3.667e-15),
+    (0.033, 3.3e-10, 3.3e-10),
+    # Exactly at the ceiling -- an order-one model, the no-op case either way.
+    (1.0, _BNGSIM_DEFAULT_ATOL, _BNGSIM_DEFAULT_ATOL),
+    # Above it: the derivation has an answer and the ceiling is what discards it.
+    # 4.665e+05 is Weber_BMC2015's own median, and 4.665e-03 its own answer.
+    (4.665e5, _BNGSIM_DEFAULT_ATOL, 4.665e-3),
+    (7.879e14, _BNGSIM_DEFAULT_ATOL, 7.879e6),
+])
+def test_the_derivation_loosens_only_when_asked(scale, clamped, loosened):
+    """``loosen`` lifts the upper clamp and nothing else (#557).
+
+    The two rows above the ceiling are the ones the issue is about, and the three below
+    it are why this is safe to add: a model whose state lives at or under one gets the
+    identical number either way, so every trajectory ADR-0103 changed and every
+    trajectory it deliberately left alone is unmoved by the existence of this flag. Only
+    a model asking for something *looser* than the backend default can tell the
+    difference, which is exactly the population the clamp was silently serving badly --
+    10 of the 22 subset-I slugs with a readable nominal state.
+    """
+    common = (_BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL)
+
+    assert _derive_atol(scale, *common) == pytest.approx(clamped)
+    assert _derive_atol(scale, *common, loosen=True) == pytest.approx(loosened)
+
+
+def test_lifting_the_ceiling_does_not_lift_the_floor():
+    """``loosen`` is about the ceiling; ``_DERIVED_ATOL_FLOOR`` is untouched by it.
+
+    Worth an assertion rather than a comment because "trust the derivation in both
+    directions" is a natural reading of the opt-in that would take the floor with it. It
+    does not: the floor answers a different question -- how much resolution the derivation
+    will *reach for on its own*, which past ~1e-16 is already under double precision's
+    resolution of a state of order one -- and a model that genuinely lives down there
+    still says so by pinning a number.
+    """
+    tiny = 1e-20 / _BNGSIM_DEFAULT_RTOL
+
+    assert _derive_atol(tiny, _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL,
+                        loosen=True) == _DERIVED_ATOL_FLOOR
+
+
+@pytest.mark.parametrize('nominal', [
+    [1e7, 1e4, 1e-3], [4.208e7, 4.665e5, 1.239e2], [10.0, 1e-2, 1.8e-9], [1.0, 1e6],
+])
+def test_the_loosened_vector_still_never_resolves_below_the_models_scale(nominal):
+    """Lifting the ceiling leaves ADR-0105's *floor* exactly where its measurement put it.
+
+    The lower clamp is the one that was paid for: read literally, "resolve each species to
+    ``rtol`` of its own magnitude" put ``Brannmark_JBC2010``'s ``IRp`` at 1.76e-17 and
+    killed 91 of 100 box points against the scalar's 39. Nothing about a model whose
+    species live *above* one revisits that, so #557 moves one clamp and leaves the other
+    alone -- and this is the property that says so, on the large-scale rows and the
+    ADR-0105 rows alike.
+    """
+    scale = float(np.median([v for v in nominal if v > 0.0]))
+    scalar_atol = _derive_atol(scale, _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL,
+                               loosen=True)
+    got = _derive_atol_vector(nominal, scalar_atol, _BNGSIM_DEFAULT_RTOL,
+                              _BNGSIM_DEFAULT_ATOL, loosen=True)
+
+    assert np.all(got >= scalar_atol)
+
+
+@_needs_per_species_atol
+def test_the_loosened_vector_is_bngsims_own_derivation():
+    """With the ceiling lifted, the rule *is* ``bngsim.derive_atol`` at the model's median.
+
+    ``max(rtol*y_i, rtol*median)`` is ``rtol * max(y_i, median)``, which is the library's
+    own function with the median supplied as its ``floor`` -- so the opt-in is not a
+    fourth PyBNF-specific rule, it is the backend's rule with PyBNF's answer to the one
+    question the backend leaves open. (bngsim's default floor is the smallest strictly
+    positive species instead, which is the reading ADR-0105 measured and rejected; the
+    ``floor=`` argument exists for exactly this.)
+
+    The companion assertion is ``test_only_ever_tighten_is_pybnfs_to_apply_not_the
+    _backends``: pinned against the same library, it says the *clamped* default is
+    PyBNF's own. Both are asserted against bngsim rather than against a second copy of
+    this arithmetic.
+    """
+    import bngsim
+
+    nominal = [4.208e7, 4.665e5, 1.239e2]
+    median = float(np.median(nominal))
+    scalar_atol = _derive_atol(median, _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL,
+                               loosen=True)
+
+    ours = _derive_atol_vector(nominal, scalar_atol, _BNGSIM_DEFAULT_RTOL,
+                               _BNGSIM_DEFAULT_ATOL, loosen=True)
+    theirs = bngsim.derive_atol(nominal, _BNGSIM_DEFAULT_RTOL, floor=median)
+
+    np.testing.assert_allclose(ours, theirs, rtol=1e-12)
+
+
+@_needs_per_species_atol
+def test_a_model_above_the_backend_default_gets_no_vector_until_it_opts_in(tmp_path):
+    """The issue's central observation, as a test: the vector declines where it is needed.
+
+    ``_LARGE_SPREAD_SBML`` spans ten decades, which is precisely the shape ADR-0105's
+    vector exists for -- and it takes the scalar path, because the vector clamps into
+    ``[scalar_atol, default_atol]`` and the scalar has itself been clamped to
+    ``default_atol``, collapsing that interval to a point. So the per-species mechanism
+    silently declines exactly the models whose own scale asks for something the ceiling
+    will not give. Opting in re-opens the interval and the same model resolves ``X``
+    (1e+07) three decades apart from ``Tiny`` (1e-03).
+    """
+    clamped = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_off.xml')
+    opted_in = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_on.xml',
+                                atol='auto')
+
+    assert _tolerance_kwargs(clamped)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL,
+                                             'atol': _LARGE_SPREAD_CLAMPED}
+
+    engine, kwargs = _tolerance_kwargs(opted_in)
+    assert dict(zip(engine.species_names, kwargs['atol'])) == pytest.approx(
+        {'X': 0.1, 'Mid': _LARGE_SPREAD_LOOSENED, 'Tiny': _LARGE_SPREAD_LOOSENED})
+    # ADR-0105's pairing holds under the opt-in too: the model-wide scalar is still what
+    # a `time = inf` measurement and a pre-equilibration phase converge against, and it
+    # is still stated rather than left to bngsim's own 1e-8 fallback.
+    assert kwargs['steady_state_tol'] == pytest.approx(_LARGE_SPREAD_LOOSENED)
+
+
+def test_the_opt_in_reaches_a_model_with_no_vector_to_give(tmp_path, monkeypatch):
+    """``auto`` loosens the *scalar* too, so it serves an install without lanl/bngsim#196.
+
+    The scalar is the whole of what ADR-0103 had and it is what the clamp acted on, so
+    the loosening is meaningful on its own -- an older bngsim opting in gets 1e-04 rather
+    than 1e-08 on this model, without a vector anywhere in sight. That also makes the
+    capability probe a refinement of this change rather than a precondition for it.
+    """
+    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_HAS_PER_SPECIES_ATOL', False)
+    model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_old.xml',
+                             atol='auto')
+
+    assert _tolerance_kwargs(model)[1] == {
+        'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': pytest.approx(_LARGE_SPREAD_LOOSENED)}
+
+
+@_needs_per_species_atol
+def test_the_looser_tolerance_costs_the_integrator_less_work(tmp_path):
+    """The mechanism, in steps: the same model, at a tolerance its own state asks for.
+
+    CVODE weights each state by ``rtol*|y_i| + atol``, so on a model living at
+    1e+04..1e+07 an ``atol`` of 1e-08 is one the absolute term can never reach: the
+    integrator is held to a *relative* accuracy far tighter than the ``rtol`` that is
+    supposed to govern it, and pays in steps for resolution nobody asked for.
+
+    Steps, rather than pass/fail, is the right instrument and the corpus is what says so
+    (ADR-0112): over 20 sensitivity-applied box points per slug, the six subset-I models
+    the clamp binds hardest cost 0.38x-0.67x the CVODE steps under ``auto`` -- and all of
+    them integrate either way. This is the fixture-scale version of that number, asserted
+    with a wide margin rather than at a bare inequality so a second platform's CVODE
+    cannot flip it on a step or two.
+    """
+    clamped = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_steps_off.xml')
+    opted_in = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_steps_on.xml',
+                                atol='auto')
+
+    def steps(model):
+        # A fresh engine model per run: a second run() on the same Simulator continues
+        # from where the first left off (ADR-0104), which would make these incomparable.
+        engine = model._engine_model_for_action()
+        sim = model._make_simulator(engine, 'ode')
+        result = sim.run(t_span=(0.0, _WIDE_T_END), n_points=81,
+                         **model._run_tolerance_kwargs(sim, engine))
+        return int(result.solver_stats['n_steps'])
+
+    assert steps(opted_in) < 0.75 * steps(clamped)
+
+
+@_needs_per_species_atol
+def test_the_opted_in_model_still_integrates_to_its_closed_form(tmp_path):
+    """A looser tolerance is not a wrong answer -- it is a coarser one, and here it is not.
+
+    The trade #557 is actually making is against *smoothness*, not accuracy: on Weber four
+    decades of tolerance move ``J_paper`` in the sixth decimal while the finite-difference
+    reference degrades 28x. This asserts the accuracy half on the fixture, where the
+    closed form is exact -- ``X`` decaying through three time-gated stages from 1e+07,
+    integrated at the 0.1 its own magnitude asks for, still matches ``exp`` to a relative
+    1.0e-06, which is ``rtol`` doing exactly what ``rtol`` is for. That is the shape of
+    the trade: the absolute tolerance stops governing and the relative one governs, which
+    is the condition ADR-0103 states the derivation is trying to reach.
+    """
+    model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_exact.xml',
+                             atol='auto')
+    engine = model._engine_model_for_action()
+    sim = model._make_simulator(engine, 'ode')
+    result = sim.run(t_span=(0.0, T_END), n_points=N_STEPS + 1,
+                     **model._run_tolerance_kwargs(sim, engine))
+
+    got = np.asarray(result.species)[:, list(result.species_names).index('X')]
+    np.testing.assert_allclose(got, _exact_x(np.asarray(result.time), x0=1e7), rtol=3e-6)
+
+
+# --- #557: a tolerance that follows the trajectory (lanl/bngsim#213) ------------- #
+_needs_tracking_atol = pytest.mark.skipif(
+    not bngsim_sbml_model.BNGSIM_HAS_TRACKING_ATOL,
+    reason='needs a bngsim whose Simulator.run takes a TrackingAtol (lanl/bngsim#213)')
+
+
+@_needs_tracking_atol
+def test_tracking_carries_the_derived_vector_as_its_ceiling(tmp_path):
+    """``sbml_atol = tracking`` is ``auto``'s vector, plus a rule for going below it.
+
+    The ceiling is the thing to check. bngsim's own ``TrackingAtol()`` defaults it to
+    ``"auto"``, which re-derives from the model's **live** state at every ``run`` -- the
+    shape ADR-0105 ruled out for the vector, because a fit that moves initial conditions
+    would then integrate each evaluation at a tolerance that is a function of the search
+    position. So PyBNF states the ceiling explicitly, from the nominal state, exactly as
+    it states the vector.
+    """
+    model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_track.xml',
+                             atol='tracking 6')
+    reference = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_track_ref.xml',
+                                 atol='auto')
+    engine, kwargs = _tolerance_kwargs(model)
+
+    assert isinstance(kwargs['atol'], bngsim_sbml_model.bngsim.TrackingAtol)
+    assert kwargs['atol'].decades == 6.0
+    np.testing.assert_allclose(kwargs['atol'].ceiling, _tolerance_kwargs(reference)[1]['atol'])
+    # bngsim resolves a TrackingAtol to the *Simulator's* own scalar for every
+    # scalar-shaped consumer, so ADR-0105's steady-state cutoff has to be stated here for
+    # the same reason it is stated with a vector.
+    assert kwargs['steady_state_tol'] == pytest.approx(_LARGE_SPREAD_LOOSENED)
+
+
+@_needs_tracking_atol
+def test_tracking_without_a_depth_leaves_it_to_the_backend(tmp_path):
+    """An unstated depth is bngsim's default, not a copy of bngsim's default.
+
+    12 is a *measured* property of that mechanism -- the depth at which its own accuracy
+    stops improving on the model it was measured against, past which the limit is roundoff
+    -- so it belongs to the library that measured it. Copying the number here would let
+    the two drift apart silently.
+    """
+    model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_track_def.xml',
+                             atol='tracking')
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs['atol'].decades == bngsim_sbml_model.bngsim.TrackingAtol().decades
+
+
+@_needs_tracking_atol
+def test_tracking_at_depth_zero_is_the_loosened_vector(tmp_path):
+    """Depth 0 reduces to ``auto`` exactly, which is what makes tracking an *extension*.
+
+    bngsim's rule is ``clamp(rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)``, so at
+    depth 0 the clamp collapses onto the ceiling and the same tolerance reaches CVODE
+    through ``CVodeWFtolerances`` rather than ``CVodeSVtolerances``. The two agree to
+    about one ulp rather than exactly -- the same error weights by differently
+    contractable expressions -- which is why this asserts the trajectory closely rather
+    than bit-for-bit.
+
+    That property is why one ``_atol_loosens()`` flag is correct for both settings: they
+    are not two modes that happen to share a derivation, they are one derivation and a
+    depth.
+    """
+    def trajectory(atol, name):
+        model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name=name, atol=atol)
+        engine = model._engine_model_for_action()
+        sim = model._make_simulator(engine, 'ode')
+        result = sim.run(t_span=(0.0, T_END), n_points=N_STEPS + 1,
+                         **model._run_tolerance_kwargs(sim, engine))
+        return np.asarray(result.species)[:, list(result.species_names).index('X')]
+
+    np.testing.assert_allclose(trajectory('tracking 0', 'depth0.xml'),
+                               trajectory('auto', 'depth0_ref.xml'), rtol=1e-9)
+
+
+@_needs_tracking_atol
+def test_tracking_resolves_the_species_a_vector_of_initial_values_cannot(tmp_path):
+    """The half ADR-0105 named as out of reach, now in reach and measured.
+
+    A vector read off initial values fixes the *cross-species* compromise and stops there:
+    whatever number species ``i`` gets, it keeps for the whole run, so a species that
+    starts at order one and decays outgrows its own tolerance partway through and stops
+    being error-controlled. ``X`` here starts at 10 and ends near 7e-17 -- eighteen decades
+    down -- which is the case in the flesh.
+
+    So this is not the same claim as the loosening: the loosening is about which models
+    integrate at all, and this is about whether a decayed species' value means anything.
+    Both are ``sbml_atol``'s to state because they are the same statement about how far
+    the model's own state may set its tolerance.
+    """
+    def tail(atol, name):
+        model = _piecewise_model(tmp_path, text=_WIDE_SPREAD_SBML, name=name, atol=atol)
+        engine = model._engine_model_for_action()
+        sim = model._make_simulator(engine, 'ode')
+        result = sim.run(t_span=(0.0, _WIDE_T_END), n_points=81,
+                         **model._run_tolerance_kwargs(sim, engine))
+        time = np.asarray(result.time)
+        got = np.asarray(result.species)[:, list(result.species_names).index('X')]
+        exact = _exact_x(time, x0=10.0)
+        return float(np.max(np.abs(got[-8:] - exact[-8:]) / exact[-8:]))
+
+    # The derived vector gives X the backend default 1e-8, which is 8 decades ABOVE where
+    # X has got to, so its tail is pure noise. Tracking follows it down.
+    assert tail('tracking', 'wide_track.xml') < 1e-3 * tail(None, 'wide_novector.xml')
+
+
+@_needs_tracking_atol
+def test_tracking_applies_to_a_model_whose_species_share_one_scale(tmp_path):
+    """No vector to state is not a reason to decline tracking -- it is the case for it.
+
+    A model whose species all start at one gets an elementwise-constant vector and so
+    takes the scalar call (19 of the 23 subset-I slugs). What tracking adds is
+    *within*-species and over time, which is orthogonal to whether the species differ
+    from each other; a model that starts uniform and decays is precisely where a vector
+    of initial values has nothing to say. So the scalar becomes a broadcast ceiling
+    rather than a refusal.
+    """
+    model = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='one_track.xml',
+                             atol='tracking 4')
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert isinstance(kwargs['atol'], bngsim_sbml_model.bngsim.TrackingAtol)
+    assert kwargs['atol'].ceiling == pytest.approx(_BNGSIM_DEFAULT_ATOL)
+    assert kwargs['atol'].decades == 4.0
+
+
+def test_tracking_is_refused_rather_than_dropped_without_the_backend(tmp_path):
+    """A mode that cannot apply must not silently not apply.
+
+    The failure that would otherwise happen is the one this whole line of work exists to
+    stop making: a run that integrated at something other than what was asked for, whose
+    trajectory is plausible and whose conclusion is about the model.
+    """
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bngsim_sbml_model, 'BNGSIM_HAS_TRACKING_ATOL', False)
+    try:
+        with pytest.raises(ModelError, match='lanl/bngsim#213'):
+            _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='no_track.xml',
+                             atol='tracking')
+    finally:
+        monkey.undo()
+
+
+# --- #557: what the settings are, at the boundaries ----------------------------- #
+@pytest.mark.parametrize('value, expected', [
+    (None, (None, None, None)),
+    (1e-4, (1e-4, None, None)),
+    ('1e-4', (1e-4, None, None)),
+    ('auto', (None, 'auto', None)),
+    ('AUTO', (None, 'auto', None)),
+    ('tracking', (None, 'tracking', None)),
+    ('tracking 6', (None, 'tracking', 6.0)),
+    ('tracking 0', (None, 'tracking', 0.0)),
+])
+def test_parse_atol_setting_reads_every_legal_shape(value, expected):
+    """One shape authority, so config.py and the model constructor cannot disagree.
+
+    A numeric *string* reads as the number because a value can reach a model from
+    somewhere other than the conf grammar -- a hand-built dict, an importer -- and the
+    two spellings must mean the same tolerance.
+    """
+    assert bngsim_sbml_model.parse_atol_setting(value) == expected
+
+
+@pytest.mark.parametrize('value', [
+    0, -1e-8, float('inf'), float('nan'), True, '', 'nonsense', 'auto 3',
+    'tracking x', 'tracking -1', 'tracking 1 2',
+])
+def test_parse_atol_setting_refuses_what_is_not_a_tolerance(value):
+    """Including the three that look plausible: a zero/negative/infinite one.
+
+    ``tracking -1`` is refused for bngsim's own reason -- a tracking tolerance with no
+    floor is pure relative error control, which has no weight to give a species sitting
+    at exactly zero.
+    """
+    with pytest.raises(ValueError):
+        bngsim_sbml_model.parse_atol_setting(value)
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('sbml_atol = 1e-4', 1e-4),
+    ('sbml_atol = auto', 'auto'),
+    ('sbml_atol = AUTO', 'auto'),
+    ('sbml_atol = tracking', 'tracking'),
+    ('sbml_atol = tracking 6', 'tracking 6'),
+    ('sbml_atol = tracking 6  # the depth', 'tracking 6'),
+])
+def test_the_conf_grammar_takes_a_number_or_a_mode(text, expected):
+    """A key that used to be a float now carries three kinds of statement (#557).
+
+    The grammar order is the fragile part and is what this pins: ``numgram`` error-stops
+    immediately after its ``=``, so a mode reaching it would be a hard parse failure
+    rather than a backtrack -- the mode grammar has to be tried first, and has to fail
+    *recoverably* on a number so the float form still lands on ``numgram``.
+    """
+    from pybnf import parse
+
+    assert parse.ploop([text])['sbml_atol'] == expected
+
+
+@pytest.mark.parametrize('text', ['sbml_atol = nonsense', 'sbml_atol = tracking 1 2'])
+def test_the_conf_grammar_names_all_three_forms_when_it_refuses(text):
+    """The error a typo gets lists what the key actually accepts, not just "a number"."""
+    from pybnf import parse
+
+    with pytest.raises(PybnfError) as exc:
+        parse.ploop([text])
+    assert 'auto' in str(exc.value) and 'tracking' in str(exc.value)
+
+
+def _tolerance_config(value, backend='bngsim'):
+    """A bare :class:`Configuration` carrying just enough to reach the tolerance checks."""
+    cfg = object.__new__(config.Configuration)
+    cfg.models = {}
+    cfg.config = {'bng_command': '', 'sbml_backend': backend, 'sbml_integrator': 'cvode',
+                  'sbml_ssa_strict': 1, 'sbml_atol': value}
+    return cfg
+
+
+@pytest.mark.parametrize('value', ['auto', 'tracking', 'tracking 6'])
+def test_config_accepts_the_modes_under_the_bngsim_backend(value):
+    """...and still refuses them under RoadRunner, which has its own integrator settings."""
+    _tolerance_config(value)._load_simulators()
+
+    with pytest.raises(PybnfError, match='sbml_atol.*bngsim'):
+        _tolerance_config(value, backend='roadrunner')._load_simulators()
+
+
+@pytest.mark.parametrize('value', ['nonsense', 'tracking -1', 0, -1])
+def test_config_refuses_a_setting_that_is_not_a_tolerance(value):
+    """Refused at config load rather than as a ModelError once the run has started."""
+    with pytest.raises(PybnfError, match='sbml_atol'):
+        _tolerance_config(value)._load_simulators()
+
+
+def test_config_refuses_tracking_without_the_backend_capability(monkeypatch):
+    """The capability check runs at config load too, so the refusal is not per-model."""
+    monkeypatch.setattr(config, 'BNGSIM_HAS_TRACKING_ATOL', False)
+
+    with pytest.raises(PybnfError, match='lanl/bngsim#213'):
+        _tolerance_config('tracking')._load_simulators()
