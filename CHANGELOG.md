@@ -75,6 +75,26 @@ All notable changes to PyBNF are documented below. This project adheres to
   *and* the polish did has two facts to report, not one that replaces the other.
 
 ### Added
+- **Measurement-time uncertainty via posterior marginalization, phase 1 (#587, ADR-0112).** A
+  new `time_error` clause on the `noise_model` line treats the latent sampling time as a random
+  variable and *integrates it out* of the likelihood, instead of assuming each datum was collected
+  at exactly its reported time — an assumption that biases estimates and makes posteriors
+  overconfident when sampling times actually drift (handling delays, imperfect synchronization,
+  reporting error). Written whole-fit as `noise_model = <family>, <scale> = <source>, time_error =
+  truncated_normal, sigma_t = fit st__FREE` (or `uniform`; `sigma_t = fix_at <w>`), it replaces the
+  per-point likelihood with a `MarginalizedTimeObjective` whose per-observation contribution is
+  `−log ∫ p(ȳ_k | y(τ)) p(τ | t_k) dτ` — the `n_t`-dimensional marginal factorizes into
+  one-dimensional integrals (the method of Vanhoefer, Nakonecnij, Binder & Hasenauer, bioRxiv
+  2026.05.09.724053; the temporal analogue of Raimúndez et al. 2023 nuisance marginalization). The
+  search stays `n_θ` (+ one `σ_t`), not `n_θ + n_t`. Phase 1 evaluates each integral by log-space
+  quadrature over the stored trajectory, reusing every noise family's normalized `log_density`
+  (ADR-0056) as the integrand and the gradient-free optimizers/samplers (`de`/`pso`/`ss`/`mh`/
+  `dream`/…) unchanged — nothing is added to the model file. Edition-2 only. The `σ_t → 0` limit
+  is the standard likelihood (a `fix_at 0` clause short-circuits to it). Deferred and refused at
+  build with a reason: a per-observable time prior, a prediction-dependent `σ`, the count family,
+  and every gradient `job_type` (`trf`/`lbfgs`/`gntr`/`hmc`/`ms` — phase 2's augmented-ODE
+  sensitivities are what those need); `noise_profiling` (which *maximizes* a scale out) is refused
+  as ill-defined alongside marginalization (which *integrates* the time out).
 - **Multiple shooting, `job_type = ms` (#563, ADR-0110).** The consumer of the
   constrained-transcription layer below, and the thing #563 was actually asking for. Each scored
   experiment's time course is cut at knots; segment *j* is integrated from its own start state —

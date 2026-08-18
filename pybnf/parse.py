@@ -311,8 +311,19 @@ def parse(s):
     # ('cumulative', observable) structural key. A bare literal (no ``=``), matched first so it
     # never shadows a ``<param> = <source>`` field.
     nm_cumulative_field = pp.Group(pp.CaselessLiteral('cumulative'))
-    nm_field = (nm_cumulative_field | nm_location_field | nm_prediction_formula_field
-                | nm_formula_field | nm_source_field)
+    # A measurement-time-uncertainty clause (ADR-0112, #587): the prior-shape literal
+    # ``time_error = <family>`` and its scale source ``sigma_t = <verb> [<arg>]``. Orthogonal
+    # to the noise family/source (it marginalizes the latent sampling time out of the
+    # likelihood, not a per-point scale), so ploop stores it under its own
+    # ('time_error', observable) key -- the cumulative pattern -- rather than folding it into
+    # the (family, fields, location) tuple. Matched before nm_source_field so ``sigma_t = fit
+    # st__FREE`` is the time clause, not a generic noise-source field named "sigma_t"; the
+    # verb set is the shared nm_verb (build_time_error_spec rejects all but fit/fix_at).
+    nm_time_error_field = pp.Group(
+        pp.CaselessLiteral('time_error') - equals - _one_of('truncated_normal uniform', caseless=True))
+    nm_sigma_t_field = pp.Group(pp.CaselessLiteral('sigma_t') - equals - nm_verb - pp.Optional(nm_arg))
+    nm_field = (nm_cumulative_field | nm_time_error_field | nm_sigma_t_field | nm_location_field
+                | nm_prediction_formula_field | nm_formula_field | nm_source_field)
     # The observable is optional: present -> a per-observable override; absent
     # (``noise_model = <family>``) -> the whole-fit default (ADR-0031). pyparsing
     # distinguishes them by whether a bare token precedes the ``=``.
@@ -787,7 +798,19 @@ def ploop(ls):  # parse loop
                 fields = {}
                 location = None
                 cumulative = False
+                time_error = None            # the time-prior family token (ADR-0112, #587)
+                sigma_t = None               # the (verb, arg) for the time-error scale source
                 for field in raw_fields:
+                    if field[0].lower() == 'time_error':
+                        if time_error is not None:
+                            raise PybnfError(f"In {where}, time_error is specified multiple times")
+                        time_error = field[1].lower()
+                        continue
+                    if field[0].lower() == 'sigma_t':
+                        if sigma_t is not None:
+                            raise PybnfError(f"In {where}, sigma_t is specified multiple times")
+                        sigma_t = (field[1], field[2] if len(field) > 2 else None)   # (verb, arg)
+                        continue
                     if field[0].lower() == 'cumulative':
                         # A bare flag (ADR-0051, #418): a per-observable prediction transform,
                         # orthogonal to the noise spec -- stored under its own ('cumulative',
@@ -825,6 +848,21 @@ def ploop(ls):  # parse loop
                             "increments. Declare it on a per-observable line, e.g. "
                             "'noise_model <obs> = <family>, <param> = <source>, cumulative'.")
                     d[('cumulative', observable)] = True
+                if time_error is not None or sigma_t is not None:
+                    # Both-or-neither: a time-prior shape needs its scale source and vice versa
+                    # (ADR-0112, #587). Stored under its own structural key -- config.py's
+                    # objective dispatch reads it and swaps in the MarginalizedTimeObjective.
+                    if time_error is None:
+                        raise PybnfError(
+                            f"In {where}, 'sigma_t' was given without 'time_error'",
+                            "A timing-error scale needs a time-prior shape: add "
+                            "'time_error = truncated_normal' (or 'uniform') to the line.")
+                    if sigma_t is None:
+                        raise PybnfError(
+                            f"In {where}, 'time_error' was given without 'sigma_t'",
+                            "A time-prior shape needs its scale: add "
+                            "'sigma_t = fit <param__FREE>' or 'sigma_t = fix_at <number>'.")
+                    d[('time_error', observable)] = (time_error, sigma_t)
             elif l[0] == 'objective_spec':
                 # Named analytical objective with inline constants (ADR-0059 item 6):
                 # ``objective = banana, a = 1, b = 100``. Record the target name as the modern

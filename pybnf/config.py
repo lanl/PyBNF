@@ -2650,6 +2650,14 @@ class Configuration:
             # config via its from_config classmethod -- no per-objfunc recipe.
             obj = entry.cls.from_config(self.config)
 
+        # Measurement-time uncertainty (ADR-0112, #587): a ``time_error`` clause on the
+        # noise_model line marginalizes the latent sampling time out of the likelihood. Parsed
+        # under its own ('time_error', observable) structural key, so it is read here and swaps
+        # the built per-point objective for a MarginalizedTimeObjective (lazy import, avoiding a
+        # config<->measurement cycle). No key -> exact no-op. Named off the class (not ``self``)
+        # so the ``_load_obj_func`` no-self test idiom (a SimpleNamespace) still works.
+        obj = Configuration._maybe_marginalize_time(self.config, obj, ed)
+
         # Whole-fit default location (ADR-0024): the mean/median interpretation of the
         # prediction, applied to a per-point objective's default noise model
         # (per-observable noise_model location fields override it).
@@ -2698,6 +2706,73 @@ class Configuration:
                     f"only with a per-point objective (chi_sq, sos, laplace, neg_bin, ...).")
             obj._cumulative_cols = cumulative_cols
         return obj
+
+    #: Fit types whose search consumes an analytic objective gradient, which phase-1
+    #: marginalization cannot supply (dz_k/dθ needs augmented-ODE sensitivities; ADR-0112 "the
+    #: gradient is an integral, not an envelope"). Refused under a time_error clause until phase 2.
+    _TIME_ERROR_GRADIENT_FIT_TYPES = frozenset({'trf', 'lbfgs', 'gntr', 'hmc', 'ms'})
+
+    @staticmethod
+    def _maybe_marginalize_time(config, obj, ed):
+        """Swap ``obj`` for a marginal-time objective when a ``time_error`` clause is present
+        (ADR-0112, #587); otherwise return it unchanged.
+
+        Phase-1 scope and its refusals live here (not in the objective) because they are
+        config-level facts -- the edition, the run selector, the interaction with
+        ``noise_profiling``, and whether a per-observable clause was used. A ``@staticmethod``
+        over ``config`` (not ``self``) so the ``_load_obj_func`` no-self test idiom keeps working.
+        """
+        time_keys = [k for k in config
+                     if isinstance(k, tuple) and k[0] == 'time_error']
+        if not time_keys:
+            return obj
+
+        edition.require_edition(ed, 2, "the 'time_error' measurement-time marginalization")
+
+        # Per-observable time priors are deferred (phase 1 is whole-fit only): a single time
+        # prior applies to every scored column.
+        per_obs = sorted(k[1] for k in time_keys if k[1] is not None)
+        if per_obs:
+            raise UnknownObjectiveFunctionError(
+                'a per-observable time_error clause is not yet supported',
+                f"time_error was declared per observable ({', '.join(per_obs)}); phase 1 supports "
+                f"only a whole-fit clause ('noise_model = <family>, ..., time_error = <shape>, "
+                f"sigma_t = <source>'). Per-observable time priors are a follow-up (ADR-0112).")
+        if ('time_error', None) not in config:
+            # Only per-observable keys existed, already rejected above; defensive.
+            return obj
+
+        # The integrand is a per-point density integrated over the trajectory, so the objective
+        # must be a per-point likelihood -- not a profile / score / expression / callable / target.
+        from .objective import LikelihoodObjective
+        if not isinstance(obj, LikelihoodObjective):
+            raise UnknownObjectiveFunctionError(
+                'time_error requires a per-point likelihood objective',
+                f"time_error marginalizes a per-observation density p(ȳ_k | y(τ)) over the latent "
+                f"time, so it needs a per-point noise-model objective (gaussian / lognormal / "
+                f"laplace / ...). The selected objective '{type(obj).__name__}' has no such "
+                f"density (a column-joint profile objective, or a score / expression / callable "
+                f"target).")
+
+        fit_type = config.get('fit_type')
+        if fit_type in Configuration._TIME_ERROR_GRADIENT_FIT_TYPES:
+            raise UnknownObjectiveFunctionError(
+                f'job_type = {fit_type} is not yet supported with time_error',
+                f"The marginal-time objective is gradient-free in phase 1 (dz_k/dθ needs "
+                f"augmented-ODE sensitivities, ADR-0112 phase 2). Use a gradient-free method "
+                f"(de / pso / ss / mh / dream / ...) for a time_error fit; '{fit_type}' is "
+                f"refused until phase 2 lifts this.")
+
+        if config.get('noise_profiling'):
+            raise UnknownObjectiveFunctionError(
+                'noise_profiling cannot combine with time_error',
+                "noise_profiling = 1 *maximizes* a noise scale out (ADR-0108); time_error "
+                "*integrates* the latent time out (ADR-0112). Composing the two on the same fit "
+                "is ill-defined -- run one or the other.")
+
+        from .measurement.time_error import build_time_error_spec, build_time_error_objective
+        prior, sigma_t_source = build_time_error_spec(*config[('time_error', None)])
+        return build_time_error_objective(obj, prior, sigma_t_source)
 
     def _attach_analytic_scale(self):
         """Attach the resolved analytic per-series scaling to the objective (ADR-0066, #479).
