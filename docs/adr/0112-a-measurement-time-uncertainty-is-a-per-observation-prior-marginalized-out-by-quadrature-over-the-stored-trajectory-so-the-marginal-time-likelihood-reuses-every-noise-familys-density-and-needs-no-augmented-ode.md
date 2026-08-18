@@ -168,16 +168,34 @@ bar), and to give a prior for the case where only a bound on the timing error is
 The marginal is defined on the compact support `[t_0, t_max]` the paper assumes (Eq. 15) — a
 condition "obviously satisfied in practice." Phase 1 needs the base model simulated on a grid
 that (a) spans `[t_0, t_max]` and (b) is dense enough that the trapezoidal error is below the
-noise floor. Two consequences:
+noise floor. This is **not** free: PyBNF's default for a data-driven time course is to sample
+the trajectory *at exactly the reported times* (the sparse `t_k`), which for a marginalized
+column would leave the integral with a handful of nodes and an inferred support of only
+`[min t_k, max t_k]`. So the grid is handled explicitly:
 
-* The simulation grid is decoupled from the data times. Today a datum must match a simulated
-  row; under `time_error` the data times only *centre* the prior, so the grid is chosen for
-  quadrature accuracy, not to hit the `t_k`. A `time_error_grid = <n>` key (default sized from
-  the data span and the smallest `σ_t`) sets the node count, echoed at run start.
+* The simulation grid is **decoupled from the data times**. Under `time_error` a datum matches
+  no simulated row — the reported time only *centres* the prior — so the experiment is simulated
+  on a **dense uniform grid** over `[t_start, t_end]` stated on the experiment line: `t_end:`
+  (required — the support `t_max`, set past the last data point so the prior is not truncated),
+  optional `t_start:` (default 0 = `t_0`), and optional `n_steps:` (the quadrature resolution;
+  default 100). Those keys are otherwise ignored for a data-driven time course, and honoring
+  them here is what `Configuration._time_error_timecourse` does; a missing `t_end:` is a pointed
+  error, not a silent sparse grid. The objective infers `[t_0, t_max]` from the delivered grid's
+  span, so the support is exactly the grid the quadrature runs over. Only a plain time course is
+  supported — a `preequilibrate:` / steady-state / parameter-scan experiment under `time_error`
+  is refused (no time axis to marginalize).
 * The grid must resolve the prior. When `σ_t` is small the time prior is a narrow spike and a
   coarse grid integrates it inaccurately — the phase-1 analogue of the phase-2 stiffness the
-  paper flags. The builder warns when `σ_t` (or its lower search bound) is small relative to the
-  grid spacing, and refuses a grid that cannot see the spike at all.
+  paper flags. Keep `n_steps` dense relative to `σ_t`; the phase-2 augmented ODE removes this
+  by controlling the integration error directly.
+
+### The integrand is vectorized over the trajectory
+
+The dominant per-evaluation cost is the observation density at every grid node, `n_data ×
+n_grid` evaluations. `NoiseModel.log_density` is numpy-vectorized in the prediction, so the
+integrand calls it **once per datum over the whole trajectory column**, not in a Python loop
+over nodes — the difference between a marginal fit that runs in seconds and one that does not
+(a real lesson from the end-to-end validation).
 
 ### The objective value carries the normalized density, not the fit-convention NLL
 
@@ -274,15 +292,16 @@ borrow ADR-0108's "no new sensitivity" result.
 
 ## Consequences
 
-Phase 1 is a contained feature: one grammar clause, one ploop branch, one `config_schema` key
-(`time_error_grid`), one objective class, a two-member `TimeErrorPrior`, and a `TimeErrorSource`
-— reusing `NoiseModel.log_density`, the prior shapes, and the gradient-free fitters and samplers
-without change. Its acceptance test is the paper's Fig. 2 exponential-decay example expressed on
-the `time_error` clause: the standard fit is biased and overconfident, the marginal fit recovers
-`θ_true` with calibrated intervals, and the marginal `σ_t → 0` limit reproduces the standard fit
-byte-for-byte. Phase 2 (augmentation + sensitivities) is a separate ADR that upgrades the engine
-behind the same clause, adding the gradient methods the phase-1 refusal table currently turns
-away, and is where the paper's scalability claims are realized.
+Phase 1 is a contained feature: one grammar clause, one ploop branch, one objective class, a
+two-member `TimeErrorPrior`, a `TimeErrorSource`, and a dense-grid time-course action — reusing
+`NoiseModel.log_density`, the prior shapes, and the gradient-free fitters and samplers without
+change. Its acceptance test is the paper's Fig. 2 exponential-decay example expressed on the
+`time_error` clause (tutorial lesson 49): the standard fit is biased (`k ≈ 1.36` for a truth of
+1), the marginal fit recovers it (`k ≈ 1.06`), estimating `σ_t` still recovers `k` and reports a
+non-zero timing error, and the marginal `σ_t → 0` limit is the standard likelihood. Phase 2
+(augmentation + sensitivities) is a separate ADR that upgrades the engine behind the same clause,
+adding the gradient methods the phase-1 refusal table currently turns away, and is where the
+paper's scalability claims are realized.
 
 ## Implementation (phase 1)
 
@@ -295,7 +314,16 @@ away, and is where the paper's scalability claims are realized.
 * `pybnf/parse.py` — the `nm_time_error_field` / `nm_sigma_t_field` grammar and the ploop branch
   that stores `('time_error', observable)` and enforces both-or-neither.
 * `pybnf/config.py` — `_maybe_marginalize_time` (a `@staticmethod` over `config`, so the
-  no-self `_load_obj_func` test idiom is preserved), holding the phase-1 refusals.
+  no-self `_load_obj_func` test idiom is preserved), holding the phase-1 refusals; and
+  `_time_error_timecourse` / `_time_error_active`, which give a marginalized time course its
+  dense uniform grid over the support (the ordinary data-driven path samples only the sparse
+  reported times). `MarginalizedTimeObjective.required_free_noise_params` reports an estimated
+  `σ_t` (and any `fit` noise scale) as a declared nuisance so `sigma_t = fit …` is not rejected
+  as an orphan free parameter.
+* `examples/tutorial/49_measurement_time_uncertainty/` — the Fig. 2 lesson (model, timing-
+  perturbed data + its `regenerate_data.py`, and `standard` / `marginal` / `estimate_sigma_t`
+  confs), registered in `_manifest.py` so the generic driver asserts marginal-recovers /
+  standard-dragged through the real bngsim backend.
 * `tests/test_time_error_marginal.py` — parse, prior normalization, the marginal integral vs. a
   `scipy.integrate` reference (Gaussian/truncated-normal and Laplace/uniform), the `σ_t → 0`
   pointwise-density limit, `evaluate` end-to-end on hand-built trajectories, the bias-reduction

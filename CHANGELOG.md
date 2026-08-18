@@ -94,7 +94,14 @@ All notable changes to PyBNF are documented below. This project adheres to
   `information_criteria.txt` work out of the box: the marginal per-observation `log z_k` **is** a
   normalized per-observation log-likelihood, so the objective reports it through the same
   `evaluate_pointwise` hook the per-point families use (`Σ_k log z_k = −score`), and an estimated
-  `σ_t` is already counted in `k`. Deferred and refused at
+  `σ_t` is already counted in `k`. A marginalized time course is simulated on a **dense uniform
+  grid** over the support (`t_end:` required, `t_start:`/`n_steps:` optional on the experiment
+  line — decoupled from the sparse reported times, which only centre each timing prior), and
+  `sigma_t = fit …` estimates the timing scale jointly (recognized as a declared nuisance).
+  Worked end to end in **tutorial lesson 49** (`examples/tutorial/49_measurement_time_uncertainty/`):
+  ignoring the timing spread biases the decay rate to `k ≈ 1.36` (truth 1), marginalizing recovers
+  `k ≈ 1.06`, and estimating `σ_t` recovers `k` while re-discovering a non-zero timing error.
+  Deferred and refused at
   build with a reason: a per-observable time prior, a prediction-dependent `σ`, the count family,
   and every gradient `job_type` (`trf`/`lbfgs`/`gntr`/`hmc`/`ms` — phase 2's augmented-ODE
   sensitivities are what those need); `noise_profiling` (which *maximizes* a scale out) is refused

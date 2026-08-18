@@ -353,6 +353,18 @@ class TestConfigDispatch:
                        'noise_model obs1 = laplace, scale = fix_at 1, '
                        'time_error = truncated_normal, sigma_t = fix_at 0.5')
 
+    def test_estimated_sigma_t_is_a_declared_nuisance(self):
+        # required_free_noise_params must include the estimated sigma_t (and any fit noise scale),
+        # else the free-parameter validator rejects it as an orphan (the e2e gap fixed this session).
+        obj = _build_obj('noise_model = gaussian, sigma = fit s__FREE, '
+                         'time_error = truncated_normal, sigma_t = fit st__FREE')
+        assert obj.required_free_noise_params() == {'s__FREE', 'st__FREE'}
+
+    def test_fixed_sigma_t_declares_only_the_noise_nuisance(self):
+        obj = _build_obj('noise_model = gaussian, sigma = fit s__FREE, '
+                         'time_error = truncated_normal, sigma_t = fix_at 0.5')
+        assert obj.required_free_noise_params() == {'s__FREE'}
+
     def test_prediction_dependent_sigma_refused_at_eval(self):
         # A relative σ varies with the (per-τ) prediction, so it is refused when the marginal
         # objective resolves the scale (ADR-0112 phase-1 scope).
@@ -361,3 +373,33 @@ class TestConfigDispatch:
         exp = {'m': {'y': _exp([(2.0, 0.14)])}}
         with pytest.raises(PybnfError, match='prediction-dependent'):
             obj.evaluate_multiple(sim, exp, pset=[])
+
+
+# --------------------------------------------------------------------------------------------
+# The dense simulation grid a time_error time-course requires (config action, ADR-0112)
+# --------------------------------------------------------------------------------------------
+
+class TestDenseGrid:
+    def test_builds_a_uniform_grid_from_t_end_and_n_steps(self):
+        # A time_error time course is simulated on a dense uniform grid over the support, NOT at
+        # the (sparse) reported times -- so t_end/n_steps on the experiment line are honored here
+        # (they are ignored for an ordinary data-driven time course). step = span / n_steps.
+        tc = Configuration._time_error_timecourse(None, 'exp1', 'ode', {'t_end': '10', 'n_steps': '200'})
+        assert tc.time == 10.0
+        assert tc.t_start == 0.0
+        assert np.isclose(tc.step, 10.0 / 200)      # uniform grid, not explicit data points
+        assert getattr(tc, 'explicit_points', None) is None
+
+    def test_default_n_steps_is_dense(self):
+        tc = Configuration._time_error_timecourse(None, 'exp1', 'ode', {'t_end': '10'})
+        assert np.isclose(tc.step, 10.0 / 100)      # default 100 steps over the support
+
+    def test_missing_t_end_is_a_pointed_error(self):
+        with pytest.raises(PybnfError, match='dense grid|support|t_end'):
+            Configuration._time_error_timecourse(None, 'exp1', 'ode', {'n_steps': '200'})
+
+    def test_time_error_active_detects_the_clause(self):
+        yes = Configuration._time_error_active(
+            types.SimpleNamespace(config={('time_error', None): ('truncated_normal', ('fix_at', '0.5'))}))
+        no = Configuration._time_error_active(types.SimpleNamespace(config={('noise_model', None): ()}))
+        assert yes is True and no is False

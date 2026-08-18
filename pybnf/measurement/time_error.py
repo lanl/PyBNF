@@ -361,8 +361,10 @@ class MarginalizedTimeObjective(SummationObjective):
         (:meth:`NoiseModel.log_density`); the time factor is the (un-normalized kernel) ×
         (Python normalizer). Everything is accumulated in log space for underflow safety.
         """
-        # log p(ȳ_k | y(τ)) at every node -- reuse the family density, vectorized over τ.
-        log_obs = np.array([noise_model.log_density(float(y), y_bar, sigma, extra) for y in y_traj])
+        # log p(ȳ_k | y(τ)) at every node -- one vectorized call over the whole trajectory
+        # (log_density is numpy-vectorized in the prediction; a per-node Python loop would be
+        # O(n_data x n_grid) scalar scipy calls per evaluation, the marginal's dominant cost).
+        log_obs = np.asarray(noise_model.log_density(y_traj, y_bar, sigma, extra), dtype=float)
         kernel = self.time_prior.unnormalized_density(tau_grid, t_k, sigma_t)
         log_norm = self.time_prior.log_normalizer(t_k, sigma_t, t0, tmax)
         with np.errstate(divide='ignore'):
@@ -410,13 +412,36 @@ class MarginalizedTimeObjective(SummationObjective):
 
     # -- noise-scalar resolution: share the existing SigmaSource path --------------------------
 
+    def _default_sources(self):
+        """The class-default ``{param: SigmaSource}`` mapping (mirrors
+        :meth:`LikelihoodObjective._default_sources`): the multi-parameter map if built that
+        way, else the single ``sigma_source`` wrapped under the family's primary parameter."""
+        if self._default_source_map is not None:
+            return self._default_source_map
+        if self.sigma_source is None:
+            return {}
+        return {self.noise.noise_params[0]: self.sigma_source}
+
     def _spec_for(self, col_name):
         """The ``(NoiseModel, {param: SigmaSource})`` for one observable -- its override or the
         class default (shape mirrors :meth:`LikelihoodObjective._spec_for`)."""
-        default_sources = (self._default_source_map
-                            or ({self.noise.noise_params[0]: self.sigma_source}
-                                if self.sigma_source is not None else {}))
-        return self.overrides.get(col_name, (self.noise, default_sources))
+        return self.overrides.get(col_name, (self.noise, self._default_sources()))
+
+    def required_free_noise_params(self):
+        """The free-parameter names this objective estimates -- the noise sources' (exactly as
+        :meth:`LikelihoodObjective.required_free_noise_params`) PLUS the time-error scale's, so
+        an estimated ``sigma_t`` (``sigma_t = fit st__FREE``) is recognized as a declared
+        nuisance rather than flagged an orphan free parameter (ADR-0021, ADR-0112). Without the
+        second half a marginalized fit that *estimates* the timing scale is refused at load."""
+        names = set()
+        specs = [self._default_sources(), *[sources for _f, sources in self.overrides.values()]]
+        for sources in specs:
+            for source in sources.values():
+                names |= source.required_free_params()
+        st = self.sigma_t_source.required_free_param()
+        if st is not None:
+            names.add(st)
+        return names
 
     def _resolve_noise_scalar(self, sources, noise_model, exp_data, exp_row, col_name):
         """``(primary σ, {secondary: value})`` for one datum from its noise sources + the PSet,

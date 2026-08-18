@@ -1,0 +1,32 @@
+# =============================================================================
+#  First-order decay          dx/dt = -k * x          x(t) = exp(-k t)   (x0 = 1)
+# =============================================================================
+#  The simplest kinetics, used here to isolate ONE effect: what happens to the
+#  estimate of the decay rate k when the *times* at which the data were sampled
+#  are uncertain? The initial amount x0 is known (= 1); only k is fitted.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k   1.0    # decay rate           <- FITTED
+    x0  1.0    # initial amount (known)
+  end parameters
+
+  begin molecule types
+    X()
+  end molecule types
+
+  begin seed species
+    X()  x0
+  end seed species
+
+  begin observables
+    Molecules  X_obs  X()
+  end observables
+
+  begin reaction rules
+    decay: X() -> 0  k
+  end reaction rules
+
+end model

@@ -1479,7 +1479,22 @@ class Configuration:
                         name, stacked, fields['measurement_params'], replicate_lengths)
                 action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
                 points = sorted({float(x) for x in stacked[stacked.indvar]})
-                if preequilibrate is not None:
+                if self._time_error_active():
+                    # A time_error (marginalized) fit integrates the likelihood over the latent
+                    # measurement time, which is only defined for a time course sampled densely
+                    # over the support (ADR-0112, #587). Pre-equilibration, steady-state, and
+                    # parameter-scan experiments carry no such time axis to marginalize, so they
+                    # are refused rather than silently integrated over the wrong grid.
+                    if preequilibrate is not None or action_type != 'time_course':
+                        raise PybnfError(
+                            f"Experiment '{name}': a time_error fit supports only a plain "
+                            "time-course experiment.",
+                            "The latent measurement time is marginalized over a dense time grid, "
+                            "which a preequilibrate:, steady_state, or parameter_scan experiment "
+                            "does not provide.")
+                    action = self._time_error_timecourse(name, method, fields)
+                    self._attach_nf_options(action, fields, method)
+                elif preequilibrate is not None:
                     # New-era pre-equilibration (ADR-0052, #440): equilibrate UNDER the named
                     # condition (unmeasured, to steady state), perturb to the measurement
                     # condition, then measure -- one simulation, two phases, state carried over.
@@ -1899,6 +1914,49 @@ class Configuration:
                 raise PybnfError(
                     f"Experiment '{name}': 'n_steps' must be a positive integer (got {n_steps}).")
             d['step'] = span / float(n_steps)
+        return TimeCourse(d)
+
+    def _time_error_active(self):
+        """Whether a ``time_error`` clause (ADR-0112, #587) is present -- so a data-driven time
+        course must be simulated on a dense grid over the support, not at the reported times."""
+        return any(isinstance(k, tuple) and k[0] == 'time_error' for k in self.config)
+
+    def _time_error_timecourse(self, name, method, fields):
+        """A uniform dense grid over ``[t_start, t_end]`` for a marginalized (``time_error``)
+        experiment (ADR-0112, #587).
+
+        A marginalized column integrates the likelihood over the latent measurement time, so the
+        trajectory must be sampled densely over the whole timing-uncertainty **support** -- NOT
+        at the (sparse) reported data times, which only *centre* the timing prior and need not be
+        grid points. So a ``time_error`` experiment states its support and resolution on the
+        experiment line exactly like a constraint-only one: ``t_end:`` (required -- the upper
+        support bound ``tmax``, set beyond the last data point so the prior is not hard-truncated),
+        optional ``t_start:`` (default 0 = the paper's ``t0``), and optional ``n_steps:`` (the
+        quadrature resolution; default 100 -- make it dense relative to ``sigma_t``). The objective
+        infers ``[t0, tmax]`` from this grid's span and integrates over its points."""
+        t_end = fields.get('t_end')
+        if t_end is None:
+            raise PybnfError(
+                f"Experiment '{name}' is part of a time_error (marginalized) fit, so it must be "
+                "simulated on a dense grid over the whole timing-uncertainty support -- not at the "
+                "reported data times.",
+                "State the support on the experiment line: 't_end: <tmax>' (required -- the upper "
+                "support bound, beyond the last data point so the timing prior is not truncated), "
+                "and optionally 't_start: <t0>' (default 0) and 'n_steps: <N>' (default 100; the "
+                "quadrature resolution -- make it dense relative to sigma_t).")
+        d = {'suffix': name, 'method': method, 'time': t_end}
+        t_start = fields.get('t_start')
+        if t_start is not None:
+            if float(t_start) >= float(t_end):
+                raise PybnfError(
+                    f"Experiment '{name}': t_start ({t_start}) must be less than t_end ({t_end}).")
+            d['t_start'] = t_start
+        span = float(t_end) - float(t_start if t_start is not None else 0.0)
+        n_steps = float(fields.get('n_steps', 100))
+        if n_steps < 1:
+            raise PybnfError(
+                f"Experiment '{name}': 'n_steps' must be a positive integer (got {n_steps}).")
+        d['step'] = span / n_steps
         return TimeCourse(d)
 
     def _load_experiment_constraints(self, name, base, data_key, constraint_file):
