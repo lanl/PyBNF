@@ -202,6 +202,13 @@ class GlobalConfig(PyBNFConfigModel):
     bng_command: str = Field(default_factory=_default_bng_command)
     smoothing: int = 1
     backup_every: int = 1
+    # Also checkpoint the best fit's information criteria (#560): every backup that finds a
+    # new best fit re-simulates it once and writes Results/information_criteria_backup.txt,
+    # so a run that has not terminated -- or was killed -- is scoreable from its own
+    # artifacts, rather than only after the terminal path writes information_criteria.txt.
+    # Already a no-op for an objective that is not a proper likelihood. 0 = off, for a model
+    # where one extra simulation per backup interval is too expensive.
+    backup_information_criteria: int = 1
     time_course: Any = ()
     param_scan: Any = ()
     min_objective: float = float('-inf')

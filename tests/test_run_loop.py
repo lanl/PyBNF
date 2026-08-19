@@ -36,7 +36,7 @@ import pickle
 import numpy as np
 import pytest
 
-from .context import algorithms, budget as budget_mod, pset, printing
+from .context import algorithms, budget as budget_mod, objective, pset, printing
 from pybnf.pset import Trajectory, FailedSimulationError
 
 
@@ -906,7 +906,15 @@ class _PicklableCfg:
         self.variables = variables
 
 
-def _bare_backup_algo(tmp_path, *, refine=False, delete_old_files=0):
+class _PicklableObjective:
+    """Objective stand-in for the backup tests. ``supports_pointwise_log_likelihood``
+    is the gate the information-criteria path reads (#560); False here, so a bare
+    backup neither re-simulates nor writes a criteria checkpoint unless a test opts in."""
+
+    supports_pointwise_log_likelihood = False
+
+
+def _bare_backup_algo(tmp_path, *, refine=False, delete_old_files=0, backup_ic=1):
     """Minimal *picklable* Algorithm carrying what backup()/output_results read.
 
     The trajectory is deliberately excluded from the pickle (Algorithm.should_pickle)
@@ -919,11 +927,13 @@ def _bare_backup_algo(tmp_path, *, refine=False, delete_old_files=0):
     variables = [pset.FreeParameter('v1__FREE', 'uniform_var', 0, 100)]
     algo = object.__new__(_ConcreteAlgorithm)
     algo.config = _PicklableCfg(
-        {'output_dir': out, 'delete_old_files': delete_old_files, 'num_to_output': 100},
+        {'output_dir': out, 'delete_old_files': delete_old_files, 'num_to_output': 100,
+         'backup_information_criteria': backup_ic},
         variables)
     algo.res_dir = res_dir
     algo.refine = refine
     algo.output_counter = 0
+    algo.objective = _PicklableObjective()
     algo.trajectory = Trajectory(100)
     algo.trajectory.add(_pset('iter0run0', 5.0), 5.0, 'iter0run0')
     return algo
@@ -951,6 +961,201 @@ class TestBackup:
         assert isinstance(loaded_algo, algorithms.Algorithm)
         np.testing.assert_allclose(loaded_algo.trajectory.best_score(), 5.0)
         assert [p.name for p in loaded_pending] == ['pending0', 'pending1']
+
+
+# --------------------------------------------------------------------------- #
+# The information-criteria half of the checkpoint (#560)
+#
+# sorted_params_backup.txt has always been checkpointed; information_criteria.txt
+# was written only on the terminal path, so a run was un-scoreable at every moment
+# except its last. These cover the second half now written beside it: that it is
+# written, what it says, and the several ways it costs nothing.
+# --------------------------------------------------------------------------- #
+def _ic(log_likelihood=-12.5):
+    return objective.information_criteria(log_likelihood, k=2, n=10)
+
+
+def _kv(text):
+    """The key/value lines of an information-criteria file (comments dropped) — the
+    part a consumer parses, and the part a checkpoint shares with the final file."""
+    return dict(line.split('\t', 1) for line in text.splitlines() if not line.startswith('#'))
+
+
+class _CountingCompute:
+    """Stands in for _compute_information_criteria, counting the re-simulations the
+    checkpoint asks for and recording which pset each one scored."""
+
+    def __init__(self, ic=None):
+        self.ic = _ic() if ic is None else ic
+        self.scored = []
+
+    def __call__(self, best_pset):
+        self.scored.append(best_pset.name)
+        return self.ic
+
+
+class _WatchingCompute:
+    """Records which halves of the checkpoint are already on disk when the re-simulation is
+    asked for. Module-level (not a closure) because backup() pickles the algorithm it is
+    attached to."""
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+        self.on_disk = []
+
+    def __call__(self, best_pset):
+        self.on_disk.extend(p for p in ('alg_backup.bp', 'Results/sorted_params_backup.txt')
+                            if os.path.isfile(self.out_dir + '/' + p))
+        return _ic()
+
+
+class TestInformationCriteriaCheckpoint:
+
+    def test_backup_writes_the_criteria_beside_the_parameter_sets(self, tmp_path, monkeypatch):
+        """The point of #560: both halves of a scoreable result are on disk during the
+        run. The checkpoint carries the same key/value lines as the final artifact — one
+        parser reads either — and its comments say which parameter set it describes and
+        that the run is not over."""
+        algo = _bare_backup_algo(tmp_path)
+        monkeypatch.setattr(algo, '_compute_information_criteria', _CountingCompute())
+
+        algo.backup()
+
+        text = open(algo.res_dir + '/information_criteria_backup.txt').read()
+        assert 'CHECKPOINT' in text
+        assert 'iter0run0' in text and 'sorted_params_backup.txt' in text
+        # The run's own artifact is untouched: it still means "this run's result".
+        assert not os.path.exists(algo.res_dir + '/information_criteria.txt')
+        # Written now, it differs from the checkpoint only in comments.
+        algo._emit_information_criteria(_ic())
+        assert _kv(text) == _kv(open(algo.res_dir + '/information_criteria.txt').read())
+        assert _kv(text)['log_likelihood'] == '-12.5'
+
+    def test_a_checkpoint_reports_to_the_log_not_the_console(self, tmp_path, monkeypatch, capsys):
+        """A checkpoint fires on a cadence, so — like the parameter-set checkpoint beside
+        it — it reports to the log, not to the console. Only the end-of-run file prints."""
+        monkeypatch.setattr(printing, 'verbosity', 1)
+        algo = _bare_backup_algo(tmp_path)
+        monkeypatch.setattr(algo, '_compute_information_criteria', _CountingCompute())
+
+        algo.backup()
+        assert 'Information criteria' not in capsys.readouterr().out
+
+        algo._emit_information_criteria(_ic())
+        assert 'Information criteria (best fit)' in capsys.readouterr().out
+
+    def test_an_unchanged_best_fit_is_not_re_simulated(self, tmp_path, monkeypatch):
+        """The whole cost of this feature is one simulation per checkpoint, and it is
+        only paid when there is something new to say. A search's long converged tail —
+        the 40 minutes of stragglers that motivated #560 — re-simulates nothing: the file
+        on disk already describes the best fit."""
+        algo = _bare_backup_algo(tmp_path)
+        compute = _CountingCompute()
+        monkeypatch.setattr(algo, '_compute_information_criteria', compute)
+
+        algo.backup()
+        algo.backup()
+        algo.backup()
+        assert compute.scored == ['iter0run0']
+
+        algo.trajectory.add(_pset('iter9run3', 1.0), 1.0, 'iter9run3')
+        algo.backup()
+        assert compute.scored == ['iter0run0', 'iter9run3']
+        assert 'iter9run3' in open(algo.res_dir + '/information_criteria_backup.txt').read()
+
+    def test_a_failed_write_is_retried_at_the_next_checkpoint(self, tmp_path):
+        """Only a file that was actually written licenses skipping the next recompute.
+        Otherwise one transient I/O error would leave a run whose best fit never changes
+        again with no criteria checkpoint at all — the exact failure #560 removes."""
+        algo = _bare_backup_algo(tmp_path)
+        compute = _CountingCompute()
+        algo._compute_information_criteria = compute
+        algo._emit_information_criteria = lambda *a, **k: False
+
+        algo._checkpoint_information_criteria()
+        algo._checkpoint_information_criteria()
+        assert compute.scored == ['iter0run0', 'iter0run0']
+
+    def test_a_non_likelihood_objective_costs_nothing(self, tmp_path):
+        """No information criterion is defined for sos / kl / direct_pass, so the gate in
+        _compute_information_criteria makes the checkpoint a no-op — no re-simulation, no
+        file, on the objectives where there would be nothing to write."""
+        algo = _bare_backup_algo(tmp_path)   # objective.supports_pointwise_log_likelihood False
+
+        algo.backup()
+
+        assert not os.path.exists(algo.res_dir + '/information_criteria_backup.txt')
+        assert os.path.isfile(algo.res_dir + '/sorted_params_backup.txt')
+
+    def test_backup_information_criteria_0_turns_it_off(self, tmp_path, monkeypatch):
+        """The escape hatch for a model where one extra simulation per backup interval is
+        too expensive. Everything else about the checkpoint is unchanged."""
+        algo = _bare_backup_algo(tmp_path, backup_ic=0)
+        compute = _CountingCompute()
+        monkeypatch.setattr(algo, '_compute_information_criteria', compute)
+
+        algo.backup()
+
+        assert compute.scored == []
+        assert not os.path.exists(algo.res_dir + '/information_criteria_backup.txt')
+        assert os.path.isfile(algo.res_dir + '/sorted_params_backup.txt')
+
+    def test_a_refine_checkpoints_under_its_own_name(self, tmp_path, monkeypatch):
+        """A refine's parameter checkpoint is sorted_params_refine_backup.txt, so its
+        criteria checkpoint is information_criteria_refine_backup.txt: both halves of one
+        phase's checkpoint carry the same name, and neither is confused with the fit's."""
+        algo = _bare_backup_algo(tmp_path, refine=True)
+        monkeypatch.setattr(algo, '_compute_information_criteria', _CountingCompute())
+
+        algo.backup()
+
+        text = open(algo.res_dir + '/information_criteria_refine_backup.txt').read()
+        assert 'sorted_params_refine_backup.txt' in text
+        assert not os.path.exists(algo.res_dir + '/information_criteria_backup.txt')
+
+    def test_an_empty_trajectory_has_nothing_to_score(self, tmp_path):
+        """A backup can land before the first result comes back (an expired budget, a
+        slow first generation); there is no best fit to re-simulate, and asking the
+        Trajectory for one would raise."""
+        algo = _bare_backup_algo(tmp_path)
+        algo.trajectory = Trajectory(100)
+        compute = _CountingCompute()
+        algo._compute_information_criteria = compute
+
+        algo._checkpoint_information_criteria()
+
+        assert compute.scored == []
+        assert not os.path.exists(algo.res_dir + '/information_criteria_backup.txt')
+
+    def test_the_re_simulation_runs_after_the_resume_state_is_written(self, tmp_path):
+        """Re-simulating the best fit is the only slow part of a checkpoint, so it runs last:
+        a kill during it leaves the parameter sets and the resume pickle current, and one
+        interval of criteria is the most that can be lost."""
+        algo = _bare_backup_algo(tmp_path)
+        watch = _WatchingCompute(str(tmp_path))
+        algo._compute_information_criteria = watch
+
+        algo.backup()
+
+        assert watch.on_disk == ['alg_backup.bp', 'Results/sorted_params_backup.txt']
+
+    def test_a_checkpoint_leaves_no_mid_run_profiled_noise_behind(self, tmp_path):
+        """profiled_noise.txt reports the scales estimated at the run's FINAL best fit, and
+        the scoring pass the checkpoint runs captures them at whatever point it scored. A
+        checkpoint must not leave that behind for the end-of-run tail to report if its own
+        scoring pass fails."""
+        algo = _bare_backup_algo(tmp_path)
+
+        def _mid_run_scoring(best_pset):
+            algo._profiled_noise = {'sigma': 3.0}
+            return _ic()
+
+        algo._compute_information_criteria = _mid_run_scoring
+
+        algo._checkpoint_information_criteria()
+
+        assert os.path.isfile(algo.res_dir + '/information_criteria_backup.txt')
+        assert algo._profiled_noise == {}
 
 
 class _ResumeProbe(algorithms.Algorithm):

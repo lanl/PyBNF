@@ -11,6 +11,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "banana.target",
     [
      "target.exp"
@@ -430,6 +434,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -887,6 +895,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "banana.target",
     [
      "target.exp"
@@ -1330,6 +1342,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -1864,6 +1880,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -2433,6 +2453,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "beta",
     [
      1.0
@@ -2991,6 +3015,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "beta",
     [
      1.0
@@ -3410,6 +3438,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -3867,6 +3899,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "beta",
     [
      1.0
@@ -4309,6 +4345,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -4647,6 +4687,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -5042,6 +5086,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -5316,6 +5364,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -5607,6 +5659,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -5948,6 +6004,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -6286,6 +6346,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -6635,6 +6699,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -7008,6 +7076,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -7388,6 +7460,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -7750,6 +7826,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -8137,6 +8217,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -8483,6 +8567,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -8835,6 +8923,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -9181,6 +9273,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -9533,6 +9629,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -9856,6 +9956,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -10207,6 +10311,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -10541,6 +10649,10 @@
    ],
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -10930,6 +11042,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "beta",
     [
      0.5,
@@ -11306,6 +11422,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "beta",
     [
      1.0
@@ -11634,6 +11754,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [
@@ -11975,6 +12099,10 @@
     1
    ],
    [
+    "backup_information_criteria",
+    1
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -12313,6 +12441,10 @@
   [
    [
     "backup_every",
+    1
+   ],
+   [
+    "backup_information_criteria",
     1
    ],
    [

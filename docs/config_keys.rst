@@ -972,6 +972,28 @@ Output Options
 
     * ``backup_every = 10``
 
+**backup_information_criteria**
+  If 1, each checkpoint also writes ``Results/information_criteria_backup.txt`` — the AIC/BIC/AICc
+  and full normalized log-likelihood of the best fit so far — alongside
+  ``Results/sorted_params_backup.txt``. Both halves of a scoreable result are then on disk
+  throughout the run, so a fit that is still going, or that was killed or crashed, can be scored
+  from its own artifacts; without it, ``Results/information_criteria.txt`` appears only when the
+  run terminates normally. The checkpoint file has the same format as the final one, with extra
+  ``#`` comment lines marking it as a snapshot of a run in progress; the final artifact is
+  unchanged.
+
+  Cost is one extra simulation per checkpoint, and only when the checkpoint has something new to
+  report: nothing is spent while the best fit is unchanged (the file already describes it), and
+  nothing is spent at all unless the objective is a proper likelihood, since no information
+  criterion is defined otherwise. The cadence is ``backup_every``. Set this to 0 for a model
+  where even that is too expensive.
+
+  Default: 1
+
+  Example:
+
+    * ``backup_information_criteria = 0``
+
 **save_best_data**
   If 1, run an extra simulation at the end of fitting using the best-fit parameters, and save the best-fit .gdat and .scan files to the Results directory. 
   

@@ -135,6 +135,14 @@ class Algorithm(ABC):
     #: the run loop's own tail -- always read a well-defined empty map.
     _profiled_noise = {}
 
+    #: Name of the parameter set ``Results/information_criteria_backup.txt`` currently
+    #: describes (#560), or None while no checkpoint has been written. The checkpoint costs
+    #: one re-simulation, so it is skipped while this still names the best fit -- the file on
+    #: disk already describes it. A **class** attribute for the same reason ``_profiled_noise``
+    #: is: an algorithm unpickled from a backup written before this existed reads a
+    #: well-defined None and simply writes its first checkpoint.
+    _ic_checkpoint_name = None
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
@@ -252,6 +260,10 @@ class Algorithm(ABC):
         self.trajectory = Trajectory(self.config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
+        # The next run writes its own Results directory, so nothing there describes a
+        # best fit yet -- and PSet names restart from iter0run0, so a name carried over
+        # from the previous run would suppress the first checkpoint (#560).
+        self._ic_checkpoint_name = None
         self.job_group_dir = dict()
         self.fail_count = 0
         self.success_count = 0
@@ -1087,6 +1099,13 @@ class Algorithm(ABC):
                 print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
                        'problem.')
 
+        # Then the other half of a scoreable result: the absolute log-likelihood behind the
+        # information criteria, which lives in no parameter table (#560). LAST, because it is
+        # the only part of a checkpoint that can take a while -- it re-simulates the best fit
+        # -- and a kill during it must not leave the resume state a whole interval behind the
+        # parameter sets it belongs with.
+        self._checkpoint_information_criteria()
+
     def get_backup_every(self):
         """
         Returns a number telling after how many individual simulation returns should we back up the algorithm.
@@ -1591,7 +1610,73 @@ class Algorithm(ABC):
             logger.exception('Failed to compute information criteria for the best fit')
             return None
 
-    def _emit_information_criteria(self, ic):
+    def _checkpoint_information_criteria(self):
+        """Write ``Results/information_criteria_backup.txt`` for the best fit so far -- the
+        information-criteria half of the run's checkpoint (#560).
+
+        ``sorted_params_backup.txt`` has been checkpointed since forever, but the information
+        criteria were written only on the terminal path, so the two halves of a scoreable
+        result had entirely different lifetimes: a run was un-scoreable at every moment
+        except its last, even though the best parameter vector had been on disk the whole
+        time. That matters because ``log_likelihood`` here is the only place PyBNF reports
+        the FULL normalized log-likelihood -- the minimized ``Obj`` column of the parameter
+        table is the *reduced* objective -- so an absolute AIC/BIC, or any benchmark score
+        built on one, cannot be computed from the parameter checkpoint alone. A killed,
+        crashed, or simply not-yet-finished run now carries both halves.
+
+        Cheap by construction, and free unless it has something new to say:
+
+        * a no-op unless the objective is a proper likelihood (the gate in
+          :meth:`_compute_information_criteria`), so nothing is spent on the ``sos`` /
+          ``sod`` / ``norm_sos`` / ``kl`` / ``wasserstein`` / ``direct_pass`` fits for which
+          no information criterion is defined;
+        * a no-op while the best fit is unchanged -- the file on disk already describes it.
+          That is exactly the long converged tail of a search, where the reported number has
+          stopped moving and only stragglers are still running;
+        * otherwise one extra simulation per checkpoint, i.e. one per ``backup_every *
+          population_size * smoothing`` simulation returns. ``backup_information_criteria =
+          0`` turns it off for a model where even that is too expensive.
+
+        Failures are logged and swallowed by the two helpers this calls: a diagnostics file
+        must never abort a run, and a *periodic* one must not start aborting one mid-flight
+        either.
+        """
+        if not self.config.config['backup_information_criteria']:
+            return
+        if len(self.trajectory) == 0:
+            return
+        best_name = self.trajectory.best_fit_name()
+        if best_name == self._ic_checkpoint_name:
+            logger.debug('Best fit is unchanged since the last information-criteria checkpoint; '
+                         'not re-simulating it')
+            return
+        # _compute_information_criteria captures the profiled noise scales at whatever point
+        # it scores, and profiled_noise.txt reports the run's FINAL best fit, so a checkpoint
+        # must not leave a mid-run value behind for the end-of-run tail to report if its own
+        # scoring pass fails.
+        saved_profiled_noise = self._profiled_noise
+        try:
+            ic = self._compute_information_criteria(self.trajectory.best_fit())
+        finally:
+            self._profiled_noise = saved_profiled_noise
+        if ic is None:
+            return
+        # Mirrors sorted_params_backup.txt / sorted_params_refine_backup.txt, so both halves
+        # of one phase's checkpoint carry the same name, and the final artifact keeps its
+        # exact current meaning.
+        name = 'refine_backup' if self.refine else 'backup'
+        wrote = self._emit_information_criteria(
+            ic, name=name,
+            preamble=['# CHECKPOINT of a run still in progress: the best fit SO FAR, not the',
+                      "#   run's result. That is information_criteria.txt, written at the end.",
+                      '# Parameter set: %s -- its row in sorted_params_%s.txt.' % (best_name, name)])
+        if wrote:
+            # Only a written file licenses skipping the next recompute; a transient I/O
+            # failure must not leave the checkpoint permanently stale on a run whose best
+            # fit never changes again.
+            self._ic_checkpoint_name = best_name
+
+    def _emit_information_criteria(self, ic, name='', preamble=()):
         """Write ``Results/information_criteria.txt`` (and a console line) for a fit.
 
         ``ic`` is the :class:`~pybnf.objective.InformationCriteria` from
@@ -1599,11 +1684,20 @@ class Algorithm(ABC):
         objective, or no best fit -- in which case nothing is written. AIC/BIC/AICc
         rank this fit against competing models (lower is better); this is the
         first-class form of the AIC lesson 45 (model selection) computes by hand.
+
+        :param name: File suffix. ``''`` (the default) writes the run's result,
+            ``information_criteria.txt``; anything else writes
+            ``information_criteria_<name>.txt`` -- today the periodic checkpoint
+            (:meth:`_checkpoint_information_criteria`, #560). A checkpoint differs from
+            the result only in its ``#`` comments and in staying off the console, so one
+            parser reads either file.
+        :param preamble: Extra ``#`` comment lines placed above the standard header.
+        :return: True if a file was written.
         """
         if ic is None:
-            return
+            return False
         aicc_str = ('%.10g' % ic.aicc) if ic.aicc is not None else 'n/a (n <= k+1)'
-        lines = [
+        lines = list(preamble) + [
             '# Information criteria for the best-fit parameter set (lower is better).',
             '# Valid for a likelihood objective only (normal / lognormal / lnnormal / laplace /',
             '#   neg_bin / student_t). Computed from the full normalized log-likelihood',
@@ -1619,17 +1713,22 @@ class Algorithm(ABC):
             'BIC\t%.10g' % ic.bic,
             'AICc\t%s' % aicc_str,
         ]
-        path = str(Path(self.res_dir) / 'information_criteria.txt')
+        filename = 'information_criteria.txt' if name == '' else 'information_criteria_%s.txt' % name
+        path = str(Path(self.res_dir) / filename)
         try:
             with open(path, 'w') as f:
                 f.write('\n'.join(lines) + '\n')
         except Exception:
-            logger.exception('Failed to write information_criteria.txt')
-            return
+            logger.exception('Failed to write %s' % filename)
+            return False
         logger.info('Wrote information criteria %s' % path)
-        print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
-               '(k=%d, n=%d, lnL=%.6g)'
-               % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
+        if name == '':
+            # The checkpoint says the same thing about a run still in progress, on a
+            # cadence; like the parameter-set checkpoint beside it, it stays in the log.
+            print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
+                   '(k=%d, n=%d, lnL=%.6g)'
+                   % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
+        return True
 
     def _emit_profiled_noise(self):
         """Write ``Results/profiled_noise.txt`` for a fit that profiles a noise scale out of
