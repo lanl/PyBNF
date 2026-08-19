@@ -12,7 +12,7 @@ from . import edition
 from pydantic import ValidationError
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
-    Mutation, MutationSet
+    Mutation, MutationSet, OutOfBoundsException
 from .bngsim_sbml_model import (
     BNGSIM_HAS_PER_SPECIES_ATOL,
     BNGSIM_HAS_SBML,
@@ -3203,8 +3203,21 @@ class Configuration:
                 # are unchanged at every edition.
                 ed = edition.resolve_edition(self.config.get('edition'))
                 edition.require_edition(ed, 2, "the 'parameter:' declaration syntax")
-                free_param = self._free_parameter_from_record(k[1], self.config[k],
-                                                              initialization_distribution)
+                try:
+                    free_param = self._free_parameter_from_record(k[1], self.config[k],
+                                                                  initialization_distribution)
+                except OutOfBoundsException:
+                    # An out-of-box initial_value. FreeParameter's own constructor check
+                    # fires here, during _load_variables, long before _load_start_point can
+                    # give it a proper message -- and OutOfBoundsException subclasses
+                    # Exception, so pybnf.main reports it as "an unknown error ... please
+                    # report this bug" (#583). Say what is actually wrong instead.
+                    raise PybnfError(
+                        f"start point out of bounds for '{k[1]}'",
+                        f"Parameter '{k[1]}' declares an initial_value outside its own "
+                        f"lower/upper bounds. A start point is refused rather than moved into "
+                        f"the box.",
+                        "Correct the initial_value, or widen the parameter's bounds.")
             else:
                 continue
 
@@ -3300,11 +3313,23 @@ class Configuration:
             return
 
         if self.config['fit_type'] == 'check':
-            raise PybnfError(
-                'start point declared for job_type = check',
-                "A start point was declared, but job_type = check does not fit anything -- it "
-                "simulates each model at the values in the model file itself and ignores every "
-                "free parameter. Remove the start point, or choose a job_type that fits.")
+            # Only the explicit `start_point =` line is refused here. An `initial_value:` is
+            # part of a parameter's own declaration, and pointing an existing fit conf at
+            # `job_type = check` -- the documented way to test that the models simulate
+            # before fitting -- must keep working; refusing it would demand deleting fields
+            # the real fit needs. A `start_point` line, by contrast, says nothing except
+            # "start the fit here", which `check` cannot honour.
+            explicit = sorted(n for n, (_, s) in declared.items() if s == 'start_point')
+            if explicit:
+                raise PybnfError(
+                    'start point declared for job_type = check',
+                    f"start_point is set for {', '.join(explicit)}, but job_type = check does "
+                    f"not fit anything -- it simulates each model at the values in the model "
+                    f"file itself and ignores every free parameter. Remove the start_point "
+                    f"line(s), or choose a job_type that fits.")
+            self.start_point = {}
+            self.start_point_spelling = {}
+            return
 
         for name in sorted(declared):
             theta, spelling = declared[name]
@@ -3341,7 +3366,23 @@ class Configuration:
                     f"{10.0 ** theta:g}.")
             lo_u, hi_u = self._start_point_box(v)
             u = v.to_sampling_space(theta)
-            if not (lo_u <= u <= hi_u):
+            # Two checks, because two different comparisons are made downstream and they must
+            # not disagree. The first is against the DECLARED box in sampling space, which is
+            # the only one that sees a `u`-flagged box (there lower_bound/upper_bound are
+            # +-inf). The second replays the exact theta-space comparison every consumer
+            # makes via ``set_value(..., reflect=False)``. They are not equivalent at ULP
+            # resolution: ``log10`` is monotone but not injective there, so a theta a few ULP
+            # outside a log-scaled wall maps to exactly the wall's ``u``. Checking only the
+            # first accepted such a value at load and then let it raise a bare
+            # OutOfBoundsException at run time -- reported as "an unknown error ... please
+            # report this bug", which is precisely what this method exists to prevent (#583).
+            out_of_box = not (lo_u <= u <= hi_u)
+            if not out_of_box:
+                try:
+                    v.set_value(theta, reflect=False)
+                except OutOfBoundsException:
+                    out_of_box = True
+            if out_of_box:
                 lo_t, hi_t = v.from_sampling_space(lo_u), v.from_sampling_space(hi_u)
                 raise PybnfError(
                     f"start point out of bounds for '{name}'",

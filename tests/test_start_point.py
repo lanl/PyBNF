@@ -29,20 +29,28 @@ from pybnf.pset import FreeParameter
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _conf(tmp_path, extra=None, fit_type='cmaes', bounds=(-10.0, 10.0), n=2):
+def _conf(tmp_path, extra=None, fit_type='cmaes', bounds=(-10.0, 10.0), n=2,
+          extra_vars=None, edition2=False):
     """A real ``Configuration`` over an analytical 2-D Gaussian with ``uniform_var``
     parameters ``p1..pN`` -- the legacy positional declaration style, on purpose: the
-    ``start_point`` key has to work for a conf that cannot express ``initial_value``."""
+    ``start_point`` key has to work for a conf that cannot express ``initial_value``.
+
+    ``edition2`` switches to the new-era spelling (``job_type`` / ``objective``), which is
+    the only edition where a ``parameter:`` record is legal."""
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec([2.0, -1.0], [1.0, 1.0]))
     lo, hi = bounds
     base = {
         'output_dir': str(tmp_path) + '/out',
         'models': {tgt}, tgt: [exp], 'exp_data': {exp},
-        'objfunc': 'direct_pass', 'fit_type': fit_type, 'initialization': 'lh',
+        'initialization': 'lh',
         'delete_old_files': 1, 'verbosity': 0, 'wall_time_sim': 0, 'random_seed': 1234,
         'population_size': 4, 'max_iterations': 2,
     }
-    base.update({('uniform_var', 'p%d' % (i + 1)): [lo, hi] for i in range(n)})
+    if edition2:
+        base.update({'edition': 2, 'job_type': fit_type, 'objective': 'sos'})
+    else:
+        base.update({'fit_type': fit_type, 'objfunc': 'direct_pass'})
+    base.update(extra_vars or {('uniform_var', 'p%d' % (i + 1)): [lo, hi] for i in range(n)})
     base.update(extra or {})
     return config.Configuration(base)
 
@@ -313,6 +321,83 @@ class TestAdjacentSilentFailures:
         row = PetabParameterRow('k', True, 1.0, 10.0, nominal_value=20.0)
         with pytest.raises(PybnfError, match='nominalValue'):
             free_parameter_from_row(row)
+
+
+class TestReviewFindings:
+    """Defects found by review of this change, before it shipped. Each was a way for the
+    start-point work to reintroduce the failure mode it exists to remove."""
+
+    @pytest.mark.parametrize('lo,hi,delta,side', [
+        (100.0, 1000.0, -1, 'lower'),
+        (1.0, 10.0, +1, 'upper'),
+    ])
+    def test_a_log_scaled_start_one_ulp_outside_a_wall_is_refused_at_load(
+            self, tmp_path, lo, hi, delta, side):
+        """Config validated in SAMPLING space while every consumer re-checks in THETA space.
+        ``log10`` is monotone but not injective at ULP resolution, so a theta a few ULP
+        outside a log-scaled wall maps to exactly the wall's ``u`` -- accepted at load, then
+        raising a bare OutOfBoundsException mid-fit, reported as 'an unknown error … please
+        report this bug'. Both comparisons are now made at load."""
+        import numpy as np
+        wall = lo if side == 'lower' else hi
+        theta = np.nextafter(wall, 0.0 if delta < 0 else wall * 2)
+        with pytest.raises(PybnfError, match='out of bounds'):
+            _conf(tmp_path, {('start_point', 'k'): float(theta)},
+                  extra_vars={('loguniform_var', 'k'): [lo, hi]})
+
+    def test_job_type_check_still_loads_a_conf_carrying_initial_value(self, tmp_path):
+        """Pointing an existing fit conf at ``job_type = check`` is the documented way to
+        test that the models simulate. Refusing it because a ``parameter:`` record carries an
+        ``initial_value`` would demand deleting fields the real fit needs."""
+        conf = _conf(tmp_path, {('parameter', 'q'): {
+            'prior': 'uniform', 'lower': '-10', 'upper': '10', 'initial_value': '2.0'}},
+            fit_type='check', edition2=True)
+        assert conf.start_point == {}
+
+    def test_job_type_check_still_refuses_an_explicit_start_point_line(self, tmp_path):
+        """A ``start_point`` line says nothing except 'start the fit here', which ``check``
+        cannot honour -- so that one is still an error."""
+        with pytest.raises(PybnfError, match='check'):
+            _conf(tmp_path, {('start_point', 'p1'): 1.0}, fit_type='check')
+
+    @pytest.mark.parametrize('bad', ['50', '0'])
+    def test_out_of_box_initial_value_is_a_config_error_not_a_bare_exception(self, tmp_path, bad):
+        """``FreeParameter``'s constructor check fires during ``_load_variables``, before the
+        start-point resolver can give it a message -- and ``OutOfBoundsException`` subclasses
+        ``Exception``, so it reached the user as 'please report this bug'. ``0`` is included
+        because it is the value the old truthiness guard let through unvalidated."""
+        with pytest.raises(PybnfError, match='out of bounds'):
+            _conf(tmp_path, {('parameter', 'z'): {
+                'prior': 'uniform', 'lower': '1', 'upper': '10', 'initial_value': bad}},
+                fit_type='de', edition2=True)
+
+    def test_profile_likelihood_theta_star_is_the_initial_value_spelling_only(self, tmp_path):
+        """The two spellings deliberately diverge on this one job_type. ``initial_value:`` on
+        every parameter means 'these are theta*, skip the polish'; ``start_point`` means
+        'start here' and the polish still runs. Unifying them silently changed the PEtab
+        path, where the importer now emits a start point per parameter from ``nominalValue``
+        -- so every problem with a full nominalValue column would have profiled around the
+        nominal point instead of the optimum. A nominalValue is not a claim of optimality."""
+        conf = _conf(tmp_path, {('start_point', 'p1'): 1.0, ('start_point', 'p2'): 1.0})
+        spelling = conf.start_point_spelling
+        assert set(spelling.values()) == {'start_point'}
+        assert not any(s == 'initial_value' for s in spelling.values())
+
+    def test_the_record_does_not_call_a_sampled_draw_a_box_center(self, tmp_path, monkeypatch):
+        """For a population algorithm an undeclared coordinate is a random / Latin-hypercube
+        draw, not the box centre. Labelling it 'box_center' would be a false statement in the
+        one artifact added so a reader can tell a displaced start from a correct one."""
+        from pathlib import Path
+        H.install(monkeypatch)
+        conf = _conf(tmp_path, fit_type='de')
+        from pybnf.algorithms.optimizers.differential_evolution import DifferentialEvolution
+        alg = DifferentialEvolution(conf)
+        H.drive(alg)
+        text = (Path(alg.res_dir) / 'start_point.txt').read_text()
+        rows = [ln.split('\t') for ln in text.splitlines() if ln and not ln.startswith('#')]
+        srcs = {r[0]: r[2] for r in rows if len(r) > 2}
+        assert srcs.get('p1') == 'sampled' and srcs.get('p2') == 'sampled'
+        assert 'box_center' not in text.split('# parameter')[-1]
 
 
 def test_an_out_of_box_value_reflects_rather_than_clamping():

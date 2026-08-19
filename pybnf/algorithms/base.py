@@ -1736,18 +1736,32 @@ class Algorithm(ABC):
         replicate records its own. Log-and-swallow on failure, like every artifact here: a
         provenance file must never be the reason a fit dies.
         """
+        if resumed:
+            # A resumed run has no start to resolve: `psets` is the pending in-flight list
+            # unpickled from the backup, i.e. arbitrary mid-run individuals. Writing them
+            # here would overwrite the original run's record -- destroying the one artifact
+            # that says where the fit began -- and label mid-run values as a start point.
+            # The record the original run left is the true one; leave it alone.
+            return
         try:
             declared = getattr(self.config, 'start_point', None) or {}
             first = self._start_pset_for_record(psets)
+            # Whether this algorithm RESOLVES a start point (a start-point optimizer, which
+            # keeps `start_pset`/`start_psets`) or DRAWS an initial population. For the
+            # latter an undeclared coordinate is a random / Latin-hypercube draw, not the box
+            # centre -- labelling it 'box_center' would be a false statement in the one file
+            # that exists so a reader can tell a displaced start from a correct one.
+            resolves_start = (getattr(self, 'start_pset', None) is not None
+                              or bool(getattr(self, 'start_psets', None)))
             rows = []
             for v in self.variables:
                 spk = getattr(self, 'START_POINT_KEY', None)
-                if resumed:
-                    source = 'resumed'
-                elif spk is not None and spk in self.config.config:
+                if spk is not None and spk in self.config.config:
                     source = 'refine'
                 elif v.name in declared:
                     source = getattr(self.config, 'start_point_spelling', {}).get(v.name, 'declared')
+                elif not resolves_start:
+                    source = 'sampled'
                 elif v.has_bounded_support:
                     source = 'box_center'
                 elif not v.has_prior:
@@ -1774,15 +1788,18 @@ class Algorithm(ABC):
                 '#           parameter under asymmetric truncation -- declare a start point to pin it',
                 '#         point      -- the single var / logvar / lnvar value',
                 '#         prior      -- an unbounded prior with no declared start (p1)',
+                '#         sampled    -- drawn from the prior / bounds, as a population',
+                '#           algorithm or sampler does for every undeclared coordinate',
                 '#         refine     -- the previous phase best fit, injected by a method chain',
-                '#         resumed    -- run resumed from a checkpoint; no start was resolved',
                 '# lower/upper are the DECLARED box, or +-inf where the parameter declares none',
                 '#   (a parameter with no box can also finish outside any range you have in mind).',
                 # A multi-start fit pins its FIRST start and scatters the rest, so say how
                 # many there are: a reader who assumes their declared point governed the
-                # whole fit is making the mistake this file exists to prevent.
-                'starts\t%d' % (getattr(self, 'n_starts', None) or len(psets or [])),
-                'starts_pinned\t%d' % (1 if declared and not resumed else 0),
+                # whole fit is making the mistake this file exists to prevent. Only
+                # MultiStartOptimizer has a start COUNT; for everyone else the initial pset
+                # list is a population or a chain set, which is a different thing entirely.
+                'starts\t%d' % int(getattr(self, 'n_starts', 1) or 1),
+                'starts_pinned\t%d' % (1 if declared else 0),
                 '#',
                 '# parameter\tstart\tsource\tlower\tupper',
             ] + rows

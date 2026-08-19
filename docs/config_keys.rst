@@ -884,9 +884,11 @@ optimizer's own settings (e.g. ``simplex_step`` for Simplex), so you do not need
   and alongside the legacy ``*_var`` declarations. Declaring both for one parameter is fine if they
   agree and an error if they disagree.
 
-  For ``job_type = profile_likelihood`` a start point given for **every** parameter has a second
-  meaning: those values are taken as the optimum θ\* to profile around, and the polish is skipped. A
-  partial start point there is just a start point.
+  One exception to the equivalence: for ``job_type = profile_likelihood``, an ``initial_value:``
+  given for **every** parameter means those values *are* the optimum θ\* to profile around, and the
+  polish is skipped. ``start_point`` never carries that meaning — it names where the polish starts,
+  and the polish still runs — so a value you believe is optimal should be written as
+  ``initial_value:`` there.
 
   Default: None (the box centre, or the ``var`` / ``logvar`` point)
 

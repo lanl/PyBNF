@@ -717,14 +717,23 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         # assembled gradient -- the preflight / theta* evaluation reads the runner kind
         # off it, and super().start_run() would set it up again anyway.
         self._setup_gradient_path()
-        # Profile likelihood gives a COMPLETE start point its own reading: these values are
-        # theta*, the optimum to profile around, so the polish is skipped. That is shipped,
-        # documented, and pinned by tests, and it is the one job_type where a start point
-        # does not mean "begin here". A partial spec cannot mean theta* -- there is no
-        # optimum to profile around without every coordinate -- so it falls through to the
-        # polish, which is now said honestly (#583): the old message asserted that no
-        # initial_value was supplied even when some were.
-        declared = getattr(self.config, 'start_point', None) or {}
+        # Profile likelihood gives a complete `initial_value:` specification its own reading:
+        # those values are theta*, the optimum to profile around, so the polish is skipped.
+        # That is shipped, documented and pinned by tests, and it is the one place a declared
+        # value does not mean "begin here".
+        #
+        # It is deliberately scoped to the `initial_value:` SPELLING, not to the resolved
+        # start point (#583). `start_point = <p> <v>` means "start the search here" for every
+        # job_type including this one -- it names the polish start and the polish still runs.
+        # Unifying the two here would have been a silent behaviour change on the PEtab path:
+        # the importer now emits a start point per parameter from `nominalValue`, and every
+        # PEtab problem whose parameters all carry one would have skipped the polish and
+        # profiled around the nominal point rather than the optimum. A nominalValue is not a
+        # claim of optimality, and that is exactly the class of silent displacement this work
+        # exists to remove.
+        spelling = getattr(self.config, 'start_point_spelling', None) or {}
+        declared = {n: v for n, v in (getattr(self.config, 'start_point', None) or {}).items()
+                    if spelling.get(n) == 'initial_value'}
         if declared and all(v.name in declared for v in self.variables):
             # Explicit theta* (a start point for every parameter): evaluate it once. That
             # single evaluation yields BOTH the reference objective and the inner-runner

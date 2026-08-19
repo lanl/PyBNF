@@ -172,7 +172,12 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
         diversity."""
         requested = max(1, int(self.config.config.get(self._n_starts_key, 1)))
         if not self._is_box_start():
-            if requested > 1:
+            # A refine legitimately runs one start -- it polishes the point it was handed, it
+            # does not re-scatter -- so the note below would be false there. It is aimed at a
+            # standalone point-start fit, where an explicitly set start count really is being
+            # dropped on the floor.
+            injected = self.START_POINT_KEY in self.config.config
+            if requested > 1 and not injected:
                 # Silently ignoring an explicitly-set start count is the same defect class
                 # as #559: the key is accepted, does nothing, and says nothing.
                 print1(f"Note: {self._n_starts_key} = {requested}, but this fit has no prior "

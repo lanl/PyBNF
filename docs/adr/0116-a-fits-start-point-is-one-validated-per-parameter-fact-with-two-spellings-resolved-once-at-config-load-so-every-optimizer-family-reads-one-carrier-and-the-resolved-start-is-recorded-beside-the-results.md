@@ -114,6 +114,19 @@ puts a prior/box record's start on `.value` and a no-prior record's into `p1` in
 space, and a legacy `*_var` conf can reach neither. A dict is also immune to the shared
 template mutation described below.
 
+The two spellings are synonyms **except on `profile_likelihood`**, where a complete
+`initial_value:` specification has always meant "these values are θ\*, skip the polish".
+That reading is scoped to the `initial_value:` spelling deliberately; `start_point` means
+"start the search here" for every `job_type` including this one. Unifying them looked
+tidier and was caught in review as a silent behaviour change on the PEtab path: the
+importer now emits a start point per parameter from `nominalValue`, so every problem with
+a full `nominalValue` column would have skipped the polish and profiled around the nominal
+point rather than the optimum. **A `nominalValue` is not a claim of optimality**, and a
+profile measured from a non-minimal reference puts every confidence bound in the wrong
+place — silently, since the importer writes `verbosity = 0`. A divergence between two
+synonyms on one `job_type` is a real cost; manufacturing exactly the class of displacement
+this ADR exists to remove is a larger one.
+
 ### Resolution is per parameter, not per fit
 
 `_resolve_start_pset` now resolves each parameter independently: a declared start, else

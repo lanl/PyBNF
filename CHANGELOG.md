@@ -38,6 +38,13 @@ All notable changes to PyBNF are documented below. This project adheres to
   start at all, since that start seeds the distribution mean and is never itself evaluated.
   The PEtab importer now emits `start_point` from `nominalValue`, a mapping ADR-0043's
   field table advertised and neither direction implemented.
+  The two spellings are synonyms **except on `profile_likelihood`**, where a complete
+  `initial_value:` specification keeps its established meaning — those values are θ\*, so the
+  polish is skipped. `start_point` never carries that meaning; it names where the polish
+  starts. The distinction is load-bearing: a `nominalValue` is not a claim of optimality, and
+  unifying the two would have made every PEtab problem with a full `nominalValue` column
+  profile around the nominal point rather than the optimum, putting every confidence bound in
+  the wrong place without a word.
 - **A `model:` declaration carries that model's own CVODE tolerances, so a per-species
   absolute tolerance can finally be written by hand (#586, ADR-0116).** `sbml_atol` and
   `sbml_rtol` are one key each over *every* SBML/Antimony model in a fit, and that — not the
