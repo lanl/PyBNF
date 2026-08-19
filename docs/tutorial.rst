@@ -59,7 +59,8 @@ Optimizers and identifiability
   ``migrate_every``, ``num_to_migrate``).
 - `44. Initialization <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/44_initialization>`__
   — where the search starts: seeding the initial population from an informative
-  prior (``initialization``).
+  prior, or pinning the start at a point you already have — a previous fit's
+  result, a published value (``initialization``, ``start_point``).
 
 Objectives and noise models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1071,6 +1071,11 @@ EXAMPLES = (
             ConfCheck('uninformed.conf', recover={'alpha': 1.2, 'gamma': 0.8},
                       dragged_min_err=0.10,
                       note='no informative prior to seed from -> tiny budget cannot find the basin'),
+            # The third way to answer "where does the search begin": pin it. A start point
+            # near the answer -- the point a previous fit would have handed you, ~12% and
+            # ~10% off the truth -- puts cmaes in the right basin from flat bounds, and the
+            # optimizer polishes the rest of the way.
+            ConfCheck('start_point.conf', recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.01),
         ),
     ),
     Example(
