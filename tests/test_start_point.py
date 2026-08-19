@@ -3,7 +3,7 @@
 Both issues are about the same absence. There was no way to say "start this fit at exactly
 this point, inside the declared box", every workaround failed *silently*, and no artifact
 recorded where a run actually began -- so a fit displaced from its intended start reported a
-plausible number and looked exactly like a correct one. ADR-0116 closes that with one fact,
+plausible number and looked exactly like a correct one. ADR-0117 closes that with one fact,
 two spellings, and one record:
 
 * ``start_point = <parameter> <value>`` -- edition-agnostic, one line per parameter, the only

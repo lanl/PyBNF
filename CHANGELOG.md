@@ -7,7 +7,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 - **A fit's start point is a supported, validated, per-parameter fact that every optimizer
-  reads, and the resolved start is recorded beside the results (#583, #559, ADR-0116).**
+  reads, and the resolved start is recorded beside the results (#583, #559, ADR-0117).**
   There was no supported way to say "start this fit at exactly this point, inside the
   declared box." Every route failed, and every one failed **silently** — the fit ran,
   converged, and reported a plausible number from a point that was not the one that was
@@ -170,7 +170,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 - **`starting_params` is now a configuration error on a `job_type` that has never read it
-  (#559, ADR-0116).** It has exactly one read site — the Bayesian sampler base — so on the
+  (#559, ADR-0117).** It has exactly one read site — the Bayesian sampler base — so on the
   other fourteen `job_type`s it was accepted, validated against nothing, and then discarded
   without a word: a `gntr` job seeded with it produced **bit-identical** output to the same
   job with the line deleted. The error names `start_point` as the replacement, which every
@@ -179,12 +179,12 @@ All notable changes to PyBNF are documented below. This project adheres to
   alphabetical, so round-tripping a result row back into it silently permutes the values).
   Unchanged for the six samplers that do read it, which is every shipped conf that sets it.
 - **A mixed bounded/unbounded parameter set no longer starts every parameter at the wrong
-  place (#583, ADR-0116).** Start resolution was all-or-nothing, so one unbounded parameter
+  place (#583, ADR-0117).** Start resolution was all-or-nothing, so one unbounded parameter
   sent *every* parameter down the point-start branch — where a bounded parameter's `p1` is
   its **lower bound**, read as if it were a sampling-space start value. A `loguniform_var`
   over `[1e-3, 1e3]` started at `10**1e-3 = 1.0023`, its lower corner, with nothing logged at
   any level. Resolution is now per parameter.
-- **CMA-ES no longer freezes a coordinate whose prior is truncated (#583, ADR-0116).** The
+- **CMA-ES no longer freezes a coordinate whose prior is truncated (#583, ADR-0117).** The
   per-coordinate box width was `p2 - p1`, which is the box only for a `uniform`/`loguniform`
   declaration; for a **truncated** prior those are the family's location and scale, so the
   width came out as the scale and, for the entirely ordinary `sd == mean`, as exactly `0.0`.
@@ -192,20 +192,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   singular covariance and could never move for the whole run. Widths now come from the
   prior's own support — bit-identical for every `uniform`/`loguniform` box.
 - **`FreeParameter` no longer skips its bounds check for a value of exactly `0`, and no
-  longer mutates the shared template on a fold (#583, ADR-0116).** The check was guarded by
+  longer mutates the shared template on a fold (#583, ADR-0117).** The check was guarded by
   truthiness rather than `is not None`, so `initial_value: 0` — a legitimate value for a
   linear parameter — was stored unvalidated. Separately, folding an out-of-box value wrote
   `self.value = self.lower_bound` onto the template `FreeParameter` living in
   `Configuration.variables`, which every Algorithm aliases and which rides the algorithm's
   pickle, so the contamination survived a checkpoint and a `--resume`. Nothing read it.
 - **The concurrent multi-start scatter honors `initialization`, and says so when it cannot
-  scatter (#583, ADR-0116).** It called the Latin-hypercube sampler unconditionally, so
+  scatter (#583, ADR-0117).** It called the Latin-hypercube sampler unconditionally, so
   `initialization = rand` was a silent no-op for the whole gradient/CMA-ES multi-start
   family; and a `population_size > 1` on a fit with no box to scatter across was silently
   reduced to a single start — the same "accepted, does nothing, says nothing" shape as
   `starting_params`.
 - **`job_type = profile_likelihood` no longer reports that no start point was supplied when
-  some were (#583, ADR-0116).** A partial specification cannot be θ\*, so it correctly falls
+  some were (#583, ADR-0117).** A partial specification cannot be θ\*, so it correctly falls
   through to the polish — but it said "No initial_value supplied" while doing so. It now
   names the parameters that were left undeclared. A complete specification keeps its
   established meaning there: those values are the optimum, and the polish is skipped.

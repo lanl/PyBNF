@@ -102,6 +102,35 @@ and the phase's ``status`` and ``reason`` say why. The usual cause is a ``wall_t
 that the search consumed; see ``wall_time_refine_frac``, which holds part of the budget
 back for the refine.
 
+Where did my fit actually start?
+--------------------------------
+Every run writes ``Results/start_point.txt``, before any parameter set is scored. One row per
+free parameter, in **declaration** order (not the alphabetical order the parameter tables use),
+giving the start value, where it came from, and the box it was checked against::
+
+    starts	5
+    starts_pinned	1
+    # parameter	start	source	lower	upper
+    kcat	17.5	start_point	0.01	1000
+    Km	50.5	box_center	1	100
+
+The ``source`` column is the thing to read. ``start_point`` / ``initial_value`` mean you pinned
+that coordinate; ``box_center`` means it came from the 0.5 quantile of the bounded prior;
+``sampled`` means it was drawn from the prior or bounds, as a population algorithm or sampler
+does; ``refine`` means the previous phase's best fit was injected by a method chain.
+
+This matters most when a fit converges to a plausible-looking number from the wrong place, which
+has no symptom of its own. In particular, ``box_center`` for a **truncated non-uniform** prior is
+the prior's *median*, and under asymmetric truncation the median is not the location parameter --
+a ``normal`` prior with ``mean: 0.088, sd: 0.2`` truncated to ``[0, 1]`` has its median at
+``0.173``, a factor of ~2 away. If you meant to start at the mean, say so with
+:ref:`start_point <start_point>` rather than relying on the box centre.
+
+``starts`` and ``starts_pinned`` describe a multi-start fit: a declared start point pins start 0
+and the remaining starts stay independent draws, so your point governed one of them, not all.
+A refine writes ``Results/start_point_refine.txt`` beside it. A resumed run writes neither --
+it leaves the original run's record intact, since a resume has no start of its own.
+
 .. note::
 
    For models simulated with the bngsim backend, ``wall_time_sim`` is honored

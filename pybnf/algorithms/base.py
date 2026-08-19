@@ -853,7 +853,7 @@ class Algorithm(ABC):
     def _seed_start_point_pset(self, sampled_pset):
         """Pin the parameters that declare a start point to it, in ONE pset.
 
-        ADR-0043 Phase 2, re-pointed at the unified carrier by ADR-0116. The declared start
+        ADR-0043 Phase 2, re-pointed at the unified carrier by ADR-0117. The declared start
         point -- ``start_point = <p> <v>`` lines and ``parameter:`` records'
         ``initial_value:`` fields alike, resolved and validated into
         ``Configuration.start_point`` -- is where the search/walk should begin (a PEtab
@@ -1222,7 +1222,7 @@ class Algorithm(ABC):
         else:
             psets = self.start_run()
 
-        # Record where this fit actually began, before anything is scored (#583, ADR-0116).
+        # Record where this fit actually began, before anything is scored (#583, ADR-0117).
         # Placed here because it is the one point every family passes through with its start
         # in hand: the start-point optimizers resolved theirs in __init__, the populations and
         # samplers in the start_run() just above, and a resumed run has none of either.
@@ -1716,7 +1716,7 @@ class Algorithm(ABC):
         return psets[0] if psets else None
 
     def _emit_start_point(self, psets, resumed=False):
-        """Write ``Results/start_point.txt`` -- where this fit actually began (#583, ADR-0116).
+        """Write ``Results/start_point.txt`` -- where this fit actually began (#583, ADR-0117).
 
         Provenance, not configuration: it answers "what point did the search start from,
         and was that the point I asked for?" for a run that has already happened. Every

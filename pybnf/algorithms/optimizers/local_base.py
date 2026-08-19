@@ -11,7 +11,7 @@ step is an additive ``u`` step) exactly as Simplex does its log-space arithmetic
 
 * **start-point resolution** -- the injected refiner start point (set by
   ``pybnf._refine_best_fit`` under :attr:`START_POINT_KEY`) when refining; else,
-  **per parameter** (#583, ADR-0116): the declared start point
+  **per parameter** (#583, ADR-0117): the declared start point
   (``start_point = <p> <v>``, or a ``parameter:`` record's ``initial_value:``,
   resolved into ``Configuration.start_point``); the **box center** in sampling
   space ``u`` for a bounded-support prior -- the global-start mode (#404,
@@ -55,7 +55,7 @@ class StartPointOptimizer(Algorithm):
 
         * the **declared start point** -- ``start_point = <p> <v>``, or the ``initial_value:``
           field of a ``parameter:`` record, both resolved and validated into
-          ``Configuration.start_point`` (#583/#559, ADR-0116). Refused, never folded, if it
+          ``Configuration.start_point`` (#583/#559, ADR-0117). Refused, never folded, if it
           left the declared box: :meth:`FreeParameter.set_value` is called with
           ``reflect=False`` here, so a value that slipped past config-load validation raises
           rather than silently reflecting to an arbitrary interior point;

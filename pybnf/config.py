@@ -348,7 +348,7 @@ class Configuration:
         # -- profiling removes a declared parameter from the search, not from the .conf.
         # A no-op (leaves self.variables untouched) unless noise_profiling = 1.
         self._apply_noise_profiling()
-        # The fit's start point (#583/#559, ADR-0116). Deliberately the first thing after
+        # The fit's start point (#583/#559, ADR-0117). Deliberately the first thing after
         # _apply_noise_profiling: that is the earliest point at which self.variables is
         # FINAL (profiling prunes parameters out of the search here), so a start_point
         # naming a profiled-out parameter is caught rather than silently ignored.
@@ -3248,7 +3248,7 @@ class Configuration:
         return v.prior_support()
 
     def _load_start_point(self):
-        """Resolve the fit's declared start point into ``self.start_point`` (#583/#559, ADR-0116).
+        """Resolve the fit's declared start point into ``self.start_point`` (#583/#559, ADR-0117).
 
         One fact with two spellings, merged here into one theta-space dict so that every
         algorithm family reads a single carrier:

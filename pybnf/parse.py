@@ -679,7 +679,7 @@ def parse(s):
     parameter_field = pp.Group(pp.Suppress(',') + param_field_name + colon - param_field_value)
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
-    # the start point of the fit, one parameter per line (#583, ADR-0116):
+    # the start point of the fit, one parameter per line (#583, ADR-0117):
     #   start_point = <parameter> <value>
     # The value is always in the parameter's own units (theta), never in sampling space, at
     # every ``parameter_scale`` -- so a log10 parameter takes ``start_point = k 0.017``, not
