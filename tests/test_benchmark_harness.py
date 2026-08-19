@@ -85,6 +85,11 @@ _EXCLUDE = frozenset({
     # refused for the sampler fit_types this oracle covers -- so it says nothing about the
     # synthesized configs this test compares. Excluded alongside its sibling noise_location.
     'noise_profiling',
+    # Post-freeze checkpoint key (#560): also write the information criteria beside the
+    # parameter sets at each backup. On by default, but a no-op for every benchmark here --
+    # each .target names direct_pass or ave_norm_sos, and no information criterion is defined
+    # for an objective that is not a proper likelihood, so nothing is computed or written.
+    'backup_information_criteria',
 })
 
 

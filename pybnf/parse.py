@@ -36,7 +36,8 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen',
                # The fit's total wall-clock budget in seconds (#529): 0 = unbounded.
                'wall_time_fit', 'verbosity',
-               'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
+               'exchange_every', 'backup_every', 'backup_information_criteria',
+               'bootstrap', 'crossover_number', 'ind_var_rounding',
                # Profile every estimated free-parameter noise scale out analytically instead
                # of searching it (#562, ADR-0108): 0 = off.
                'noise_profiling',

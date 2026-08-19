@@ -6,6 +6,33 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **The information criteria are checkpointed alongside the parameter sets, so a run is
+  scoreable before it ends (#560).** `sorted_params_backup.txt` has been written throughout a
+  run since forever; `information_criteria.txt` was written **only** on the terminal path. Every
+  downstream consumer of a fit's result needs both, so a run was un-scoreable at every moment
+  except its last — even though the best parameter vector had been on disk the whole time and the
+  number was fully determined long before the process exited. That gap is not cosmetic:
+  `log_likelihood` in `information_criteria.txt` is the only place PyBNF reports the **full
+  normalized** log-likelihood (every dropped per-point constant restored), while the minimized
+  `Obj` column of the parameter table is the *reduced* objective, so an absolute AIC/BIC — or any
+  benchmark score built on one — could not be computed from the checkpoint alone.
+  Each checkpoint now also writes `Results/information_criteria_backup.txt` (and
+  `information_criteria_refine_backup.txt` during a refine, mirroring the parameter file beside
+  it). Same format as the final artifact, differing only in `#` comments that mark it a snapshot
+  and name the parameter set it describes, so one parser reads either file. The final
+  `information_criteria.txt` is unchanged, in name, content, and meaning.
+  Cost is one extra simulation per checkpoint, and only when the checkpoint has something new to
+  say. Nothing is spent while the best fit is unchanged — the file on disk already describes it,
+  which is exactly the long converged tail that motivated the issue: a `gntr` fit of
+  `Brannmark_JBC2010` (100 starts × 1000 iterations) reached its final objective with ~40 minutes
+  left, all of it spent waiting for a file rather than for an answer. Nothing is spent at all
+  unless the objective is a proper likelihood, since no information criterion is defined for
+  `sos` / `sod` / `norm_sos` / `kl` / `wasserstein` / `direct_pass`. Otherwise it is one
+  simulation per `backup_every * population_size * smoothing` returns — 1 in 1000 at the common
+  `backup_every = 10, population_size = 100`. The new key **`backup_information_criteria`**
+  (default 1) turns it off for a model where even that is too expensive.
+  A killed or crashed long run is worth what it should be, too: the parameters survived it
+  already, and now the score does.
 - **`sbml_atol` takes `auto` and `tracking`, so a model whose own scale asks for a *looser*
   absolute tolerance can have one (#557, ADR-0114).** ADR-0103's derivation is allowed only to
   tighten. That is a no-regression rule and it is why the derivation could be applied to every model
