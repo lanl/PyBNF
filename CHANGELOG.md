@@ -6,6 +6,36 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **`job_type = de` and `job_type = ade` no longer stop after generation 0 on a negative
+  objective (#561, ADR-0114).** The Differential Evolution family tested convergence with a
+  *ratio* of objectives — `max(fit) / min(fit) < 1 + stop_tolerance` — which reads as
+  convergence only on a positive objective bounded below by 0 (a χ², an SSE). On a likelihood
+  objective (a negative log-likelihood, unbounded below) it fired at generation 0: an
+  all-negative population lands the ratio in `(0, 1]`, and a single `inf`-scored failed
+  simulation makes it `-inf`, below *every* threshold — so no value of `stop_tolerance`
+  disabled it, and both members of the family were unrunnable on any estimated-σ likelihood
+  fit (the whole Grein et al. 2026 benchmark subset-I corpus, 23/23 slugs). On
+  `Borghans_BiophysChem1997` (`islands = 4`, `population_size = 400`, `max_iterations = 600`)
+  the run terminated inside the first generation, spending a 240,000-evaluation budget on 0
+  generations of search — and `stop_tolerance = -1e9` still fired, because the failed-sim
+  `-inf` is below that too.
+  The convergence test is now an **absolute range in objective units**,
+  `max - min <= de_tolfun`, assessed over the **finite** fitnesses only — sign-agnostic, and
+  with failed simulations (`inf`) ignored so one dead candidate can neither trigger nor block
+  the stop. It gets its own key, `de_tolfun` (a range in objective units, where
+  `stop_tolerance` was a dimensionless ratio), which falls back to `stop_tolerance` when unset
+  so an existing config keeps its threshold magnitude — mirroring how `cmaes_tolfun` splits
+  off `cmaes_stop_tol` (ADR-0106, the CMA-ES sibling of exactly this defect). The shared check
+  lives in one `DifferentialEvolutionBase` helper, so `de` and `ade` cannot drift apart again
+  (the missing `!= 0` guard that let `ade` divide `0/0` on an all-zero population was such a
+  drift; the range form has no division). In an island run, convergence is assessed only once
+  every island has completed an iteration, so ignoring `inf` cannot let one finished island
+  stop the whole search before the others have run.
+  Regression tests pin each failure mode at its decision point (an all-negative spread and an
+  `inf`-defeated threshold are *not* converged; a collapsed finite population *is*; `de_tolfun`
+  is its own knob; the all-zero `ade` population no longer divides) plus an end-to-end guard
+  that both optimizers advance past generation 0 on an objective that is negative everywhere
+  the population lands.
 - **`job_type = ms` no longer dies on a fit with a measurement-model formula observable (#578).**
   Multiple shooting was unusable on essentially the whole PEtab-imported corpus — including its
   own motivating problem, `Borghans_BiophysChem1997` — failing on the first outer iteration with

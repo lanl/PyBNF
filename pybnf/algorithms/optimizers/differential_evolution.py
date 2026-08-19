@@ -15,7 +15,10 @@ from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 
 import logging
+from typing import Optional
+
 import numpy as np
+from pydantic import Field
 import re
 import copy
 
@@ -40,6 +43,16 @@ class DEFamilyConfig(PyBNFConfigModel):
     mutation_rate: float = 0.5
     mutation_factor: float = 0.5
     stop_tolerance: float = 0.002
+    # The DE-family convergence tolerance as an absolute range in OBJECTIVE units
+    # (#561, ADR-0114): the population is converged when the spread of its finite
+    # fitnesses, ``max - min``, has collapsed to within this value. ``stop_tolerance``
+    # was a *ratio* (``max/min``), which only reads as convergence on a positive
+    # objective bounded below by 0; ``de_tolfun`` measures the range directly, so it
+    # is well-defined for a likelihood objective too. It is a range in objective units
+    # where ``stop_tolerance`` was dimensionless, so it gets its own key -- and falls
+    # back to ``stop_tolerance`` when unset (mirroring ``cmaes_tolfun`` -> ``cmaes_stop_tol``,
+    # ADR-0106), so an existing config keeps the threshold magnitude it had.
+    de_tolfun: Optional[float] = Field(default=None, ge=0.0)
     de_strategy: str = 'rand1'
 
 
@@ -77,6 +90,13 @@ class DifferentialEvolutionBase(Algorithm):
         self.mutation_factor = config.config['mutation_factor']
         self.max_iterations = config.config['max_iterations']
         self.stop_tolerance = config.config['stop_tolerance']
+        # The convergence tolerance the run actually uses (#561, ADR-0114): an
+        # absolute range in objective units. Unset ``de_tolfun`` falls back to
+        # ``stop_tolerance`` -- the single knob the test used before -- so an existing
+        # config keeps its threshold magnitude, now read as a range rather than a ratio.
+        configured_tolfun = config.config['de_tolfun']
+        self.de_tolfun = (self.stop_tolerance if configured_tolfun is None
+                          else float(configured_tolfun))
 
         self.strategy = config.config['de_strategy']
         options = ('rand1', 'rand2', 'best1', 'best2', 'all1', 'all2')
@@ -127,6 +147,33 @@ class DifferentialEvolutionBase(Algorithm):
                 new_pset_vars.append(p)
 
         return PSet(new_pset_vars)
+
+    def _population_converged(self):
+        """The DE-family convergence test (#561, ADR-0114), shared by ``de`` and ``ade``.
+
+        The population is converged when the spread of its objective values --
+        measured as an **absolute range** ``max - min`` over the **finite** fitnesses
+        only -- has collapsed to within ``de_tolfun``.
+
+        This replaces the original **ratio** test ``max/min < 1 + stop_tolerance``,
+        which is a convergence statement only when the objective is positive and
+        bounded below by 0 (a chi-square, an SSE). On a likelihood objective -- a
+        negative log-likelihood, unbounded below -- an all-negative population lands
+        the ratio in ``(0, 1]`` and it fires at generation 0 regardless of the spread;
+        and any single ``inf``-scored failed simulation, paired with a negative
+        fitness, makes the ratio ``-inf`` and defeats *every* threshold. Both failure
+        modes are the negative sign, not a real convergence -- so the family was
+        unrunnable on any estimated-sigma likelihood fit.
+
+        The range form is sign-agnostic. Ignoring the non-finite entries is what makes
+        a failed simulation unable to either satisfy or defeat the test; it also
+        subsumes the original ``!= 0`` guard against dividing by an all-zero
+        population, which ``ade`` never had. An empty finite set (every member still
+        ``inf``, e.g. before the first result) is never "converged".
+        """
+        finite = np.asarray(self.fitnesses, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        return bool(finite.size and (finite.max() - finite.min()) <= self.de_tolfun)
 
     def start_run(self):
         return NotImplementedError("start_run() not implemented in DifferentialEvolutionBase class")
@@ -399,8 +446,18 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
                 logger.debug('Island %i completed %i iterations' % (island, self.iter_num[island]))
                 # print(sorted(self.fitnesses[island]))
 
-            # Convergence check
-            if (np.min(self.fitnesses) != 0) and (np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance):
+            # Convergence check: absolute range of the finite population (#561, ADR-0114).
+            # Only assessed once EVERY island has completed at least one iteration
+            # (``min(self.iter_num) >= 1``): until then some islands are still at their
+            # initial ``inf`` sentinel, and since the test (correctly) ignores non-finite
+            # fitnesses, a single finished island's collapsed subpopulation could
+            # otherwise stop the whole run before the others have searched at all. The
+            # old ratio test got this for free -- an unevaluated island's ``inf`` made the
+            # global ``max`` infinite -- but that same coupling is what let a failed sim
+            # defeat the test; the gate restores the "wait for the whole population" half
+            # without the sign/failed-sim half. (For a single island this holds from the
+            # first iteration on, so single-island DE is unaffected.)
+            if min(self.iter_num) >= 1 and self._population_converged():
                 return 'STOP'
 
             # Return a copy, so our internal data structure is not tampered with.
@@ -526,8 +583,8 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
                 logger.debug('Completed %i simulations' % self.sims_completed)
             if iters_complete >= self.max_iterations:
                 return 'STOP'
-            # Convergence check
-            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance:
+            # Convergence check: absolute range of the finite population (#561, ADR-0114).
+            if self._population_converged():
                 return 'STOP'
 
         if 'best' in self.strategy:

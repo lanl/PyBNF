@@ -1672,15 +1672,25 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
     * ``mutation_factor = 0.7``
 
 **stop_tolerance**
-  Stop the run if within the current popluation, :math:`max\_objective / min\_objective < 1 + e`, where *e* is the value of this key. This criterion triggers when the entire population has converged to roughly the same objective function value. 
-  
+  Stop the run when the current population has converged to roughly the same objective function value, measured as an **absolute range** of the objective across the finite members of the population: the run ends once :math:`max\_objective - min\_objective \le e`, where *e* is the value of this key. Failed simulations (which score infinity) are ignored, so one dead candidate can neither trigger nor block the stop. This is a range in the units of your objective function; on a likelihood objective (a negative log-likelihood, which is unbounded below) set it to the smallest population spread you still consider unconverged. Prior to #561 this was a *ratio* test (:math:`max/min < 1 + e`), which stopped the run at generation 0 on any objective that can go negative; see ``de_tolfun`` to set the range independently of this key's magnitude.
+
   Default: 0.002
-  
+
   Example:
-  
+
     * ``stop_tolerance = 0.001``
-  
-  
+
+
+**de_tolfun**
+  The convergence tolerance the run actually uses: the absolute objective range (see ``stop_tolerance``) below which the population counts as converged. It is a range in the units of your objective function, whereas ``stop_tolerance`` was historically a dimensionless ratio; the two are separated so a fit can set a meaningful objective-range stop without reinterpreting the legacy key. Unset, it follows ``stop_tolerance``, so an existing config keeps the threshold magnitude it had.
+
+  Default: unset (follows ``stop_tolerance``)
+
+  Example:
+
+    * ``de_tolfun = 1e-3``
+
+
 **de_strategy**
   Specifies how new parameter sets are chosen. The following options are available:
   

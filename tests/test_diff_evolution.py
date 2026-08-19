@@ -332,9 +332,10 @@ class TestDifferentialEvolutionPlumbing:
             assert recorded == [None, None, None]
 
     def test_convergence_stop(self, tmp_path):
-        """Oracle (convergence criterion): when max(fitness)/min(fitness) <
-        1 + stop_tolerance (and min != 0) the island reports 'STOP'. Equal
-        fitnesses give ratio exactly 1, below any positive tolerance."""
+        """Oracle (convergence criterion, #561/ADR-0114): when the absolute range of the
+        finite fitnesses, max - min, is <= de_tolfun (which follows stop_tolerance when
+        unset) the island reports 'STOP'. Equal fitnesses give range exactly 0, below any
+        non-negative tolerance."""
         de = algorithms.DifferentialEvolution(_de_config(tmp_path, islands=1, population_size=3,
                                                          stop_tolerance=0.002))
         assert self._run_one_island_generation(de, [5.0, 5.0, 5.0]) == 'STOP'
@@ -373,7 +374,7 @@ class TestDifferentialEvolutionPlumbing:
             nxt = []
             for i, ps in enumerate(current):
                 res = algorithms.Result(ps, self.d1s, ps.name)
-                res.score = 10.0 + i                  # distinct, nonzero: no convergence STOP
+                res.score = 10.0 + i                  # range 5 > de_tolfun: no convergence STOP
                 out = de.got_result(res)
                 if isinstance(out, list):
                     nxt += out
@@ -442,8 +443,9 @@ class TestAsyncDifferentialEvolution:
         assert out == 'STOP'
 
     def test_convergence_stop(self, tmp_path):
-        """Oracle (convergence criterion): at an iteration boundary, equal
-        fitnesses make max/min = 1 < 1 + stop_tolerance, so the run stops."""
+        """Oracle (convergence criterion, #561/ADR-0114): at an iteration boundary, equal
+        fitnesses make the finite range max - min = 0 <= de_tolfun (which follows
+        stop_tolerance when unset), so the run stops."""
         ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, population_size=3,
                                                                        max_iterations=100,
                                                                        stop_tolerance=0.002))

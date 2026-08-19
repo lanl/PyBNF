@@ -75,7 +75,12 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'n_starts']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
-                 'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
+                 'mutation_rate', 'mutation_factor', 'stop_tolerance',
+                 # Differential Evolution (job_type = de / ade, #561/ADR-0114): the
+                 # convergence tolerance as an absolute range in objective units
+                 # (unset it follows stop_tolerance).
+                 'de_tolfun',
+                 'step_size', 'simplex_step', 'simplex_log_step',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',

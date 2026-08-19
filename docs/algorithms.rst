@@ -125,7 +125,24 @@ The asynchronous version of the algorithm is identical to the sychronous algorit
 Island-based version
 """"""""""""""""""""
 
-In the island-based version of the algorithm [Penas2015]_, the population is divided into ``num_islands`` islands, which each follow the above update procedure independently. Every ``migrate_every`` iterations, a migration step occurs in which ``num_to_migrate`` individuals from each island are transferred randomly to others (according to a random permutation of the islands, keeping the number of individuals on each island constant). The migration step does not require synchronization of the islands; it is performed when the last island reaches the appropriate iteration number, regardless of whether other islands are already further along. 
+In the island-based version of the algorithm [Penas2015]_, the population is divided into ``num_islands`` islands, which each follow the above update procedure independently. Every ``migrate_every`` iterations, a migration step occurs in which ``num_to_migrate`` individuals from each island are transferred randomly to others (according to a random permutation of the islands, keeping the number of individuals on each island constant). The migration step does not require synchronization of the islands; it is performed when the last island reaches the appropriate iteration number, regardless of whether other islands are already further along.
+
+Convergence
+"""""""""""
+
+A run finishes either at ``max_iterations`` or when the population has converged to
+roughly the same objective value. Convergence is measured as an **absolute range** of the
+objective over the population: the run stops once the spread between the best and worst
+*finite* member falls to ``de_tolfun`` or below. Failed simulations (scored as infinity)
+are ignored, so one dead candidate can neither trigger nor block the stop. The range is in
+the units of your objective function, which is what makes it well-defined on a likelihood
+objective — a negative log-likelihood is unbounded below, so a *ratio* of objectives
+(the pre-#561 test) reads an all-negative population as converged and stops after
+generation 0. ``de_tolfun`` is unset by default and then follows ``stop_tolerance``, so an
+existing config keeps the threshold magnitude it had; set ``de_tolfun`` to control the
+objective range independently of that key. In an island run, convergence is assessed only
+once every island has completed at least one iteration, so a single finished island cannot
+stop the whole search before the others have run.
 
 Applications
 ^^^^^^^^^^^^

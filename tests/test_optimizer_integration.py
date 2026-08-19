@@ -12,6 +12,7 @@ These are deliberately small (low dimension, modest budgets) so the suite stays
 fast enough to run on every change. The slow, tighter-tolerance recovery checks
 (e.g. the banana valley) are marked ``slow``.
 """
+import copy
 import json
 
 import numpy as np
@@ -19,6 +20,8 @@ import pytest
 
 from . import integration_harness as H
 from .context import algorithms, config, parse
+from pybnf.data import Data
+from pybnf.pset import Model
 
 
 # fit_type -> Algorithm subclass
@@ -1299,3 +1302,191 @@ def test_local_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_t
     assert np.allclose(H.best_params(multi, 2), [6.0, 6.0], atol=0.3)                  # escaped off-center
     assert multi.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
     assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5
+
+
+# --------------------------------------------------------------------------- #
+# DE / ADE convergence is an absolute objective range over the finite
+# population, not a ratio (#561, ADR-0114)
+# --------------------------------------------------------------------------- #
+# The original DE-family test -- max(fit) / min(fit) < 1 + stop_tolerance -- reads as
+# convergence only on a positive objective bounded below by 0 (a chi-square, an SSE).
+# On a likelihood objective (a negative log-likelihood, unbounded below) it fires at
+# generation 0: an all-negative population lands the ratio in (0, 1], and a single
+# inf-scored failed simulation makes it -inf, below EVERY threshold -- so no value of
+# stop_tolerance disables it, and the whole Differential Evolution family was
+# unrunnable on any estimated-sigma likelihood fit. The test is now an absolute range
+# max - min over the FINITE fitnesses, carried by its own key de_tolfun (a range in
+# objective units, where stop_tolerance was a dimensionless ratio) that falls back to
+# stop_tolerance when unset.
+
+
+def _de_family_alg(tmp_path, fit_type, **overrides):
+    """A real ``de`` / ``ade`` algorithm over a (here unused) analytical target, so its
+    convergence helper can be exercised white-box on hand-set fitnesses."""
+    cls = {'de': algorithms.DifferentialEvolution,
+           'ade': algorithms.AsynchronousDifferentialEvolution}[fit_type]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0, 0.0], [1.0, 1.0]))
+    conf = H.make_config(tmp_path, fit_type, tgt, exp, n_params=2,
+                         population_size=12, max_iterations=10, **overrides)
+    return cls(conf)
+
+
+def _set_fitnesses(alg, fit_type, fits):
+    """``de`` holds fitnesses nested per island; ``ade`` holds a flat list."""
+    alg.fitnesses = [list(fits)] if fit_type == 'de' else list(fits)
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_de_convergence_does_not_fire_on_an_all_negative_spread(tmp_path, fit_type):
+    """The #561 defect. A likelihood population spanning ~107 NLL units is NOT
+    converged, but under the ratio form its all-negative sign put max/min in (0, 1] --
+    below 1 + stop_tolerance for any non-negative tolerance -- so the run stopped at
+    generation 0. The absolute range does not fire: 106.5 is nowhere near the
+    tolerance."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=1e-6)
+    _set_fitnesses(alg, fit_type, [-59.5, -100.0, -166.0, -120.0])   # spread 106.5
+    # The ratio form fired on exactly this population...
+    assert np.max(alg.fitnesses) / np.min(alg.fitnesses) < 1.0 + alg.stop_tolerance
+    # ...the range form does not.
+    assert alg.de_tolfun == alg.stop_tolerance
+    assert alg._population_converged() is False
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_de_convergence_is_not_defeated_by_a_failed_simulation(tmp_path, fit_type):
+    """A failed simulation scores inf. Paired with any negative fitness the ratio
+    becomes inf / negative = -inf, below every threshold -- so even stop_tolerance =
+    -1e9 fired, and there was no value that disabled the test. The range form ignores
+    the non-finite entries: the failed point can neither satisfy nor defeat
+    convergence."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=1e-6)
+    _set_fitnesses(alg, fit_type, [-59.5, np.inf, -166.0, -120.0])
+    # Under the ratio form even a -1e9 threshold fired here: inf / min = -inf < 1 - 1e9.
+    assert np.max(alg.fitnesses) / np.min(alg.fitnesses) < 1.0 + (-1e9)
+    # The finite entries still span 106.5, so the range form does not fire.
+    assert alg._population_converged() is False
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_de_convergence_fires_when_the_finite_population_collapses(tmp_path, fit_type):
+    """The other half: this is not "never converge". A finite population collapsed to
+    within de_tolfun -- even a negative one -- is converged, and an inf-scored member is
+    simply ignored rather than blocking the stop."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=1e-3)
+    _set_fitnesses(alg, fit_type, [-59.5000, -59.4998, -59.4999, -59.5])   # spread 2e-4
+    assert alg._population_converged() is True
+    _set_fitnesses(alg, fit_type, [-59.5000, np.inf, -59.4999, -59.5])     # inf ignored
+    assert alg._population_converged() is True
+
+
+def test_de_tolfun_is_a_knob_of_its_own(tmp_path):
+    """de_tolfun is a range in objective units; stop_tolerance was a dimensionless
+    ratio. They are separated so a fit can set a meaningful objective-range stop without
+    reinterpreting the legacy key. Unset, de_tolfun follows stop_tolerance."""
+    alg = _de_family_alg(tmp_path, 'de', stop_tolerance=0.002, de_tolfun=5.0)
+    assert alg.stop_tolerance == 0.002 and alg.de_tolfun == 5.0
+    # A 3-unit spread: converged under the explicit 5.0 range.
+    alg.fitnesses = [[-100.0, -98.0, -97.0, -99.5]]
+    assert alg._population_converged() is True
+    # The fallback: unset de_tolfun IS stop_tolerance (here for ade too).
+    fallback = _de_family_alg(tmp_path, 'ade', stop_tolerance=0.002)
+    assert fallback.de_tolfun == 0.002
+
+
+def test_ade_convergence_survives_an_all_zero_population(tmp_path):
+    """ade never had de's ``!= 0`` guard, so an all-zero population computed
+    max/min = 0/0 = nan (a RuntimeWarning; nan < threshold is False, so it silently
+    never stopped -- yet on a real objective a whole population at exactly 0 IS
+    converged). The range form reports convergence with no division at all: under
+    ``errstate(all='raise')`` a stray 0/0 would raise instead."""
+    alg = _de_family_alg(tmp_path, 'ade', stop_tolerance=1e-6)
+    alg.fitnesses = [0.0, 0.0, 0.0]
+    with np.errstate(all='raise'):
+        assert alg._population_converged() is True
+
+
+def test_de_island_does_not_stop_the_run_before_other_islands_evaluate(tmp_path):
+    """Island-DE guard (#561, ADR-0114). Because the convergence test ignores non-finite
+    fitnesses, a single island that finishes its first iteration with a collapsed (here
+    identical, range-0) finite population must NOT stop the whole run while other islands
+    are still entirely unevaluated (all inf). The old ratio test got this for free -- an
+    unevaluated island's inf made the global max infinite -- but that same coupling is
+    what let a failed sim defeat the test; convergence is now assessed only once every
+    island has completed an iteration."""
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0, 0.0], [1.0, 1.0]))
+    conf = H.make_config(tmp_path, 'de', tgt, exp, n_params=2,
+                         population_size=20, max_iterations=20, islands=2,
+                         stop_tolerance=1e-3)
+    de = algorithms.DifferentialEvolution(conf)
+    start = de.start_run()                       # 20 psets: island 0 is [:10], island 1 [10:]
+    resp = None
+    for p in start[:10]:                         # complete island 0's first iteration...
+        res = algorithms.Result(p, ['# x\ty\n'], p.name)
+        res.score = 7.0                          # ...with an identical (range-0) population
+        resp = de.got_result(res)
+    assert de.iter_num == [1, 0]                 # island 0 done, island 1 still untouched
+    # Island 0's finite subpopulation is collapsed, but the run continues: it proposes
+    # island 0's next generation rather than stopping the whole (2-island) search.
+    assert resp != 'STOP' and len(resp) == 10
+
+
+class _ShiftedParaboloidModel(Model):
+    """Test-only model whose ``score`` column is ``0.5*sum((x-mu)^2) - shift``, so
+    ``direct_pass`` yields a NEGATIVE objective near the mode (``shift > 0``). The mode
+    is still ``mu`` (a well-posed fit); the objective just lives below 0 -- the regime
+    that made the ratio convergence test stop the DE family at generation 0 (#561)."""
+
+    def __init__(self, mu, shift, name='g', pset=None):
+        self.mu = np.asarray(mu, dtype=float)
+        self.shift = float(shift)
+        self.name = name
+        self.file_path = name
+        self.suffixes = ['target']
+        self.stochastic = False
+        self.has_observables = False
+        self.param_names = set()
+        self._pset = pset
+
+    def copy_with_param_set(self, pset):
+        m = copy.copy(self)
+        m._pset = pset
+        return m
+
+    def save(self, *args, **kwargs):
+        pass
+
+    def get_suffixes(self):
+        return self.suffixes
+
+    def execute(self, folder, filename, timeout):
+        x = np.array([self._pset['p%d' % (i + 1)] for i in range(len(self.mu))])
+        score = 0.5 * float(np.sum((x - self.mu) ** 2)) - self.shift
+        d = Data(arr=np.array([[0.0, score]]))
+        d.cols = {'index': 0, 'score': 1}
+        d.headers = {0: 'index', 1: 'score'}
+        return {'target': d}
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_de_family_advances_past_generation_zero_on_a_negative_objective(tmp_path, fit_type):
+    """End-to-end regression for #561: on an objective negative everywhere the
+    population lands, the DE family must keep searching, not stop inside generation 0.
+    Before the fix the all-negative gen-0 population satisfied the ratio test and the
+    run halted immediately -- the reported budget spent on 0 generations of search."""
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0, 0.0], [1.0, 1.0]))
+    conf = H.make_config(tmp_path, fit_type, tgt, exp, n_params=2,
+                         population_size=12, max_iterations=8,
+                         bounds=(-3.0, 3.0), stop_tolerance=1e-6)
+    conf.models['g'] = _ShiftedParaboloidModel([0.5, -0.5], shift=50.0)
+    alg = {'de': algorithms.DifferentialEvolution,
+           'ade': algorithms.AsynchronousDifferentialEvolution}[fit_type](conf)
+    H.drive(alg)
+
+    # The objective at the mode is -shift, so a working search drives well below 0 --
+    # the negative regime the ratio test could not handle.
+    assert alg.trajectory.best_score() < -1.0
+    # The generation counter advanced well past the generation-0 stop.
+    if fit_type == 'de':
+        assert max(alg.iter_num) >= 2
+    else:
+        assert alg.sims_completed >= 2 * alg.population_size
