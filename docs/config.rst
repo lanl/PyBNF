@@ -102,6 +102,8 @@ To avoid mistakes in configuration, you may optionally append “__FREE” to th
 
 Caution: If you are using `COPASI`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field.
 
+SBML files also do not carry the solver settings PyBNF runs them under. On ``sbml_backend = bngsim`` the CVODE tolerances are derived from the model's own species magnitudes, and :ref:`sbml_rtol <sbml_rtol>` / ``sbml_atol`` state them for the whole fit if you want to override that. A single model can also state its own on its :ref:`model: <model_decl>` declaration line (``atol:``, ``rtol:``, and a per-species ``species_atol:``), which is what to reach for when one model of a multi-model fit — or one species of one model — is the one that needs a different tolerance. If simulations are failing with CVODE errors, start at :doc:`troubleshooting`.
+
 Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the :ref:`time_course <time_course_key>` and :ref:`param_scan <param_scan_key>` keys. For BNGL models, simulation actions should be specified in the BNGL file's ``begin actions`` block, which supports the full set of BioNetGen action arguments.
 
 .. _exp-file:

@@ -41,9 +41,34 @@ If the SBML file was generated in COPASI, refer to `Unexpected behavior when gen
 
 CVODE errors
 """"""""""""
-For SBML models, if your logs in ``FailedSimLogs/`` include errors from CVODE such as "CV_ERR_FAILURE: Error test failures occurred too many times during one internal time step" or "CV_TOO_MUCH_WORK: The solver took mxstep internal steps but could not reach tout", it means that CVODE, the ODE integrator used in libRoadRunner to simulate SBML models, decided that the model was too difficult to simulate and gave up. This might happen when the solution to the ODE system is not sufficiently smooth. 
+For SBML models, if your logs in ``FailedSimLogs/`` include errors from CVODE such as "CV_ERR_FAILURE: Error test failures occurred too many times during one internal time step" or "CV_TOO_MUCH_WORK: The solver took mxstep internal steps but could not reach tout", it means that CVODE, the ODE integrator that simulates SBML models on both :ref:`sbml_backend <sbml_backend>` settings (through libRoadRunner on ``roadrunner``, through bngsim on ``bngsim``), decided that the model was too difficult to simulate and gave up. This might happen when the solution to the ODE system is not sufficiently smooth.
 
-It may be possible to run such simulations with a different SBML integrator, set with the ``sbml_integrator`` key. 
+It may be possible to run such simulations with a different SBML integrator, set with the ``sbml_integrator`` key.
+
+**Check the absolute tolerance first** when ``sbml_backend = bngsim``. Both of those errors are
+what an ``atol`` mismatched to the model's units looks like from the outside. CVODE weights each
+state by ``rtol*|y| + atol``, so an ``atol`` far *beneath* a species' own magnitude holds the
+integrator to an accuracy nobody asked for, and it pays in steps until it exhausts ``mxstep``.
+PyBNF derives ``atol`` from the model's species magnitudes for exactly this reason, but the
+derivation is only allowed to *tighten* by default, so a model whose species sit far above one
+keeps a tolerance 5+ decades tighter than its own scale asks for. See
+:ref:`sbml_rtol <sbml_rtol>` for the full account; in order of what to try:
+
+* ``sbml_atol = auto`` — let the derivation loosen as well as tighten. Costs nothing on a model
+  whose species sit at or below one, and is the first thing to try on one whose species are large.
+* ``sbml_atol = <number>`` — state one tolerance for every species of every model, replacing the
+  derivation entirely.
+* ``atol:`` / ``rtol:`` / ``species_atol:`` on a single model's :ref:`model: <model_decl>`
+  declaration (``edition >= 2``) — the same settings scoped to **one** model of a multi-model
+  fit, plus the only way to hand-write a tolerance for a **named species**. Use it when one
+  model, or one species, is the one giving trouble.
+* ``sbml_atol = tracking`` — an absolute tolerance that follows the trajectory rather than
+  staying where the initial values put it, for a species that decays far below its own starting
+  magnitude. It costs integrator steps; lower its depth if a model that integrated before stops.
+
+Going the other way — a trajectory that looks wrong rather than one that fails — is the same
+key: a model whose species sit *below* ``1e-8`` carries no significant digits at the backend
+default, and its forward sensitivities carry fewer still.
 
 
 Resource not available
