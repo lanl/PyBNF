@@ -137,6 +137,47 @@ def _positive_atol(value):
     return value
 
 
+def parse_species_atol_setting(species_atol):
+    """Normalize a per-model ``species_atol`` map into ``{name: float}`` (#586).
+
+    The sibling of :func:`parse_atol_setting` for the hand-written per-species vector the
+    new-era ``model:`` declaration carries (ADR-0116), and it exists for the same reason:
+    ``config.py`` rejects a bad one at config load and the model constructor is reachable
+    directly, so one function has to own what a value means or the two will disagree.
+
+    ``None`` (and an empty map) is ``None`` -- nothing stated. Otherwise every entry is
+    checked to be a finite **positive** number. Strictly positive rather than bngsim's
+    ``>= 0``: zero is a legal entry of a plain ``CVodeSVtolerances`` vector but says that
+    species has no absolute error control at all, and it is refused outright as a
+    ``TrackingAtol`` ceiling -- so accepting it here would make ``species_atol: X 0``
+    parse, integrate, and then fail the moment the same model added ``atol: tracking``.
+    One rule that holds under every setting is worth more than the one value it declines.
+
+    Species NAMES are not checked here: they belong to the model, and the check needs the
+    species list bngsim will integrate under (:meth:`_check_stated_species_atol`). Raises
+    ``ValueError`` naming the offending species; callers translate it into their own
+    error type rather than each re-deciding what the legal shapes are.
+    """
+    if species_atol is None:
+        return None
+    if not isinstance(species_atol, dict):
+        raise ValueError(
+            'expected a mapping of species name to absolute tolerance; got '
+            f'{type(species_atol).__name__}')
+    normalized = {}
+    for name, value in species_atol.items():
+        # A numeric *string* reads as the number, for parse_atol_setting's reason: a value
+        # can reach a model from somewhere other than the conf grammar. ``True`` does not,
+        # because ``float(True)`` is 1.0 and would pass silently.
+        if isinstance(value, bool):
+            raise ValueError(f"species '{name}': expected a positive number; got {value!r}")
+        try:
+            normalized[str(name)] = _positive_atol(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"species '{name}': {exc}") from None
+    return normalized or None
+
+
 def _derive_atol(scale, rtol, default_atol, *, loosen=False, model_name=None, warned=None):
     """The absolute tolerance a model whose state lives at ``scale`` needs (#546).
 
@@ -469,10 +510,27 @@ class BngsimSbmlModelNoTimeout(Model):
     # lanl/bngsim#213's trajectory-following weights on top of that. The two are mutually
     # exclusive by construction, so ``_config_atol is not None`` remains exactly what it
     # was: "the user stated the number, take it".
+    #
+    # ``_config_species_atol`` is the fourth kind of statement and the only one that is not
+    # about the whole model: the hand-written ``{species: atol}`` map a new-era ``model:``
+    # declaration carries (#586, ADR-0116). It is an OVERRIDE LAYER rather than a
+    # replacement -- the species it names take the number stated, verbatim, and every other
+    # species keeps whatever the three settings above would have given it. ``None`` means
+    # "nothing stated", which is every model that does not use the syntax.
     _config_rtol = None
     _config_atol = None
     _atol_mode = None
     _atol_tracking_decades = None
+    _config_species_atol = None
+
+    # The species names bngsim will integrate this model under, captured from the engine
+    # load the constructor already pays for (:meth:`_load_engine_model_or_raise`). NOT the
+    # same list as ``_species_names``, which is the SBML document's ids: bngsim renames an
+    # id that collides with an Antimony reserved word (``NULL`` -> ``_ant_NULL``) and
+    # appends a state for every parameter or compartment a rate rule or event assignment
+    # drives. Those are the names a ``species_atol`` map is written in and checked against,
+    # because they are the ones a per-species vector is ordered by.
+    _engine_species_names = None
 
     # The model's per-species nominal values in bngsim's units, and their typical (median
     # strictly-positive) magnitude, both set from the parsed document by
@@ -490,7 +548,7 @@ class BngsimSbmlModelNoTimeout(Model):
     _atol_floor_warned = None
 
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
-                 strict_ssa=True, rtol=None, atol=None):
+                 strict_ssa=True, rtol=None, atol=None, species_atol=None):
         if integrator not in _SUPPORTED_INTEGRATORS:
             raise ModelError(
                 'sbml_backend = bngsim supports sbml_integrator in {}; got {}'.format(', '.join(_SUPPORTED_INTEGRATORS), integrator)
@@ -499,7 +557,7 @@ class BngsimSbmlModelNoTimeout(Model):
         _require_bngsim_sbml_support()
 
         self._init_common_attrs(file, abs_file, pset, actions, save_files, integrator, strict_ssa,
-                                file_ext='.xml', rtol=rtol, atol=atol)
+                                file_ext='.xml', rtol=rtol, atol=atol, species_atol=species_atol)
         self.stochastic = integrator == 'gillespie' or any(
             getattr(a, 'method', 'ode') == 'ssa' for a in actions
         )
@@ -515,14 +573,17 @@ class BngsimSbmlModelNoTimeout(Model):
         logger.debug('Loaded model %s with bngsim SBML backend', self.name)
 
     def _init_common_attrs(self, file, abs_file, pset, actions, save_files, integrator, strict_ssa,
-                           file_ext, rtol=None, atol=None):
+                           file_ext, rtol=None, atol=None, species_atol=None):
         """Set the model attributes shared by the SBML and Antimony backends.
 
         ``file_ext`` is stripped from the file name to form ``self.name`` ('.xml'
         for SBML, '.ant' for Antimony). ``self.stochastic`` is set by the caller
         because the two backends compute it differently. ``rtol``/``atol`` carry the
         config's explicit CVODE tolerances (#546); ``None`` leaves each to the
-        backend default / the scale derivation.
+        backend default / the scale derivation. ``species_atol`` carries this model's
+        own hand-written per-species map (#586); its species NAMES are checked once the
+        engine model has been loaded (:meth:`_check_stated_species_atol`), because the
+        list they are written against is bngsim's rather than the document's.
         """
         self.file_path = file
         self.abs_file_path = abs_file
@@ -546,9 +607,24 @@ class BngsimSbmlModelNoTimeout(Model):
                 'sbml_atol = tracking needs a bngsim whose Simulator.run takes a '
                 'trajectory-following absolute tolerance (lanl/bngsim#213, '
                 'bngsim.TrackingAtol); this build does not have one.')
+        try:
+            self._config_species_atol = parse_species_atol_setting(species_atol)
+        except ValueError as exc:
+            raise ModelError(f'Invalid species_atol for model {self.name}: {exc}') from exc
+        if self._config_species_atol and not BNGSIM_HAS_PER_SPECIES_ATOL:
+            # Refused rather than degraded, for the reason the tracking refusal above gives.
+            # The DERIVED vector may fall back to the scalar silently (:meth:`_per_species_atol`)
+            # because the scalar is a correct tolerance for that model and nobody asked for
+            # anything else; a hand-written map is somebody asking, and a stated tolerance
+            # that did not apply is a plausible trajectory with a wrong conclusion attached.
+            raise ModelError(
+                'species_atol needs a bngsim whose Simulator.run takes a per-species '
+                'absolute tolerance (lanl/bngsim#196, bngsim.normalize_atol_vector); this '
+                'build does not have one.')
         self._tolerance_cache = None
         self._atol_vector_cache = None
         self._atol_floor_warned = set()
+        self._engine_species_names = None
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
         self.mutants = [MutationSet()]
 
@@ -999,13 +1075,60 @@ class BngsimSbmlModelNoTimeout(Model):
 
     def _load_engine_model_or_raise(self, parse_error_message):
         """Load the bngsim engine model, letting FileNotFoundError propagate
-        unwrapped and converting any other failure into a ModelError."""
+        unwrapped and converting any other failure into a ModelError.
+
+        The loaded model is not kept -- the per-action engine models come from
+        :meth:`_get_engine_template`'s text-keyed cache -- but its **species names** are,
+        because they are the list a hand-written ``species_atol`` map is written against
+        (#586) and this load is already paid for. Checking the map here is what makes an
+        unknown species name an error at config load, where the conf author is, rather
+        than a silent no-op discovered from a trajectory.
+        """
         try:
-            self._load_bngsim_model_from_path(self.abs_file_path)
+            engine = self._load_bngsim_model_from_path(self.abs_file_path)
         except FileNotFoundError:
             raise
         except Exception as exc:
             raise ModelError(parse_error_message) from exc
+        self._engine_species_names = tuple(getattr(engine, 'species_names', None) or ())
+        self._check_stated_species_atol()
+
+    def _check_stated_species_atol(self):
+        """Refuse a ``species_atol`` naming a species this model does not integrate (#586).
+
+        The list checked against is the **engine** model's, not the SBML document's, and
+        the two really do differ: bngsim renames an id that collides with an Antimony
+        reserved word (``Smith_BMCSystBiol2013``'s ``NULL``/``null`` load as
+        ``_ant_NULL``/``_ant_null``) and promotes to a state every parameter or compartment
+        a rate rule or an event assignment drives, which the ``<listOfSpecies>`` does not
+        mention at all. Engine names are what a per-species vector is ordered by, so they
+        are the only list that can be both checked and applied; validating against document
+        ids would accept a name that then silently did nothing, which is the failure this
+        whole line of work exists to stop making.
+
+        The message names the species the model does have, because a name that reads wrong
+        is usually one of them spelled differently -- and it says so outright for the
+        ``_ant_`` case, which is the one a conf author cannot guess from their own file.
+        """
+        stated = getattr(self, '_config_species_atol', None)
+        names = getattr(self, '_engine_species_names', None)
+        if not stated or not names:
+            return
+        known = set(names)
+        unknown = [name for name in stated if name not in known]
+        if not unknown:
+            return
+        hints = [f"'{n}' (bngsim renames an id that collides with an Antimony reserved "
+                 f"word, so state it as '_ant_{n}')"
+                 for n in unknown if f'_ant_{n}' in known]
+        shown = list(names[:12]) + (['...'] if len(names) > 12 else [])
+        message = (
+            f'species_atol for model {self.name} names {len(unknown)} species this model '
+            f'does not integrate: {", ".join(sorted(unknown))}. It integrates '
+            f'{len(names)}: {", ".join(shown)}.')
+        if hints:
+            message += ' ' + ' '.join(hints) + '.'
+        raise ModelError(message)
 
     def copy_with_param_set(self, pset):
         newmodel = copy.deepcopy(self)
@@ -1943,16 +2066,86 @@ class BngsimSbmlModelNoTimeout(Model):
         than at the first ``run()`` -- which on a fit is a long way from where the vector
         was built. Memoized against the ordering it was built for, so a later action with
         a different species list rebuilds rather than silently reusing.
+
+        **A hand-written ``species_atol`` (#586) reaches none of those routes to ``None``.**
+        Every one of them says "nothing was stated here that a scalar does not already
+        cover", which is exactly what a map on the ``model:`` line is not: the species it
+        names take the number stated, and the ones it does not keep whatever the
+        derivation, a pinned scalar, or the backend default would have given them. So the
+        map is an override *layer* over that base rather than a fourth way to build it,
+        and the base is computed here exactly as it is for a model that states nothing --
+        except that a pinned ``sbml_atol`` still switches the derivation off, so its base
+        is that number broadcast rather than a vector derived around it.
         """
-        if not BNGSIM_HAS_PER_SPECIES_ATOL or getattr(self, '_config_atol', None) is not None:
+        stated = getattr(self, '_config_species_atol', None)
+        pinned = getattr(self, '_config_atol', None)
+        if not BNGSIM_HAS_PER_SPECIES_ATOL:
+            # Unreachable with a stated map: the constructor refuses that outright rather
+            # than degrading to the scalar (:meth:`_init_common_attrs`).
+            return None
+        if pinned is not None and not stated:
             return None
         names = tuple(getattr(engine_model, 'species_names', None) or ())
         cached = getattr(self, '_atol_vector_cache', None)
         if cached is not None and cached[0] == names:
             return cached[1]
-        vector = self._derive_per_species_atol(sim, names)
+        base = None if pinned is not None else self._derive_per_species_atol(sim, names)
+        vector = self._apply_stated_per_species_atol(sim, names, base) if stated else base
         self._atol_vector_cache = (names, vector)
         return vector
+
+    def _apply_stated_per_species_atol(self, sim, names, base):
+        """Lay a hand-written ``species_atol`` over the vector this model would have had (#586).
+
+        ``base`` is the derived vector when there is one and ``None`` when there is not --
+        a model whose species share one scale, an ordering the derivation could not take,
+        or a pinned ``sbml_atol``. ``None`` becomes the model's scalar broadcast over every
+        species, which is the tolerance those species are integrated at today, so the map
+        moves exactly the species it names and nothing else.
+
+        **A stated entry is used verbatim.** Neither clamp applies to it: not ADR-0103's
+        only-ever-tighten ceiling, which ADR-0114 established is a no-regression rule about
+        the *derivation* rather than a property of the model, and not ADR-0105's
+        model-scalar floor, which is a statement about how far a derivation read off
+        *initial values* may reach for on its own. A number a person wrote is neither of
+        those; it is the same kind of statement a pinned ``sbml_atol`` is, and it wins for
+        the same reason. The one bound kept is ``parse_species_atol_setting``'s: finite and
+        strictly positive, which is CVODE's own requirement.
+
+        Nor does the "elementwise the scalar, so send the scalar" off-ramp apply. That
+        exists so a model with no over-tightening to give back keeps its ``CVodeSStolerances``
+        call byte for byte (19 of 23 subset-I slugs), and it is correct precisely because
+        nobody asked for a vector. Here somebody did, so a map whose entries happen to
+        agree with the scalar still travels as a vector, and pays #196's ~1 ulp
+        ``cvEwtSetSS``/``cvEwtSetSV`` difference for having been stated.
+        """
+        stated = self._config_species_atol
+        if not names:
+            raise ModelError(
+                f'species_atol was stated for model {self.name}, but bngsim reports no '
+                'species to order it against.')
+        unknown = sorted(name for name in stated if name not in set(names))
+        if unknown:
+            # The constructor already checked this against the engine model it loaded, so
+            # reaching here means the action's engine model carries a different species
+            # list. Raised rather than warned-and-dropped: the config author stated these.
+            raise ModelError(
+                f'species_atol for model {self.name} names {len(unknown)} species this '
+                f'action does not integrate: {", ".join(unknown)}.')
+        _, scalar_atol = self._effective_tolerances(sim)
+        derived = base is not None
+        if not derived:
+            base = [scalar_atol] * len(names)
+        vector = [stated.get(name, atol) for name, atol in zip(names, base)]
+        logger.debug(
+            'bngsim SBML model %s: species_atol states %d of %d species by hand (%s); the '
+            'rest keep the %s. Range [%g, %g], steady-state cutoff %g.',
+            getattr(self, 'name', None), len(stated), len(names),
+            ', '.join(f'{n}={stated[n]:g}' for n in sorted(stated)),
+            'tolerance the derivation gives them' if derived else 'model-wide scalar',
+            min(vector), max(vector), scalar_atol)
+        return bngsim.normalize_atol_vector(
+            vector, len(names), names, where='the per-model species_atol')
 
     def _derive_per_species_atol(self, sim, names):
         """Build (and validate, and log) the vector :meth:`_per_species_atol` memoizes.
@@ -1983,10 +2176,14 @@ class BngsimSbmlModelNoTimeout(Model):
             # ``_ant_NULL``/``_ant_null``.
             logger.warning(
                 'bngsim SBML model %s: the engine model integrates %d species the SBML '
-                'document does not declare under those names (%s), so the per-species '
-                'absolute tolerance cannot be ordered against the state without guessing; '
-                'integrating at the scalar tolerance instead.',
-                model_name, len(missing), ', '.join(sorted(missing)[:4]))
+                'document does not declare under those names (%s), so the DERIVED '
+                'per-species absolute tolerance cannot be ordered against the state '
+                'without guessing; %s.',
+                model_name, len(missing), ', '.join(sorted(missing)[:4]),
+                'the species named by species_atol still take the tolerances stated for '
+                'them, and every other species integrates at the scalar'
+                if getattr(self, '_config_species_atol', None)
+                else 'integrating at the scalar tolerance instead')
             return None
         vector = [by_species[name] for name in names]
         moved = sum(1 for atol in vector if atol != scalar_atol)

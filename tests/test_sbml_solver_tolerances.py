@@ -307,19 +307,22 @@ def _write(tmp_path, text, name):
 
 
 def _piecewise_model(tmp_path, *, text=_PIECEWISE_SBML, name='pw.xml', rtol=None, atol=None,
-                     extra=()):
+                     species_atol=None, extra=()):
     """A :class:`BngsimSbmlModelNoTimeout` over the piecewise fixture.
 
     ``extra`` adds ``(name, value)`` free parameters to the fit point, which is how the
     tests that move a species' *initial condition* are written -- a species id is a
     fittable name here, exactly as it is on a PEtab problem that estimates one.
+    ``species_atol`` carries the hand-written per-species map a new-era ``model:``
+    declaration states (#586); ``None`` is every model that states nothing.
     """
     xml = _write(tmp_path, text, name)
     ps = PSet([FreeParameter(p, 'uniform_var', 1e-9, 10., value=v)
                for p, v in (('k0', K0), ('k1', K1), ('k2', K2)) + tuple(extra)])
     action = TimeCourse({'time': str(T_END), 'step': str(T_END / N_STEPS)})
     return bngsim_sbml_model.BngsimSbmlModelNoTimeout(
-        xml, xml, pset=ps, actions=(action,), rtol=rtol, atol=atol)
+        xml, xml, pset=ps, actions=(action,), rtol=rtol, atol=atol,
+        species_atol=species_atol)
 
 
 def _tolerance_kwargs(model):
@@ -1412,11 +1415,28 @@ def test_config_accepts_the_modes_under_the_bngsim_backend(value):
         _tolerance_config(value, backend='roadrunner')._load_simulators()
 
 
-@pytest.mark.parametrize('value', ['nonsense', 'tracking -1', 0, -1])
+@pytest.mark.parametrize('value', ['nonsense', 'tracking -1', 0, -1, float('inf')])
 def test_config_refuses_a_setting_that_is_not_a_tolerance(value):
     """Refused at config load rather than as a ModelError once the run has started."""
     with pytest.raises(PybnfError, match='sbml_atol'):
         _tolerance_config(value)._load_simulators()
+
+
+@pytest.mark.parametrize('value', [0.0, -1.0, float('inf'), float('nan')])
+def test_config_refuses_an_rtol_that_is_not_a_relative_tolerance(value):
+    """Finite as well as positive, which a bare ``> 0`` check did not catch.
+
+    The conf grammar's number token also matches ``inf`` (ADR-0047's open truncation side),
+    so ``sbml_rtol = inf`` parsed to a float that cleared the old check and reached CVODE as
+    a relative tolerance with error control effectively off. ``sbml_atol`` never had the
+    hole -- ``parse_atol_setting`` has always demanded finiteness -- so this closes the one
+    key that did, alongside the per-model ``rtol:`` that would otherwise have inherited it.
+    """
+    cfg = _tolerance_config(None)
+    cfg.config['sbml_rtol'] = value
+
+    with pytest.raises(PybnfError, match='sbml_rtol'):
+        cfg._load_simulators()
 
 
 def test_config_refuses_tracking_without_the_backend_capability(monkeypatch):
@@ -1425,3 +1445,648 @@ def test_config_refuses_tracking_without_the_backend_capability(monkeypatch):
 
     with pytest.raises(PybnfError, match='lanl/bngsim#213'):
         _tolerance_config('tracking')._load_simulators()
+
+
+# --- #586: the tolerance is a statement about ONE model, not about the fit -------- #
+#
+# ``sbml_atol`` and ``sbml_rtol`` are one global key each, applying to every SBML/Antimony
+# model in a fit, and that is why neither could ever take a hand-written per-species
+# vector: a positional one is ordered against a species list a conf author cannot see, and
+# a species-keyed one has no reading across models that do not share species names. Both
+# problems are about the *key*, so ADR-0116 moves the statement onto the new-era ``model:``
+# declaration, where it names one model file:
+#
+#     model: weber.xml, atol: auto, species_atol: PKD 1e-3, CERT 1e-2, rtol: 1e-9
+#
+# ``atol:`` / ``rtol:`` are the per-model form of the two global keys and override them for
+# that model alone; ``species_atol:`` is the vector, laid over whatever the derivation, a
+# pinned number, or the backend default would have given each species.
+
+_needs_per_species_atol_ctor = pytest.mark.skipif(
+    not BNGSIM_HAS_PER_SPECIES_ATOL,
+    reason='the model constructor refuses a species_atol without lanl/bngsim#196')
+
+
+def _model_tolerance_dict(text):
+    """The ``{model file: record}`` a conf snippet's ``model:`` lines parse to."""
+    from pybnf import parse
+
+    d = parse.ploop([line + '\n' for line in text.splitlines()])
+    return {k[1]: v for k, v in d.items()
+            if isinstance(k, tuple) and k[0] == 'model_tolerances'}
+
+
+@pytest.mark.parametrize('line, mf, expected', [
+    ('model: m.xml, atol: 1e-4', 'm.xml', {'atol': 1e-4}),
+    ('model: m.xml, atol: auto', 'm.xml', {'atol': 'auto'}),
+    ('model: m.xml, atol: tracking', 'm.xml', {'atol': 'tracking'}),
+    ('model: m.xml, atol: tracking 6', 'm.xml', {'atol': 'tracking 6'}),
+    ('model: m.xml, rtol: 1e-10', 'm.xml', {'rtol': 1e-10}),
+    ('model: sub/dir/m.ant, species_atol: PKD 1e-3, CERT 1e-2', 'sub/dir/m.ant',
+     {'species_atol': {'PKD': 1e-3, 'CERT': 1e-2}}),
+    ('model: m.xml, species_atol: _ant_NULL 1e-3', 'm.xml',
+     {'species_atol': {'_ant_NULL': 1e-3}}),
+    ('model: m.xml, atol: auto, species_atol: A 1e-3, rtol: 1e-9', 'm.xml',
+     {'atol': 'auto', 'species_atol': {'A': 1e-3}, 'rtol': 1e-9}),
+    ('MODEL: m.xml, ATOL: AUTO', 'm.xml', {'atol': 'auto'}),
+    ('model: m.xml, atol: 1e-4  # a comment', 'm.xml', {'atol': 1e-4}),
+])
+def test_the_model_line_states_one_models_own_tolerances(line, mf, expected):
+    """Every spelling the declaration takes, and what it parses to (#586).
+
+    ``atol:`` is normalized exactly as ``sbml_atol`` is -- a number to a float, a mode to
+    one lower-cased string -- so both reach ``parse_atol_setting``, the one authority on
+    that value's shape, in the same shape.
+    """
+    assert _model_tolerance_dict(line) == {mf: expected}
+
+
+def test_the_tolerance_fields_are_order_independent():
+    """``pp.Each``, like every other labeled-field record in the new era."""
+    one = _model_tolerance_dict('model: m.xml, atol: auto, rtol: 1e-9, species_atol: A 1')
+    two = _model_tolerance_dict('model: m.xml, species_atol: A 1, rtol: 1e-9, atol: auto')
+    assert one == two == {'m.xml': {'atol': 'auto', 'rtol': 1e-9, 'species_atol': {'A': 1.0}}}
+
+
+@pytest.mark.parametrize('text', [
+    'model: egfr.bngl',
+    'model: egfr.bngl, erbb2.bngl',
+    'model = egfr.bngl : d.exp',
+    'model = egfr.bngl : none',
+])
+def test_a_declaration_that_states_no_tolerance_is_unchanged(text):
+    """The fields are optional, and the legacy ``model =`` line still backtracks to it.
+
+    ``mdmkey + colon`` is a non-error-stop ``+`` precisely so ``model = f : d.exp`` can
+    fall through to the legacy grammar; adding optional fields after the file list must
+    not disturb that, and this is the assertion that says so.
+    """
+    from pybnf import parse
+
+    assert _model_tolerance_dict(text) == {}
+    assert parse.parse(text)[0] in ('model', 'model_decl')
+
+
+@pytest.mark.parametrize('line, expected_files', [
+    # The file regex is unanchored and lazy, so before the guard it crossed the comma
+    # before a field and ran to the next extension it could find -- here, one inside the
+    # COMMENT -- producing a second "model file" named `atol: 1e-10  # ... decay.xml`.
+    ('model: decay.xml, atol: 1e-10  # tighter than the default for decay.xml',
+     ['decay.xml']),
+    ('model: a.xml, species_atol: A 1e-3, B 1e-2  # compare against b.xml', ['a.xml']),
+    # ...and a model genuinely named after a field label still parses, because the
+    # lookahead needs the label AND its colon.
+    ('model: rtol.xml, atol: 1e-4', ['rtol.xml']),
+    ('model: a.xml, rtol.xml', ['a.xml', 'rtol.xml']),
+])
+def test_a_tolerance_field_is_never_read_as_a_model_filename(line, expected_files):
+    """A comment mentioning a model file must not be absorbed into the file list (#586)."""
+    from pybnf import parse
+
+    tokens = parse.parse(line)
+    assert [t for t in tokens[1:] if isinstance(t, str)] == expected_files
+
+
+def test_a_model_file_written_after_a_tolerance_field_is_a_parse_error():
+    """Rather than the field being swallowed as a filename and the model silently added.
+
+    The refusal is the ``model`` format hint, which spells out the whole legal shape of the
+    line; what matters is that no bogus model reaches the models set.
+    """
+    from pybnf import parse
+
+    with pytest.raises(PybnfError) as exc:
+        parse.ploop(['model: a.xml, atol: 1e-4, b.xml\n'])
+    assert 'species_atol' in str(exc.value)
+
+
+def test_a_multi_model_declaration_cannot_state_a_tolerance():
+    """The whole point was to stop one number meaning several things at once."""
+    with pytest.raises(PybnfError, match='exactly one model'):
+        _model_tolerance_dict('model: a.xml, b.xml, atol: 1e-4')
+
+
+def test_a_model_is_given_its_tolerances_once():
+    """Two ``model:`` lines for one file would leave the second silently winning."""
+    with pytest.raises(PybnfError, match='more than once'):
+        _model_tolerance_dict('model: a.xml, atol: 1e-4\nmodel: a.xml, rtol: 1e-9')
+
+
+def test_a_species_is_given_its_tolerance_once():
+    with pytest.raises(PybnfError, match="Species 'A'.*more than once"):
+        _model_tolerance_dict('model: a.xml, species_atol: A 1e-3, A 1e-4')
+
+
+def test_the_model_format_hint_names_the_tolerance_fields():
+    """A mistyped field reports what the line takes rather than a bare parse failure."""
+    from pybnf import parse
+
+    with pytest.raises(PybnfError) as exc:
+        parse.ploop(['model: a.xml, bogus: 3\n'])
+    message = str(exc.value)
+    assert 'species_atol' in message and 'atol:' in message and 'rtol:' in message
+
+
+# --- the shape authority, shared by config.py and the model constructor ---------- #
+@pytest.mark.parametrize('value, expected', [
+    (None, None),
+    ({}, None),
+    ({'A': 1e-3}, {'A': 1e-3}),
+    ({'A': 1}, {'A': 1.0}),
+    ({'A': 1e-3, 'B': 2e-2}, {'A': 1e-3, 'B': 2e-2}),
+    ({'A': '1e-3'}, {'A': 1e-3}),
+])
+def test_parse_species_atol_setting_reads_a_map(value, expected):
+    """``{name: float}`` or ``None``; an empty map states nothing, like an absent one."""
+    from pybnf.bngsim_sbml_model import parse_species_atol_setting
+
+    assert parse_species_atol_setting(value) == expected
+
+
+@pytest.mark.parametrize('value', [
+    {'A': 0},        # legal in a bare CVodeSVtolerances vector, refused as a ceiling
+    {'A': -1e-3},
+    {'A': float('nan')},
+    {'A': float('inf')},
+    {'A': True},
+    {'A': 'auto'},
+    [('A', 1e-3)],
+])
+def test_parse_species_atol_setting_refuses_what_is_not_a_tolerance(value):
+    """Strictly positive, so one rule holds under ``tracking`` too.
+
+    bngsim accepts ``0`` in a plain per-species vector and refuses it outright as a
+    ``TrackingAtol`` ceiling. Accepting it here would make ``species_atol: X 0`` parse,
+    integrate, and then fail the moment the same model added ``atol: tracking`` -- so the
+    stricter of the two rules is the one taken, and it is taken everywhere.
+    """
+    from pybnf.bngsim_sbml_model import parse_species_atol_setting
+
+    with pytest.raises(ValueError):
+        parse_species_atol_setting(value)
+
+
+# --- the vector a person writes ------------------------------------------------- #
+@_needs_per_species_atol
+def test_a_stated_species_tolerance_reaches_the_run_call_by_name(tmp_path):
+    """Ordered against the ENGINE species list, asserted by name rather than by position.
+
+    A mis-ordered vector assigns one species' tolerance to another and every entry is a
+    plausible tolerance, so nothing downstream would say so -- which is why the ordering
+    is asserted here the way the derived vector's is.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_stated.xml',
+                             species_atol={'Big': 1e-2})
+    engine, kwargs = _tolerance_kwargs(model)
+
+    assert dict(zip(engine.species_names, kwargs['atol'])) == pytest.approx(
+        {'X': _TWO_SCALE_SCALAR, 'Big': 1e-2})
+
+
+@_needs_per_species_atol
+def test_the_species_a_map_does_not_name_keep_what_they_would_have_had(tmp_path):
+    """The map is an override layer, not a replacement for the derivation.
+
+    Under ``atol: auto`` the large-spread fixture derives ``{X: 1e-1, Mid: 1e-4,
+    Tiny: 1e-4}``; naming ``Tiny`` alone moves ``Tiny`` alone.
+    """
+    derived = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='pw_base.xml',
+                               atol='auto')
+    _, base_kwargs = _tolerance_kwargs(derived)
+
+    model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='pw_layer.xml',
+                             atol='auto', species_atol={'Tiny': 1e-12})
+    engine, kwargs = _tolerance_kwargs(model)
+
+    by_name = dict(zip(engine.species_names, kwargs['atol']))
+    base_by_name = dict(zip(engine.species_names, base_kwargs['atol']))
+    assert by_name['Tiny'] == 1e-12
+    assert {k: v for k, v in by_name.items() if k != 'Tiny'} == pytest.approx(
+        {k: v for k, v in base_by_name.items() if k != 'Tiny'})
+
+
+@_needs_per_species_atol
+@pytest.mark.parametrize('stated', [1e-2, 1e-20])
+def test_a_stated_entry_is_bound_by_neither_clamp(tmp_path, stated):
+    """A number a person wrote is a statement, so the derivation's clamps do not touch it.
+
+    The upper one is ADR-0103's only-ever-tighten ceiling, which ADR-0114 established is a
+    no-regression rule about the derivation rather than a property of the model; the lower
+    one is ADR-0105's model-scalar floor, which is about how far a derivation read off
+    *initial values* may reach for on its own. ``1e-2`` is four decades above the first and
+    ``1e-20`` ten below ``_DERIVED_ATOL_FLOOR``; both arrive verbatim.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name=f'pw_clamp{stated:g}.xml',
+                             species_atol={'X': stated})
+    engine, kwargs = _tolerance_kwargs(model)
+
+    assert dict(zip(engine.species_names, kwargs['atol']))['X'] == stated
+
+
+@_needs_per_species_atol
+def test_a_pinned_scalar_becomes_the_base_the_map_overrides(tmp_path):
+    """A pinned ``atol`` still switches the derivation off; it does not switch the map off.
+
+    So ``atol: 1e-6, species_atol: X 1e-3`` reads exactly as it looks -- everything at
+    ``1e-6`` except ``X`` -- rather than as a contradiction one of the two has to lose.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_pin.xml',
+                             atol=1e-6, species_atol={'X': 1e-3})
+    engine, kwargs = _tolerance_kwargs(model)
+
+    assert dict(zip(engine.species_names, kwargs['atol'])) == pytest.approx(
+        {'X': 1e-3, 'Big': 1e-6})
+    assert kwargs['steady_state_tol'] == 1e-6
+
+
+@_needs_per_species_atol
+def test_a_stated_map_travels_even_when_it_agrees_with_the_scalar(tmp_path):
+    """The "elementwise the scalar, so send the scalar" off-ramp is for the derivation.
+
+    That off-ramp exists so a model with no over-tightening to give back keeps its
+    ``CVodeSStolerances`` call byte for byte -- correct precisely because nobody asked for
+    a vector. Here somebody did, so the vector travels and pays lanl/bngsim#196's ~1 ulp
+    ``cvEwtSetSS``/``cvEwtSetSV`` difference for having been stated.
+    """
+    unstated = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_a.xml')
+    assert _tolerance_kwargs(unstated)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL,
+                                              'atol': _BNGSIM_DEFAULT_ATOL}
+
+    stated = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_b.xml',
+                              species_atol={'X': _BNGSIM_DEFAULT_ATOL})
+    engine, kwargs = _tolerance_kwargs(stated)
+    assert kwargs['atol'] == [_BNGSIM_DEFAULT_ATOL] * len(engine.species_names)
+    assert kwargs['steady_state_tol'] == _BNGSIM_DEFAULT_ATOL
+
+
+@_needs_per_species_atol
+def test_a_stated_map_keeps_the_steady_state_cutoff_the_models_own_scalar(tmp_path):
+    """ADR-0105's pairing, unchanged: bngsim's cutoff has no per-species reading to take.
+
+    Left unstated it falls back to the Simulator's own ``1e-8`` rather than to anything
+    derived, which on a model whose states are ~1e-8 makes every ``time = inf`` measurement
+    and every pre-equilibration phase return the initial state and call it equilibrium.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_ss.xml',
+                             species_atol={'X': 1e-3})
+    _, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+@_needs_tracking_atol
+@_needs_per_species_atol
+def test_a_stated_map_becomes_the_tracking_ceiling(tmp_path):
+    """``tracking`` follows the trajectory *beneath* a ceiling; the map states the ceiling."""
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_track_map.xml',
+                             atol='tracking 4', species_atol={'Big': 1e-2})
+    engine, kwargs = _tolerance_kwargs(model)
+
+    assert kwargs['atol'].decades == 4.0
+    assert dict(zip(engine.species_names, kwargs['atol'].ceiling)) == pytest.approx(
+        {'X': _TWO_SCALE_SCALAR, 'Big': 1e-2})
+    assert kwargs['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+@_needs_per_species_atol
+def test_a_stated_map_can_say_exactly_what_the_derivation_says(tmp_path):
+    """The surface is expressive enough to reproduce ``auto``'s own vector by hand.
+
+    Not a use anybody has, but it is the property that says this is one mechanism rather
+    than two: what the derivation computes is inside what a person can write, so the
+    difference between them is who decided, not what can be expressed.
+    """
+    derived = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='pw_eq_a.xml',
+                               atol='auto')
+    engine, base_kwargs = _tolerance_kwargs(derived)
+    by_hand = dict(zip(engine.species_names, base_kwargs['atol']))
+
+    stated = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='pw_eq_b.xml',
+                              atol='auto', species_atol=by_hand)
+    _, kwargs = _tolerance_kwargs(stated)
+
+    assert kwargs['atol'] == pytest.approx(base_kwargs['atol'])
+    assert kwargs['steady_state_tol'] == pytest.approx(base_kwargs['steady_state_tol'])
+
+
+@_needs_per_species_atol
+def test_a_stated_map_is_a_constant_of_the_model_not_of_the_fit_point(tmp_path):
+    """A tolerance that moved with a fitted initial condition would step the objective.
+
+    Trivially true of a number read out of the conf, and asserted anyway because it is the
+    property the whole derivation is arranged around (bngsim's ``AUTO`` is what it rules
+    out) and a later implementation that resolved the map against live state would break it
+    silently.
+    """
+    at_nominal = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_const_a.xml',
+                                  species_atol={'X': 1e-3})
+    moved = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_const_b.xml',
+                             species_atol={'X': 1e-3}, extra=(('Big', 1e-3),))
+
+    assert _tolerance_kwargs(moved)[1] == _tolerance_kwargs(at_nominal)[1]
+
+
+@_needs_per_species_atol
+def test_a_stated_map_reaches_the_bngsim_run_call(tmp_path, monkeypatch):
+    """What ``Simulator.run`` is actually called with, not just what the seam computes."""
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_stated_run.xml',
+                             species_atol={'Big': 1e-2})
+    engine = model._engine_model_for_action()
+    captured = {}
+
+    class _CapturingSim:
+        _rtol, _atol = _BNGSIM_DEFAULT_RTOL, _BNGSIM_DEFAULT_ATOL
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError('stop here')
+
+    monkeypatch.setattr(model, '_make_simulator', lambda engine_model, method: _CapturingSim())
+    with pytest.raises(RuntimeError, match='stop here'):
+        model._run_simulation(engine, 1.0, 2, method='ode')
+
+    assert dict(zip(engine.species_names, captured['atol'])) == pytest.approx(
+        {'X': _TWO_SCALE_SCALAR, 'Big': 1e-2})
+    assert captured['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+@_needs_per_species_atol
+def test_a_stated_map_survives_the_rename_that_makes_the_derivation_decline(tmp_path):
+    """The map reaches a model the derived vector cannot order at all.
+
+    ``test_a_species_the_document_does_not_name_falls_back_and_says_so`` is the derivation
+    on this shape: the engine renames an id that collides with an Antimony reserved word,
+    the document and engine name sets disagree, and the vector is abandoned for the scalar.
+    A stated map is written in engine names to begin with, so it is not merely unaffected
+    -- it is the only way those models reach ``CVodeSVtolerances`` at all.
+
+    The rename is staged onto the model rather than written into the fixture, exactly as
+    the derivation's own version of this test stages it: the SBML ids here carry no
+    reserved word, so a real load of this document renames nothing.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_ren_map.xml')
+    model._config_species_atol = {'_ant_Big': 1e-2}
+
+    class _RenamedEngine:
+        species_names = ('X', '_ant_Big')
+
+    kwargs = model._run_tolerance_kwargs(object(), _RenamedEngine())
+
+    assert kwargs['atol'] == pytest.approx([_TWO_SCALE_SCALAR, 1e-2])
+    assert kwargs['steady_state_tol'] == pytest.approx(_TWO_SCALE_SCALAR)
+
+
+# --- the names are checked, against the list that is actually used --------------- #
+def test_the_engine_species_names_are_captured_at_construction(tmp_path):
+    """The list a map is checked against, taken from a load the constructor already pays for."""
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_names.xml')
+
+    assert model._engine_species_names == ('X', 'Big')
+
+
+@_needs_per_species_atol_ctor
+def test_an_unknown_species_is_refused_and_the_message_names_the_ones_it_has(tmp_path):
+    """At config load, where the conf author is -- not from a trajectory later."""
+    with pytest.raises(ModelError) as exc:
+        _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_unknown.xml',
+                         species_atol={'Bigg': 1e-2})
+
+    message = exc.value.message
+    assert 'Bigg' in message and 'X' in message and 'Big' in message
+
+
+@_needs_per_species_atol_ctor
+def test_a_renamed_species_is_named_in_the_refusal(tmp_path):
+    """The one case a conf author cannot guess from their own model file.
+
+    bngsim renames an id that collides with an Antimony reserved word, so a person reading
+    ``<species id="NULL">`` and writing ``species_atol: NULL 1e-3`` names something that
+    does not exist. The message says what to write instead rather than leaving them to
+    find ``_ant_NULL`` in a 133-name list.
+    """
+    model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_rename_msg.xml')
+    model._engine_species_names = ('X', '_ant_NULL')
+    model._config_species_atol = {'NULL': 1e-3}
+
+    with pytest.raises(ModelError, match='_ant_NULL'):
+        model._check_stated_species_atol()
+
+
+@_needs_per_species_atol_ctor
+def test_a_stated_map_is_refused_rather_than_dropped_without_the_backend(tmp_path, monkeypatch):
+    """The derived vector may fall back to the scalar silently; a stated one may not.
+
+    Nobody asked for the derived vector, and the scalar is a correct tolerance for that
+    model -- just a less discriminating one. A hand-written map is somebody asking, and a
+    stated tolerance that did not apply is a plausible trajectory with a wrong conclusion
+    attached, which is the failure #557 refused for ``tracking`` and this refuses here.
+    """
+    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_HAS_PER_SPECIES_ATOL', False)
+
+    with pytest.raises(ModelError, match='lanl/bngsim#196'):
+        _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_nocap.xml',
+                         species_atol={'X': 1e-3})
+
+
+@_needs_per_species_atol_ctor
+def test_a_stated_map_is_shape_checked_by_the_constructor_too(tmp_path):
+    """The model is reachable directly, so it cannot defer a malformed map to the first run."""
+    with pytest.raises(ModelError, match='species_atol'):
+        _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_badshape.xml',
+                         species_atol={'X': -1.0})
+
+
+# --- the whole trajectory, under a hand-written vector -------------------------- #
+@_needs_per_species_atol
+def test_the_model_still_integrates_to_its_closed_form_under_a_stated_vector(tmp_path):
+    """A tolerance no derivation would produce still lands on the analytic answer.
+
+    ``X`` is stated at ``1e-6`` -- two decades ABOVE the backend default, which is where
+    the clamped derivation stops and one decade above what ``auto`` computes for it
+    (``rtol * 10``). So this is not a species being handed something the derivation would
+    have given it anyway; it is the reach a hand-written entry adds, integrated and checked
+    against the closed form rather than against another tolerance.
+
+    Restricted to where the exact solution is well clear of the stated tolerance, for
+    ``test_the_released_species_still_integrates_to_its_closed_form``'s reason: below that,
+    asking ``X`` to be relatively accurate is asking the absolute tolerance not to be one.
+    """
+    model = _piecewise_model(tmp_path, text=_WIDE_SPREAD_SBML, name='wide_stated.xml',
+                             species_atol={'X': 1e-6})
+    engine = model._engine_model_for_action()
+    sim = model._make_simulator(engine, 'ode')
+    kwargs = model._run_tolerance_kwargs(sim, engine)
+    assert dict(zip(engine.species_names, kwargs['atol']))['X'] == 1e-6
+
+    result = sim.run(t_span=(0.0, _WIDE_T_END), n_points=81, **kwargs)
+    t = np.asarray(result.time)
+    got = np.asarray(result.species[:, list(engine.species_names).index('X')])
+    exact = _exact_x(t, 10.0)
+    clear = exact > 1e-1
+    np.testing.assert_allclose(got[clear], exact[clear], rtol=1e-3)
+
+
+# --- the config surface --------------------------------------------------------- #
+def _per_model_config(mf, record, *, backend='bngsim', models=None):
+    """A bare :class:`Configuration` carrying one per-model tolerance record."""
+    cfg = object.__new__(config.Configuration)
+    cfg.models = {}
+    cfg.config = {'bng_command': '', 'sbml_backend': backend, 'sbml_integrator': 'cvode',
+                  'sbml_ssa_strict': 1, 'sbml_atol': None, 'sbml_rtol': None,
+                  'models': {mf} if models is None else models,
+                  ('model_tolerances', mf): record}
+    return cfg
+
+
+def test_a_per_model_record_is_resolved_field_by_field():
+    """What reaches the model constructor: only the fields the line actually stated."""
+    cfg = _per_model_config('m.xml', {'atol': 'auto', 'rtol': 1e-9,
+                                      'species_atol': {'A': 1e-3}})
+
+    assert cfg._resolve_model_tolerances() == {
+        'm.xml': {'atol': 'auto', 'rtol': 1e-9, 'species_atol': {'A': 1e-3}}}
+
+
+def test_a_job_with_no_per_model_record_resolves_to_nothing():
+    cfg = _per_model_config('m.xml', {})
+    del cfg.config[('model_tolerances', 'm.xml')]
+
+    assert cfg._resolve_model_tolerances() == {}
+
+
+def test_a_tolerance_for_an_undeclared_model_is_refused():
+    cfg = _per_model_config('m.xml', {'atol': 1e-4}, models={'other.xml'})
+
+    with pytest.raises(PybnfError, match='does not declare'):
+        cfg._resolve_model_tolerances()
+
+
+@pytest.mark.parametrize('mf', ['m.bngl', 'm.target'])
+def test_a_model_with_no_cvode_tolerance_to_state_is_refused(mf):
+    """A BNGL model states ``atol``/``rtol`` in its own ``begin actions`` block."""
+    cfg = _per_model_config(mf, {'atol': 1e-4})
+
+    with pytest.raises(PybnfError, match='begin actions'):
+        cfg._resolve_model_tolerances()
+
+
+def test_a_per_model_tolerance_needs_the_bngsim_backend():
+    """RoadRunner has its own integrator settings, so accepting it would do nothing."""
+    cfg = _per_model_config('m.xml', {'atol': 1e-4}, backend='roadrunner')
+
+    with pytest.raises(PybnfError, match='sbml_backend = bngsim'):
+        cfg._resolve_model_tolerances()
+
+
+def test_a_per_model_tolerance_is_refused_under_the_gillespie_integrator():
+    """A stochastic run has no CVODE tolerances to set, so the record could only decorate.
+
+    ``sbml_integrator = gillespie`` makes ``_resolve_method`` return ``'ssa'`` for every
+    action of every model, and a stochastic run's kwargs carry neither ``rtol`` nor
+    ``atol`` (``test_a_stochastic_run_sets_no_tolerances``). It is the third case in the
+    same family as a ``.bngl`` model and the RoadRunner backend, and is refused with them.
+    """
+    cfg = _per_model_config('m.xml', {'species_atol': {'A': 1e-3}})
+    cfg.config['sbml_integrator'] = 'gillespie'
+
+    with pytest.raises(PybnfError, match='gillespie'):
+        cfg._resolve_model_tolerances()
+
+
+def test_a_per_model_tolerance_reports_a_missing_bngsim_as_a_missing_bngsim(monkeypatch):
+    """Not as a specific missing API, which is what the capability probes would say.
+
+    With no bngsim at all, every probe is False, so the `species_atol` refusal would
+    otherwise tell somebody who cannot import the library that their build lacks
+    ``bngsim.normalize_atol_vector``.
+    """
+    monkeypatch.setattr(config, 'BNGSIM_HAS_SBML', False)
+    monkeypatch.setattr(config, 'BNGSIM_HAS_PER_SPECIES_ATOL', False)
+    cfg = _per_model_config('m.xml', {'species_atol': {'A': 1e-3}})
+
+    with pytest.raises(PybnfError, match='sbml_backend = bngsim was requested'):
+        cfg._resolve_model_tolerances()
+
+
+@pytest.mark.parametrize('record, match', [
+    ({'atol': 'nonsense'}, 'atol'),
+    ({'atol': 'tracking -1'}, 'decades'),
+    ({'atol': 0}, 'atol'),
+    ({'atol': float('inf')}, 'atol'),
+    ({'rtol': 0.0}, 'rtol'),
+    ({'rtol': -1.0}, 'rtol'),
+    ({'rtol': float('inf')}, 'rtol'),
+    ({'species_atol': {'A': 0.0}}, 'species_atol'),
+    ({'species_atol': {'A': -1.0}}, 'species_atol'),
+])
+def test_config_refuses_a_per_model_setting_that_is_not_a_tolerance(record, match):
+    """Refused at config load, naming the model, rather than once the run has started."""
+    cfg = _per_model_config('m.xml', record)
+
+    with pytest.raises(PybnfError, match=match) as exc:
+        cfg._resolve_model_tolerances()
+    assert 'm.xml' in str(exc.value)
+
+
+def test_config_refuses_a_per_model_tracking_without_the_backend_capability(monkeypatch):
+    monkeypatch.setattr(config, 'BNGSIM_HAS_TRACKING_ATOL', False)
+    cfg = _per_model_config('m.xml', {'atol': 'tracking'})
+
+    with pytest.raises(PybnfError, match='lanl/bngsim#213'):
+        cfg._resolve_model_tolerances()
+
+
+def test_config_refuses_a_species_atol_without_the_backend_capability(monkeypatch):
+    monkeypatch.setattr(config, 'BNGSIM_HAS_PER_SPECIES_ATOL', False)
+    cfg = _per_model_config('m.xml', {'species_atol': {'A': 1e-3}})
+
+    with pytest.raises(PybnfError, match='lanl/bngsim#196'):
+        cfg._resolve_model_tolerances()
+
+
+def test_the_per_model_tolerances_require_edition_2():
+    """They ride the ``model:`` declaration, which is edition-2 syntax."""
+    with pytest.raises(PybnfError, match='edition 2'):
+        config.Configuration._resolve_model_declarations(
+            {('model_tolerances', 'm.xml'): {'atol': 1e-4}, 'edition': None})
+
+
+def test_a_conf_states_one_models_tolerance_and_leaves_the_other_alone(tmp_path, monkeypatch):
+    """The whole of #586, end to end: two models, one statement, no collision.
+
+    ``sbml_atol`` is one key over every SBML/Antimony model in the fit, so before this
+    there was no way to say "this species of this model" -- a positional vector had no
+    ordering a conf author could see, and a species-keyed one had no reading across models
+    that do not share species names. Here ``one.xml`` states a per-species vector by name
+    and ``two.xml``, which has no ``X`` at all, is untouched and keeps the global key.
+    """
+    from pybnf import parse
+
+    _write(tmp_path, _TWO_SCALE_SBML, 'one.xml')
+    _write(tmp_path, _ORDER_ONE_SBML.replace('"X"', '"Solo"').replace('<ci>X</ci>',
+                                                                     '<ci>Solo</ci>'),
+           'two.xml')
+    conf = (
+        'edition = 2\n'
+        'job_type = de\n'
+        'objective = sos\n'
+        'sbml_backend = bngsim\n'
+        'population_size = 4\n'
+        'max_iterations = 1\n'
+        'uniform_var = k0 1e-9 10\n'
+        'sbml_atol = 1e-7\n'
+        'model: one.xml, atol: auto, species_atol: X 1e-11, rtol: 1e-10\n'
+        'model: two.xml\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = config.Configuration(parse.ploop(conf.splitlines(keepends=True)))
+
+    one, two = cfg.models['one'], cfg.models['two']
+    assert (one._config_rtol, one._atol_mode, one._config_atol) == (1e-10, 'auto', None)
+    assert one._config_species_atol == {'X': 1e-11}
+    assert (two._config_rtol, two._atol_mode, two._config_atol) == (None, None, 1e-7)
+    assert two._config_species_atol is None
+
+    engine, kwargs = _tolerance_kwargs(one)
+    assert dict(zip(engine.species_names, kwargs['atol']))['X'] == 1e-11
+    assert _tolerance_kwargs(two)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': 1e-7}

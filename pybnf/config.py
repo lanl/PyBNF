@@ -14,11 +14,13 @@ from pydantic import ValidationError
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
 from .bngsim_sbml_model import (
+    BNGSIM_HAS_PER_SPECIES_ATOL,
     BNGSIM_HAS_SBML,
     BNGSIM_HAS_TRACKING_ATOL,
     BNGSIM_SBML_ERROR,
     BngsimSbmlModelNoTimeout,
     parse_atol_setting,
+    parse_species_atol_setting,
 )
 from .bngsim_antimony_model import (
     BNGSIM_HAS_ANTIMONY,
@@ -553,9 +555,16 @@ class Configuration:
         Mutates ``d``.
         """
         declared = d.pop('model', None)
-        if declared:
+        # A per-model tolerance record (#586) can only ride a ``model:`` line, so the
+        # marker above already gates it; named here too so the gate does not depend on that
+        # coincidence, and so the error says which syntax was refused.
+        stated_tolerances = any(isinstance(k, tuple) and k[0] == 'model_tolerances' for k in d)
+        if declared or stated_tolerances:
             ed = edition.resolve_edition(d.get('edition'))
-            edition.require_edition(ed, 2, "the 'model:' declaration syntax")
+            edition.require_edition(
+                ed, 2,
+                "the 'model:' declaration syntax" if declared else
+                "the 'model:' line's per-model solver tolerances")
 
     @staticmethod
     def _resolve_run_selector(d):
@@ -755,6 +764,115 @@ class Configuration:
         
                 
 
+    def _resolve_model_tolerances(self):
+        """The per-model CVODE tolerance records, checked and keyed by model file (#586).
+
+        The new-era ``model:`` declaration carries this model's own ``atol:`` / ``rtol:`` /
+        ``species_atol:`` (ADR-0116), parsed into ``('model_tolerances', <file>)`` structural
+        keys. ``sbml_atol`` and ``sbml_rtol`` remain the fit-wide defaults; a record
+        overrides them for the one model it names, field by field, so a job can state one
+        model's tolerance without saying anything about the others -- which is the whole of
+        what one global key could not do, and the reason a hand-written per-species vector
+        had no unambiguous reading until now.
+
+        Everything checkable without the model is checked here, at config load, before any
+        model is built:
+
+        * the record names a model this job actually declares;
+        * that model is one with a CVODE tolerance to state -- an ``.xml``/``.ant`` model on
+          ``sbml_backend = bngsim``, integrated by CVODE rather than by Gillespie. A
+          ``.bngl`` model takes ``atol``/``rtol`` from its own ``begin actions`` block, the
+          RoadRunner backend has its own integrator settings, and
+          ``sbml_integrator = gillespie`` makes every action of every model stochastic
+          (``_resolve_method``), where a run carries no tolerances at all -- so accepting
+          the record in any of the three would silently do nothing;
+        * the values have a legal shape, through the same ``parse_atol_setting`` /
+          ``parse_species_atol_setting`` the model constructor uses, so the two cannot
+          disagree about what a value means;
+        * the backend can carry what was asked for (``tracking``, a per-species vector).
+
+        What is *not* checked here is the one thing that needs the model: whether a
+        ``species_atol`` names species this model has. That is checked in the constructor,
+        against the species list bngsim will integrate under, and still at config load --
+        ``_load_models`` runs before the fit starts.
+        """
+        records = {key[1]: value for key, value in self.config.items()
+                   if isinstance(key, tuple) and key[0] == 'model_tolerances'}
+        if not records:
+            return {}
+        backend = self.config.get('sbml_backend')
+        resolved = {}
+        if not BNGSIM_HAS_SBML:
+            # Ahead of the capability probes below, which would otherwise report a specific
+            # missing bngsim API to somebody who has no bngsim at all. This is the same
+            # message ``_load_models`` gives that job one step later.
+            raise PybnfError(
+                f'sbml_backend = bngsim was requested, but {BNGSIM_SBML_ERROR}.')
+        declared = self.config.get('models') or ()
+        for mf, record in records.items():
+            if mf not in declared:
+                raise PybnfError(
+                    f"Solver tolerances were stated for model '{mf}', which this job does "
+                    'not declare. State them on that model\'s own `model:` line.')
+            if not re.search(r'\.(xml|ant)$', mf):
+                raise PybnfError(
+                    f"Model '{mf}' cannot take the `model:` line's solver tolerances "
+                    f'({", ".join(sorted(record))}): they are CVODE settings, and only an '
+                    'SBML (.xml) or Antimony (.ant) model on sbml_backend = bngsim uses '
+                    'them. A BNGL model states atol/rtol in its own begin actions block.')
+            if backend != 'bngsim':
+                raise PybnfError(
+                    f"Model '{mf}' states solver tolerances "
+                    f'({", ".join(sorted(record))}) on its `model:` line, which is only '
+                    f'supported when sbml_backend = bngsim. Current sbml_backend is '
+                    f'"{backend}".')
+            if self.config.get('sbml_integrator') == 'gillespie':
+                # A stochastic run has no CVODE tolerances to set -- BngsimSbmlModel's
+                # _resolve_method returns 'ssa' for every action under this integrator, and
+                # a stochastic run's kwargs carry neither rtol nor atol. Refused for the
+                # same reason a .bngl model and the RoadRunner backend are: a tolerance
+                # accepted and then not applied is the failure this surface exists to stop.
+                raise PybnfError(
+                    f"Model '{mf}' states solver tolerances "
+                    f'({", ".join(sorted(record))}) on its `model:` line, but '
+                    'sbml_integrator = gillespie runs every action stochastically, and a '
+                    'stochastic run has no CVODE tolerances to set.',
+                    'Use sbml_integrator = cvode, or drop the tolerance fields.')
+            own = {}
+            if 'rtol' in record:
+                if not np.isfinite(record['rtol']) or record['rtol'] <= 0.:
+                    raise PybnfError(
+                        f"Model '{mf}': `rtol:` must be a finite positive number; got "
+                        f"{record['rtol']}.")
+                own['rtol'] = record['rtol']
+            if 'atol' in record:
+                try:
+                    _, atol_mode, _ = parse_atol_setting(record['atol'])
+                except ValueError as exc:
+                    raise PybnfError(f"Model '{mf}': `atol:` {exc}") from exc
+                if atol_mode == 'tracking' and not BNGSIM_HAS_TRACKING_ATOL:
+                    raise PybnfError(
+                        f"Model '{mf}': `atol: tracking` needs a bngsim whose "
+                        'Simulator.run takes a trajectory-following absolute tolerance '
+                        '(lanl/bngsim#213, bngsim.TrackingAtol); this build does not have '
+                        'one.',
+                        'Upgrade bngsim, or state a number (or "auto") instead.')
+                own['atol'] = record['atol']
+            if 'species_atol' in record:
+                try:
+                    species_atol = parse_species_atol_setting(record['species_atol'])
+                except ValueError as exc:
+                    raise PybnfError(f"Model '{mf}': `species_atol:` {exc}") from exc
+                if species_atol and not BNGSIM_HAS_PER_SPECIES_ATOL:
+                    raise PybnfError(
+                        f"Model '{mf}': `species_atol:` needs a bngsim whose Simulator.run "
+                        'takes a per-species absolute tolerance (lanl/bngsim#196, '
+                        'bngsim.normalize_atol_vector); this build does not have one.',
+                        'Upgrade bngsim, or state one `atol:` number for the whole model.')
+                own['species_atol'] = species_atol
+            resolved[mf] = own
+        return resolved
+
     def _load_models(self):
         """
         Loads models specified in configuration file in a dictionary keyed on
@@ -789,6 +907,10 @@ class Configuration:
         # the model checker (``fit_type == 'check'``) suppresses it at every edition.
         modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
 
+        # Per-model CVODE tolerances stated on the ``model:`` line (#586, ADR-0116),
+        # validated once here so a bad one is a config-load error naming the model file.
+        per_model_tol = self._resolve_model_tolerances()
+
         md = {}
         for mf in self.config['models']:
             # Initialize model type based on extension
@@ -812,14 +934,16 @@ class Configuration:
                         # bngsim now enforces wall_time_sim in-process via
                         # SimulationTimeout, so the subprocess wrapper is no
                         # longer needed for either zero or positive timeouts.
+                        own = per_model_tol.get(mf, {})
                         model = BngsimSbmlModelNoTimeout(
                             mf,
                             self._absolute(mf),
                             save_files=save_flag,
                             integrator=self.config['sbml_integrator'],
                             strict_ssa=strict_ssa,
-                            rtol=self.config.get('sbml_rtol'),
-                            atol=self.config.get('sbml_atol'),
+                            rtol=own.get('rtol', self.config.get('sbml_rtol')),
+                            atol=own.get('atol', self.config.get('sbml_atol')),
+                            species_atol=own.get('species_atol'),
                         )
                     elif self.config['wall_time_sim'] == 0:
                         model = SbmlModelNoTimeout(
@@ -845,14 +969,16 @@ class Configuration:
                     # bngsim now enforces wall_time_sim in-process via
                     # SimulationTimeout, so the subprocess wrapper is no
                     # longer needed for either zero or positive timeouts.
+                    own = per_model_tol.get(mf, {})
                     model = BngsimAntimonyModelNoTimeout(
                         mf,
                         self._absolute(mf),
                         save_files=save_flag,
                         integrator=self.config['sbml_integrator'],
                         strict_ssa=strict_ssa,
-                        rtol=self.config.get('sbml_rtol'),
-                        atol=self.config.get('sbml_atol'),
+                        rtol=own.get('rtol', self.config.get('sbml_rtol')),
+                        atol=own.get('atol', self.config.get('sbml_atol')),
+                        species_atol=own.get('species_atol'),
                     )
                 elif re.search(r'\.target$', mf):
                     from .analytical_model import AnalyticalModel
@@ -2540,8 +2666,13 @@ class Configuration:
                         'one.',
                         'Upgrade bngsim, or state a number (or "auto") instead.')
                 continue
-            if tol <= 0.:
-                raise PybnfError(f'Config option "{tol_key}" must be a positive number; got {tol}.')
+            # Finite as well as positive: the conf grammar's number token also matches
+            # ``inf`` (an open truncation side, ADR-0047), so ``sbml_rtol = inf`` parses to
+            # a float that clears a bare ``> 0`` and then reaches CVODE as a relative
+            # tolerance that turns error control off.
+            if not np.isfinite(tol) or tol <= 0.:
+                raise PybnfError(
+                    f'Config option "{tol_key}" must be a finite positive number; got {tol}.')
         # Check that the integrator is valid
         if self.config['sbml_backend'] == 'bngsim':
             bngsim_integrators = ('cvode', 'gillespie')
