@@ -52,13 +52,117 @@ _BNGSIM_DEFAULT_ATOL = 1e-8
 _DERIVED_ATOL_FLOOR = 1e-16
 
 
-def _derive_atol(scale, rtol, default_atol, *, model_name=None, warned=None):
+# The two non-numeric settings ``sbml_atol`` accepts (#557). Both are opt-ins to the
+# derivation rather than replacements for it, which is what separates them from a pinned
+# number: a number states the tolerance, these state how far the model's own state is
+# allowed to state it.
+#
+# ``auto``     -- trust the derivation in **both** directions, i.e. lift the upper clamp
+#                 that lets it only ever tighten (:func:`_derive_atol`).
+# ``tracking`` -- ``auto``'s vector as a *ceiling*, re-evaluated against the state being
+#                 integrated rather than against t = 0 (lanl/bngsim#213's
+#                 ``CVodeWFtolerances``). Takes an optional depth in decades; bngsim's
+#                 own default (12) applies when it is not stated.
+_ATOL_AUTO = 'auto'
+_ATOL_TRACKING = 'tracking'
+
+
+def parse_atol_setting(atol):
+    """Split an ``sbml_atol`` value into ``(pinned, mode, decades)`` (#557).
+
+    One shape authority for a key that now carries three different kinds of statement,
+    so ``config.py`` (which rejects a bad one with a pointed message at config load) and
+    the model constructor (which is reachable directly, and must not defer a malformed
+    setting to the first ``run``) cannot disagree about what a value means.
+
+    * a **number** -- ``(float, None, None)``. The documented off-switch: it pins the
+      scalar and switches every derivation, vector and tracking alike, off.
+    * ``auto`` -- ``(None, 'auto', None)``.
+    * ``tracking`` / ``tracking <decades>`` -- ``(None, 'tracking', None | float)``.
+      ``None`` decades means "bngsim's default depth", which is deliberately not copied
+      here: it is a measured property of that mechanism (12, where its own accuracy stops
+      improving) and belongs to the library that measured it.
+    * ``None`` -- ``(None, None, None)``, the unset default: derive, and only tighten.
+
+    A numeric *string* reads as the number, because a value can reach a model from
+    somewhere other than the conf grammar (a hand-built dict, an importer). Raises
+    ``ValueError`` with a message naming the value; callers translate it into their own
+    error type rather than each re-deciding what the legal shapes are.
+    """
+    if atol is None:
+        return None, None, None
+    if isinstance(atol, bool):
+        raise ValueError(f'expected a positive number, "auto", or "tracking [decades]"; got {atol!r}')
+    if isinstance(atol, (int, float)):
+        return _positive_atol(atol), None, None
+    tokens = str(atol).strip().split()
+    if not tokens:
+        raise ValueError('expected a positive number, "auto", or "tracking [decades]"; got an empty value')
+    mode = tokens[0].lower()
+    # The modes are tried before the number, not because the order could go either way --
+    # neither spelling parses as a float -- but so a malformed `tracking <junk>` reports
+    # what is wrong with its depth rather than falling through to "not a number".
+    if mode == _ATOL_AUTO and len(tokens) == 1:
+        return None, _ATOL_AUTO, None
+    if mode == _ATOL_TRACKING and len(tokens) <= 2:
+        if len(tokens) == 1:
+            return None, _ATOL_TRACKING, None
+        try:
+            decades = float(tokens[1])
+        except ValueError:
+            raise ValueError(
+                f'"tracking" takes an optional depth in decades; got {tokens[1]!r}') from None
+        if not np.isfinite(decades) or decades < 0.0:
+            raise ValueError(
+                f'"tracking" decades must be finite and >= 0; got {decades!r}. A tracking '
+                'tolerance with no floor is pure relative error control, which has no '
+                'weight to give a species sitting at exactly zero.')
+        return None, _ATOL_TRACKING, decades
+    if len(tokens) == 1:
+        try:
+            number = float(tokens[0])
+        except ValueError:
+            pass
+        else:
+            return _positive_atol(number), None, None
+    raise ValueError(
+        f'expected a positive number, "auto", or "tracking [decades]"; got {str(atol)!r}')
+
+
+def _positive_atol(value):
+    """``float(value)``, refusing what CVODE cannot take as an absolute tolerance."""
+    value = float(value)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f'an absolute tolerance must be a finite positive number; got {value!r}')
+    return value
+
+
+def _derive_atol(scale, rtol, default_atol, *, loosen=False, model_name=None, warned=None):
     """The absolute tolerance a model whose state lives at ``scale`` needs (#546).
 
     ``rtol * scale``, clamped into ``[_DERIVED_ATOL_FLOOR, default_atol]``. The upper
     clamp is what makes this safe to apply unconditionally: the derivation can only
     *tighten*, never loosen, so a model whose species are of order one (or larger) keeps
     the backend default bit-for-bit and every existing trajectory is unchanged.
+
+    **``loosen`` lifts that upper clamp, and lifts nothing else** (#557,
+    ``sbml_atol = auto``). Only-ever-tighten is a no-regression rule, not a statement
+    about the model, and the phrase carrying it -- "of order one *or larger*" -- is doing
+    a great deal of work: a model whose species all sit far above one has a real,
+    computable tolerance need, and the derivation computes it and then discards it.
+    ``Weber_BMC2015``'s seven species live at 1.24e+02 .. 4.21e+07, median 4.67e+05, so it
+    asks for ``4.665e-03`` and is handed ``1e-8``, 5.7 decades tighter. What that costs is
+    the error test read forwards: an ``atol`` far under the state's own magnitude is one
+    the absolute term can never reach, so the integrator is held to a *relative* accuracy
+    far tighter than the ``rtol`` that is supposed to govern it, and pays in steps for
+    resolution nobody asked for. The forward-*sensitivity* solve pays most, since CVODES
+    derives its sensitivity tolerances from the state ones.
+
+    The clamp binds on 10 of the 22 subset-I slugs with a readable nominal state, and nine
+    of those ten integrate their box samples at the clamped value today -- they are merely
+    charged 1.5x-2.6x the integrator steps for it (ADR-0112). That is the whole argument
+    for the opt-in: the ten are the *scope* of the problem, not a mandate to move nine
+    working results.
 
     The rule is CVODE's own error test read backwards. It weights each state by
     ``rtol*|y_i| + atol``, so ``atol`` is a declaration that values below it are noise --
@@ -76,9 +180,12 @@ def _derive_atol(scale, rtol, default_atol, *, model_name=None, warned=None):
     the floor binds -- the model asks for more resolution than the derivation will reach
     for on its own -- it is logged once per model via the ``warned`` set, because that is
     the case where the tolerance is still not small enough and nothing else would say so.
+    The floor is unconditional: ``loosen`` is about the ceiling, and a model asking for
+    ``1e-20`` is asking for something ``1e-16`` already declines to reach for.
     """
     if scale is None:
         return default_atol
+    ceiling = np.inf if loosen else default_atol
     wanted = rtol * scale
     if wanted < _DERIVED_ATOL_FLOOR and warned is not None and model_name not in warned:
         warned.add(model_name)
@@ -89,10 +196,10 @@ def _derive_atol(scale, rtol, default_atol, *, model_name=None, warned=None):
             'under-resolved, set sbml_atol explicitly.',
             model_name, scale, wanted, _DERIVED_ATOL_FLOOR, _DERIVED_ATOL_FLOOR,
         )
-    return min(max(wanted, _DERIVED_ATOL_FLOOR), default_atol)
+    return min(max(wanted, _DERIVED_ATOL_FLOOR), ceiling)
 
 
-def _derive_atol_vector(nominal, scalar_atol, rtol, default_atol):
+def _derive_atol_vector(nominal, scalar_atol, rtol, default_atol, *, loosen=False):
     """One absolute tolerance per species, from the model's nominal state (ADR-0105).
 
     ``atol_i = clamp(rtol * y_i, scalar_atol, default_atol)``, with ``y_i`` the species'
@@ -104,6 +211,14 @@ def _derive_atol_vector(nominal, scalar_atol, rtol, default_atol):
       are all of order one integrates exactly as before. bngsim's own ``derive_atol`` has
       no upper clamp -- it returns ``1.0e-07`` for ``Brannmark_JBC2010``'s ``X``, looser
       than the default -- so only-ever-tighten is PyBNF's to apply, and is applied here.
+
+      ``loosen`` (#557, ``sbml_atol = auto``) lifts this clamp and only this one; the
+      lower one stays exactly where the measurement below put it. What is left is
+      ``max(rtol*y_i, scalar_atol)``, i.e. ``rtol * max(y_i, median)`` -- which is
+      *bngsim's own* ``derive_atol`` with the model's median supplied as its ``floor``,
+      rather than the smallest strictly positive species bngsim would pick by default.
+      That equivalence is asserted against the library rather than against a copy of this
+      arithmetic, the same way the unclamped default is.
 
     * **The lower clamp is the model's own scalar, and it is there because the
       alternative was measured and lost.** Read literally, "resolve each species to
@@ -139,7 +254,8 @@ def _derive_atol_vector(nominal, scalar_atol, rtol, default_atol):
     ``nominal`` is ordered; the caller owns the ordering contract against
     ``Model.species_names``.
     """
-    return np.clip(rtol * np.asarray(nominal, dtype=float), scalar_atol, default_atol)
+    ceiling = np.inf if loosen else default_atol
+    return np.clip(rtol * np.asarray(nominal, dtype=float), scalar_atol, ceiling)
 
 
 # Process-level cache of loaded bngsim engine models, keyed by a hash of the
@@ -204,6 +320,7 @@ from ._bngsim_caps import (
     BNGSIM_HAS_OUTPUT_SENS,
     BNGSIM_HAS_PER_SPECIES_ATOL,
     BNGSIM_HAS_SBML,
+    BNGSIM_HAS_TRACKING_ATOL,
     BNGSIM_SBML_ERROR,
     bngsim,
     feature_missing_reason,
@@ -344,8 +461,18 @@ class BngsimSbmlModelNoTimeout(Model):
     # model's own state scale (:meth:`_effective_tolerances`). Class attributes so an
     # instance built via object.__new__ -- the ``_make_simulator`` test fakes, unpickling
     # -- answers "not stated" rather than raising.
+    #
+    # ``sbml_atol`` splits three ways (#557, :func:`parse_atol_setting`), and only the
+    # first of the three is a tolerance: ``_config_atol`` is a *pinned number*, which
+    # switches every derivation off, while ``_atol_mode`` is an opt-in to the derivation
+    # -- ``auto`` lifts its only-ever-tighten ceiling, ``tracking`` adds
+    # lanl/bngsim#213's trajectory-following weights on top of that. The two are mutually
+    # exclusive by construction, so ``_config_atol is not None`` remains exactly what it
+    # was: "the user stated the number, take it".
     _config_rtol = None
     _config_atol = None
+    _atol_mode = None
+    _atol_tracking_decades = None
 
     # The model's per-species nominal values in bngsim's units, and their typical (median
     # strictly-positive) magnitude, both set from the parsed document by
@@ -406,7 +533,19 @@ class BngsimSbmlModelNoTimeout(Model):
         self.integrator = integrator
         self.strict_ssa = bool(strict_ssa)
         self._config_rtol = None if rtol is None else float(rtol)
-        self._config_atol = None if atol is None else float(atol)
+        try:
+            (self._config_atol, self._atol_mode,
+             self._atol_tracking_decades) = parse_atol_setting(atol)
+        except ValueError as exc:
+            raise ModelError(f'Invalid sbml_atol for model {self.name}: {exc}') from exc
+        if self._atol_mode == _ATOL_TRACKING and not BNGSIM_HAS_TRACKING_ATOL:
+            # Refused rather than degraded. A tolerance mode that silently did not apply
+            # produces a plausible trajectory and a wrong conclusion about the model,
+            # which is the failure this whole line of work exists to stop making.
+            raise ModelError(
+                'sbml_atol = tracking needs a bngsim whose Simulator.run takes a '
+                'trajectory-following absolute tolerance (lanl/bngsim#213, '
+                'bngsim.TrackingAtol); this build does not have one.')
         self._tolerance_cache = None
         self._atol_vector_cache = None
         self._atol_floor_warned = set()
@@ -1703,14 +1842,26 @@ class BngsimSbmlModelNoTimeout(Model):
         except bngsim.SsaValidationError as exc:
             raise ModelError(str(exc)) from exc
 
+    def _atol_loosens(self):
+        """Whether this model's ``sbml_atol`` opted into loosening (#557).
+
+        True for both non-numeric settings: ``tracking`` builds its ceiling from the same
+        derivation ``auto`` produces, so at depth 0 it *is* ``auto`` -- a strict
+        extension, which is the property that makes one flag correct for both rather than
+        an accident that two modes happen to share.
+        """
+        return getattr(self, '_atol_mode', None) in (_ATOL_AUTO, _ATOL_TRACKING)
+
     def _effective_tolerances(self, sim):
         """The ``(rtol, scalar atol)`` pair this model is measured in (#546).
 
-        ``sbml_rtol`` / ``sbml_atol`` win outright when stated. Otherwise rtol is the
-        backend's own default (read off the constructed ``Simulator`` so this tracks
-        bngsim rather than a copy of its constant) and atol is derived from the model's
-        typical species magnitude by :func:`_derive_atol` -- which can only tighten, so a
-        model of order-one scale keeps the default pair exactly.
+        ``sbml_rtol`` / a **pinned** ``sbml_atol`` win outright when stated. Otherwise
+        rtol is the backend's own default (read off the constructed ``Simulator`` so this
+        tracks bngsim rather than a copy of its constant) and atol is derived from the
+        model's typical species magnitude by :func:`_derive_atol` -- which can only
+        tighten, so a model of order-one scale keeps the default pair exactly, unless
+        ``sbml_atol = auto`` / ``tracking`` (#557) has lifted that ceiling, in which case
+        a model living *above* one gets the looser tolerance its own scale asks for.
 
         Under ADR-0105 this scalar is no longer always the *integration* tolerance: when
         the per-species vector is in force it becomes the steady-state convergence cutoff
@@ -1742,13 +1893,16 @@ class BngsimSbmlModelNoTimeout(Model):
             default_atol = float(getattr(sim, '_atol', _BNGSIM_DEFAULT_ATOL))
             scale = getattr(self, '_nominal_state_scale', None)
             name = getattr(self, 'name', None)
-            atol = _derive_atol(scale, rtol, default_atol, model_name=name,
+            atol = _derive_atol(scale, rtol, default_atol, loosen=self._atol_loosens(),
+                                model_name=name,
                                 warned=getattr(self, '_atol_floor_warned', None))
             if atol != default_atol:
                 logger.debug(
                     'bngsim SBML model %s: typical species magnitude %g, so the ODE '
-                    'absolute tolerance is %g rather than the backend default %g.',
-                    name, scale, atol, default_atol)
+                    'absolute tolerance is %g rather than the backend default %g (%s).',
+                    name, scale, atol, default_atol,
+                    'looser -- sbml_atol opted into the derivation in both directions'
+                    if atol > default_atol else 'tighter')
         self._tolerance_cache = (float(rtol), float(atol))
         return self._tolerance_cache
 
@@ -1762,16 +1916,19 @@ class BngsimSbmlModelNoTimeout(Model):
           probe rather than a version floor, because the build that first carried
           lanl/bngsim#196 declares the same version string as the wheel 25 commits behind
           it;
-        * **``sbml_atol`` is stated** -- an explicit scalar is the documented off-switch
-          for this whole change, and it pins the pre-#196 ``CVodeSStolerances`` path
-          bit-for-bit, ulp included;
+        * **``sbml_atol`` pins a number** -- an explicit scalar is the documented
+          off-switch for this whole change, and it pins the pre-#196 ``CVodeSStolerances``
+          path bit-for-bit, ulp included. ``auto`` / ``tracking`` (#557) are *not* that:
+          they state how far the derivation may go, so the vector stays on and gains its
+          released upper end;
         * **there is no nominal state to read** (a non-constant compartment volume makes
           the unit factors parameter-dependent), so there is nothing to derive from;
         * **the engine model's species do not line up** with the document's, so the
           vector could not be ordered without guessing -- a mis-ordered vector assigns
           one species' tolerance to another and nothing downstream would say so;
         * **the vector is elementwise the scalar** -- true of 19 of the 23 subset-I
-          slugs, which is what "ADR-0103 had nothing to give back here" looks like: a
+          slugs under the clamped derivation, which is what "ADR-0103 had nothing to give
+          back here" looks like: a
           model the scalar derivation left at the backend default has no over-tightening
           to undo. Handing CVODE a constant vector instead of the constant it already has
           buys nothing and costs the ~1 ulp ``cvEwtSetSS``/``cvEwtSetSV`` difference #196
@@ -1812,7 +1969,8 @@ class BngsimSbmlModelNoTimeout(Model):
         rtol, scalar_atol = self._effective_tolerances(sim)
         default_atol = float(getattr(sim, '_atol', _BNGSIM_DEFAULT_ATOL))
         by_species = dict(zip(nominal, _derive_atol_vector(
-            list(nominal.values()), scalar_atol, rtol, default_atol)))
+            list(nominal.values()), scalar_atol, rtol, default_atol,
+            loosen=self._atol_loosens())))
         if all(atol == scalar_atol for atol in by_species.values()):
             return None
         missing = set(names) - set(by_species)
@@ -1860,9 +2018,34 @@ class BngsimSbmlModelNoTimeout(Model):
         integration tolerance and becomes the convergence criterion, which keeps one
         statement about the model's magnitude governing both and reproduces today's
         steady-state behaviour exactly.
+
+        ``sbml_atol = tracking`` (#557) takes the same pairing for the same reason, one
+        step further along: bngsim resolves a ``TrackingAtol`` to *its own* scalar for
+        every scalar-shaped consumer, so the cutoff has to be stated there too. What
+        travels is the derived vector as the tracking **ceiling** -- a constant of the
+        model, read off its nominal state -- with the trajectory-following happening
+        strictly *beneath* it. bngsim also ships a bare ``"tracking"`` whose ceiling is
+        derived from the **live** state at every ``run``; that is the shape ADR-0105 ruled
+        out for the vector and it is ruled out here for the same reason, since a fit that
+        moves initial conditions would then put a step in the objective wherever the
+        derivation crossed a rounding boundary.
+
+        When the vector declines -- a model whose species share one scale, an ordering it
+        cannot take, a bngsim without lanl/bngsim#196 -- tracking still applies, with the
+        scalar as a broadcast ceiling. That case is not a degradation: what tracking adds
+        is *within*-species and over time, so it is orthogonal to whether the species
+        differ from each other, and a model whose species all start at one is exactly
+        where a decay into nothing is invisible to any vector read off initial values.
         """
         rtol, scalar_atol = self._effective_tolerances(sim)
         vector = self._per_species_atol(sim, engine_model)
+        if getattr(self, '_atol_mode', None) == _ATOL_TRACKING:
+            decades = getattr(self, '_atol_tracking_decades', None)
+            spec = dict(ceiling=scalar_atol if vector is None else vector)
+            if decades is not None:
+                spec['decades'] = float(decades)
+            return {'rtol': rtol, 'atol': bngsim.TrackingAtol(**spec),
+                    'steady_state_tol': scalar_atol}
         if vector is None:
             return {'rtol': rtol, 'atol': scalar_atol}
         return {'rtol': rtol, 'atol': vector, 'steady_state_tol': scalar_atol}

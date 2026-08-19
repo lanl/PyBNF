@@ -14,6 +14,10 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# What ``sbml_atol``'s numeric form looks like, so ploop can tell it from a MODE token
+# (#557) without a try/except around ``float`` that would also swallow ``inf``/``nan``.
+_NUMERIC_VALUE = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+
 
 _one_of = pp.one_of if hasattr(pp, 'one_of') else pp.oneOf
 _DelimitedList = pp.DelimitedList if hasattr(pp, 'DelimitedList') else pp.delimitedList
@@ -208,6 +212,20 @@ def parse(s):
     # multiple num value
     multnumkey = _one_of(' '.join(multnumkeys), caseless=True)
     multnumgram = multnumkey - equals - pp.OneOrMore(num) - comment
+
+    # the bngsim SBML absolute tolerance's non-numeric settings (#557):
+    #   sbml_atol = auto                 -- trust the derivation in BOTH directions
+    #   sbml_atol = tracking [<decades>] -- auto's vector as a ceiling, followed down the
+    #                                       trajectory (lanl/bngsim#213)
+    # ``sbml_atol`` stays in ``numkeys_float`` for the pinned-number form, so this has to be
+    # tried BEFORE ``numgram`` -- which error-stops (``-``) right after its ``=`` and so
+    # cannot backtrack out of a non-numeric value. Built with ``+`` up to the mode token for
+    # the mirror-image reason: a numeric value fails here and must fall through to
+    # ``numgram``. Once a mode has matched, the rest error-stops, so ``tracking 1 2`` reports
+    # a bad depth rather than reading as an unknown key.
+    sbml_atol_key = pp.CaselessLiteral('sbml_atol')
+    sbml_atol_mode = _one_of('auto tracking', caseless=True)
+    sbml_atol_gram = sbml_atol_key + equals + sbml_atol_mode - pp.Optional(num) - comment
 
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
@@ -606,7 +624,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | sbml_atol_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -651,6 +669,12 @@ def ploop(ls):  # parse loop
             elif l[0] in numkeys_int:
                 key = l[0]
                 values = int(l[1])
+            elif l[0] == 'sbml_atol' and not _NUMERIC_VALUE.fullmatch(l[1]):
+                # A tolerance MODE rather than a number (#557): 'auto' / 'tracking [d]'.
+                # Carried through as one lower-cased string so config.py and the model
+                # constructor read the same value; parse_atol_setting owns its shape.
+                key = l[0]
+                values = ' '.join(l[1:]).lower()
             elif l[0] in numkeys_float:
                 key = l[0]
                 values = float(l[1])
@@ -991,6 +1015,11 @@ def ploop(ls):  # parse loop
             fmt = ''
             if key in numkeys_int:
                 fmt = f"'{key}=x' where x is an integer"
+            elif key == 'sbml_atol':
+                fmt = ("'sbml_atol=x' where x is a positive decimal number, or "
+                       "'sbml_atol=auto' (derive it from the model's own species scale, in "
+                       "both directions), or 'sbml_atol=tracking [decades]' (auto, plus an "
+                       "absolute tolerance that follows the trajectory)")
             elif key in numkeys_float:
                 fmt = f"'{key}=x' where x is a decimal number"
             elif key in multnumkeys:

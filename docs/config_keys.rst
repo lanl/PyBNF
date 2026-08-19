@@ -1318,20 +1318,74 @@ Algorithm Options
   for the whole fit. A tolerance that moved with a fitted initial condition would put a
   step in the objective wherever the derivation crossed a rounding boundary.
 
-  Set ``sbml_atol`` explicitly if your model lives below the ``1e-16`` floor, or if you
-  want a different tolerance from the one the derivation picks. It is a **single number**
-  and it replaces the whole derivation: stating it integrates every species at that value,
-  which is also the way to pin the pre-per-species behaviour exactly.
+  **Both clamps above only ever tighten, and that is a no-regression rule rather than a
+  statement about your model.** A model whose species all sit far *above* one has a real,
+  computable tolerance need, and the derivation computes it and then discards it:
+  ``Weber_BMC2015``'s seven species live at ``1.24e+02 .. 4.21e+07``, so it asks for
+  ``4.7e-03`` and is handed ``1e-08``, 5.7 decades tighter. What that costs is CVODE's
+  error test read forwards: an ``atol`` far under the state's own magnitude is one the
+  absolute term can never reach, so the integrator is held to a *relative* accuracy far
+  tighter than the ``sbml_rtol`` that is supposed to govern it, and pays in steps for
+  resolution nobody asked for. A forward-sensitivity solve pays most, since CVODES derives
+  its sensitivity tolerances from the state ones. Say ``sbml_atol = auto`` to lift the
+  ceiling:
+
+  ``sbml_atol = auto``
+    Trust the derivation in **both** directions. The two steps above are unchanged except
+    that neither is capped at ``1e-08`` any more, so a species is integrated at
+    ``sbml_rtol`` times its own initial value however large that is, and the model-wide
+    number is ``sbml_rtol`` times the median however large *that* is. The lower clamp
+    stays: no species is resolved below the model-wide number, which is the part that was
+    measured (releasing it roughly doubled the failed simulations on the model it was
+    meant to help). Nothing changes for a model whose species sit at or below one — those
+    never reached the ceiling — so this only moves models the clamp was serving badly.
+
+  ``sbml_atol = tracking``, ``sbml_atol = tracking <decades>``
+    ``auto``, plus an absolute tolerance that follows the **trajectory** rather than
+    staying where the initial values put it. A vector read off initial values fixes the
+    cross-species compromise and stops there: whatever number a species gets, it keeps for
+    the whole run, so a species that starts at order one and decays to something tiny
+    outgrows its own tolerance partway through and stops being error-controlled. This
+    installs bngsim's ``CVodeWFtolerances`` rule
+    ``atol_i(y) = clamp(sbml_rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)``, with the
+    ``auto`` vector as the ceiling — so it is never *looser* than ``auto``, only deeper,
+    and ``tracking 0`` is ``auto`` exactly.
+
+    ``<decades>`` is how far below its own ceiling a species keeps being resolved
+    relatively; omit it for bngsim's measured default (12). It is not free — roughly 1.6x
+    the integrator steps at the default depth on a real-model sweep, ~4x on a pure decay —
+    and it cannot conjure digits that are not there: a species formed as a *difference* of
+    large fluxes carries roundoff of order ``eps * flux``, and asking for accuracy below
+    that collapses the step size rather than sharpening the answer. Lower the depth if a
+    model that integrated before stops. Needs a bngsim with lanl/bngsim#213; PyBNF refuses
+    the key rather than integrating at something else if yours does not have it.
+
+  Set ``sbml_atol`` to a **number** if your model lives below the ``1e-16`` floor, or if
+  you want a different tolerance from the one the derivation picks. A number replaces the
+  whole derivation: it integrates every species at that value, which is also the way to
+  pin the pre-per-species behaviour exactly. ``auto`` and ``tracking`` are not that — they
+  say how far the model's own state may set its tolerance, so the derivation stays on.
+
+  What a looser tolerance costs is **smoothness**, not accuracy, and the distinction
+  matters when choosing between ``auto`` and a hand-set number. On ``Weber_BMC2015`` four
+  decades of tolerance move the objective at the reference point in its *sixth* decimal,
+  and the assembled gradient does not move at all; what degrades is the finite-difference
+  reference — i.e. the objective surface a trust-region line search consumes. So a
+  gradient fit on a model with a wide species spread may do better at a number somewhere
+  under the derivation's own answer, and ``auto`` is the setting that tells you what that
+  answer is.
 
   A bngsim build without per-species tolerance support stops after the first step and
   integrates every species at the model-wide number, so an older bngsim runs every fit it
-  ran before.
+  ran before — and still honours ``auto``, which loosens that number.
 
   Default: unset (see above)
 
-  Example:
+  Examples:
 
     * ``sbml_atol = 1e-20``
+    * ``sbml_atol = auto``
+    * ``sbml_atol = tracking 6``
 
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with

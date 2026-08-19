@@ -5,6 +5,55 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **`sbml_atol` takes `auto` and `tracking`, so a model whose own scale asks for a *looser*
+  absolute tolerance can have one (#557, ADR-0112).** ADR-0103's derivation is allowed only to
+  tighten. That is a no-regression rule and it is why the derivation could be applied to every model
+  without a flag — but a model whose species all sit far above one has a real, computable tolerance
+  need, and the derivation computes it and then discards it. `Weber_BMC2015`'s seven species live at
+  `1.24e+02 .. 4.21e+07`, so it asks for `4.665e-03` and is handed `1e-08`, 5.7 decades tighter.
+  ADR-0105's per-species vector cannot rescue that either, and the way it fails is the point: each
+  entry clamps into `[scalar_atol, default_atol]`, the scalar has itself been clamped to
+  `default_atol`, that interval collapses to a point, and the vector correctly declines — so the
+  per-species mechanism silently declines exactly the models that span the most decades. Measured
+  over the subset-I corpus, the clamp binds on **10 of the 22 slugs with a readable nominal state**.
+
+  - **`sbml_atol = auto`** lifts the ceiling on both derivations and nothing else. ADR-0105's
+    *floor* — no species resolved below the model's own scalar — stays exactly where its measurement
+    put it (releasing it killed 91 of 100 `Brannmark_JBC2010` box points against 39), and the
+    `1e-16` floor stays too. What is left, `rtol * max(y_i, median)`, is bngsim's own `derive_atol`
+    with the model's median as its `floor`, and is asserted against the library rather than against
+    a second copy of the arithmetic.
+  - **`sbml_atol = tracking [decades]`** wires lanl/bngsim#213's `CVodeWFtolerances` — an absolute
+    tolerance re-evaluated against the state being integrated, so a species that starts at order one
+    and decays to nothing keeps a tolerance that means something for it. This is the half ADR-0105
+    named as out of reach. The ceiling is `auto`'s vector, held from the **nominal** state, so
+    `tracking 0` is `auto` exactly and a fit that moves initial conditions does not move its own
+    tolerance; bngsim's bare `"auto"` ceiling, which re-derives from the live state at every run,
+    is deliberately not used. An unstated depth is left to bngsim rather than copied.
+
+  **Nothing changes without one of those two words.** Unset is byte-identical — same clamps, same
+  vector, same steady-state pairing — and a number remains the documented off-switch that pins
+  `CVodeSStolerances` ulp for ulp. `tracking` on a bngsim without the capability is *refused*, at
+  config load and again in the model constructor, rather than silently integrating at something
+  else.
+
+  **One thing #557 claims does not reproduce, and it is recorded rather than repeated.** The issue's
+  headline is that Weber integrates 6 of 30 sensitivity-applied box points at the clamped tolerance,
+  against 22 at `1e-04`. On the current stack all six arms — unset, `1e-08`, `1e-04`, `auto`,
+  `tracking`, `tracking 6` — integrate **30 of 30**, within 7.2 s of each other. bngsim moved from
+  0.12.2 to 0.13.0 in between, and the documented Weber-specific change is lanl/bngsim#305, whose
+  own entry measures that slug's `t = 24` crossing and reports the step count roughly halving. So
+  this ships as a capability with a measured cost rather than as a rescue, and the instrument that
+  discriminates is **integrator steps** rather than pass/fail. Over 20 box points per slug with the
+  gradient sensitivity request applied, `auto` costs 0.38x–0.67x the CVODE steps on the six slugs the
+  clamp binds hardest (`Perelson` 8 440 → 3 216; `Weber` 78 641 → 36 154; `Laske` 236 629 → 158 543),
+  is bit-identical on `Giordano_Nature2020` — the control, whose derivation tightens and so cannot
+  see the ceiling — and moves `J_paper` at the PEtab nominal point in its sixth decimal. It is not
+  free in the other direction either: error-test failures rise as steps fall, and `Laske` lost one
+  box point of twenty at one seed (both arms lose one at a second seed). ADR-0112 has every arm and
+  says what it has not bisected.
+
 ### Fixed
 - **`job_type = ms` no longer dies on a fit with a measurement-model formula observable (#578).**
   Multiple shooting was unusable on essentially the whole PEtab-imported corpus — including its

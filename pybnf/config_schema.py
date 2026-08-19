@@ -233,8 +233,16 @@ class GlobalConfig(PyBNFConfigModel):
     # keeps 1e-8 exactly. Stating either pins it for every deterministic run of every
     # SBML/Antimony model in the fit. bngsim backend only; the BNGL path takes its
     # tolerances from the actions block, which is BioNetGen's own surface for them.
+    #
+    # sbml_atol also takes two non-numeric settings (#557), which is why it is typed
+    # loosely here rather than as a float: `auto` lifts the derivation's only-ever-tighten
+    # ceiling, so a model living far ABOVE one gets the looser tolerance its own scale
+    # asks for; `tracking [decades]` adds lanl/bngsim#213's trajectory-following weights
+    # on top. Their shape is owned by bngsim_sbml_model.parse_atol_setting and checked in
+    # config.py, so a bad one is a pointed error at config load rather than a Pydantic
+    # union report.
     sbml_rtol: Optional[float] = None
-    sbml_atol: Optional[float] = None
+    sbml_atol: Any = None
     stochastic_seed: str = 'auto'
     parallel_count: Optional[int] = None
     save_best_data: int = 0

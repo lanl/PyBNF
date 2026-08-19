@@ -15,8 +15,10 @@ from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreePara
     Mutation, MutationSet
 from .bngsim_sbml_model import (
     BNGSIM_HAS_SBML,
+    BNGSIM_HAS_TRACKING_ATOL,
     BNGSIM_SBML_ERROR,
     BngsimSbmlModelNoTimeout,
+    parse_atol_setting,
 )
 from .bngsim_antimony_model import (
     BNGSIM_HAS_ANTIMONY,
@@ -2520,6 +2522,24 @@ class Configuration:
                     'Config option "{}" is only supported when sbml_backend = bngsim. '
                     'Current sbml_backend is "{}".'.format(tol_key, self.config['sbml_backend'])
                 )
+            if tol_key == 'sbml_atol':
+                # sbml_atol also carries the two derivation opt-ins (#557), so its shape
+                # check is parse_atol_setting's -- the same function the model constructor
+                # uses, so the two cannot disagree about what a value means. Rejected
+                # here, at config load, because the alternative is a ModelError raised
+                # once per model after the run has already started.
+                try:
+                    _, atol_mode, _ = parse_atol_setting(tol)
+                except ValueError as exc:
+                    raise PybnfError(f'Config option "sbml_atol": {exc}') from exc
+                if atol_mode == 'tracking' and not BNGSIM_HAS_TRACKING_ATOL:
+                    raise PybnfError(
+                        'Config option "sbml_atol = tracking" needs a bngsim whose '
+                        'Simulator.run takes a trajectory-following absolute tolerance '
+                        '(lanl/bngsim#213, bngsim.TrackingAtol); this build does not have '
+                        'one.',
+                        'Upgrade bngsim, or state a number (or "auto") instead.')
+                continue
             if tol <= 0.:
                 raise PybnfError(f'Config option "{tol_key}" must be a positive number; got {tol}.')
         # Check that the integrator is valid
