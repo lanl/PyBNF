@@ -39,10 +39,11 @@ inputs:
   petab-spec:
     description: >-
       The petab requirement to install. Defaults to stock PyPI petab. A CI leg
-      overrides it with the #420 Step B fork
-      (git+…/libpetab-python@bngl_model_support) so the exporter oracle
-      validates `language: bngl` problems through petab's OWN native BnglModel
-      loader rather than the register_bngl() monkeypatch (ADR-0026).
+      overrides it with upstream libpetab-python main
+      (git+…/PEtab-dev/libpetab-python@main), where the native BnglModel loader
+      landed (PEtab-dev/libpetab-python#508), so the exporter oracle validates
+      `language: bngl` problems through petab's OWN native loader rather than the
+      register_bngl() monkeypatch (ADR-0026).
     required: false
     default: 'petab>=0.8,<1'
   cache-suffix:
@@ -135,7 +136,8 @@ runs:
         # path (pybnf[petab], ADR-0035, petab.v2.math); stock PyPI petab carries
         # the math grammar, so one install covers both. The exact petab
         # requirement is the `petab-spec` input (default stock PyPI; a CI leg
-        # overrides it with the Step B fork to run the NATIVE BNGL loader).
+        # overrides it with upstream libpetab-python main to run the NATIVE BNGL
+        # loader, PEtab-dev/libpetab-python#508).
         # arviz/h5netcdf/h5py unskip the ArviZ InferenceData bridge oracle
         # (ADR-0055; tests/test_inference_data.py + the tutorial diagnostics beat)
         # and matplotlib unskips the profile-likelihood plot oracle (#467). These

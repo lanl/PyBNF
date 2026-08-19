@@ -22,12 +22,11 @@ repo, ``docs/bngl-grammar.md``): line continuations (a trailing ``\\``), the
 species ``$`` clamp marker, and the observable/function/compartment line shapes.
 
 **Drift note (#420 Step B):** this reader has an upstream twin — the standalone,
-pybnf-free port in the ``bngl_model_support`` branch of ``libpetab-python``
-(``petab/v1/models/bngl_model.py``), the candidate ``BnglModel`` contribution for
-PEtab-dev/PEtab#436. The two carry the *same* entity-enumeration semantics and
-grammar hardening; any change here (e.g. a block alias or pattern-modifier rule)
-must be ported there, guarded by the mirrored grammar-hardening tests on both
-sides.
+pybnf-free port now merged into ``libpetab-python`` main
+(``petab/v1/models/bngl_model.py``, PEtab-dev/libpetab-python#508). The two carry
+the *same* entity-enumeration semantics and grammar hardening; any change here
+(e.g. a block alias or pattern-modifier rule) must be ported upstream, guarded by
+the mirrored grammar-hardening tests on both sides.
 """
 
 import re
