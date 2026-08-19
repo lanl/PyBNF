@@ -142,6 +142,27 @@ Once you have your config file edited as needed, run PyBNF from the folder conta
     
 Congratulations, you've just completed your first PyBNF fitting job!
 
+Picking up where a fit left off
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Your results are in ``output/Results/``. ``sorted_params.txt`` lists the best parameter sets
+found, best first. A common next step is to run again *from* that best fit rather than
+starting over — with a longer budget, a different algorithm, or tighter bounds. Name the point
+with :ref:`start_point <start_point>`, one line per parameter, in each parameter's own units::
+
+    start_point = var1 4.31
+    start_point = var2 0.87
+    start_point = var3 2.05
+
+Everything else about the config stays as it is: the ``uniform_var`` lines still declare the
+bounds the search stays inside, so this is a *bounded* restart from a known point rather than
+an unconstrained one. Name only the parameters you want to pin; any you leave out start where
+they would have anyway. A value outside its declared bounds is refused rather than quietly
+moved, and every run records where it actually began in ``Results/start_point.txt``.
+
+(If you simply want a local polish appended to the end of a search, ``refine = 1`` does that in
+one command — see :ref:`config_keys`.)
+
 .. note::
 
    Ready for more? The :ref:`tutorial` tours PyBNF's modern (edition-2) features
