@@ -61,7 +61,7 @@ import numpy as np
 
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
-from ..pset import FreeParameter, INITIALIZATION_BOUNDS
+from ..pset import FreeParameter, INITIALIZATION_BOUNDS, OutOfBoundsException
 from ._tsv import num, write_tsv
 
 _LN10 = math.log(10.0)
@@ -202,8 +202,20 @@ def free_parameter_from_row(row):
             'initialization_lb': lb,
             'initialization_ub': ub,
         }
-    return FreeParameter(row.parameter_id, keyword, p1, p2, value=value,
-                         bounded=bounded, lb=tlb, ub=tub, **init_kwargs)
+    try:
+        return FreeParameter(row.parameter_id, keyword, p1, p2, value=value,
+                             bounded=bounded, lb=tlb, ub=tub, **init_kwargs)
+    except OutOfBoundsException:
+        # A nominalValue outside the row's own lowerBound/upperBound. The bare
+        # OutOfBoundsException reaches the user as "an unknown error ... please report this
+        # bug", on a file they did not write; the problem is in the PEtab table (#583).
+        raise PybnfError(
+            f"PEtab parameter '{row.parameter_id}': nominalValue is outside its bounds",
+            f"The parameters table gives '{row.parameter_id}' a nominalValue of {value}, "
+            f"which lies outside the lowerBound/upperBound declared for it on the same row. "
+            f"PyBNF imports nominalValue as the fit's start point, and a start point outside "
+            f"the box is refused rather than moved into it.",
+            "Correct the nominalValue or widen the bounds in the PEtab parameters table.")
 
 
 def _can_initialize_from_bounds(keyword, lb, ub):

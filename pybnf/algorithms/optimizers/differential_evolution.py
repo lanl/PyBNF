@@ -305,7 +305,7 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         # ADR-0043 Phase 2: seed exactly one member of the initial population at the
         # initial_value point (a no-op unless a parameter: record declares one). One
         # member only -- the rest stay random so the islands keep their diversity.
-        self.proposed_individuals[0][0] = self._seed_initial_value_pset(self.proposed_individuals[0][0])
+        self.proposed_individuals[0][0] = self._seed_start_point_pset(self.proposed_individuals[0][0])
 
         # Initialize the individual list to empty, will be filled with the proposed_individuals once their fitnesses
         # are computed.
@@ -537,7 +537,7 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
 
         # ADR-0043 Phase 2: seed exactly one member at the initial_value point (a no-op
         # unless a parameter: record declares one); the rest stay random for diversity.
-        self.individuals[0] = self._seed_initial_value_pset(self.individuals[0])
+        self.individuals[0] = self._seed_start_point_pset(self.individuals[0])
 
         # Set all fitnesses to Inf, guaranteeing a replacement by the first proposed individual.
         # The first replacement will replace with a copy of the same PSet, with the correct objective calculated.

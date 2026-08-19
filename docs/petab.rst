@@ -94,7 +94,11 @@ following all survive an import and an export:
 
 - **Parameters and priors** — the ``parameters`` table becomes PyBNF free
   parameters, with ``estimate``/scale and a ``priorDistribution`` mapping onto the
-  corresponding prior family.
+  corresponding prior family. A ``nominalValue`` on an estimated row becomes a
+  :ref:`start_point <start_point>` line, so the imported fit starts from the problem's own
+  published point instead of the box centre; delete the line to start from the centre. A
+  ``nominalValue`` outside the row's own ``lowerBound``/``upperBound`` is a configuration
+  error rather than a silently relocated start.
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by

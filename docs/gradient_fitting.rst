@@ -93,8 +93,30 @@ keeps the global best. ``N`` reuses ``population_size`` (consistent with the met
 is the parallel-population size):
 
 * ``population_size = 1`` — a single start from the box center (the historical behavior).
-* ``population_size = N`` — start 0 is the box center; the remaining ``N − 1`` are Latin-hypercube
-  samples drawn across the prior box from the seeded ``random_seed``, so the scatter is reproducible.
+* ``population_size = N`` — start 0 is the box center; the remaining ``N − 1`` are drawn across the
+  prior box from the seeded ``random_seed`` (Latin-hypercube under the default
+  ``initialization = lh``), so the scatter is reproducible.
+
+.. _gradient_start_point:
+
+**Seeding a gradient fit at a known point.** Start 0 is the box center only when you do not say
+otherwise. To descend from a *particular* point — a published optimum, a PEtab ``nominalValue``, the
+result of an earlier fit — give it with :ref:`start_point <start_point>`, one line per parameter, in
+each parameter's own units::
+
+    job_type = gntr
+    population_size = 5
+    loguniform_var = kcat 1e-2 1e3
+    uniform_var    = Km   1   100
+    start_point = kcat 17.5
+    start_point = Km   40
+
+The bounded priors still supply the box, so every iterate stays inside it — this is the combination
+that used to be unreachable, since ``var`` / ``logvar`` could seed a start but carried no bounds, and
+``starting_params`` is read only by the samplers. Start 0 becomes your point and the other four stay
+scattered, so the multi-start still tells you whether that point was any good; use
+``population_size = 1`` to descend from it alone. A value outside the declared box is refused rather
+than moved. Where the fit actually began is recorded in ``Results/start_point.txt``.
 
 The N starts run as N concurrent jobs (matching every other method's parallelism), each advancing its
 own step machine, and the best fit found across all of them is the result. Multi-start applies only
@@ -333,6 +355,16 @@ without re-fitting::
 
     parameter: k1, lower: 1e-4, upper: 1e2, initial_value: 0.017
     parameter: k2, lower: 1e-4, upper: 1e2, initial_value: 3.1
+
+.. warning::
+
+   Use ``initial_value:`` for this, not :ref:`start_point <start_point>`. Everywhere else the two
+   are synonyms, but here they deliberately differ: a complete set of ``initial_value:`` fields
+   asserts *these values are the optimum*, so the polish is skipped, while ``start_point`` only says
+   *begin the search here* and the polish still runs. Only claim the former when you have actually
+   fitted the model — a profile measured from a non-minimal reference puts every confidence interval
+   in the wrong place. This is also why a PEtab-imported config seeds ``start_point`` from
+   ``nominalValue`` rather than ``initial_value:``: a nominal value is not a claim of optimality.
 
 **Reading the results.** From each finished profile the job extracts the confidence interval at the
 configured level and assigns an identifiability class. It writes three kinds of artifact to

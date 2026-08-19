@@ -121,7 +121,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # ADR-0043 Phase 2: seed exactly one initial individual at the initial_value point
         # (a no-op unless a parameter: record declares one). Only the main psets are seeded
         # -- the latin-hypercube reserve below stays fully random.
-        psets[0] = self._seed_initial_value_pset(psets[0])
+        psets[0] = self._seed_start_point_pset(psets[0])
         for i in range(len(psets)):
             psets[i].name = 'init%i' % i
 

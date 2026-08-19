@@ -850,31 +850,45 @@ class Algorithm(ABC):
             pset_vars.append(var.sample_initial_value(self.rng))
         return PSet(pset_vars)
 
-    def _seed_initial_value_pset(self, sampled_pset):
-        """Pin the parameters that declare an ``initial_value`` to that point, in ONE pset.
+    def _seed_start_point_pset(self, sampled_pset):
+        """Pin the parameters that declare a start point to it, in ONE pset.
 
-        ADR-0043 Phase 2. A new-era ``parameter:`` record may carry an ``initial_value``
-        -- the point where the search/walk should start (PEtab ``nominalValue``). Exactly
-        one member of a population algorithm's initial population is seeded there: this
-        helper takes a member already drawn from the prior/bounds and overwrites each
-        parameter that declares an ``initial_value`` (carried on ``FreeParameter.value``
-        by the loader, ``config._free_parameter_from_record``) with that value, leaving
-        every other parameter at its sampled draw. So a partially-specified seed is still
-        a complete pset -- pinned where an ``initial_value`` was given, drawn otherwise.
+        ADR-0043 Phase 2, re-pointed at the unified carrier by ADR-0117. The declared start
+        point -- ``start_point = <p> <v>`` lines and ``parameter:`` records'
+        ``initial_value:`` fields alike, resolved and validated into
+        ``Configuration.start_point`` -- is where the search/walk should begin (a PEtab
+        ``nominalValue``, a published optimum). Exactly one member of a population
+        algorithm's initial population is seeded there: this helper takes a member already
+        drawn from the prior/bounds and overwrites each parameter that declares a start,
+        leaving every other parameter at its sampled draw. So a partially-specified seed is
+        still a complete pset -- pinned where a start was given, drawn otherwise.
 
-        Returns ``sampled_pset`` unchanged when no parameter declares an ``initial_value``
-        (the common case), so runs without the record are byte-for-byte unaffected. Only
-        this one member is ever touched, so the rest of the population keeps the full
-        diversity global search (de/pso/ss) needs; this is distinct from the sampler-only
-        ``starting_params``, which overrides *every* chain uniformly.
+        Returns ``sampled_pset`` unchanged when nothing declares a start point (the common
+        case), so runs without one are byte-for-byte unaffected. Only this one member is
+        ever touched, so the rest of the population keeps the full diversity global search
+        (de/pso/ss) needs; this is distinct from the sampler-only ``starting_params``, which
+        overrode *every* chain uniformly.
 
-        Edition-agnostic: it reads ``FreeParameter.value``, which the loader sets the
-        same way however the parameter was declared, so the algorithm layer is unaware
-        of the config edition.
+        Reading the config's resolved dict rather than ``FreeParameter.value`` is what makes
+        the carrier universal: ``.value`` is unset for a no-prior record (whose start the
+        loader folds into ``p1`` in sampling space instead) and unreachable from a legacy
+        ``*_var`` conf, so it could never have carried the start point for every declaration
+        style. Values in the dict are already validated against the declared box, so
+        ``set_value`` here can never fold one.
         """
-        if not any(v.value is not None for v in self.variables):
+        declared = getattr(self.config, 'start_point', None) or {}
+        if not declared:
             return sampled_pset
-        fps = [v.set_value(v.value) if v.value is not None
+        # Only the FIRST start is pinned. ``MultiStartOptimizer`` re-enters the inner
+        # search's start_run once per start, so without this gate a declared start point
+        # would re-seed one member of every start's population -- turning an n_starts
+        # multi-start into n partially degenerate searches, and disagreeing with the
+        # start-point optimizers, where a declared start pins start 0 and leaves the rest
+        # scattered. ``_start_index`` is absent on a single-start algorithm, hence the 0
+        # default (#583).
+        if getattr(self, '_start_index', 0) != 0:
+            return sampled_pset
+        fps = [v.set_value(declared[v.name], reflect=False) if v.name in declared
                else sampled_pset.get_param(v.name)
                for v in self.variables]
         seeded = PSet(fps)
@@ -1207,6 +1221,12 @@ class Algorithm(ABC):
             logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
         else:
             psets = self.start_run()
+
+        # Record where this fit actually began, before anything is scored (#583, ADR-0117).
+        # Placed here because it is the one point every family passes through with its start
+        # in hand: the start-point optimizers resolved theirs in __init__, the populations and
+        # samplers in the start_run() just above, and a resumed run has none of either.
+        self._emit_start_point(psets, resumed=bool(resume))
 
         if not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
@@ -1675,6 +1695,124 @@ class Algorithm(ABC):
             # failure must not leave the checkpoint permanently stale on a run whose best
             # fit never changes again.
             self._ic_checkpoint_name = best_name
+
+    def _start_pset_for_record(self, psets):
+        """The PSet that is genuinely this algorithm's start, for :meth:`_emit_start_point`.
+
+        Not simply ``psets[0]``. A start-point optimizer resolved its start in ``__init__``
+        and keeps it (``start_pset`` for CMA-ES, ``start_psets`` for the concurrent
+        multi-start family), and for CMA-ES in particular the start is **never evaluated** --
+        it only seeds the distribution mean, so the first generation's members are draws
+        around it and none of them is the start. The population algorithms and samplers have
+        no such attribute: their start really is the first member of the initial population,
+        which ``_seed_start_point_pset`` has already pinned.
+        """
+        pset = getattr(self, 'start_pset', None)
+        if pset is not None:
+            return pset
+        psets_attr = getattr(self, 'start_psets', None)
+        if psets_attr:
+            return psets_attr[0]
+        return psets[0] if psets else None
+
+    def _emit_start_point(self, psets, resumed=False):
+        """Write ``Results/start_point.txt`` -- where this fit actually began (#583, ADR-0117).
+
+        Provenance, not configuration: it answers "what point did the search start from,
+        and was that the point I asked for?" for a run that has already happened. Every
+        failure #583 catalogues is silent precisely because no artifact ever recorded the
+        resolved start, so a fit displaced from its intended start is indistinguishable from
+        a correct one -- the 1.97x displacement that motivated the issue was caught only
+        because a known point failed to score what it provably scores.
+
+        One row per free parameter, in **declaration** order (which is the order every
+        u-space vector uses; note ``PSet``'s own string helpers sort alphabetically, so the
+        two must not be mixed). Each row carries the start value, the box it was checked
+        against, and its source, so the file is readable without the .conf beside it.
+
+        ``psets`` is the initial population/start list. The first is the one the start point
+        governs; the count is reported so a multi-start fit says outright how many of its
+        starts were scattered rather than pinned. Written to ``self.res_dir``, so a bootstrap
+        replicate records its own. Log-and-swallow on failure, like every artifact here: a
+        provenance file must never be the reason a fit dies.
+        """
+        if resumed:
+            # A resumed run has no start to resolve: `psets` is the pending in-flight list
+            # unpickled from the backup, i.e. arbitrary mid-run individuals. Writing them
+            # here would overwrite the original run's record -- destroying the one artifact
+            # that says where the fit began -- and label mid-run values as a start point.
+            # The record the original run left is the true one; leave it alone.
+            return
+        try:
+            declared = getattr(self.config, 'start_point', None) or {}
+            first = self._start_pset_for_record(psets)
+            # Whether this algorithm RESOLVES a start point (a start-point optimizer, which
+            # keeps `start_pset`/`start_psets`) or DRAWS an initial population. For the
+            # latter an undeclared coordinate is a random / Latin-hypercube draw, not the box
+            # centre -- labelling it 'box_center' would be a false statement in the one file
+            # that exists so a reader can tell a displaced start from a correct one.
+            resolves_start = (getattr(self, 'start_pset', None) is not None
+                              or bool(getattr(self, 'start_psets', None)))
+            rows = []
+            for v in self.variables:
+                spk = getattr(self, 'START_POINT_KEY', None)
+                if spk is not None and spk in self.config.config:
+                    source = 'refine'
+                elif v.name in declared:
+                    source = getattr(self.config, 'start_point_spelling', {}).get(v.name, 'declared')
+                elif not resolves_start:
+                    source = 'sampled'
+                elif v.has_bounded_support:
+                    source = 'box_center'
+                elif not v.has_prior:
+                    source = 'point'
+                else:
+                    source = 'prior'
+                try:
+                    value = '%.17g' % first.get_param(v.name).value if first is not None else 'n/a'
+                except Exception:
+                    value = 'n/a'
+                lo_u, hi_u = v.prior_support()
+                lo = '%.10g' % v.from_sampling_space(lo_u) if np.isfinite(lo_u) else '-inf'
+                hi = '%.10g' % v.from_sampling_space(hi_u) if np.isfinite(hi_u) else 'inf'
+                rows.append('%s\t%s\t%s\t%s\t%s' % (v.name, value, source, lo, hi))
+
+            lines = [
+                '# The point this fit started from, recorded before any parameter set was scored.',
+                '# One row per free parameter, in declaration order (NOT the alphabetical order',
+                '#   the parameter tables use).',
+                '# source: start_point -- a "start_point = <p> <v>" line',
+                '#         initial_value -- the initial_value: field of a parameter: record',
+                '#         box_center -- the 0.5 quantile of the bounded prior. For a truncated',
+                '#           non-uniform prior this is the MEDIAN, which is not the location',
+                '#           parameter under asymmetric truncation -- declare a start point to pin it',
+                '#         point      -- the single var / logvar / lnvar value',
+                '#         prior      -- an unbounded prior with no declared start (p1)',
+                '#         sampled    -- drawn from the prior / bounds, as a population',
+                '#           algorithm or sampler does for every undeclared coordinate',
+                '#         refine     -- the previous phase best fit, injected by a method chain',
+                '# lower/upper are the DECLARED box, or +-inf where the parameter declares none',
+                '#   (a parameter with no box can also finish outside any range you have in mind).',
+                # A multi-start fit pins its FIRST start and scatters the rest, so say how
+                # many there are: a reader who assumes their declared point governed the
+                # whole fit is making the mistake this file exists to prevent. Only
+                # MultiStartOptimizer has a start COUNT; for everyone else the initial pset
+                # list is a population or a chain set, which is a different thing entirely.
+                'starts\t%d' % int(getattr(self, 'n_starts', 1) or 1),
+                'starts_pinned\t%d' % (1 if declared else 0),
+                '#',
+                '# parameter\tstart\tsource\tlower\tupper',
+            ] + rows
+            # A refine shares the fit's Results/ directory (pybnf.py points the refiner at
+            # alg.res_dir), so it takes the _refine filename suffix every other artifact of a
+            # second phase uses rather than overwriting the fit's own record.
+            name = 'start_point_refine.txt' if self.refine else 'start_point.txt'
+            path = str(Path(self.res_dir) / name)
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+            logger.info('Wrote start point %s' % path)
+        except Exception:
+            logger.exception('Failed to write start_point.txt')
 
     def _emit_information_criteria(self, ic, name='', preamble=()):
         """Write ``Results/information_criteria.txt`` (and a console line) for a fit.

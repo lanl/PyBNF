@@ -175,7 +175,7 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
 
         # ADR-0043 Phase 2: seed exactly one particle at the initial_value point (a no-op
         # unless a parameter: record declares one); the rest stay random for diversity.
-        new_params_list[0] = self._seed_initial_value_pset(new_params_list[0])
+        new_params_list[0] = self._seed_start_point_pset(new_params_list[0])
 
         for i in range(len(new_params_list)):
             p = new_params_list[i]

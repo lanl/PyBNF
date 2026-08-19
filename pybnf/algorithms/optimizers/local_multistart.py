@@ -93,5 +93,12 @@ class LocalMultiStartOptimizer(ConcurrentMultiStartOptimizer):
         """Announce the concurrent multi-start (after the banner) when running more than one
         start; a single-start fit stays silent, byte-identical to the pre-multi-start run."""
         if self.n_starts > 1:
-            print2('Concurrent multi-start: %i independent starts (box center + '
-                   'Latin-hypercube), keeping the global best' % self.n_starts)
+            # Name start 0 honestly: it is the declared start point when there is one, and
+            # the box center otherwise (#583). A banner that always said "box center" became
+            # a lie the moment a start point could be pinned.
+            first = ('declared start point'
+                     if (getattr(self.config, 'start_point', None) or {}) else 'box center')
+            scatter = ('Latin-hypercube'
+                       if self.config.config.get('initialization') == 'lh' else 'random')
+            print2('Concurrent multi-start: %i independent starts (%s + %s), '
+                   'keeping the global best' % (self.n_starts, first, scatter))

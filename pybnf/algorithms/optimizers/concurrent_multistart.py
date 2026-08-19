@@ -76,7 +76,7 @@ for its own convergence test.
 import logging
 
 from .local_base import StartPointOptimizer
-from ...printing import print2
+from ...printing import print1, print2
 
 logger = logging.getLogger('pybnf.algorithms')
 
@@ -162,21 +162,51 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
         start has no prior box to scatter across, so it always runs a single start (the
         refiner polishes the one best fit, it does not re-scatter). Only a standalone box
         fit (bounded priors, :meth:`_is_box_start`) reads the start count, from
-        :attr:`_n_starts_key` (floored at 1)."""
+        :attr:`_n_starts_key` (floored at 1).
+
+        A declared start point does NOT collapse the scatter: it pins start 0 and leaves
+        starts 1..N-1 as independent draws, which is what makes the multi-start still worth
+        running -- the other starts exist to test whether the pinned point is any good. That
+        is also the contract the population algorithms have had since ADR-0043, where
+        exactly one member of the initial population is seeded and the rest keep full
+        diversity."""
+        requested = max(1, int(self.config.config.get(self._n_starts_key, 1)))
         if not self._is_box_start():
+            # A refine legitimately runs one start -- it polishes the point it was handed, it
+            # does not re-scatter -- so the note below would be false there. It is aimed at a
+            # standalone point-start fit, where an explicitly set start count really is being
+            # dropped on the floor.
+            injected = self.START_POINT_KEY in self.config.config
+            if requested > 1 and not injected:
+                # Silently ignoring an explicitly-set start count is the same defect class
+                # as #559: the key is accepted, does nothing, and says nothing.
+                print1(f"Note: {self._n_starts_key} = {requested}, but this fit has no prior "
+                       f"box to scatter additional starts across, so it runs a single start. "
+                       f"Multi-start needs bounded (uniform / loguniform, or lower/upper) "
+                       f"priors to draw from.")
+                logger.warning('%s = %d ignored: not a box start, running 1 start'
+                               % (self._n_starts_key, requested))
             return 1
-        return max(1, int(self.config.config.get(self._n_starts_key, 1)))
+        return requested
 
     def _resolve_start_psets(self):
-        """The ``n_starts`` start PSets: the box center first (start 0, preserving the
-        deterministic single-start behavior and the parity tests), then ``n_starts - 1``
-        Latin-hypercube samples across the prior box drawn from the seeded ``self.rng`` (so
-        the scatter reproduces from ``random_seed``). With ``n_starts == 1`` no sample is
-        drawn -- the rng is untouched -- so a single-start fit is byte-for-byte unchanged."""
+        """The ``n_starts`` start PSets: start 0 from :meth:`_resolve_start_pset` (a declared
+        start point, else the box center -- preserving the deterministic single-start
+        behavior and the parity tests), then ``n_starts - 1`` independent draws across the
+        prior box from the seeded ``self.rng`` (so the scatter reproduces from
+        ``random_seed``). With ``n_starts == 1`` no sample is drawn -- the rng is untouched
+        -- so a single-start fit is byte-for-byte unchanged.
+
+        The scatter honors ``initialization`` the same way every population algorithm does.
+        It used to call ``random_latin_hypercube_psets`` unconditionally, so
+        ``initialization = rand`` was a silent no-op for this whole family (#583)."""
         start0 = self._resolve_start_pset()
         if self.n_starts <= 1:
             return [start0]
-        return [start0] + self.random_latin_hypercube_psets(self.n_starts - 1)
+        n = self.n_starts - 1
+        if self.config.config.get('initialization') == 'lh':
+            return [start0] + self.random_latin_hypercube_psets(n)
+        return [start0] + [self.random_pset() for _ in range(n)]
 
     def _init_orchestration(self):
         """(Re)initialize the multi-start bookkeeping -- all plain list/dict/int, so the
