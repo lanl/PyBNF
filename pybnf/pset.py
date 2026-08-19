@@ -2317,7 +2317,11 @@ class FreeParameter:
         else:
             self.default_value = 1.0
 
-        if value:
+        # ``is not None``, not truthiness: 0.0 is a legitimate value for a linear parameter,
+        # and guarding on ``if value:`` let exactly that one value skip the bounds check and
+        # be stored out of box (#583). Every ``set_value`` passes its new value through here
+        # positionally, so this check runs on every assignment, not just at declaration.
+        if value is not None:
             if not self.lower_bound <= value <= self.upper_bound:  # not quite precise, but works well
                 raise OutOfBoundsException(f"Free parameter {self.name} cannot be assigned the value {value}")
         self.value = value
@@ -2405,9 +2409,13 @@ class FreeParameter:
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if not reflect:
                 raise OutOfBoundsException(f"Parameter {self} is outside of bounds")
-            if self.value is None:
-                self.value = self.lower_bound
-                logger.info(f"Assigning parameter {self.name} to take a value equal to its lower bound: {self.lower_bound}")
+            # NB: this deliberately does NOT write to self. It used to set
+            # ``self.value = self.lower_bound`` when the template carried no value, which
+            # mutated the shared FreeParameter living in ``Configuration.variables`` -- the
+            # one every Algorithm aliases and every ``set_value`` copies from. Nothing read
+            # the value it wrote (``_reflect`` uses only the bounds and the scale), but the
+            # contamination rode into the algorithm's pickle and so survived a checkpoint
+            # and a --resume (#583).
             # reflective number line, can never realize self.lower_bound or self.upper_bound this way
             adj = self._reflect(new_value)
             logger.debug(f'Assigned value {new_value:f} is out of defined bounds: [{self.lower_bound}, {self.upper_bound}].  '

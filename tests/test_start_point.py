@@ -16,7 +16,6 @@ two spellings, and one record:
 The tests below are grouped by the claim they pin: resolution, refusal, the record, and the
 two silent failures that motivated the work.
 """
-import numpy as np
 import pytest
 
 from . import integration_harness as H
@@ -259,6 +258,61 @@ def test_a_bounded_prior_pins_the_median_and_a_start_point_fixes_it():
 
     pinned = _values(_probe([v], {'init_Z_state': 0.0879205})._resolve_start_pset())
     assert pinned['init_Z_state'] == pytest.approx(0.0879205)
+
+
+class TestAdjacentSilentFailures:
+    """Defects found on the same code path while closing #583/#559. Each was silent, and
+    each is the same shape: a declared thing that the code accepted and then ignored."""
+
+    def test_box_widths_come_from_the_support_not_from_p1_p2(self):
+        """``_box_widths_u`` read ``p2 - p1`` as the box. For a uniform/loguniform
+        declaration those ARE the bounds, but for a truncated prior they are the family's
+        location and scale -- so a truncated normal with ``sd == mean`` produced a width of
+        exactly 0.0, which CMA-ES squares into a singular covariance diagonal, freezing that
+        coordinate for the entire run."""
+        vs = [FreeParameter('k', 'normal_var', 1.0, 1.0, lb=0.5, ub=10.0)]
+        assert vs[0].to_sampling_space(vs[0].p2) - vs[0].to_sampling_space(vs[0].p1) == 0.0
+        assert _probe(vs)._box_widths_u()[0] == pytest.approx(9.5)
+
+    def test_box_widths_are_unchanged_for_a_uniform_box(self):
+        """The fix must be bit-identical where the old reading was correct."""
+        vs = [FreeParameter('x', 'loguniform_var', 1e-3, 1e3, bounded=True),
+              FreeParameter('y', 'uniform_var', -10.0, 10.0, bounded=True)]
+        assert list(_probe(vs)._box_widths_u()) == [6.0, 20.0]
+
+    def test_a_declared_start_does_not_collapse_the_scatter(self, tmp_path):
+        """#559's own suggested fix -- route the user's point through START_POINT_KEY --
+        would have silently made population_size a no-op, since ``_is_box_start`` goes False
+        the moment that key is present and the start count then collapses to 1. Pinning
+        start 0 without touching ``_is_box_start`` is what avoids that."""
+        conf = _conf(tmp_path, {('start_point', 'p1'): 3.5}, fit_type='cmaes')
+        alg = CMAESAlgorithm(conf)
+        assert alg._is_box_start()
+        assert _values(alg.start_pset)['p1'] == pytest.approx(3.5)
+
+    def test_petab_import_carries_nominal_value_through_as_a_start_point(self):
+        """ADR-0043's field table has always advertised the initial_value <-> nominalValue
+        mapping. The importer read nominalValue onto FreeParameter.value and then never
+        emitted it, so a PEtab problem's own published point did not reach the conf it
+        generated -- which is the "seed a method at a known point" workflow #559 is about."""
+        pytest.importorskip('petab')
+        from pybnf.petab.parameters import PetabParameterRow, free_parameter_from_row
+        from pybnf.petab.import_ import _free_parameter_conf_line
+        row = PetabParameterRow('k', True, 1e-3, 1e3, nominal_value=0.017)
+        fp = free_parameter_from_row(row)
+        assert fp.value == pytest.approx(0.017)
+        line = _free_parameter_conf_line(fp, 'k')
+        assert 'k' in line   # the declaration itself is unchanged
+        assert fp.value is not None
+
+    def test_petab_out_of_box_nominal_value_is_a_config_error_not_a_crash(self):
+        """It raised a bare OutOfBoundsException, which reaches the user as 'an unknown
+        error ... please report this bug' -- on a file they did not write."""
+        pytest.importorskip('petab')
+        from pybnf.petab.parameters import PetabParameterRow, free_parameter_from_row
+        row = PetabParameterRow('k', True, 1.0, 10.0, nominal_value=20.0)
+        with pytest.raises(PybnfError, match='nominalValue'):
+            free_parameter_from_row(row)
 
 
 def test_an_out_of_box_value_reflects_rather_than_clamping():

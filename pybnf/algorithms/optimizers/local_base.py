@@ -10,20 +10,22 @@ step is an additive ``u`` step) exactly as Simplex does its log-space arithmetic
 ``StartPointOptimizer`` factors out the two pieces of plumbing they share:
 
 * **start-point resolution** -- the injected refiner start point (set by
-  ``pybnf._refine_best_fit`` under :attr:`START_POINT_KEY`) when refining; the
-  single-value ``var`` / ``logvar`` specs of a standalone point-start fit (the
-  same start point Simplex parses, ADR-0015); or, for a ``start_from_box``
-  optimizer (CMA-ES) given bounded ``uniform_var`` / ``loguniform_var`` priors,
-  the **box center** in sampling space ``u`` -- its global-start mode (#404,
-  ADR-0017);
+  ``pybnf._refine_best_fit`` under :attr:`START_POINT_KEY`) when refining; else,
+  **per parameter** (#583, ADR-0116): the declared start point
+  (``start_point = <p> <v>``, or a ``parameter:`` record's ``initial_value:``,
+  resolved into ``Configuration.start_point``); the **box center** in sampling
+  space ``u`` for a bounded-support prior -- the global-start mode (#404,
+  ADR-0017); or the single-value ``var`` / ``logvar`` spec of a point-start fit;
 * the ``u`` <-> :class:`PSet` conversion, which maps each coordinate back to a
   stored value and reflects it into the box via :meth:`FreeParameter.set_value`
   (a no-op for the unbounded ``var`` / ``logvar`` of a point-start fit; active when
   refining or globally searching a bounded fit's parameters).
 
-Simplex predates this and keeps its own byte-identical start-point parsing; the
-two new optimizers are the ≥2-member event (ADR-0009) that earns the shared base.
-These methods plug into the run loop through ``start_run`` / ``got_result`` only
+Every start-point optimizer now shares this base -- ``cmaes``, ``powell``, ``sim``,
+``gntr``, ``lbfgs``, ``trf``, ``ms`` and ``profile_likelihood`` all inherit
+``_resolve_start_pset`` unchanged. (Simplex once kept its own byte-identical copy of
+the start-point parsing; it does not any more, and has not for some time.) These
+methods plug into the run loop through ``start_run`` / ``got_result`` only
 (ADR-0007); no method overrides ``run()``.
 """
 
@@ -96,7 +98,15 @@ class StartPointOptimizer(Algorithm):
         global-start mode), rather than a point start or an injected refiner start.
 
         It holds when no refiner start point was injected and every variable has a
-        bounded-support prior (``uniform_var`` / ``loguniform_var``). Whether the
+        bounded-support prior. Note that is *not* only ``uniform_var`` /
+        ``loguniform_var``: a truncated prior of any family reports
+        ``has_bounded_support``, so a bounded ``normal`` satisfies this too -- which is
+        the mechanism behind #583's median-vs-mean displacement, since the box branch's
+        0.5 quantile is the prior's median rather than its location parameter.
+
+        This governs only the **scatter** (how many starts, and whether there is a box to
+        draw them from), not where start 0 is: a declared start point pins start 0 without
+        collapsing a multi-start, so it deliberately does not appear here. Whether the
         fit_type is *allowed* to be here at all is enforced upstream by the
         ``start_from_box`` registry flag in ``config._load_variables`` (#404)."""
         return (self.START_POINT_KEY not in self.config.config
@@ -104,14 +114,33 @@ class StartPointOptimizer(Algorithm):
                 and all(v.has_bounded_support for v in self.variables))
 
     def _box_widths_u(self):
-        """Per-coordinate box widths in sampling space ``u`` (only meaningful in
-        box-start mode), ordered by ``self.variables``: ``log10(p2) - log10(p1)``
-        for a log parameter, ``p2 - p1`` otherwise. Derived from the prior bounds
-        ``p1`` / ``p2`` so it is independent of the reflecting-bound (``b`` / ``u``)
-        flag -- the same box the center is taken from."""
-        return np.array(
-            [v.to_sampling_space(v.p2) - v.to_sampling_space(v.p1)
-             for v in self.variables], dtype=float)
+        """Per-coordinate box widths in sampling space ``u``, ordered by ``self.variables``.
+
+        Taken from :meth:`FreeParameter.prior_support`, the prior's own support in ``u``:
+        exactly the box the center is taken from, and independent of the reflecting-bound
+        (``b`` / ``u``) flag.
+
+        This used to read ``p2 - p1`` directly. For a ``uniform`` / ``loguniform`` box that
+        is the same number bit for bit, because there ``p1`` / ``p2`` *are* the bounds -- but
+        for a **truncated** prior they are the family's location and scale, so the width came
+        out as the scale and, for the entirely ordinary case ``sd == mean``, as exactly 0.0.
+        CMA-ES squares these into its initial covariance diagonal (``cmaes.py``), so such a
+        coordinate got a singular covariance and could never move at all (#583).
+
+        An unbounded coordinate has no box width; it falls back to the prior's scale, and
+        then to 1.0, so the caller always receives a positive, finite vector."""
+        widths = []
+        for v in self.variables:
+            lo, hi = v.prior_support()
+            w = hi - lo
+            if not np.isfinite(w) or w <= 0.0:
+                # No finite support (an untruncated prior). The family's scale is the best
+                # available length for this coordinate; a one-parameter family has no p2.
+                w = abs(v.p2 - v.p1) if v.p2 is not None else 0.0
+                if not np.isfinite(w) or w <= 0.0:
+                    w = 1.0
+            widths.append(w)
+        return np.array(widths, dtype=float)
 
     def _u_from_pset(self, pset):
         """The parameter vector of ``pset`` in sampling space ``u`` (the inverse

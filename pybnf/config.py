@@ -3392,9 +3392,9 @@ class Configuration:
             f"This config file sets 'starting_params', but job_type = {fit_type} has never "
             f"read it -- only the samplers ({samplers}) do. Until now the line was accepted "
             f"and then silently discarded, so the fit started somewhere else entirely.",
-            f"Use the start point instead, which every job_type reads and which is matched by "
-            f"NAME rather than by declaration order: one 'start_point = <parameter> <value>' "
-            f"line per parameter you want to pin.")
+            "Use the start point instead, which every job_type reads and which is matched by "
+            "NAME rather than by declaration order: one 'start_point = <parameter> <value>' "
+            "line per parameter you want to pin.")
 
     def _warn_unbounded_start_points(self):
         """Warn once for start points that no declared box can validate (#583 item 3, #559 §2).

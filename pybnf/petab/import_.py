@@ -441,6 +441,12 @@ def _free_parameters(parameter_rows):
             surrogate_params.add(model_param)
         fp = free_parameter_from_row(row)
         free_param_lines.append(_free_parameter_conf_line(fp, model_param))
+        if fp.value is not None:
+            # The problem's own nominalValue, carried through as the fit's start point
+            # (#583). Previously read and discarded, so the seed a PEtab problem ships with
+            # had to be transcribed by hand -- which is exactly the "seed a method at a
+            # known point" workflow that #559 was filed about.
+            free_param_lines.append(f'start_point = {model_param} {num(fp.value)}')
     if not free_param_lines:
         raise PybnfError(
             "The PEtab parameters table declares no estimated (estimate=true) parameters, "
@@ -467,7 +473,14 @@ def _free_parameter_conf_line(fp, model_param):
     half-bounded (ADR-0020/0047) -- is emitted as a new-era ``parameter:`` record, the
     only grammar that carries ``lower``/``upper`` bounds (#417/ADR-0043); an open side
     is written as an explicit infinity. The family's stem and scale are recovered from
-    the prior registry so the record round-trips to the same ``FreeParameter``."""
+    the prior registry so the record round-trips to the same ``FreeParameter``.
+
+    A PEtab ``nominalValue`` becomes the fit's start point (#583). ADR-0043's field table
+    has always advertised the ``initial_value`` <-> ``nominalValue`` mapping; the importer
+    read the value onto ``FreeParameter.value`` and then dropped it on the way out, so a
+    problem's own published point never reached the conf it generated. It is emitted as a
+    ``start_point =`` line beside the declaration rather than as a record field, so the
+    compact legacy form stays compact and one deletable line drops the seed."""
     if fp.trunc_lb is None and fp.trunc_ub is None:
         nums = num(fp.p1) if fp.p2 is None else f'{num(fp.p1)} {num(fp.p2)}'
         return f'{fp.type} = {model_param} {nums}'

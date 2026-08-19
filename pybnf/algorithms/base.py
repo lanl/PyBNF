@@ -879,6 +879,15 @@ class Algorithm(ABC):
         declared = getattr(self.config, 'start_point', None) or {}
         if not declared:
             return sampled_pset
+        # Only the FIRST start is pinned. ``MultiStartOptimizer`` re-enters the inner
+        # search's start_run once per start, so without this gate a declared start point
+        # would re-seed one member of every start's population -- turning an n_starts
+        # multi-start into n partially degenerate searches, and disagreeing with the
+        # start-point optimizers, where a declared start pins start 0 and leaves the rest
+        # scattered. ``_start_index`` is absent on a single-start algorithm, hence the 0
+        # default (#583).
+        if getattr(self, '_start_index', 0) != 0:
+            return sampled_pset
         fps = [v.set_value(declared[v.name], reflect=False) if v.name in declared
                else sampled_pset.get_param(v.name)
                for v in self.variables]

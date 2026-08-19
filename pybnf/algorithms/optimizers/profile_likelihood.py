@@ -717,8 +717,16 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         # assembled gradient -- the preflight / theta* evaluation reads the runner kind
         # off it, and super().start_run() would set it up again anyway.
         self._setup_gradient_path()
-        if all(v.value is not None for v in self.variables):
-            # Explicit theta* (initial_value on every parameter): evaluate it once. That
+        # Profile likelihood gives a COMPLETE start point its own reading: these values are
+        # theta*, the optimum to profile around, so the polish is skipped. That is shipped,
+        # documented, and pinned by tests, and it is the one job_type where a start point
+        # does not mean "begin here". A partial spec cannot mean theta* -- there is no
+        # optimum to profile around without every coordinate -- so it falls through to the
+        # polish, which is now said honestly (#583): the old message asserted that no
+        # initial_value was supplied even when some were.
+        declared = getattr(self.config, 'start_point', None) or {}
+        if declared and all(v.name in declared for v in self.variables):
+            # Explicit theta* (a start point for every parameter): evaluate it once. That
             # single evaluation yields BOTH the reference objective and the inner-runner
             # kind (read from least_squares_exact), then profile -- no polish.
             print2(self._start_banner())
@@ -726,8 +734,9 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             self.polished = False
             self.probe_counter = 0
             self.pending = {}
-            theta_star = PSet([v.set_value(v.value) for v in self.variables])
-            print1('Using the supplied initial_value for every parameter as the optimum; '
+            theta_star = PSet([v.set_value(declared[v.name], reflect=False)
+                               for v in self.variables])
+            print1('Using the supplied start point for every parameter as the optimum; '
                    'skipping the polish.')
             _name, pset = self._pl_dispatch(self._u_from_pset(theta_star))
             return [pset]
@@ -739,7 +748,13 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         # not knowing the objective's structure until a real gradient is assembled.
         self.phase = 'preflight'
         self.polished = True
-        print1('No initial_value supplied; polishing to the optimum before profiling.')
+        if declared:
+            missing = ', '.join(v.name for v in self.variables if v.name not in declared)
+            print1(f'A start point was supplied for only some parameters ({missing} left '
+                   f'undeclared), so it cannot be the optimum; polishing to the optimum '
+                   f'before profiling.')
+        else:
+            print1('No start point supplied; polishing to the optimum before profiling.')
         return [self._preflight_dispatch(self._u_from_pset(self.start_psets[0]))]
 
     def got_result(self, res):
@@ -784,10 +799,11 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 "(the %s) -- the point is non-integrable at these parameters -- so there "
                 "is no optimum to profile around." % (
                     self._fit_type_label(),
-                    'supplied initial_value theta*' if self.phase == 'center'
+                    'supplied theta* start point' if self.phase == 'center'
                     else 'box center'),
-                hint="Supply an initial_value optimum that simulates, or tighten the "
-                     "parameter bounds so the reference point integrates.")
+                hint="Supply a start point (start_point / initial_value) at an optimum that "
+                     "simulates, or tighten the parameter bounds so the reference point "
+                     "integrates.")
         exact = self.gradient_at(res).least_squares_exact
         self._runner_kind = 'trf' if exact else 'lbfgs'
         if exact:

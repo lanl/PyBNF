@@ -851,8 +851,49 @@ optimizer's own settings (e.g. ``simplex_step`` for Simplex), so you do not need
   in base 10 logarithmic space.
 
   Example:
-  
+
     * ``logvar = k__FREE -3 1``
+
+.. _start_point:
+
+**start_point**
+  The point the fit starts from, one line per parameter: the parameter's name followed by its value.
+  Use it to seed a run at a published optimum, at a PEtab ``nominalValue``, or at any point you want to
+  test the local behaviour of a method around — while keeping the box and priors declared above.
+
+  The value is always in the parameter's **own units**, never in log space, whatever its scale: a
+  ``loguniform_var`` or ``parameter_scale: log10`` parameter takes ``start_point = k 0.017``, not
+  ``-1.77``. (A non-positive value on a log-scaled parameter is an error, since that is the likely
+  symptom of writing the log.)
+
+  It is **partial by design**. Name only the parameters you want to pin; every other parameter starts
+  exactly where it would have without the key — at the centre of its box, or at its ``var`` / ``logvar``
+  value. For a multi-start fit (``population_size`` / ``n_starts`` greater than 1) the declared point is
+  start 0 and the remaining starts stay independent draws, so the scatter that makes a multi-start
+  worth running is preserved; use ``population_size = 1`` for a single run from exactly this point.
+
+  A value outside the parameter's declared bounds is **refused**, not moved. PyBNF does not clamp an
+  out-of-box value to the nearest bound — it reflects it back inside, landing on an arbitrary interior
+  point — so a start point that would be moved is reported as a configuration error instead.
+
+  Where the fit actually started is recorded in ``Results/start_point.txt``, with each parameter's
+  value, its source, and the box it was checked against.
+
+  Equivalent to the ``initial_value:`` field of a new-era ``parameter:`` record (see
+  :ref:`edition <edition>`), which states the same fact inline; ``start_point`` works at every edition
+  and alongside the legacy ``*_var`` declarations. Declaring both for one parameter is fine if they
+  agree and an error if they disagree.
+
+  For ``job_type = profile_likelihood`` a start point given for **every** parameter has a second
+  meaning: those values are taken as the optimum θ\* to profile around, and the polish is skipped. A
+  partial start point there is just a start point.
+
+  Default: None (the box centre, or the ``var`` / ``logvar`` point)
+
+  Examples:
+
+    * ``start_point = k__FREE 0.017``
+    * ``start_point = kcat 17.5``
 
 Simulation Actions
 ------------------
@@ -2217,13 +2258,24 @@ For Adaptive MCMC
   
     * ``calculate_covari = 1 50000``
 **starting_params**
-  Seed the run from a defined set of starting parameters listed in the same order they are defined with a space seperating each value in the order they are listed as free parameters in the configuratuib file
-  
+  Seed every chain of a **sampler** from a defined set of starting parameters, listed in the same order
+  the free parameters are declared in the .conf file, separated by spaces.
+
+  This key is read only by the samplers (``am``, ``mh``, ``pt``, ``dream``, ``p_dream``, ``hmc``).
+  Setting it on any other ``job_type`` is a configuration error: no optimizer has ever read it, so it
+  used to be accepted and then silently discarded, and the fit started somewhere else entirely.
+
+  Prefer :ref:`start_point <start_point>` for new configurations. It is read by every ``job_type``, it is
+  matched by **name** rather than by position — ``starting_params`` is positional against declaration
+  order, while every result file PyBNF writes is alphabetical, so round-tripping a result row back into
+  it silently permutes the values — and it is validated against the declared bounds. Note also that
+  ``continue_run = 1`` overrides ``starting_params`` entirely.
+
   Default: None
-  
-  Example: 
-  
-    * ``starting_params = 5.5 2 3``     
+
+  Example:
+
+    * ``starting_params = 5.5 2 3``
 
 For DREAM
 """""""""
