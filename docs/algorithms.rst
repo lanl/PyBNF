@@ -740,8 +740,9 @@ standalone (``job_type = cmaes``). Standalone, it accepts either of two starts:
 * a single starting **point** given with the ``var`` / ``logvar`` keys (local
   search, like Simplex and Powell); or
 * a bounded **box** given with the ``uniform_var`` / ``loguniform_var`` keys —
-  its *global-start* mode. CMA-ES begins at the box center and seeds its
-  covariance with the per-coordinate box widths, so the first generation spans the
+  its *global-start* mode. CMA-ES begins at the box center (or, if you name one,
+  at the :ref:`start_point <start_point>`) and seeds its covariance with the
+  per-coordinate box widths, so the first generation spans the
   whole box; candidates are reflected back into the box. Because covariance
   adaptation makes CMA-ES one of the strongest general-purpose black-box global
   optimizers, this is the recommended way to run it as a primary search (the
