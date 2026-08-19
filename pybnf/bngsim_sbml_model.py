@@ -160,7 +160,7 @@ def _derive_atol(scale, rtol, default_atol, *, loosen=False, model_name=None, wa
 
     The clamp binds on 10 of the 22 subset-I slugs with a readable nominal state, and nine
     of those ten integrate their box samples at the clamped value today -- they are merely
-    charged 1.5x-2.6x the integrator steps for it (ADR-0112). That is the whole argument
+    charged 1.5x-2.6x the integrator steps for it (ADR-0114). That is the whole argument
     for the opt-in: the ten are the *scope* of the problem, not a mandate to move nine
     working results.
 
