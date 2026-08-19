@@ -679,8 +679,21 @@ def parse(s):
     parameter_field = pp.Group(pp.Suppress(',') + param_field_name + colon - param_field_value)
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
+    # the start point of the fit, one parameter per line (#583, ADR-0116):
+    #   start_point = <parameter> <value>
+    # The value is always in the parameter's own units (theta), never in sampling space, at
+    # every ``parameter_scale`` -- so a log10 parameter takes ``start_point = k 0.017``, not
+    # ``-1.77``. Edition-agnostic and independent of how the parameter was declared, so it is
+    # the one spelling a legacy ``*_var`` conf can use; the edition-2 ``parameter:`` record's
+    # ``initial_value:`` field states the same fact inline, and config.py merges the two into
+    # one resolved dict (refusing a disagreement). Stored under a structural ('start_point',
+    # id) tuple key -- a sibling of ('parameter', id) -- so it rides the structural-key path
+    # (ADR-0014) and is never flagged as an unused key.
+    start_point_key = pp.CaselessLiteral('start_point')
+    start_point_gram = start_point_key - equals - bng_parameter - num - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | sbml_atol_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | start_point_gram | sbml_atol_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -927,6 +940,19 @@ def ploop(ls):  # parse loop
                 if pkey in d:
                     raise PybnfError(f"Parameter '{pid}' is specified multiple times")
                 d[pkey] = fields
+            elif l[0] == 'start_point':
+                # ``start_point = <parameter> <value>`` (#583): the point the fit starts from,
+                # one parameter per line. Stored under a structural ('start_point', id) tuple
+                # key -> the theta-space float. config.py resolves it against the declared
+                # parameters (a name that is not a free parameter is refused there, where the
+                # variables exist) and merges it with any ``initial_value:`` spelling.
+                spid, sval = l[1], float(l[2])
+                skey = ('start_point', spid)
+                if skey in d:
+                    raise PybnfError(f"start_point for '{spid}' is specified multiple times",
+                                     f"The config file sets 'start_point = {spid} ...' more than once. "
+                                     f"A parameter has exactly one start point; delete the duplicate line.")
+                d[skey] = sval
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -1153,6 +1179,10 @@ def ploop(ls):  # parse loop
                       "whether or not the variable should be bounded ('u' is unbounded, 'b' or left blank is bounded)"
             elif key in var_def_keys_1or2nums:
                 fmt = f"'{key}=v x' or '{key}=v x y' where v is a variable name, and x and y are decimal numbers"
+            elif key == 'start_point':
+                fmt = ("'start_point = v x' where v is the name of one declared free parameter and x is "
+                       "a decimal number, in that parameter's own units (not log space) whatever its "
+                       "parameter_scale. One line per parameter")
             elif key in strkeylist:
                 fmt = f"'{key}=s' where s is a string"
             elif key == 'model':

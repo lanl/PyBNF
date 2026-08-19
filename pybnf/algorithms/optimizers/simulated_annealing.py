@@ -107,7 +107,7 @@ class SimulatedAnnealing(Algorithm):
             first_psets = [self.random_pset() for _ in range(self.num_parallel)]
         # ADR-0043 Phase 2: seed exactly one replicate at the initial_value point (a no-op
         # unless a parameter: record declares one); the others stay random for diversity.
-        first_psets[0] = self._seed_initial_value_pset(first_psets[0])
+        first_psets[0] = self._seed_start_point_pset(first_psets[0])
         for i in range(self.num_parallel):
             first_psets[i].name = 'iter0run%i' % i
         return first_psets

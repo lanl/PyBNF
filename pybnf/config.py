@@ -208,7 +208,12 @@ class Configuration:
         """
         if d is None:
             d = dict()
-            
+
+        # The resolved start point, empty until _load_start_point runs. Declared up front so
+        # every reader (the algorithms) sees the attribute even if construction raises early.
+        self.start_point = {}
+        self.start_point_spelling = {}
+
         # An inline analytical objective -- a named target (ADR-0059: ``objective = banana,
         # ...``) or a bring-your-own expression / callable (ADR-0050: ``objective = expression``
         # + ``expression = ...``, or ``objective = callable`` + ``callable = mod:func``) --
@@ -343,6 +348,12 @@ class Configuration:
         # -- profiling removes a declared parameter from the search, not from the .conf.
         # A no-op (leaves self.variables untouched) unless noise_profiling = 1.
         self._apply_noise_profiling()
+        # The fit's start point (#583/#559, ADR-0116). Deliberately the first thing after
+        # _apply_noise_profiling: that is the earliest point at which self.variables is
+        # FINAL (profiling prunes parameters out of the search here), so a start_point
+        # naming a profiled-out parameter is caught rather than silently ignored.
+        self._load_start_point()
+        self._check_starting_params()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
         # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
@@ -3207,6 +3218,205 @@ class Configuration:
         """Whether a config key declares a free parameter -- a legacy ``(*_var, id)`` tuple
         or a new-era ``('parameter', id)`` record (ADR-0043)."""
         return isinstance(k, tuple) and (bool(re.search('var$', k[0])) or k[0] == 'parameter')
+
+    @staticmethod
+    def _start_point_box(v):
+        """The box a start point for ``v`` must lie in, as ``(lo, hi)`` in sampling space ``u``.
+
+        :meth:`FreeParameter.prior_support` is the right source and the b/u flag is
+        deliberately not consulted: ``prior_support`` is the *declared* box -- finite for a
+        ``uniform``/``loguniform`` box and for a truncated prior, ``(-inf, inf)`` (or a
+        half-line) for an untruncated family or a no-prior ``var``/``logvar``. The b/u flag
+        governs only whether the search *reflects* off that box; ``uniform_var = k 1 10 u``
+        still declares [1, 10] on its own conf line, and a start outside it is still a
+        contradiction worth refusing. An infinite side means there is no wall to violate --
+        the case :meth:`_warn_unbounded_start_points` reports separately.
+        """
+        return v.prior_support()
+
+    def _load_start_point(self):
+        """Resolve the fit's declared start point into ``self.start_point`` (#583/#559, ADR-0116).
+
+        One fact with two spellings, merged here into one theta-space dict so that every
+        algorithm family reads a single carrier:
+
+        * ``start_point = <parameter> <value>`` -- edition-agnostic, one line per parameter,
+          independent of how the parameter was declared. The only spelling available to a
+          legacy ``*_var`` conf, which is the configuration #559 was filed against.
+        * ``parameter: <id>, ..., initial_value: <v>`` -- the edition-2 record field
+          (ADR-0043), stating the same fact inline.
+
+        Both are **partial by design**: a parameter with no declared start keeps exactly
+        today's behaviour (box centre, Latin-hypercube draw, or ``p1``), matching the
+        contract :meth:`Algorithm._seed_start_point_pset` has implemented for the population
+        algorithms since ADR-0043. Declaring both spellings for one parameter is fine when
+        they agree and refused when they do not -- silently preferring one would reintroduce
+        exactly the class of failure this work exists to remove.
+
+        Every value is validated here, where the declared box is still in hand, and every
+        failure is a :class:`PybnfError` -- never the bare ``OutOfBoundsException``, which
+        ``pybnf.main`` reports as 'an unknown error ... please report this bug'. Nothing is
+        clamped and nothing is folded: an out-of-box start point is refused, because the
+        historical alternative (:meth:`FreeParameter.set_value`'s periodic reflection) moves
+        the fit to an arbitrary interior point and says so only at DEBUG.
+        """
+        self.start_point = {}
+        self.start_point_spelling = {}
+        by_name = {v.name: v for v in self.variables}
+        declared = {}   # name -> (theta, spelling)
+
+        # The `parameter:` records' initial_value: fields, read from the RAW record rather
+        # than back off the built FreeParameter. `.value` would be the wrong source: the
+        # loader carries it there for a prior/box record but folds a no-prior record's start
+        # into `p1` in *sampling* space and never sets `.value` at all, so no single
+        # attribute on FreeParameter holds every declaration style's start point in theta.
+        for k in sorted((k for k in self.config if isinstance(k, tuple) and k[0] == 'parameter'),
+                        key=lambda k: k[1]):
+            raw = self.config[k].get('initial_value')
+            if raw is None:
+                continue
+            try:
+                declared[k[1]] = (float(raw), 'initial_value')
+            except (TypeError, ValueError):
+                raise PybnfError(f"Parameter '{k[1]}': field 'initial_value' must be a number, "
+                                 f"got {raw!r}.")
+        for k in sorted((k for k in self.config if isinstance(k, tuple) and k[0] == 'start_point'),
+                        key=lambda k: k[1]):
+            name, theta = k[1], float(self.config[k])
+            if name in declared:
+                other, _ = declared[name]
+                # Both spellings, one parameter. Agreement is harmless (a record that names
+                # its own start plus a start_point line restating it); disagreement is a
+                # genuine contradiction and there is no defensible winner.
+                if not (other == theta or (np.isnan(other) and np.isnan(theta))):
+                    raise PybnfError(
+                        f"contradictory start point for '{name}'",
+                        f"Parameter '{name}' is given two different start points: "
+                        f"initial_value: {other} on its 'parameter:' record, and "
+                        f"'start_point = {name} {theta}'. Delete one of them.")
+            declared[name] = (theta, 'start_point')
+
+        if not declared:
+            return
+
+        if self.config['fit_type'] == 'check':
+            raise PybnfError(
+                'start point declared for job_type = check',
+                "A start point was declared, but job_type = check does not fit anything -- it "
+                "simulates each model at the values in the model file itself and ignores every "
+                "free parameter. Remove the start point, or choose a job_type that fits.")
+
+        for name in sorted(declared):
+            theta, spelling = declared[name]
+            where = (f"'start_point = {name} {theta}'" if spelling == 'start_point'
+                     else f"initial_value: {theta} on parameter '{name}'")
+            v = by_name.get(name)
+            if v is None:
+                known = ', '.join(sorted(by_name)) or '(none)'
+                # Distinguish "typo" from "profiled out": noise_profiling prunes a declared
+                # parameter out of the search after it loads, so its name is real but it is
+                # no longer something the fit can start at.
+                if any(self._is_free_param_key(k) and k[1] == name for k in self.config):
+                    raise PybnfError(
+                        f"start point for non-searched parameter '{name}'",
+                        f"{where} names a parameter that is declared but is not part of the "
+                        f"search: noise_profiling = 1 profiles it out analytically, so it has "
+                        f"no start point to set. Remove that line.")
+                raise PybnfError(
+                    f"start point for unknown parameter '{name}'",
+                    f"{where} names '{name}', which is not a declared free parameter. "
+                    f"The declared free parameters are: {known}.")
+            if not np.isfinite(theta):
+                raise PybnfError(
+                    f"non-finite start point for '{name}'",
+                    f"{where} is not a finite number. A start point is a point the fit "
+                    f"evaluates, so it must be finite.")
+            if v.log_space and theta <= 0.0:
+                raise PybnfError(
+                    f"non-positive start point for log-scaled parameter '{name}'",
+                    f"{where} is not positive, but '{name}' is sampled on a log scale, so its "
+                    f"value must be > 0.",
+                    f"A start point is always given in the parameter's OWN units, never in log "
+                    f"space. If you meant the point whose log10 is {theta}, write "
+                    f"{10.0 ** theta:g}.")
+            lo_u, hi_u = self._start_point_box(v)
+            u = v.to_sampling_space(theta)
+            if not (lo_u <= u <= hi_u):
+                lo_t, hi_t = v.from_sampling_space(lo_u), v.from_sampling_space(hi_u)
+                raise PybnfError(
+                    f"start point out of bounds for '{name}'",
+                    f"{where} lies outside the box declared for '{name}', "
+                    f"[{lo_t:g}, {hi_t:g}].",
+                    "A start point is refused rather than moved. PyBNF does not clamp an "
+                    "out-of-box value to the nearest bound -- it reflects it back inside, "
+                    "which lands the fit on an arbitrary interior point that is neither the "
+                    "point you asked for nor the bound. Widen the bounds or correct the value.")
+            self.start_point[name] = theta
+            self.start_point_spelling[name] = spelling
+
+        if self.config.get('starting_params'):
+            raise PybnfError(
+                'both start_point and starting_params are set',
+                "This config file declares a start point (start_point / initial_value) and also "
+                "sets 'starting_params'. They are two ways to say the same thing and they are "
+                "matched differently -- 'starting_params' is positional, by declaration order, "
+                "while a start point is by name. Keep the start point and delete "
+                "'starting_params'.")
+
+        self._warn_unbounded_start_points()
+
+    def _check_starting_params(self):
+        """Refuse ``starting_params`` on a fit_type that has never read it (#559 §1).
+
+        ``starting_params`` is a global key read at exactly one place -- the Bayesian
+        sampler base -- so on any of the fourteen non-sampler fit_types it has always been
+        accepted, validated against nothing, and then discarded without a word. That is the
+        failure #559 was filed for: a ``gntr`` job seeded with it produced bit-identical
+        output to the same job with the line deleted.
+
+        Refusing rather than warning is deliberate and is #559's own preference: a warning
+        about a key that has never done anything is indistinguishable from the silence that
+        caused the bug report. The key keeps working unchanged for the six sampler fit_types
+        that do read it.
+        """
+        if not self.config.get('starting_params'):
+            return
+        fit_type = self.config['fit_type']
+        entry = FIT_TYPE_REGISTRY.get(fit_type)
+        if entry is not None and entry.family == 'sampler':
+            return
+        samplers = ' / '.join(sorted(c for c, e in FIT_TYPE_REGISTRY.items()
+                                     if e.family == 'sampler'))
+        raise PybnfError(
+            f"'starting_params' is not read by job_type = {fit_type}",
+            f"This config file sets 'starting_params', but job_type = {fit_type} has never "
+            f"read it -- only the samplers ({samplers}) do. Until now the line was accepted "
+            f"and then silently discarded, so the fit started somewhere else entirely.",
+            f"Use the start point instead, which every job_type reads and which is matched by "
+            f"NAME rather than by declaration order: one 'start_point = <parameter> <value>' "
+            f"line per parameter you want to pin.")
+
+    def _warn_unbounded_start_points(self):
+        """Warn once for start points that no declared box can validate (#583 item 3, #559 §2).
+
+        ``var`` / ``logvar`` and an untruncated prior carry no finite support, so a start
+        point for them is accepted unchecked and the search that follows can leave any box
+        the user believes in without a word. That is the failure mode that produced an
+        apparent record fit whose parameters had left their declared range, so it is worth a
+        line even though the resolver itself is behaving correctly.
+        """
+        by_name = {v.name: v for v in self.variables}
+        loose = [n for n in sorted(self.start_point)
+                 if not all(np.isfinite(b) for b in self._start_point_box(by_name[n]))]
+        if not loose:
+            return
+        names = ', '.join(loose)
+        logger.warning(f'Start point declared for unbounded parameter(s): {names}')
+        print1(f"Warning: the start point for {names} cannot be checked against a box, because "
+               f"{'that parameter declares' if len(loose) == 1 else 'those parameters declare'} "
+               f"no bounds. The fit may also finish outside the range you have in mind. Give "
+               f"each a 'lower:'/'upper:' box (or a uniform/loguniform prior) to have both the "
+               f"start point and the search bounded.")
 
     def _free_parameter_from_record(self, pid, raw_fields, initialization_distribution):
         """Build a :class:`FreeParameter` from a new-era ``parameter:`` record (ADR-0043).

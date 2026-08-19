@@ -46,26 +46,50 @@ class StartPointOptimizer(Algorithm):
     def _resolve_start_pset(self):
         """The PSet the search starts from.
 
-        Three sources, in priority order:
+        The injected refiner start point wins outright when present: a refine begins from
+        what the search actually **found**, not from where the user said the search should
+        begin, and that is the whole content of a method chain. Otherwise the start is
+        resolved **per parameter**, from the first of these that applies:
 
-        * the injected refiner start point, if present (refinement);
-        * the **box center**, for a ``start_from_box`` optimizer given bounded
-          priors -- the 0.5 quantile of each ``uniform_var`` / ``loguniform_var``,
-          i.e. the midpoint of the box in sampling space ``u`` (#404, ADR-0017);
+        * the **declared start point** -- ``start_point = <p> <v>``, or the ``initial_value:``
+          field of a ``parameter:`` record, both resolved and validated into
+          ``Configuration.start_point`` (#583/#559, ADR-0116). Refused, never folded, if it
+          left the declared box: :meth:`FreeParameter.set_value` is called with
+          ``reflect=False`` here, so a value that slipped past config-load validation raises
+          rather than silently reflecting to an arbitrary interior point;
+        * the **box center** for a bounded-support prior -- the 0.5 quantile of the
+          ``uniform_var`` / ``loguniform_var`` box in sampling space ``u`` (#404, ADR-0017).
+          Note this is the prior's *median*, which for a truncated non-uniform prior is not
+          its location parameter: that gap is #583 item 1, and a declared start point is the
+          supported way to close it;
         * else the single ``var`` / ``logvar`` / ``lnvar`` start point Simplex uses (a
           single value per parameter; a log variable carries ``p1`` in its sampling
           space, so ``from_sampling_space`` maps it back to a stored value -- ``10**p1``
           for ``logvar``, ``exp(p1)`` for ``lnvar``, identity for ``var``).
+
+        Resolving per parameter rather than per fit is what lets a **partial** start point
+        work -- the declared coordinates are pinned and the rest keep exactly the behaviour
+        they have today, matching the contract
+        :meth:`Algorithm._seed_start_point_pset` has implemented for the population
+        algorithms since ADR-0043. It also fixes a mixed declaration (some parameters
+        bounded, some not), which previously failed ``_is_box_start`` as a whole and so read
+        **every** parameter's ``p1`` as a start value -- starting a ``uniform_var`` at its
+        own lower bound, silently and at no log level.
         """
         if self.START_POINT_KEY in self.config.config:
             return self.config.config[self.START_POINT_KEY]
-        if self._is_box_start():
-            # Global-start mode: begin from the box center. Only start_from_box
-            # fit_types reach here with bounded priors -- config._load_variables
-            # rejects them for the point-only start optimizers (Simplex/Powell).
-            return PSet([v.value_from_quantile(0.5) for v in self.variables])
-        start_vars = [v.set_value(v.from_sampling_space(v.p1)) for v in self.variables]
-        return PSet(start_vars)
+        declared = getattr(self.config, 'start_point', None) or {}
+        return PSet([self._start_value(v, declared) for v in self.variables])
+
+    @staticmethod
+    def _start_value(v, declared):
+        """One parameter's start value, as a :class:`FreeParameter` -- see
+        :meth:`_resolve_start_pset` for the priority order."""
+        if v.name in declared:
+            return v.set_value(declared[v.name], reflect=False)
+        if v.has_bounded_support:
+            return v.value_from_quantile(0.5)
+        return v.set_value(v.from_sampling_space(v.p1))
 
     def _is_box_start(self):
         """True when this is a standalone fit over a bounded-prior box (the
