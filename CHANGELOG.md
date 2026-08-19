@@ -7,7 +7,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 - **`sbml_atol` takes `auto` and `tracking`, so a model whose own scale asks for a *looser*
-  absolute tolerance can have one (#557, ADR-0112).** ADR-0103's derivation is allowed only to
+  absolute tolerance can have one (#557, ADR-0114).** ADR-0103's derivation is allowed only to
   tighten. That is a no-regression rule and it is why the derivation could be applied to every model
   without a flag — but a model whose species all sit far above one has a real, computable tolerance
   need, and the derivation computes it and then discards it. `Weber_BMC2015`'s seven species live at
@@ -51,7 +51,7 @@ All notable changes to PyBNF are documented below. This project adheres to
   is bit-identical on `Giordano_Nature2020` — the control, whose derivation tightens and so cannot
   see the ceiling — and moves `J_paper` at the PEtab nominal point in its sixth decimal. It is not
   free in the other direction either: error-test failures rise as steps fall, and `Laske` lost one
-  box point of twenty at one seed (both arms lose one at a second seed). ADR-0112 has every arm and
+  box point of twenty at one seed (both arms lose one at a second seed). ADR-0114 has every arm and
   says what it has not bisected.
 
 ### Fixed

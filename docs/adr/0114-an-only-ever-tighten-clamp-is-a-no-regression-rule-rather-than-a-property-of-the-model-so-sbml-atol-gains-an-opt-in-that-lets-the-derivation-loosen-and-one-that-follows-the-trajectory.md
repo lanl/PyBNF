@@ -1,6 +1,10 @@
 # An only-ever-tighten clamp is a no-regression rule rather than a property of the model, so `sbml_atol` gains an opt-in that lets the derivation loosen — and one that follows the trajectory (issue #557)
 
 **Status: Accepted and implemented (2026-08-18). Extends ADR-0103 and ADR-0105; supersedes neither.**
+*(Numbered 0114 on 2026-08-19. It was written and merged as 0112, which #587's
+measurement-time ADR had already taken nine hours earlier on `main` — a collision neither branch
+could see, since each picked the next free number against the `main` it branched from. Renumbered
+rather than left duplicated because an ADR's number is how every other document cites it.)*
 Both stand exactly as written for the default path, which is byte-identical after this change. What
 this adds is a way for a job to say how far its own model's state may set its tolerance.
 

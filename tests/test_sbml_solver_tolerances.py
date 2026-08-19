@@ -1138,7 +1138,7 @@ def test_the_looser_tolerance_costs_the_integrator_less_work(tmp_path):
     supposed to govern it, and pays in steps for resolution nobody asked for.
 
     Steps, rather than pass/fail, is the right instrument and the corpus is what says so
-    (ADR-0112): over 20 sensitivity-applied box points per slug, the six subset-I models
+    (ADR-0114): over 20 sensitivity-applied box points per slug, the six subset-I models
     the clamp binds hardest cost 0.38x-0.67x the CVODE steps under ``auto`` -- and all of
     them integrate either way. This is the fixture-scale version of that number, asserted
     with a wide margin rather than at a bare inequality so a second platform's CVODE
