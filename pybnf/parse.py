@@ -80,7 +80,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance',
-                 # Differential Evolution (job_type = de / ade, #561/ADR-0114): the
+                 # Differential Evolution (job_type = de / ade, #561/ADR-0115): the
                  # convergence tolerance as an absolute range in objective units
                  # (unset it follows stop_tolerance).
                  'de_tolfun',

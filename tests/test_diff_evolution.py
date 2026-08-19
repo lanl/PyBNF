@@ -332,7 +332,7 @@ class TestDifferentialEvolutionPlumbing:
             assert recorded == [None, None, None]
 
     def test_convergence_stop(self, tmp_path):
-        """Oracle (convergence criterion, #561/ADR-0114): when the absolute range of the
+        """Oracle (convergence criterion, #561/ADR-0115): when the absolute range of the
         finite fitnesses, max - min, is <= de_tolfun (which follows stop_tolerance when
         unset) the island reports 'STOP'. Equal fitnesses give range exactly 0, below any
         non-negative tolerance."""
@@ -443,7 +443,7 @@ class TestAsyncDifferentialEvolution:
         assert out == 'STOP'
 
     def test_convergence_stop(self, tmp_path):
-        """Oracle (convergence criterion, #561/ADR-0114): at an iteration boundary, equal
+        """Oracle (convergence criterion, #561/ADR-0115): at an iteration boundary, equal
         fitnesses make the finite range max - min = 0 <= de_tolfun (which follows
         stop_tolerance when unset), so the run stops."""
         ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, population_size=3,

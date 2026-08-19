@@ -1306,7 +1306,7 @@ def test_local_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_t
 
 # --------------------------------------------------------------------------- #
 # DE / ADE convergence is an absolute objective range over the finite
-# population, not a ratio (#561, ADR-0114)
+# population, not a ratio (#561, ADR-0115)
 # --------------------------------------------------------------------------- #
 # The original DE-family test -- max(fit) / min(fit) < 1 + stop_tolerance -- reads as
 # convergence only on a positive objective bounded below by 0 (a chi-square, an SSE).
@@ -1406,7 +1406,7 @@ def test_ade_convergence_survives_an_all_zero_population(tmp_path):
 
 
 def test_de_island_does_not_stop_the_run_before_other_islands_evaluate(tmp_path):
-    """Island-DE guard (#561, ADR-0114). Because the convergence test ignores non-finite
+    """Island-DE guard (#561, ADR-0115). Because the convergence test ignores non-finite
     fitnesses, a single island that finishes its first iteration with a collapsed (here
     identical, range-0) finite population must NOT stop the whole run while other islands
     are still entirely unevaluated (all inf). The old ratio test got this for free -- an

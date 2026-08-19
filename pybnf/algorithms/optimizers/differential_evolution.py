@@ -44,7 +44,7 @@ class DEFamilyConfig(PyBNFConfigModel):
     mutation_factor: float = 0.5
     stop_tolerance: float = 0.002
     # The DE-family convergence tolerance as an absolute range in OBJECTIVE units
-    # (#561, ADR-0114): the population is converged when the spread of its finite
+    # (#561, ADR-0115): the population is converged when the spread of its finite
     # fitnesses, ``max - min``, has collapsed to within this value. ``stop_tolerance``
     # was a *ratio* (``max/min``), which only reads as convergence on a positive
     # objective bounded below by 0; ``de_tolfun`` measures the range directly, so it
@@ -90,7 +90,7 @@ class DifferentialEvolutionBase(Algorithm):
         self.mutation_factor = config.config['mutation_factor']
         self.max_iterations = config.config['max_iterations']
         self.stop_tolerance = config.config['stop_tolerance']
-        # The convergence tolerance the run actually uses (#561, ADR-0114): an
+        # The convergence tolerance the run actually uses (#561, ADR-0115): an
         # absolute range in objective units. Unset ``de_tolfun`` falls back to
         # ``stop_tolerance`` -- the single knob the test used before -- so an existing
         # config keeps its threshold magnitude, now read as a range rather than a ratio.
@@ -149,7 +149,7 @@ class DifferentialEvolutionBase(Algorithm):
         return PSet(new_pset_vars)
 
     def _population_converged(self):
-        """The DE-family convergence test (#561, ADR-0114), shared by ``de`` and ``ade``.
+        """The DE-family convergence test (#561, ADR-0115), shared by ``de`` and ``ade``.
 
         The population is converged when the spread of its objective values --
         measured as an **absolute range** ``max - min`` over the **finite** fitnesses
@@ -446,7 +446,7 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
                 logger.debug('Island %i completed %i iterations' % (island, self.iter_num[island]))
                 # print(sorted(self.fitnesses[island]))
 
-            # Convergence check: absolute range of the finite population (#561, ADR-0114).
+            # Convergence check: absolute range of the finite population (#561, ADR-0115).
             # Only assessed once EVERY island has completed at least one iteration
             # (``min(self.iter_num) >= 1``): until then some islands are still at their
             # initial ``inf`` sentinel, and since the test (correctly) ignores non-finite
@@ -583,7 +583,7 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
                 logger.debug('Completed %i simulations' % self.sims_completed)
             if iters_complete >= self.max_iterations:
                 return 'STOP'
-            # Convergence check: absolute range of the finite population (#561, ADR-0114).
+            # Convergence check: absolute range of the finite population (#561, ADR-0115).
             if self._population_converged():
                 return 'STOP'
 

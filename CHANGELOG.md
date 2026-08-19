@@ -56,7 +56,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 - **`job_type = de` and `job_type = ade` no longer stop after generation 0 on a negative
-  objective (#561, ADR-0114).** The Differential Evolution family tested convergence with a
+  objective (#561, ADR-0115).** The Differential Evolution family tested convergence with a
   *ratio* of objectives — `max(fit) / min(fit) < 1 + stop_tolerance` — which reads as
   convergence only on a positive objective bounded below by 0 (a χ², an SSE). On a likelihood
   objective (a negative log-likelihood, unbounded below) it fired at generation 0: an
