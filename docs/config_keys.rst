@@ -1332,6 +1332,8 @@ Algorithm Options
   
     * ``sbml_integrator = rk4``
 
+.. _sbml_backend:
+
 **sbml_backend**
   Which simulation engine runs SBML models: ``roadrunner`` (the default, libRoadRunner) or
   ``bngsim`` (the BioNetGen simulator). The ``bngsim`` backend supports a restricted set of
