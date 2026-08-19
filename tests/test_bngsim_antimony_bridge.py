@@ -272,3 +272,88 @@ def test_bngsim_antimony_mutants_modify_parameters(tmp_path):
 
     expected = 10.0 * math.exp(-0.6 * 10.0)
     assert abs(dat['S'][-1] - expected) < 1e-4
+
+
+# --- #586: a per-model tolerance record reaches the Antimony backend too --------- #
+#
+# The Antimony path shares every line of the SBML backend's tolerance code (it subclasses
+# it and overrides only the loader), so this is not a second implementation. It is here
+# because Antimony is where the one thing a conf author cannot see happens: bngsim renames
+# a species id that collides with an Antimony reserved word, so a ``species_atol`` written
+# from the model file names something the engine does not carry.
+
+_ANTIMONY_RESERVED_NAME_MODEL_TEXT = """model reserved_decay()
+  species NULL, S;
+  k = 0.3;
+  J0: S -> NULL; k*S;
+  S = 10;
+  NULL = 0.5;
+end
+"""
+
+
+def _antimony_model(tmp_path, text=_ANTIMONY_MODEL_TEXT, name='test_decay.ant', **kwargs):
+    path = tmp_path / name
+    path.write_text(text)
+    return bngsim_antimony_model.BngsimAntimonyModelNoTimeout(
+        str(path), str(path), **kwargs)
+
+
+@pytest.mark.bngsim_antimony
+def test_an_antimony_model_takes_its_own_per_species_tolerance(tmp_path):
+    """The same record, the same seam, ordered against the same engine species list."""
+    model = _antimony_model(tmp_path, species_atol={'S': 1e-3})
+    engine = model._engine_model_for_action()
+    kwargs = model._run_tolerance_kwargs(model._make_simulator(engine, 'ode'), engine)
+
+    assert dict(zip(engine.species_names, kwargs['atol']))['S'] == 1e-3
+    assert 'steady_state_tol' in kwargs
+
+
+@pytest.mark.bngsim_antimony
+def test_an_antimony_reserved_word_species_is_named_by_the_name_bngsim_gives_it(tmp_path):
+    """``NULL`` in the model file is ``_ant_NULL`` in the state vector, and says so.
+
+    This is the case that decides which of the two candidate name spaces a hand-written
+    map is written in. The SBML document's ids would let a person write what they see and
+    then silently do nothing; the engine's names are the ones a per-species vector is
+    ordered by, so they are the only list that can be both checked and applied -- and the
+    refusal spells out the rename rather than leaving it to be discovered.
+    """
+    with pytest.raises(pset.ModelError, match='_ant_NULL'):
+        _antimony_model(tmp_path, text=_ANTIMONY_RESERVED_NAME_MODEL_TEXT,
+                        name='reserved_decay.ant', species_atol={'NULL': 1e-3})
+
+    model = _antimony_model(tmp_path, text=_ANTIMONY_RESERVED_NAME_MODEL_TEXT,
+                            name='reserved_decay.ant', species_atol={'_ant_NULL': 1e-3})
+    engine = model._engine_model_for_action()
+    kwargs = model._run_tolerance_kwargs(model._make_simulator(engine, 'ode'), engine)
+
+    assert dict(zip(engine.species_names, kwargs['atol']))['_ant_NULL'] == 1e-3
+
+
+@pytest.mark.bngsim_antimony
+def test_a_promoted_state_is_nameable_even_though_the_document_never_declares_it(tmp_path):
+    """A rate rule on a parameter appends a state the ``<listOfSpecies>`` does not mention.
+
+    Nothing read off the document can give that state a tolerance -- it has no declared
+    initial value to derive one from and no id in the species list to key one on -- so this
+    is a tolerance only a hand-written entry can reach at all.
+    """
+    text = """model promoted()
+  species A, B;
+  growth = 0.05;
+  J0: A -> B; growth*A;
+  A = 10; B = 0;
+  growth' = 0.01*growth;
+end
+"""
+    model = _antimony_model(tmp_path, text=text, name='promoted.ant',
+                            species_atol={'growth': 1e-9})
+
+    assert 'growth' not in model.species_names
+    assert model._engine_species_names == ('A', 'B', 'growth')
+
+    engine = model._engine_model_for_action()
+    kwargs = model._run_tolerance_kwargs(model._make_simulator(engine, 'ode'), engine)
+    assert dict(zip(engine.species_names, kwargs['atol']))['growth'] == 1e-9

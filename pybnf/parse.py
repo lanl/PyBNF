@@ -255,7 +255,57 @@ def parse(s):
     # error-stopped (``-``). A parse action tags it ``model_decl`` so ploop can route
     # the colon form -- whose tokens are otherwise shaped like ``mdmgram``'s -- to the
     # declaration handler. Edition-gated (>= 2) in config.py.
-    model_decl_gram = mdmkey + colon - _DelimitedList(model_file) - comment
+    #
+    # The declaration also carries this model's own CVODE tolerances (#586, ADR-0116):
+    #   model: <file>[, atol: <num>|auto|tracking [<decades>]][, rtol: <num>]
+    #                [, species_atol: <species> <num>[, <species> <num>...]]
+    # ``sbml_atol``/``sbml_rtol`` are one global key each, applying to every SBML/Antimony
+    # model in the fit, which is why neither could ever take a per-species vector: a
+    # positional one has no ordering a conf author can see, and a species-keyed one has no
+    # reading across models that do not share species names. Scoping the statement to one
+    # declared model file answers both -- the names are checked against that model's own
+    # species list, and two models cannot collide. Each field is the usual labeled
+    # ``pp.Group(pp.Suppress(',') + <label> + colon + <value>)`` of the ``experiment:`` /
+    # ``condition:`` family, combined with ``pp.Each`` so they may appear in any order, and
+    # every one of them is optional. ``atol:`` takes exactly what ``sbml_atol`` takes (the
+    # mode alternative first, for parse_atol_setting's reason); ``species_atol:`` takes
+    # ``<name> <value>`` pairs, whose delimited list ends cleanly at the next labeled field
+    # because ``rtol: 1e-9`` fails the ``<name> <num>`` shape and backtracks out.
+    # A comma list of files is still legal and a field still ends it -- a ``model:`` line
+    # that carries fields must declare exactly ONE model, which ploop enforces with a
+    # pointed message rather than the grammar with a parse failure.
+    md_species = pp.Word(pp.alphas + '_', pp.alphanums + '_')
+    md_atol_value = (sbml_atol_mode + pp.Optional(num)) | num
+    md_atol_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('atol') + colon - md_atol_value)
+    md_rtol_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('rtol') + colon - num)
+    md_species_atol_field = pp.Group(
+        pp.Suppress(',') + pp.CaselessLiteral('species_atol') + colon
+        - _DelimitedList(pp.Group(md_species + num)))
+    md_tolerance_fields = (pp.Optional(md_atol_field) & pp.Optional(md_rtol_field)
+                           & pp.Optional(md_species_atol_field))
+    # The declaration's file token is the shared ``model_file`` regex behind a guard, and the
+    # guard exists because that regex is UNANCHORED and lazy: it will start mid-line and run
+    # across commas, colons, spaces and ``#`` to reach the next extension it can find.
+    # Harmless while a ``model:`` line was files-and-nothing-else, and not harmless once a
+    # comma can be followed by something that is not a file. Without it,
+    # ``model: decay.xml, atol: 1e-10  # tighter for decay.xml`` hands ``_DelimitedList`` the
+    # comma and lets the regex swallow the field, the comment and all, as a second "model
+    # file" named ``atol: 1e-10  # tighter for decay.xml`` -- and
+    # ``model: a.xml, atol: 1e-4, b.xml`` swallows ``b.xml`` the same way, walking straight
+    # past the one-model rule the field list is supposed to obey.
+    #
+    # A tolerance field label is never a filename, so the file list ends where the fields
+    # begin. The lookahead needs the label AND its colon, so a model genuinely named
+    # ``rtol.xml`` still parses. A file written *after* a field is then a plain parse error
+    # carrying the ``model`` format hint, which is where the line's legal shape is spelled
+    # out. Nothing else about the token is narrowed -- in particular ``#`` stays legal
+    # inside a filename, because the legacy ``model = ... : ...`` form still accepts it and
+    # two spellings of one declaration disagreeing about which files exist would be worse
+    # than the corner it would close.
+    md_field_label = _one_of('atol rtol species_atol', caseless=True)
+    model_decl_file = ~(md_field_label + pp.Literal(':')) + model_file
+    model_decl_gram = (mdmkey + colon - _DelimitedList(model_decl_file)
+                       + md_tolerance_fields - comment)
     model_decl_gram.set_parse_action(lambda t: ['model_decl'] + list(t)[1:])
 
     # normalization mapping grammar
@@ -650,6 +700,58 @@ def flatten(vs):
     return vs[0] if len(vs) == 1 else vs
 
 
+def _one_declared_model(files, fields):
+    """The single model a ``model:`` line's tolerance fields are about (#586).
+
+    A ``model:`` line may declare several files, and a tolerance field on such a line has
+    no reading: ``model: a.xml, b.xml, atol: 1e-4`` cannot say which model the ``1e-4`` is
+    a statement about, and the whole point of moving the tolerance off ``sbml_atol`` was to
+    stop a single number meaning several things at once (ADR-0116). Refused here rather
+    than in the grammar so the message can say what to do about it.
+    """
+    if len(files) == 1:
+        return files[0]
+    labels = ', '.join(sorted({str(f[0]).lower() for f in fields}))
+    raise PybnfError(
+        f'A `model:` line that states its own solver tolerances ({labels}) must declare '
+        f'exactly one model; this one declares {len(files)} ({", ".join(files)}). '
+        'Give each model its own `model:` line.')
+
+
+def _model_tolerance_record(fields):
+    """The ``('model_tolerances', <file>)`` payload of one ``model:`` line (#586).
+
+    ``atol`` is normalized exactly the way the global ``sbml_atol`` key is -- a number
+    becomes a float and a mode becomes one lower-cased string -- so the two reach
+    :func:`~pybnf.bngsim_sbml_model.parse_atol_setting`, the one authority on that value's
+    shape, in the same shape. ``species_atol`` becomes a plain ``{name: float}`` dict; the
+    names are not checked here, because the species list belongs to the model and the
+    model has not been loaded yet (config.py checks them, with a message that lists the
+    names the model actually has).
+    """
+    record = {}
+    for field in fields:
+        label = str(field[0]).lower()
+        if label == 'species_atol':
+            by_species = {}
+            for entry in field[1:]:
+                name, value = str(entry[0]), float(entry[1])
+                if name in by_species:
+                    raise PybnfError(
+                        f"Species '{name}' is given a species_atol more than once on one "
+                        '`model:` line.')
+                by_species[name] = value
+            record[label] = by_species
+        elif label == 'atol':
+            tokens = [str(t) for t in field[1:]]
+            record[label] = (float(tokens[0]) if _NUMERIC_VALUE.fullmatch(tokens[0])
+                             else ' '.join(tokens).lower())
+        else:
+            # ``rtol``, and any later single-number field the grammar adds.
+            record[label] = float(field[1])
+    return record
+
+
 def ploop(ls):  # parse loop
     d = {}
     models = set()
@@ -709,11 +811,25 @@ def ploop(ls):  # parse loop
                 # declared files in the structural 'model' marker so config.py can
                 # edition-gate the new syntax (>= edition 2). modelId = filename stem;
                 # stem-uniqueness is enforced when models load (Model.name).
-                for mf in l[1:]:
+                #
+                # The line's optional tolerance fields (#586) arrive as pp.Groups, i.e. as
+                # LISTS among the plain-string filenames, so the two are separated by type
+                # rather than by position -- pp.Each puts the fields in whatever order the
+                # author wrote them.
+                files = [x for x in l[1:] if isinstance(x, str)]
+                fields = [x for x in l[1:] if not isinstance(x, str)]
+                for mf in files:
                     if mf not in d:
                         d[mf] = []
                     models.add(mf)
-                d.setdefault('model', []).extend(l[1:])
+                d.setdefault('model', []).extend(files)
+                if fields:
+                    tol_key = ('model_tolerances', _one_declared_model(files, fields))
+                    if tol_key in d:
+                        raise PybnfError(
+                            f"Model '{tol_key[1]}' is given solver tolerances more than once. "
+                            'Put every tolerance field for one model on one `model:` line.')
+                    d[tol_key] = _model_tolerance_record(fields)
             elif l[0] in dictkeys:
                 # Multiple declarations allowed; config dict entry should contain a list of all the declarations.
                 # Convert the line into a dict of key-value pairs. Keep everything as strings, check later
@@ -1043,6 +1159,11 @@ def ploop(ls):  # parse loop
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'" \
                       " (legacy), or the new-era declaration 'model: modelfile.bngl' or " \
                       "'model: modelfile1.bngl, modelfile2.bngl' (requires edition >= 2)." \
+                      " A single-model declaration may also state that model's own CVODE" \
+                      " tolerances in any order: 'atol: <number>|auto|tracking [decades]'," \
+                      " 'rtol: <number>', and 'species_atol: <species> <number>[, <species>" \
+                      " <number>...]' -- e.g. 'model: weber.xml, atol: auto, species_atol:" \
+                      " PKD 1e-3, CERT 1e-2' (bngsim SBML/Antimony models only)." \
                       " Supported modelfile extensions are .bngl, .xml, .ant, and .target"
             elif key == 'normalization':
                 fmt = f"'{key}=s' or '{key}=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \

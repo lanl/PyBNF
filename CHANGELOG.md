@@ -6,6 +6,54 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **A `model:` declaration carries that model's own CVODE tolerances, so a per-species
+  absolute tolerance can finally be written by hand (#586, ADR-0116).** `sbml_atol` and
+  `sbml_rtol` are one key each over *every* SBML/Antimony model in a fit, and that — not the
+  grammar — is why neither could ever take a vector: a positional one is ordered against a
+  species list a conf author cannot see, and a species-keyed one has no reading across models
+  that do not share species names. Give the statement one model to be about and both
+  objections disappear. Under `edition >= 2` a single-model `model:` line now takes three
+  optional labeled fields, in any order:
+
+  - **`atol:`** takes exactly what `sbml_atol` takes (a number, `auto`, or
+    `tracking [decades]`), for that model alone.
+  - **`rtol:`** is the per-model `sbml_rtol`. A scalar, and only ever a scalar — CVODE takes
+    one relative tolerance and there is no per-species one to route.
+  - **`species_atol:`** is the hand-written vector, written as `<species> <number>` pairs:
+    `model: weber.xml, atol: auto, species_atol: PKD 1e-3, CERT 1e-2, rtol: 1e-9`.
+
+  **The map is a set of exceptions, not a replacement.** Every species it names takes the
+  number stated, verbatim — neither ADR-0103's `1e-8` ceiling nor ADR-0105's model-scalar
+  floor binds a number a person wrote, for the same reason a pinned `sbml_atol` number is not
+  clamped either. Every species it does *not* name keeps whatever it would have had: the
+  derived vector, a pinned scalar broadcast, or the backend default. The steady-state cutoff
+  stays the model-wide number, and under `atol: tracking` the map becomes the ceiling the
+  trajectory-following weights sit beneath.
+
+  **The species names are bngsim's, and an unknown one is an error at config load** that
+  lists the names the model does have. That matters twice: bngsim renames a species id
+  colliding with an Antimony reserved word (`NULL` integrates as `_ant_NULL`, and the error
+  says so), and a parameter driven by a rate rule becomes a state the `<listOfSpecies>` never
+  mentions — nameable here and reachable by nothing else. On
+  `Smith_BMCSystBiol2013`, the one subset-I slug where the two name lists disagree, the
+  derived vector declines outright and a hand-written map is the only route to
+  `CVodeSVtolerances` there.
+
+  **Nothing changes without one of those fields.** `sbml_atol`/`sbml_rtol` keep every meaning
+  and remain the fit-wide default; a job that states nothing gets the same `Simulator.run`
+  call it got before, argument for argument. A `model:` line carrying a tolerance field must
+  declare exactly one model, and that model must be an `.xml`/`.ant` one on
+  `sbml_backend = bngsim` integrated by CVODE. A BNGL model states `atol`/`rtol` in its own
+  `begin actions` block, the RoadRunner backend has its own integrator settings, and
+  `sbml_integrator = gillespie` runs every action stochastically — all three are refused
+  rather than accepted and ignored, as is a `species_atol` on a bngsim without
+  lanl/bngsim#196.
+
+  Measured on `Weber_BMC2015`: writing bngsim's own `rtol * y_i` rule by hand — the rule
+  ADR-0105 measured and declined to apply automatically — costs 192 integrator steps against
+  `auto`'s 184 and the clamped default's 210, agreeing with all of them to ~3e-08 at the
+  final state. The derivation is still the better default; what it could not do was be
+  overridden for one species of one model.
 - **The information criteria are checkpointed alongside the parameter sets, so a run is
   scoreable before it ends (#560).** `sorted_params_backup.txt` has been written throughout a
   run since forever; `information_criteria.txt` was written **only** on the terminal path. Every
@@ -82,6 +130,13 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **`sbml_rtol` is checked for finiteness, not just for sign, so `sbml_rtol = inf` no longer
+  reaches CVODE (#586).** The conf grammar's number token also matches `inf` (ADR-0047's open
+  truncation side), so `sbml_rtol = inf` parsed to a float that cleared the config check's
+  bare `tol <= 0.` and was installed as the relative tolerance — which turns relative error
+  control off rather than erroring. `sbml_atol` never had the hole, because
+  `parse_atol_setting` has always demanded finiteness. Found while adding the per-model
+  `rtol:` field of #586, which would otherwise have inherited the same check.
 - **`job_type = de` and `job_type = ade` no longer stop after generation 0 on a negative
   objective (#561, ADR-0115).** The Differential Evolution family tested convergence with a
   *ratio* of objectives — `max(fit) / min(fit) < 1 + stop_tolerance` — which reads as

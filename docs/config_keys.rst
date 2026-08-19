@@ -37,11 +37,68 @@ Required Keys
   per model; a comma list is shorthand for a few. Requires ``edition >= 2``; the legacy
   ``model = … : …`` form above continues to work at every edition.
 
+  A declaration of a **single** SBML (``.xml``) or Antimony (``.ant``) model on
+  ``sbml_backend = bngsim`` may also state that model's own CVODE tolerances, in any
+  order after the file:
+
+  * **atol:** ``<number>``, ``auto``, or ``tracking [<decades>]`` — the per-model form of
+    :ref:`sbml_atol <sbml_rtol>`, meaning exactly what that key means, for this model only.
+  * **rtol:** ``<number>`` — the per-model form of :ref:`sbml_rtol <sbml_rtol>`.
+  * **species_atol:** ``<species> <number>[, <species> <number>…]`` — a hand-written
+    absolute tolerance for named species of this model. Every species it does *not* name
+    keeps whatever it would otherwise have had, so this is a set of exceptions rather than
+    a replacement for the derivation.
+
+  ``sbml_atol`` and ``sbml_rtol`` remain the fit-wide defaults; a field here overrides the
+  matching global key for the one model it names, and states nothing about the others.
+  That is the point of putting them here: a global key applies to *every* SBML/Antimony
+  model in the fit, which is why neither could ever take a per-species vector — a
+  positional one is ordered against a species list a conf author cannot see, and a
+  species-keyed one has no reading across models that do not share species names.
+
+  A ``model:`` line carrying any of these fields must declare exactly one model, and that
+  model must be one with a CVODE tolerance to state. A BNGL model writes ``atol``/``rtol``
+  in its own ``begin actions`` block; the RoadRunner backend has its own integrator
+  settings; and ``sbml_integrator = gillespie`` runs every action stochastically, where
+  there are no CVODE tolerances at all. All three are refused here rather than accepted and
+  ignored. Requires ``edition >= 2``.
+
+  **The species names are bngsim's, not the document's**, and the difference is checked
+  rather than papered over: a name the model does not integrate is an error at config
+  load, listing the names it does have. Two cases make the two lists differ. bngsim
+  renames a species id that collides with an Antimony reserved word, so a model file
+  declaring ``NULL`` is integrated as ``_ant_NULL`` (the error says so when it recognizes
+  the case). And a parameter or compartment driven by a rate rule or an event assignment
+  becomes a state of its own, appended after every declared species — nameable here, and
+  reachable by nothing else, since it has no declared initial value for a derivation to
+  read.
+
+  **A number you write is used verbatim.** Neither clamp of the derivation applies to a
+  ``species_atol`` entry: not the ``1e-8`` ceiling, and not the model-wide floor. Those
+  bound how far a rule reading *initial values* may go on its own; a number in the conf is
+  a statement, exactly as a plain ``sbml_atol`` number is. It must be finite and strictly
+  positive — zero would be legal in a bare CVODE per-species vector and is refused as a
+  ``tracking`` ceiling, so the stricter rule is the one applied, and it is applied
+  everywhere.
+
+  The fields compose. ``atol: auto`` chooses the base the map is laid over; a plain
+  ``atol`` number makes that base the number, broadcast; ``atol: tracking`` makes the
+  resulting vector the trajectory-following **ceiling**. The steady-state convergence cutoff stays
+  the model-wide number in every case, for the reason :ref:`sbml_atol <sbml_rtol>` gives.
+  A ``species_atol`` needs a bngsim with per-species tolerance support and is refused —
+  not quietly dropped — without one.
+
   Examples:
 
     * ``model: egfr.bngl`` (one model; ``modelId`` = ``egfr``)
     * ``model: egfr.bngl, erbb2.bngl`` (comma list)
     * ``model: egfr.bngl`` then ``model: erbb2.bngl`` (multiple lines, union)
+    * ``model: weber.xml, atol: auto`` (this model trusts its own scale; the rest of the
+      fit is unaffected)
+    * ``model: weber.xml, species_atol: PKD 1e-3, CERT 1e-2`` (two species by hand,
+      everything else derived)
+    * ``model: weber.xml, atol: 1e-6, rtol: 1e-10, species_atol: PKD 1e-3`` (everything at
+      ``1e-6`` except ``PKD``)
 
 .. _condition:
 
@@ -1302,6 +1359,13 @@ Algorithm Options
   model in the fit. For BNGL models, write ``rtol``/``atol`` in the BNGL file's
   ``begin actions`` block instead — that is BioNetGen's own surface for them.
 
+  These two keys are the fit-wide **default**. Under ``edition >= 2`` a single model can
+  state its own instead, on its :ref:`model: <model_decl>` declaration line
+  (``atol:`` / ``rtol:``), and only there can a *per-species* vector be written by hand
+  (``species_atol:``) — a global key applies to every model in the fit, so a species name
+  on one has no unambiguous reading. Everything below describes what a value means; where
+  it is written decides how much of the fit it means it for.
+
   Leave both unset unless you have a reason not to. ``sbml_rtol`` then takes the
   backend default (``1e-8``), and the absolute tolerance is **derived from the model**
   in two steps.
@@ -1387,6 +1451,12 @@ Algorithm Options
   whole derivation: it integrates every species at that value, which is also the way to
   pin the pre-per-species behaviour exactly. ``auto`` and ``tracking`` are not that — they
   say how far the model's own state may set its tolerance, so the derivation stays on.
+
+  If what you want is a tolerance for **one species** that the derivation does not
+  produce, that is ``species_atol:`` on the :ref:`model: <model_decl>` line rather than
+  anything here: it names the species, it is checked against the model's own species list
+  at config load, and it leaves every other species exactly where this key would have put
+  it.
 
   What a looser tolerance costs is **smoothness**, not accuracy, and the distinction
   matters when choosing between ``auto`` and a hand-set number. On ``Weber_BMC2015`` four
