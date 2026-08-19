@@ -86,11 +86,13 @@ jobs:
 
   # The PEtab v2 export oracle (ADR-0025/0026) validates emitted `language: bngl`
   # problems at MODEL level. On the pytest job above (stock PyPI petab) that runs
-  # through the register_bngl() monkeypatch. This job installs the #420 Step B
-  # fork instead, so Problem.from_yaml loads BNGL through petab's OWN native
-  # BnglModel loader -- exercising the collapse-to-no-op path that otherwise only
-  # ever SKIPS, and keeping the upstream contribution (PEtab-dev/PEtab#436)
-  # continuously green. One Python version is enough; the loader is pure Python.
+  # through the register_bngl() monkeypatch. This job installs upstream
+  # libpetab-python main instead -- where the native BnglModel loader landed
+  # (PEtab-dev/libpetab-python#508) -- so Problem.from_yaml loads BNGL through
+  # petab's OWN native loader, exercising the collapse-to-no-op path that
+  # otherwise only ever SKIPS and keeping us green against the merged upstream
+  # contribution ahead of its first PyPI release (0.8.2 does not yet carry it).
+  # One Python version is enough; the loader is pure Python.
   pytest-native-bngl:
     runs-on: ubuntu-latest
     name: pytest (native BNGL loader)
@@ -105,18 +107,19 @@ jobs:
           # under PYBNF_NO_BNGSIM=1 below) rather than pay for a wheel nothing
           # here exercises. The matrix legs above cover bngsim.
           bngsim: 'false'
-          petab-spec: 'petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support'
+          petab-spec: 'petab @ git+https://github.com/PEtab-dev/libpetab-python.git@main'
           # This job also runs 3.12 through setup-pybnf, so without its own
           # suffix it shares the matrix py3.12 job's cache key and one save loses
           # the reservation (the "another job may be creating this cache"
           # warning). Give it a distinct namespace.
           cache-suffix: pybnf-native
 
-      # Fail loudly if the fork did not actually install (e.g. a resolution
-      # fallback to stock petab): the native path would silently skip otherwise.
+      # Fail loudly if the upstream build did not actually install (e.g. a
+      # resolution fallback to stock petab): the native path would silently skip
+      # otherwise.
       - name: Assert petab has native BNGL support
         run: |
-          uv run --no-sync python -c "import petab.v1.models as m; assert 'bngl' in m.known_model_types, 'the Step B fork is not installed: bngl is not a known petab model type'; print('native BNGL loader present')"
+          uv run --no-sync python -c "import petab.v1.models as m; assert 'bngl' in m.known_model_types, 'upstream libpetab-python main is not installed: bngl is not a known petab model type'; print('native BNGL loader present')"
 
       - name: Run the PEtab oracle through the native loader
         env:

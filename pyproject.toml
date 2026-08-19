@@ -55,7 +55,7 @@ antimony = [
 # imports petab; the bare-name observableFormula path and core stay dependency-free
 # (ADR-0019). Stock PyPI petab carries the math grammar, so this is a normal extra a
 # user installs with `pip install pybnf[petab]` (the test extra below overrides the
-# pin with the dogfooded fork for the BnglModel validation oracle).
+# pin with upstream libpetab-python main for the BnglModel validation oracle).
 petab = [
     "petab>=0.8,<1",
 ]
@@ -114,14 +114,16 @@ tests = [
     # formula tests use petab.v2.math. Test-only -- core stays dependency-free.
     # Stock PyPI petab, so this extra (and therefore the published wheel's
     # Requires-Dist) carries NO direct URL reference -- PyPI rejects any distribution
-    # whose metadata names a `git+` ref. The #420 Step B fork that teaches
-    # libpetab-python to load `language: bngl` problems natively (validating the
-    # exporter oracle at MODEL level rather than via the register_bngl() monkeypatch)
-    # is NOT pinned here: it is injected only on the dedicated CI leg through the
-    # setup-pybnf action's `petab-spec` input (see .github/workflows/tests.yml). Once
-    # upstream ships native BNGL (PEtab-dev/PEtab#436) even that override goes away.
-    # register_bngl() stays a working fallback for stock petab, and the oracle/formula
-    # tests `pytest.importorskip('petab')`, so this is not a hard test requirement.
+    # whose metadata names a `git+` ref. Upstream libpetab-python main, where the
+    # native `language: bngl` loader merged (PEtab-dev/libpetab-python#508 -- it
+    # validates the exporter oracle at MODEL level rather than via the register_bngl()
+    # monkeypatch), is NOT pinned here: it is injected only on the dedicated CI leg
+    # through the setup-pybnf action's `petab-spec` input (see
+    # .github/workflows/tests.yml). The latest PyPI petab (0.8.2) does not yet carry
+    # BNGL, so register_bngl() stays a working fallback for stock petab; once a
+    # release ships it, that override -- and the monkeypatch -- go away. The
+    # oracle/formula tests `pytest.importorskip('petab')`, so this is not a hard test
+    # requirement.
     "petab>=0.8,<1",
     # ArviZ InferenceData bridge oracle (ADR-0055): tests/test_inference_data.py
     # builds real containers and round-trips them through netCDF, so the bridge is
