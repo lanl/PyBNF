@@ -153,56 +153,118 @@ class TestConfig(object):
         assert 'model.bngl' in out                             # model path untouched
         config.Configuration.check_unused_keys(conf)           # must not raise on the tuple key
 
-    # --- _check_variable_keyword_combination (var/logvar-vs-prior rule, #404) ---
-    # Driven directly on a bare instance (no full build): it only reads self.config
-    # keys + the fit_type. All three start-point optimizers are now box-capable
+    # --- _check_variable_keyword_combination (var/logvar-vs-prior rule, #404, #603) ---
+    # Driven directly on a bare instance: it takes the fit_type and the built
+    # FreeParameter list. All three start-point optimizers are box-capable
     # (start_from_box): cmaes (#404) and -- via concurrent multi-start, #498/ADR-0072
     # -- sim and powell. So the box rules below hold for the whole set.
+    #
+    # The rule keys on the built FreeParameter rather than on the config key that
+    # declared it (#603). That is what makes it apply to BOTH declaration syntaxes: the
+    # legacy positional `*_var` keyword and the new-era `parameter:` record produce the
+    # same FreeParameter, so each pair of tests below asserts the two spellings agree.
     _BOX_OPTIMIZERS = ['cmaes', 'sim', 'powell']
 
     @staticmethod
-    def _kw_checker(var_tuples):
+    def _kw_checker():
+        return object.__new__(config.Configuration)
+
+    @staticmethod
+    def _legacy(*specs):
+        """FreeParameters as the legacy positional `*_var` grammar builds them."""
+        out = []
+        for name, kw, p1, p2 in specs:
+            if kw in ('var', 'logvar', 'lnvar'):
+                out.append(pset.FreeParameter(name, kw, p1, p2))
+            else:
+                out.append(pset.FreeParameter(name, kw, p1, p2, bounded=True))
+        return out
+
+    @staticmethod
+    def _record(name, fields):
+        """A FreeParameter as a new-era `parameter:` record builds it -- through the real
+        loader, so the test exercises the same construction a conf would."""
         c = object.__new__(config.Configuration)
-        c.config = dict(var_tuples)
-        return c
+        return c._free_parameter_from_record(name, fields, 'prior')
 
     @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
     def test_kw_combo_box_optimizer_accepts_bounded_priors(self, fit_type):
         """A box optimizer (start_from_box) accepts a bounded-prior box -> no raise."""
-        c = self._kw_checker({('uniform_var', 'p1'): [-10., 10.],
-                              ('loguniform_var', 'p2'): [0.1, 100.]})
-        c._check_variable_keyword_combination(fit_type)  # must not raise
+        vs = self._legacy(('p1', 'uniform_var', -10., 10.),
+                          ('p2', 'loguniform_var', 0.1, 100.))
+        self._kw_checker()._check_variable_keyword_combination(fit_type, vs)  # must not raise
 
     @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
     def test_kw_combo_box_optimizer_accepts_point_start(self, fit_type):
         """A box optimizer still accepts a single var/logvar start point -> no raise."""
-        c = self._kw_checker({('var', 'p1'): [1., 0.5], ('logvar', 'p2'): [3.]})
-        c._check_variable_keyword_combination(fit_type)  # must not raise
+        vs = self._legacy(('p1', 'var', 1., 0.5), ('p2', 'logvar', 3., None))
+        self._kw_checker()._check_variable_keyword_combination(fit_type, vs)  # must not raise
 
     @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
     def test_kw_combo_box_optimizer_rejects_unbounded_prior(self, fit_type):
         """A box search needs a bounded box: normal_var (unbounded) is rejected."""
-        c = self._kw_checker({('normal_var', 'p1'): [0., 1.]})
-        with pytest.raises(printing.PybnfError):
-            c._check_variable_keyword_combination(fit_type)
+        vs = [pset.FreeParameter('p1', 'normal_var', 0., 1.)]
+        with pytest.raises(printing.PybnfError, match='bounded prior'):
+            self._kw_checker()._check_variable_keyword_combination(fit_type, vs)
 
     @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
     def test_kw_combo_box_optimizer_rejects_mixed_point_and_box(self, fit_type):
         """A var point mixed with a uniform_var box is ambiguous -> rejected."""
-        c = self._kw_checker({('var', 'p1'): [1.], ('uniform_var', 'p2'): [-10., 10.]})
-        with pytest.raises(printing.PybnfError):
-            c._check_variable_keyword_combination(fit_type)
+        vs = self._legacy(('p1', 'var', 1., None), ('p2', 'uniform_var', -10., 10.))
+        with pytest.raises(printing.PybnfError, match='Mixed'):
+            self._kw_checker()._check_variable_keyword_combination(fit_type, vs)
 
     @raises(printing.PybnfError)
     def test_kw_combo_sampler_rejects_var_keyword(self):
         """A non-start-point method (de) rejects the var/logvar start-point keyword."""
-        c = self._kw_checker({('var', 'p1'): [1.]})
-        c._check_variable_keyword_combination('de')
+        vs = self._legacy(('p1', 'var', 1., None))
+        self._kw_checker()._check_variable_keyword_combination('de', vs)
 
     def test_kw_combo_sampler_accepts_priors(self):
         """Negative control: de with uniform_var priors -> no raise."""
-        c = self._kw_checker({('uniform_var', 'p1'): [-10., 10.]})
-        c._check_variable_keyword_combination('de')  # must not raise
+        vs = self._legacy(('p1', 'uniform_var', -10., 10.))
+        self._kw_checker()._check_variable_keyword_combination('de', vs)  # must not raise
+
+    # --- the same rules, stated as `parameter:` records (#603) -------------------- #
+    # Before #603 the rule matched config keys with `re.search('var$', k[0])`, which a
+    # ('parameter', id) key never matches -- so every refusal below was silently skipped
+    # and the record syntax accepted configurations the legacy syntax rejects.
+
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_record_unbounded_prior_is_rejected_like_the_keyword(self, fit_type):
+        vs = [self._record('p1', {'prior': 'normal', 'mean': '0', 'sd': '1'})]
+        with pytest.raises(printing.PybnfError, match='bounded prior'):
+            self._kw_checker()._check_variable_keyword_combination(fit_type, vs)
+
+    @raises(printing.PybnfError)
+    def test_kw_combo_record_point_start_is_rejected_by_a_sampler(self):
+        """A record with no prior and no bounds is a point start, whatever it is spelled."""
+        vs = [self._record('p1', {'initial_value': '1.0'})]
+        self._kw_checker()._check_variable_keyword_combination('de', vs)
+
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_record_mixed_point_and_box_is_rejected(self, fit_type):
+        vs = [self._record('p1', {'initial_value': '1.0'}),
+              self._record('p2', {'prior': 'uniform', 'lower': '-10', 'upper': '10'})]
+        with pytest.raises(printing.PybnfError, match='Mixed'):
+            self._kw_checker()._check_variable_keyword_combination(fit_type, vs)
+
+    @pytest.mark.parametrize('fit_type', _BOX_OPTIMIZERS)
+    def test_kw_combo_truncated_prior_is_a_box_not_an_unbounded_prior(self, fit_type):
+        """The case that makes the keyword-keyed rule unfixable in place, and the reason
+        the discriminator must be per-parameter: a truncated normal carries a real finite
+        box (`has_bounded_support` True) while its FAMILY is unbounded, so a rule keyed on
+        the family would refuse it. This shape is the whole Grein-2026 benchmark corpus --
+        `prior: normal, ..., lower: X, upper: Y` on `job_type = gntr`."""
+        vs = [self._record('p1', {'prior': 'normal', 'mean': '0', 'sd': '1',
+                                  'lower': '-5', 'upper': '5'})]
+        self._kw_checker()._check_variable_keyword_combination(fit_type, vs)  # must not raise
+
+    def test_kw_combo_truncated_prior_is_still_a_prior_for_a_sampler(self, ):
+        """Negative control for the above: it is a prior, so a sampler takes it too."""
+        vs = [self._record('p1', {'prior': 'normal', 'mean': '0', 'sd': '1',
+                                  'lower': '-5', 'upper': '5'})]
+        self._kw_checker()._check_variable_keyword_combination('de', vs)  # must not raise
 
     # --- _check_variable_correspondence (the config-level free-parameter guard) ---
     # Tricky.bngl declares __FREE params: koff__FREE, __koff2__FREE, kase__FREE, pase__FREE.
@@ -436,11 +498,18 @@ class TestParameterRecordConfig:
     _GAUSS_TARGET = json.dumps({'type': 'gaussian', 'mean': [0.0], 'variance': [1.0]})
     _TARGET_EXP = '# index\tscore\n0\t0\n'
 
-    def _build_vars(self, tmp_path, monkeypatch, param_lines):
+    def _build_vars(self, tmp_path, monkeypatch, param_lines, job_type='de'):
+        """Load ``param_lines`` and return the built FreeParameters by name.
+
+        ``job_type`` defaults to ``de``, which takes prior-based declarations. A record
+        with no prior and no bounds is a *point start*, which only a start-point optimizer
+        accepts and which may not be mixed with prior-based parameters -- so a no-prior
+        record needs its own call with ``job_type='sim'`` (#603 made that rule apply to
+        the record syntax, which had been bypassing it)."""
         (tmp_path / 'gaussian.target').write_text(self._GAUSS_TARGET)
         (tmp_path / 'target.exp').write_text(self._TARGET_EXP)
         monkeypatch.chdir(tmp_path)
-        conf = ('edition = 2\njob_type = de\nobjective = sos\n'
+        conf = (f'edition = 2\njob_type = {job_type}\nobjective = sos\n'
                 'model = gaussian.target : target.exp\n'
                 'population_size = 5\nmax_iterations = 5\nwall_time_sim = 0\n'
                 + ''.join(line + '\n' for line in param_lines))
@@ -557,11 +626,15 @@ class TestParameterRecordConfig:
     def test_initial_value_routing(self, tmp_path, monkeypatch):
         # A prior parameter carries initial_value as its theta-space .value (read by the
         # population seed); a no-prior start point carries it as the first slot (Simplex reads p1).
+        # Loaded separately because the two are different KINDS of declaration -- a box and a
+        # point start -- and mixing them in one fit is refused (#603).
         got = self._build_vars(tmp_path, monkeypatch, [
             'parameter: p, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5, initial_value: 2',
-            'parameter: s, initial_value: 3',
         ])
         assert got['p'].value == 2.0
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: s, initial_value: 3',
+        ], job_type='sim')
         assert got['s'].type == 'var' and got['s'].p1 == 3.0
 
     def test_parameter_scale_linear_log10_ln(self, tmp_path, monkeypatch):
@@ -574,8 +647,12 @@ class TestParameterRecordConfig:
             'parameter: b, prior: normal, parameter_scale: log10, mean: 1, sd: 0.5',
             'parameter: c, prior: normal, parameter_scale: ln, mean: 1, sd: 0.5',
             'parameter: u, prior: uniform, parameter_scale: ln, lower: 0.1, upper: 100',
-            'parameter: s, parameter_scale: ln, initial_value: 2',                 # no-prior ln start point
         ])
+        # The no-prior ln start point is a point-start declaration, so it loads under a
+        # start-point optimizer and not alongside the priors above (#603).
+        got['s'] = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: s, parameter_scale: ln, initial_value: 2',
+        ], job_type='sim')['s']
         ref = stats.norm(1, 0.5)
         assert got['a'].scale_name == 'linear' and not got['a'].log_space
         assert got['b'].type == 'lognormal_var' and got['b'].scale_name == 'log10'

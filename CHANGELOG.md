@@ -169,6 +169,34 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **A `parameter:` record is now held to the same declaration rules as the equivalent `*_var`
+  line (#603, ADR-0118).** `_check_variable_keyword_combination` refuses an incoherent pairing
+  of free-parameter declarations and `job_type` — an unbounded prior handed to a box-mode
+  optimizer, `var`/`logvar` handed to a method that draws a population, a mix of point starts
+  and boxes. It decided what it was looking at by pattern-matching **config key names** with
+  `re.search('var$', k[0])`, which a `('parameter', <id>)` key never matches, so the whole rule
+  was silently bypassed by the edition-2 syntax:
+
+      legacy  normal_var = p1 0 1          -> refused: Box-mode optimizer requires a bounded prior
+      record  parameter: p1, prior: normal -> ACCEPTED
+
+  That matters more than an ordinary validation gap, because the record syntax is the *only*
+  one that can express `initial_value` — so the surface most likely to be used for careful,
+  seeded work was the one with no coherence checking at all.
+  The rule now keys on the **built `FreeParameter`** rather than on the key that declared it,
+  and runs after the variables exist rather than before. Both syntaxes produce the same
+  `FreeParameter`, so both now get the same answer. The obvious repair — re-deriving the
+  keyword set from `{v.type}` — was tried and rejected: a *truncated* prior carries a real
+  finite box while its family does not, so it would have falsely refused
+  `prior: normal, ..., lower: X, upper: Y` on `job_type = gntr`, which is an entire benchmark
+  corpus. Verified equivalent to the old rule for every untruncated declaration (family-level
+  and parameter-level bounded-support agree across all 48 registered prior keywords), and run
+  against **1049 real `.conf` files** with zero refusals.
+  The dead branch for ADR-0015's third fit_type category is deleted: every registered refiner
+  now also carries `start_from_box`, so the "point-only start optimizer" category is empty and
+  its code was unreachable. Error messages now name the offending **parameters** rather than a
+  keyword the record user never wrote, and point at `start_point` for the case they usually
+  mean — a bounded box searched from a chosen point.
 - **`starting_params` is now a configuration error on a `job_type` that has never read it
   (#559, ADR-0117).** It has exactly one read site — the Bayesian sampler base — so on the
   other fourteen `job_type`s it was accepted, validated against nothing, and then discarded

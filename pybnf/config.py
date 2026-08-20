@@ -3173,7 +3173,6 @@ class Configuration:
                              f'free parameter, but {qscale} is not declared. Declare it as a positive '
                              f'(log-scaled) variable, e.g. "loguniform_var = {qscale} <lower> <upper>".')
         fit_type = self.config['fit_type']
-        self._check_variable_keyword_combination(fit_type)
         variables = []
         initialization_distribution = self.config.get('initialization_distribution', 'prior')
         for k in self.config.keys():
@@ -3223,6 +3222,10 @@ class Configuration:
 
             logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')
             variables.append(free_param)
+        # After the loop, not before it: the rule is about what each parameter turned out
+        # to BE (a start point, a box, an unbounded prior), which is a property of the
+        # built FreeParameter rather than of the config key that declared it (#603).
+        self._check_variable_keyword_combination(fit_type, variables)
         logger.info('Loaded variables')
         return variables
 
@@ -3628,75 +3631,95 @@ class Configuration:
             unknown = ', '.join(sorted(leftover))
             raise PybnfError(f"Parameter '{pid}': unknown field(s) for {where}: {unknown}.")
 
-    def _check_variable_keyword_combination(self, fit_type):
-        """Validate that the fit's free-parameter keywords match what the fit_type
+    @staticmethod
+    def _declaration_kind(v):
+        """How ``v`` was declared, for the coherence rules: ``'point'`` (a single start
+        value, no prior), ``'box'`` (a prior with bounded support -- a uniform box, or any
+        family truncated to one), or ``'unbounded'`` (a prior with no box).
+
+        Read off the built :class:`~pybnf.pset.FreeParameter` rather than off the config
+        key that declared it. That is what makes the rules apply to **both** declaration
+        syntaxes: the legacy positional ``*_var`` keywords and the new-era ``parameter:``
+        record produce the same FreeParameter, so they get the same answer here (#603).
+        """
+        if not v.has_prior:
+            return 'point'
+        return 'box' if v.has_bounded_support else 'unbounded'
+
+    def _check_variable_keyword_combination(self, fit_type, variables):
+        """Validate that the fit's free-parameter declarations match what the fit_type
         accepts -- the var/logvar-vs-prior rule, generalized for the box optimizers.
 
-        Three categories of fit_type, derived from two registry flags (ADR-0005):
+        Two categories of fit_type (ADR-0005):
 
-        * **point-only start optimizer** (``refiner`` and not ``start_from_box`` --
-          Simplex, Powell): begins from a single value per parameter, so it takes
-          only the no-prior ``var`` / ``logvar`` keywords.
-        * **box-capable start optimizer** (``refiner`` and ``start_from_box`` --
-          CMA-ES, #404/ADR-0017): runs either from a single ``var`` / ``logvar``
-          point *or* over a bounded-prior box (``uniform_var`` / ``loguniform_var``),
-          but not a mix, and not an unbounded prior (which has no box to span).
+        * **start-point optimizer** (``refiner``): runs either from a single
+          ``var`` / ``logvar`` point *or* over a bounded-prior box, but not a mix, and
+          not an unbounded prior (which has no box to span).
         * **everything else** (samplers, population optimizers): draws every
           variable from a prior, so it never takes ``var`` / ``logvar``.
 
         ADR-0015 derived the var/logvar rule from ``refiner`` alone because "is a
-        refiner" and "takes a var/logvar point" then coincided; box mode is exactly
-        the divergence it flagged, so the capability splits onto ``start_from_box``.
+        refiner" and "takes a var/logvar point" then coincided; #404/ADR-0017 split box
+        mode onto ``start_from_box``. Every registered refiner now also carries
+        ``start_from_box``, so the two sets are identical and the third category ADR-0015
+        anticipated -- a point-only start optimizer -- is empty. The branch that served it
+        was dead code and is gone.
+
+        Takes ``variables`` (the built :class:`~pybnf.pset.FreeParameter` list) rather
+        than reading config keys. The old form pattern-matched key names with
+        ``re.search('var$', k[0])``, which a ``('parameter', id)`` record never matches --
+        so the whole rule was silently bypassed by the edition-2 syntax, and a
+        configuration this refuses when written positionally was accepted when written as
+        a record (#603). Keying on the FreeParameter is also the only correct discriminator:
+        a *truncated* prior carries a real finite box while its family does not, so the
+        family-keyed keyword set called it unbounded.
         """
         start_point_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.refiner}
-        box_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
-        bounded_prior_kws = {kw for kw, (fam, _scale) in PRIOR_KEYWORD_MAP.items()
-                             if fam.has_bounded_support}
+        kinds = {v.name: self._declaration_kind(v) for v in variables}
+        point = sorted(n for n, k in kinds.items() if k == 'point')
+        prior = sorted(n for n, k in kinds.items() if k != 'point')
+        unbounded = sorted(n for n, k in kinds.items() if k == 'unbounded')
 
-        used = {k[0] for k in self.config.keys()
-                if isinstance(k, tuple) and re.search('var$', k[0])}
-        point_kws = used & {'var', 'logvar'}
-        prior_kws = used - {'var', 'logvar'}
-        unbounded_prior_kws = prior_kws - bounded_prior_kws
+        point_names, prior_names = ', '.join(point), ', '.join(prior)
 
         if fit_type not in start_point_types:
-            if point_kws:
-                names = ' / '.join(sorted(start_point_types))
+            if point:
+                methods = ' / '.join(sorted(start_point_types))
                 raise PybnfError(
-                    'Tried to use start-point variable type {} in another algorithm.'.format(' / '.join(sorted(point_kws))),
-                    "You've used the {} keyword, but var / logvar are only for the "
-                    "start-point optimizers (job_type = {}).\nValid keywords for other "
-                    "algorithms are: uniform_var, normal_var, lognormal_var, "
-                    "loguniform_var.".format(' / '.join(sorted(point_kws)), names))
+                    'Tried to use start-point variable type in another algorithm.',
+                    f"Parameter(s) {point_names} are declared as a single start point -- the "
+                    f"var / logvar keyword, or a 'parameter:' record with no prior and no "
+                    f"bounds -- but job_type = {fit_type} draws every parameter from a prior, "
+                    f"so there is nothing for a lone start value to mean.\nA start point is "
+                    f"only a complete declaration for the start-point optimizers "
+                    f"(job_type = {methods}). For any other method give each parameter a prior "
+                    f"(uniform_var / loguniform_var / normal_var / ...), or a 'parameter:' "
+                    f"record with a 'prior:' or a 'lower:'/'upper:' box.")
             return
 
-        # A start-point optimizer (Simplex / Powell / CMA-ES) from here on.
-        if not prior_kws:
+        # A start-point optimizer from here on.
+        if not prior:
             return  # classic single-point start (var / logvar only, or no vars)
 
-        names = ' / '.join(sorted(start_point_types))
-        if fit_type not in box_types:
-            raise PybnfError(
-                'Invalid start-point variable type {}'.format(' / '.join(sorted(prior_kws))),
-                "You've specified a start-point optimizer (job_type = {}; one of {}), "
-                "but defined a variable with the {} keyword.\nFor these optimizers, "
-                "you must instead define a single initial value for each variable\n"
-                "using the var or logvar keyword (e.g. var = p1 42 ).".format(fit_type, names, ' / '.join(sorted(prior_kws))))
-
-        # Box-capable optimizer given priors: must be a clean bounded-prior box.
-        if point_kws:
+        if point:
             raise PybnfError(
                 'Mixed start-point and box variable types',
-                "job_type = {} uses both a single-value start point (var / logvar) and "
-                "a prior-based variable ({}).\nUse one consistent style: var / logvar "
-                "for a point start, or uniform_var / loguniform_var for a global box "
-                "search.".format(fit_type, ' / '.join(sorted(prior_kws))))
-        if unbounded_prior_kws:
+                f"job_type = {fit_type} is given both kinds of declaration at once: "
+                f"{point_names} declared as a single start point (var / logvar, or a "
+                f"'parameter:' record with no prior), and {prior_names} declared with a "
+                f"prior.\nUse one consistent style -- a start point for every parameter, or a "
+                f"bounded prior for every parameter. To search a box *and* begin at a chosen "
+                f"point, give every parameter a bounded prior and name the point with "
+                f"'start_point = <parameter> <value>'.")
+        if unbounded:
+            unbounded_names = ', '.join(unbounded)
             raise PybnfError(
                 'Box-mode optimizer requires a bounded prior',
-                "job_type = {} runs a global box search when given priors, which needs a "
-                "bounded box, but variable type {} is unbounded.\nUse uniform_var / "
-                "loguniform_var for box mode, or var / logvar for a single-point start.".format(fit_type, ' / '.join(sorted(unbounded_prior_kws))))
+                f"job_type = {fit_type} runs a global box search when given priors, which "
+                f"needs a bounded box, but parameter(s) {unbounded_names} have an unbounded "
+                f"prior.\nUse uniform_var / loguniform_var for box mode, add a "
+                f"'lower:'/'upper:' box to the parameter's record to truncate the prior, or "
+                f"use var / logvar for a single-point start.")
 
     def _check_variable_correspondence(self):
         """Verify the config's free parameters and the models' parameters line up.

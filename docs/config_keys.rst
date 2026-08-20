@@ -827,14 +827,30 @@ Parameter and Model Specification
   ``*_var`` keyword is the legacy shorthand for the one- and two-parameter families.
 
 
-The following two keys (``var`` and ``logvar``) are the single-value start point used by the start-point optimizers —
-:ref:`Simplex <alg-sim>`, :ref:`Powell <alg-powell>`, and :ref:`CMA-ES <alg-cmaes>`. A fit with one of these
-``job_type``\ s must define every free parameter with ``var`` / ``logvar`` and use none of the prior-based
-parameter specifications above — except that CMA-ES may instead take bounded ``uniform_var`` / ``loguniform_var``
-priors to run as a global search over the box (see :ref:`CMA-ES <alg-cmaes>`). For any other algorithm, define
-parameters with the prior-based specifications, not ``var`` / ``logvar``. When refining a result (``refine = 1``),
-the optimizer is chosen by ``refine_method`` (``sim`` (default), ``powell``, or ``cmaes``); it reads that
-optimizer's own settings (e.g. ``simplex_step`` for Simplex), so you do not need to add ``var`` / ``logvar`` lines.
+The following two keys (``var`` and ``logvar``) are the single-value **start point** used by the
+start-point optimizers — :ref:`Simplex <alg-sim>`, :ref:`Powell <alg-powell>`, :ref:`CMA-ES <alg-cmaes>`,
+the gradient methods :ref:`trf / lbfgs / gntr <alg-gradient>`, and multiple shooting (``ms``).
+
+Each of those ``job_type``\ s accepts **either** style, and not a mix:
+
+* every parameter given a single value with ``var`` / ``logvar`` — a purely local search from
+  that point; or
+* every parameter given a **bounded** prior (``uniform_var`` / ``loguniform_var``, or any family
+  truncated to a finite box with ``lower:``/``upper:`` on a ``parameter:`` record) — a search over
+  that box, beginning at its centre unless you name a different start with
+  :ref:`start_point <start_point>`.
+
+An **unbounded** prior (``normal_var``, ``gamma_var``, …) is refused for these ``job_type``\ s:
+a box search needs a box. For any other algorithm, define parameters with the prior-based
+specifications, not ``var`` / ``logvar``.
+
+The rule is about what each parameter *is*, not how it is spelled: a ``parameter:`` record with
+no ``prior:`` and no ``lower:``/``upper:`` is a start point exactly as ``var`` is, and is accepted
+and refused in the same places.
+
+When refining a result (``refine = 1``), the optimizer is chosen by ``refine_method`` (``sim``
+(default), ``powell``, or ``cmaes``); it reads that optimizer's own settings (e.g. ``simplex_step``
+for Simplex), so you do not need to add ``var`` / ``logvar`` lines.
 
 **var**
   The starting point for a free parameter.  It is defined by a 3-tuple, corresponding to the variable's name, its initial
