@@ -169,6 +169,44 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **A multiple-shooting segment that comes back short of its end knot is refused instead of
+  being read at the wrong time (#584).** `job_type = ms` builds every continuity row from the
+  **last row** of a segment's trajectory, which is the end knot only if the integration
+  reached it. An integrator that stops early and returns a partial result rather than raising
+  breaks that quietly: the trajectory is finite, in the right columns, and its final state
+  belongs to an earlier instant, so the defect `Phi_j(z_j, θ) − z_{j+1}` becomes a difference
+  of states taken at two different *times* — a different constraint, satisfied by a different
+  trajectory. Nothing downstream could see it, because the symptom is a nonzero defect, which
+  is what an honest stage shows after θ has moved. Measured on the offline fixture: a stage
+  seeded to be feasible at iteration zero, whose defect norm is exactly `0`, reported `0.0399`
+  and would have optimized against it. The segment seam now checks that a span reached the
+  knot it was asked for, and treats one that did not the way it treats any point that did not
+  integrate — the local model goes non-finite and the search backs off, rather than the run
+  dying on a point-specific failure.
+- **A segment simulation that carries no forward sensitivities now names the segment seam
+  (#584).** It stopped on the gradient assembly's own message — *enable the gradient path
+  (apply_routing) on every scored model* — which tells a `job_type = ms` user to enable a path
+  they did enable. A sensitivity request is applied **per action** (#475/#482), so a segment
+  run under a suffix the request never reached comes back with a perfectly good trajectory and
+  no tensor at all; that is an internal wiring error and every point in the fit hits it, so it
+  is now refused where it happens, saying which segment of which experiment returned what.
+- **The shooting suite now tests behaviour at pathological parameter points, not only the
+  arithmetic at well-behaved ones (#584).** The two defects above were found by these tests.
+  The two before them (#578, #581) were not: both reached `main` through a suite of 51 passing
+  offline tests and were caught by pointing `job_type = ms` at a real model. The offline
+  fixtures are a closed-form flow and an exponential decay, deliberately well-behaved so that
+  every derivative is checkable exactly — which is the right design for what they verify, and
+  leaves nothing asking what the method does when a *point* misbehaves. The offline
+  backend's failures are now switchable — a region that does not integrate, a region whose
+  trajectory is finite while its forward sensitivities overflow (#581's exact shape), a span
+  longer than the "model" can carry, a one-off refusal on the n-th call, a missing sensitivity
+  tensor, and a span that stops short of its end knot — and the new tests assert the three
+  properties ADR-0110 states as design and nothing checked: an unusable local model **backs
+  the search off** rather than ending the run; a run that stops early still **reports what it
+  has already earned**; and an unusable point **never becomes a reported fit**, including the
+  corner the method's own advantage creates, where every segment integrates, the whole horizon
+  does not, and the run therefore reports no fit rather than a segmented score no ordinary run
+  could reproduce. Each runs in milliseconds with no simulator.
 - **A gradient fit says, at job start, when bngsim declined the analytic `∂f/∂θ` for one of its
   models and CVODES' difference quotient is carrying every sensitivity column instead (#606,
   ADR-0121).** `CVodeSensInit1` takes one sensitivity-RHS callback for every column, so a single

@@ -179,7 +179,7 @@ class SegmentBackend(ABC):
         """
 
 
-def trace_from_data(data, state_names, selector_prefix='species'):
+def trace_from_data(data, state_names, selector_prefix='species', end_time=None):
     """Read a :class:`SegmentTrace` off a simulated :class:`~pybnf.data.Data`.
 
     The end-knot state is the last row of the state columns, and its derivatives are the
@@ -189,7 +189,12 @@ def trace_from_data(data, state_names, selector_prefix='species'):
     A ``Data`` with no ``output_sensitivities`` yields a value-only trace, which is what the
     certification path (an ordinary single-shoot score, no derivatives) and a scalar
     evaluation need.
+
+    ``end_time`` is the knot the caller asked this span to reach, and passing it is what
+    turns "the last row" into "the end knot" (#584). See :func:`_require_end_knot`.
     """
+    if end_time is not None:
+        _require_end_knot(data, end_time)
     state_names = tuple(state_names)
     missing = [name for name in state_names if name not in data.cols]
     if missing:
@@ -221,3 +226,33 @@ def trace_from_data(data, state_names, selector_prefix='species'):
         d_end_ic = np.array([sens.slice_for(s, axis='ic')[-1] for s in selectors], dtype=float)
     return SegmentTrace(data, end_state, d_end_param=d_end_param, d_end_ic=d_end_ic,
                         param_axis=tuple(sens.param_names), ic_axis=tuple(sens.ic_species))
+
+
+def _require_end_knot(data, end_time):
+    """Refuse a span that came back short of the knot its end state is read from.
+
+    Everything the continuity block is built from is read off the trajectory's **last
+    row**, which is the end knot only if the integration reached it. An integrator that
+    stops early -- a step limit, a tolerance failure it reports as a partial result rather
+    than as an exception -- returns a trajectory that is perfectly finite and perfectly
+    wrong for this purpose: the defect ``c_j = Phi_j(z_j, theta) - z_{j+1}`` would then be
+    a difference of states taken at two different *instants*. That is not a small error for
+    the penalty term to absorb; it is a different constraint, satisfied by a different
+    trajectory. And nothing downstream can notice -- a stage reports a nonzero defect at a
+    point it was seeded to be feasible at, which is exactly what an honest stage does after
+    ``theta`` has moved.
+
+    So it is refused here, and as a :class:`SegmentSimulationFailed` rather than as an
+    error: a span that did not reach its knot is a point that did not integrate, which
+    every caller already handles -- the local model comes back non-finite and the search
+    backs off. The offline suite makes this switchable
+    (``TwoStateBackend.stop_short``), which is how the class is covered without a simulator
+    that can be asked to stop early (#584).
+    """
+    times = np.asarray(data.data, dtype=float)[:, data.cols[data.indvar]]
+    if times.size and np.isclose(times[-1], end_time, rtol=1e-9, atol=1e-12):
+        return
+    raise SegmentSimulationFailed(
+        'the segment stopped at %s rather than reaching its end knot %s = %g'
+        % ('no output at all' if not times.size else '%s = %g' % (data.indvar, times[-1]),
+           data.indvar, end_time))
