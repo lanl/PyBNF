@@ -306,6 +306,30 @@ class BngsimModel(NetModel):
             params=list(params or []), ic=list(ic or []),
         )
 
+    def analytic_sens_rhs_status(self):
+        """What this model's forward sensitivities will actually run on (#606).
+
+        Returns a :class:`~pybnf._bngsim_caps.SensRhsStatus`: the tri-state verdict,
+        the evidence that reached it, and whatever bngsim said about *why* while the
+        Simulator was being built. ``None`` verdict on the scalar path -- there are no
+        sensitivities to be on either path of.
+
+        The Simulator built here is the same one an ODE action builds
+        (:meth:`_execute_actions`' opening construction, with no action suffix resolved
+        yet, which is the sensitivity-bearing case), so the artifact read is about the
+        artifact this fit installs.
+        """
+        if self._sensitivity_request is None:
+            return _runtime.SensRhsStatus(
+                None, 'this model has no sensitivity request', [], 0)
+        req = self._sensitivity_request
+        self._current_action_suffix = None
+        return _runtime.probe_sens_rhs(
+            lambda: _runtime.bngsim.Simulator(
+                self._engine_model, method='ode',
+                **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')),
+            columns=len(req.params or ()) + len(req.ic or ()))
+
     def set_scored_suffixes(self, suffixes):
         """Record which output suffixes are scored gradient targets (#475).
 

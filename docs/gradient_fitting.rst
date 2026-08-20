@@ -909,6 +909,61 @@ would need, at comparable cost but with an **exact** derivative and no step-size
 parameters actually free in a given experiment are requested (a condition-pinned parameter is
 dropped), so :math:`P` is the live count, not the total.
 
+That estimate assumes the **analytic** sensitivity right-hand side, which is the next
+section's subject.
+
+
+The analytic sensitivity RHS, and when bngsim declines it
+---------------------------------------------------------
+
+bngsim derives :math:`\partial f/\partial\theta` in closed form and compiles it alongside the
+model's own right-hand side. When it cannot, CVODES falls back to its **internal difference
+quotient**: correct, and considerably more expensive — one extra right-hand-side evaluation per
+sensitivity column per step, so an :math:`N`-column request pays roughly :math:`N` times the
+sensitivity cost rather than the :math:`(1+P)` above.
+
+The fallback is **all or nothing per model**. ``CVodeSensInit1`` takes one sensitivity-RHS
+callback for every column, so a single rate law bngsim cannot differentiate declines the analytic
+path for the whole model; there is no per-reaction mixture. bngsim declines on an underivable
+construct (``abs()``, ``floor()``, ``erf()``, ``tgamma()``), on a comparison in a position it
+cannot solve, and on a derivation that exhausts its own build-time budget — which means the same
+model can decline or not depending on how long the derivation took, with no version difference to
+point at.
+
+On a fit measured in hours this is not "slower", it is often "nothing": on
+``Smith_BMCSystBiol2013`` all 25 columns fell back, every start timed out, and thirteen hours
+produced no result.
+
+PyBNF therefore checks **once per model at job start**, before the fit has spent anything, and
+says what it found::
+
+    WARNING: model 'Smith' has no analytic sensitivity right-hand side, so this gradient fit
+    runs on CVODES' internal difference quotient -- each of this model's 25 sensitivity columns
+    costs an extra right-hand-side evaluation per step, so expect roughly 25x the sensitivity
+    cost of the analytic path. The gradient stays correct. bngsim declined it because ...
+
+The :ref:`sensitivity_fallback <sensitivity_fallback>` key chooses what happens next: ``warn``
+(the default, as above), ``error`` (refuse the fit — for a long unattended run), or ``ignore``
+(skip the check, including the one simulator construction per model it costs).
+
+Two limits are worth knowing:
+
+* The **verdict** is read off the compiled codegen artifact — whether it exports the analytic
+  sensitivity RHS symbol — so it is right whether or not the artifact came from bngsim's codegen
+  cache. bngsim's **reason** is not: it is reported while generating codegen source, and a warm
+  cache skips that step, so the reason appears the first time a model is built and not afterwards.
+  Only the prose varies; the verdict, and therefore ``sensitivity_fallback = error``, does not.
+* The check describes the model **at the fit's start point**. One step of bngsim's codegen reads
+  parameter values, so a model that branches on a fitted threshold could in principle cross the
+  line mid-search.
+
+One further case is worse than slow: a declined model that *also* branches at a crossing whose
+time moves. The difference quotient integrates straight through such a crossing, dropping the
+jump, so every column is wrong at and after it. bngsim 0.14.0 and later **refuse** that run
+rather than return a gradient they have flagged as wrong, and the refusal reaches PyBNF as an
+ordinary error. On an older bngsim the same model only warns and returns the wrong gradient —
+PyBNF says so at verbosity 0 whenever bngsim's reason reaches it.
+
 
 Parameter scales
 ----------------

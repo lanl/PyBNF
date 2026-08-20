@@ -169,6 +169,43 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **A gradient fit says, at job start, when bngsim declined the analytic `∂f/∂θ` for one of its
+  models and CVODES' difference quotient is carrying every sensitivity column instead (#606,
+  ADR-0121).** `CVodeSensInit1` takes one sensitivity-RHS callback for every column, so a single
+  rate law bngsim cannot differentiate — an `abs()`/`floor()`/`erf()` term, a comparison it
+  cannot solve, or a derivation that ran out of its build-time budget — declines the analytic
+  path for the **whole model**. The substitution is correct and costs an extra right-hand-side
+  evaluation per column per step, so an N-parameter fit pays roughly N× the sensitivity cost.
+  On a fit measured in hours that is not a slower answer but no answer: on
+  `Smith_BMCSystBiol2013` all 25 columns fell back, every start timed out to `inf`, and thirteen
+  hours produced nothing. PyBNF surfaced none of it — no console line, no refusal, nothing
+  distinguishing a gradient fit on the analytic path from one on the fallback. The decline did
+  reach `<prefix>.log`, because bngsim's logger propagates to root, but as one line per model
+  written mid-run from N worker processes into a shared, noisy file: discoverable by someone who
+  already suspects the problem, which is the wrong order.
+  PyBNF now checks **once per model at gradient-path setup**, on the head node, before the fit
+  has evaluated anything, and names the model, its column count, the expected cost multiplier and
+  bngsim's own reason. The check is not the log line: the verdict is read off the compiled codegen
+  artifact — whether it exports the analytic sensitivity RHS symbol, the exact symbol bngsim's
+  C++ resolves to choose between the two paths. That matters because bngsim reports a decline
+  while *generating* codegen source, and since lanl/bngsim#174 a warm structural cache skips
+  source generation entirely: measured on 0.13.0, the same declining model reports its decline on
+  the first construction and says nothing on the second, while running on the same fallback both
+  times. Since the cache persists on disk, the run that hears nothing is typically the second run
+  of a fit — the one made after the first came back empty. bngsim's reason is still captured and
+  reported when it is heard, but only ever as prose; nothing keys off its absence.
+  The new `sensitivity_fallback` key chooses what happens next: `warn` (the default — today's
+  behaviour plus the sentence), `error` (refuse the fit, for a long unattended run), or `ignore`
+  (skip the check, including the one simulator construction per model it costs). The policy keys off the verdict rather than the reason, so a
+  fit refuses or does not refuse reproducibly whatever state the codegen cache is in. A model
+  PyBNF cannot read an answer for — a `codegen=False` run has no artifact — reports **no
+  opinion**: logged, never warned about, and never refused, because guessing is wrong in both
+  directions.
+  One decline is worse than slow: a model that also branches at a crossing whose time moves gets
+  a difference quotient that integrates straight through it, so every column is wrong at and
+  after the crossing. bngsim ≥ 0.14.0 refuses such a run rather than return a gradient it has
+  flagged as wrong; on 0.13.0, which PyBNF's floor still admits, the same model only warns and
+  returns it, and PyBNF now says so at verbosity 0 whenever bngsim's reason reaches it.
 - **The discrete-event gradient gate reads a bngsim capability instead of a version floor, so a
   from-source build that merely *declares* a new enough version no longer passes it (#558,
   ADR-0119).** `BNGSIM_HAS_EVENT_SENS` gates forward sensitivities that survive a discrete

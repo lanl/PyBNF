@@ -250,6 +250,21 @@ class GlobalConfig(PyBNFConfigModel):
     # union report.
     sbml_rtol: Optional[float] = None
     sbml_atol: Any = None
+    # What a gradient fit does when bngsim declines the analytic sensitivity RHS for a
+    # model and CVODES' internal difference quotient carries every column instead
+    # (#606, ADR-0121). The substitution is correctness-preserving and cost-multiplying
+    # -- one extra RHS evaluation per column per step -- so the default says so and
+    # proceeds:
+    #   * 'warn'   (default) -- name the model, the cost, and bngsim's reason when it
+    #              gave one, at job start, before the fit has spent anything.
+    #   * 'error'  -- refuse instead, for a run nobody will be watching. Keys off the
+    #              verdict (read off the codegen artifact), which is stable across a
+    #              warm or cold codegen cache, so a fit refuses or does not refuse
+    #              reproducibly.
+    #   * 'ignore' -- skip the check entirely, including the one Simulator construction
+    #              it costs per model.
+    # bngsim backends only; a gradient fit is bngsim-only anyway (the backend gate).
+    sensitivity_fallback: Literal['warn', 'error', 'ignore'] = 'warn'
     stochastic_seed: str = 'auto'
     parallel_count: Optional[int] = None
     save_best_data: int = 0

@@ -7,6 +7,9 @@ rather than reach for ``getattr(bngsim, ...)`` or ``hasattr(...)`` probes.
 """
 
 
+import collections
+import contextlib
+import ctypes
 import importlib.metadata
 import logging
 import os
@@ -458,3 +461,265 @@ def bngsim_stale_core_report():
         return module.format_report(prov)
     except Exception:                                  # pragma: no cover - defensive
         return ''
+
+
+# --- the analytic ∂f/∂p, per (build, MODEL) (#606) --------------------------- #
+#
+# Everything above this line is a property of the INSTALL. This is not: whether a
+# gradient runs on bngsim's analytic sensitivity RHS or on CVODES' internal
+# difference quotient is decided per model, at codegen, and two models on one
+# bngsim get different answers.
+#
+# ``CVodeSensInit1`` takes ONE sensitivity-RHS callback for every column, so a
+# single rate law bngsim cannot differentiate declines the analytic ∂f/∂p for the
+# WHOLE model -- there is no per-reaction fallback to mix in. The difference
+# quotient that replaces it costs an extra RHS evaluation per column per step, so
+# an N-parameter fit pays roughly N times the sensitivity cost. That is not an
+# annoyance on a fit measured in hours: on ``Smith_BMCSystBiol2013`` all 25 columns
+# fell back, every start timed out to ``inf``, and thirteen hours produced nothing
+# (#558). The only signal was a bngsim log line nobody had a reason to look for.
+#
+# WHY THE LOG LINE IS NOT THE INSTRUMENT. bngsim reports every decline on the
+# ``bngsim`` logger at codegen time, and PyBNF could listen for it -- that needs no
+# new bngsim API and works across the whole supported range. It is not enough on
+# its own, because the codegen cache short-circuits the step that emits it: since
+# lanl/bngsim#174 the cache key is STRUCTURAL, so a warm cache resolves the ``.so``
+# without generating any source, and source generation is where the decline is
+# derived and logged. Measured on 0.13.0 against an ``abs()`` rate law: first
+# construction reports the decline, a second construction of the same model in the
+# same process reports nothing and is on the same fallback. The cache is on disk
+# and persists across runs, so the run that hears nothing is typically the SECOND
+# run of a fit -- exactly the one made after the first came back empty.
+#
+# Silence on that logger therefore means "declined, or served from cache". It can
+# support a statement that a model IS on the fallback and never one that it is not.
+#
+# WHAT IS. The compiled artifact either exports ``bngsim_codegen_sens_rhs`` or it
+# does not, and that is the exact symbol bngsim's C++ resolves with ``try_symbol``
+# to choose the analytic RHS over the difference quotient. Reading it back off the
+# artifact answers the question for the run that is actually about to happen,
+# cache hit or not, and it is available on every build in the pin.
+#
+# So the two channels are used for different halves of the report, and
+# :func:`analytic_sens_rhs_probe` / :func:`capture_sens_rhs_declines` are that
+# split: the artifact carries the VERDICT (stable, so a policy may key off it), and
+# the logger carries the REASON (best-effort, so only the prose may key off it).
+#
+# The probe resolves through four routes, first match wins, and reports which one
+# answered -- the same ladder, and the same "prefer what the build publishes"
+# rule, as ``_resolve_event_sens`` above.
+_SENS_RHS_SYMBOL = 'bngsim_codegen_sens_rhs'
+# Route 1. A public per-run answer, if bngsim ever publishes one. No build exposes
+# this attribute today, so naming it costs nothing and means PyBNF reads the real
+# answer -- in BOTH directions -- on the first build that grows one, with no PyBNF
+# release in between. lanl/bngsim#431 is the standing ask it would arrive under.
+_SENS_RHS_PUBLIC_ATTR = 'has_analytic_sens_rhs'
+# Route 2. bngsim's own ground truth, private and >= 0.14.0. Preferred over route 3
+# wherever it exists, because it is upstream's answer to upstream's question: if the
+# artifact ever stops being where the symbol lives, a build carrying this method
+# keeps answering correctly while route 3 would not.
+_SENS_RHS_OWNED_METHOD = '_codegen_provides_sens_rhs'
+
+# bngsim phrases every decline as "Forward sensitivity: <reason>, so the analytic
+# sensitivity RHS is declined ..." (or "... <reason>. The analytic sensitivity RHS
+# is declined ..." for the variant that also says the fallback is wrong). Match the
+# clause that is common to both and keep the reason; a message that does not match
+# is kept whole rather than dropped, since an unrecognized decline is still a
+# decline and the wording is not PyBNF's to depend on.
+_SENS_RHS_DECLINE_MARK = 'analytic sensitivity rhs is declined'
+_SENS_RHS_DECLINE_RE = re.compile(
+    r'Forward sensitivity:\s*(?P<reason>.*?)[.,]\s*(?:so\s+)?[Tt]he analytic '
+    r'sensitivity RHS is declined',
+    re.DOTALL,
+)
+# The half of the decline space where "correct, but slower" is FALSE: the model
+# branches at a crossing whose time moves, the difference quotient integrates the
+# variational equation straight through it, and every column is wrong at and after
+# the crossing by the dropped saltation term. From 0.14.0 bngsim REFUSES such a run
+# (``SensitivityUnsupportedError``, lanl/bngsim#414/#416) rather than return a
+# gradient it has flagged as wrong, so there it reaches PyBNF as an ordinary error
+# and needs nothing here; on 0.13.0, which PyBNF's floor still admits, the same model
+# only warns and returns the wrong gradient. This phrase is how the variant
+# identifies itself on the builds where it is still only a warning.
+_SENS_RHS_UNCOMPENSATED_MARK = 'does not recover'
+
+
+class SensRhsStatus(collections.namedtuple(
+        'SensRhsStatus', 'analytic route reasons columns')):
+    """One model's answer to "is this fit's gradient on the analytic ``∂f/∂p``?" (#606).
+
+    ``analytic`` is the tri-state verdict :func:`analytic_sens_rhs_probe` reached
+    (``True`` / ``False`` / ``None`` for no opinion) and ``route`` names the evidence
+    that reached it. ``reasons`` is whatever bngsim said on its own logger while the
+    Simulator was being built -- ``(reason, fallback_is_wrong)`` pairs, and **empty
+    is not an answer**: a warm codegen cache emits nothing for a model that is on the
+    fallback all the same. Only ``analytic`` may be acted on; ``reasons`` only ever
+    adds detail to a verdict already reached.
+
+    ``columns`` is how many sensitivity columns this model was asked for, which is
+    what turns the verdict into a cost: the difference quotient spends one extra RHS
+    evaluation per column per step, so it is the multiplier a reader needs in order
+    to decide whether to wait.
+    """
+
+    __slots__ = ()
+
+    @property
+    def declined(self):
+        """True only for a model KNOWN to be on the difference-quotient fallback."""
+        return self.analytic is False
+
+    @property
+    def fallback_is_wrong(self):
+        """True when a captured reason says the difference quotient answers a
+        different question -- a branch crossing nobody compensates, where every
+        column is wrong at and after it (lanl/bngsim#150/#232).
+
+        Best-effort, like every read of :attr:`reasons`: ``False`` here means "not
+        heard", not "not so". bngsim >= 0.14.0 raises on this case rather than
+        warning, so it is only reachable on a sub-0.14.0 build with a cold cache.
+        """
+        return any(wrong for _, wrong in self.reasons)
+
+
+def probe_sens_rhs(make_simulator, columns=0):
+    """Build one sensitivity-bearing Simulator and report what it will run on (#606).
+
+    ``make_simulator`` is a thunk each backend supplies -- the same construction its
+    own ODE actions make, so the artifact read is about the artifact the fit will
+    actually install; ``columns`` is that model's requested sensitivity width.
+
+    Building the Simulator is the cost of the answer: it is a codegen, which
+    on a cold cache is a compile. That compile is one every worker was going to pay
+    anyway, content-addressed and shared, so paying it once here mostly moves work
+    rather than adding it -- and it buys the answer BEFORE the fit commits hours to
+    a gradient it cannot afford.
+
+    Never raises. A model that cannot be prepared for a sensitivity run reports no
+    opinion: this is a diagnostic, and a diagnostic that can end a fit is worse than
+    no diagnostic. Whatever is genuinely wrong surfaces at the first simulation with
+    its own message.
+    """
+    try:
+        with capture_sens_rhs_declines() as reasons:
+            sim = make_simulator()
+        state, route = analytic_sens_rhs_probe(sim)
+        return SensRhsStatus(state, route, list(reasons), int(columns))
+    except Exception:
+        logger.debug('could not probe the analytic sensitivity RHS', exc_info=True)
+        return SensRhsStatus(
+            None, 'the model could not be prepared for a sensitivity run', [],
+            int(columns))
+
+
+def analytic_sens_rhs_probe(sim):
+    """``(state, route)`` -- is ``sim`` about to run on the analytic ``∂f/∂p``? (#606)
+
+    ``state`` is tri-state on purpose:
+
+    * ``True``  -- the artifact this run installs carries the analytic sensitivity RHS;
+    * ``False`` -- it does not, so CVODES' internal difference quotient is used;
+    * ``None``  -- **no opinion**. There is no artifact to read (an interpreted RHS,
+      ``codegen=False``), or the one there is could not be opened. A caller must
+      report nothing rather than guess, in either direction: a false *present* hides
+      the cost this whole probe exists to surface, and a false *absent* warns about
+      a fit that is fine.
+
+    ``route`` names the evidence that answered, for a message that has to say how it
+    decided. Never raises -- a probe that cannot answer says so.
+    """
+    if sim is None:
+        return None, 'no simulator to read'
+    published = getattr(sim, _SENS_RHS_PUBLIC_ATTR, None)
+    if isinstance(published, bool):
+        return published, 'the bngsim Simulator attribute %r' % _SENS_RHS_PUBLIC_ATTR
+    owned = getattr(sim, _SENS_RHS_OWNED_METHOD, None)
+    if callable(owned):
+        try:
+            return bool(owned()), "bngsim's own Simulator.%s()" % _SENS_RHS_OWNED_METHOD
+        except Exception:                              # pragma: no cover - defensive
+            logger.debug('bngsim Simulator.%s() failed', _SENS_RHS_OWNED_METHOD,
+                         exc_info=True)
+    return _read_sens_rhs_artifact(sim)
+
+
+def _read_sens_rhs_artifact(sim):
+    """Route 3: does the codegen artifact this run installs export the symbol?
+
+    The JIT backends keep the generated C source on the Simulator and compile
+    nothing, so the source is checked first; it names the symbol only where it also
+    defines the function, which is what makes the substring test equivalent to the
+    ``.so`` symbol test. ``ctypes.CDLL`` on the ``.so`` is cheap -- bngsim's core has
+    already ``dlopen``\\ ed it, so this resolves from the loader's own table.
+    """
+    source = getattr(sim, '_codegen_c_source', '') or ''
+    if source:
+        return (_SENS_RHS_SYMBOL in source), 'the generated C source this run installs'
+    path = getattr(sim, '_codegen_so_path', '') or ''
+    if path:
+        try:
+            return (hasattr(ctypes.CDLL(path), _SENS_RHS_SYMBOL),
+                    'the compiled codegen artifact this run installs')
+        except Exception:
+            # Broad on purpose: the usual failure is an OSError from ``dlopen``, but
+            # this is a diagnostic, and no way of failing to read a path is worth
+            # raising out of one. An unreadable artifact is an unknown, not a verdict.
+            logger.debug('could not open the bngsim codegen artifact %s', path,
+                         exc_info=True)
+            return None, 'the compiled codegen artifact could not be opened'
+    return None, 'this run installs no codegen artifact to read'
+
+
+class _SensRhsDeclineHandler(logging.Handler):
+    """Collects bngsim's own decline reasons, and nothing else, off its logger."""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.reasons = []
+
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:                              # pragma: no cover - defensive
+            return
+        if _SENS_RHS_DECLINE_MARK not in message.lower():
+            return
+        match = _SENS_RHS_DECLINE_RE.search(message)
+        reason = match.group('reason').strip() if match else message.strip()
+        uncompensated = _SENS_RHS_UNCOMPENSATED_MARK in message.lower()
+        if (reason, uncompensated) not in self.reasons:
+            self.reasons.append((reason, uncompensated))
+
+
+@contextlib.contextmanager
+def capture_sens_rhs_declines():
+    """Collect bngsim's decline reasons emitted inside the block (#606).
+
+    Yields the list the handler fills: ``(reason, fallback_is_wrong)`` pairs, in the
+    order bngsim reported them and de-duplicated, where ``fallback_is_wrong`` marks
+    the variant whose difference quotient does NOT answer the same question (a
+    branch crossing nobody compensates -- see :data:`_SENS_RHS_UNCOMPENSATED_MARK`).
+
+    Best-effort **by construction**: the block has to contain the codegen that
+    derives the decline, and a warm structural cache skips that step entirely, so an
+    empty list means "declined, or served from cache" and never "not declined". Use
+    it to explain a verdict :func:`analytic_sens_rhs_probe` has already reached,
+    never to reach one.
+
+    The handler is attached to the ``bngsim`` logger itself rather than to root:
+    PyBNF's own root handlers stay untouched, so a decline still lands in the run's
+    log exactly as it does today.
+    """
+    handler = _SensRhsDeclineHandler()
+    bngsim_logger = logging.getLogger('bngsim')
+    # No level is set here, deliberately. The ``bngsim`` logger is left at NOTSET and
+    # inherits root's, and ``init_logging`` sets root to DEBUG and does its level
+    # filtering on the FileHandler -- so the decline record reaches this handler even
+    # under ``--log_level error``, where it would not reach the log file. Lowering a
+    # level here would instead be a global side effect, and would push records into
+    # PyBNF's own handlers that the user asked not to see.
+    bngsim_logger.addHandler(handler)
+    try:
+        yield handler.reasons
+    finally:
+        bngsim_logger.removeHandler(handler)
