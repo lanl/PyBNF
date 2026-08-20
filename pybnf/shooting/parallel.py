@@ -61,6 +61,8 @@ dominant cost. Stated here rather than discovered from a benchmark table.
 import queue
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+
 from .backend import SegmentSimulationFailed, trace_from_data
 
 
@@ -182,12 +184,19 @@ class SegmentPool:
 
 
 def _integrate(task, pset, lane):
-    """One span, in one lane. ``None`` when it did not integrate."""
+    """One span, in one lane. ``None`` when it did not integrate.
+
+    "Did not integrate" includes coming back **short of the segment's end knot**, which is
+    why the requested knot is handed to
+    :func:`~pybnf.shooting.backend.trace_from_data` rather than the end state being read off
+    whatever last row arrived (#584).
+    """
     try:
         data = task.backend.simulate(pset, task.times, task.initial_state, lane=lane)
+        return trace_from_data(data, task.state_names,
+                               end_time=float(np.asarray(task.times, dtype=float)[-1]))
     except SegmentSimulationFailed:
         return None
-    return trace_from_data(data, task.state_names)
 
 
 def _integrate_in_lane(task, pset, lane_queue):

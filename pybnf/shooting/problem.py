@@ -316,9 +316,40 @@ class MultipleShootingProblem(TranscriptionProblem, EqualitySystem):
                                          self._knot_state(u, experiment, segment),
                                          experiment.state_names))
         flat, ok = self._pool.run(pset, tasks)
+        traces = _regroup(flat, shape) if ok else None
+        if traces is not None:
+            self._require_sensitivities(traces)
         self._cache_key = key
-        self._cache = (pset, _regroup(flat, shape)) if ok else None
+        self._cache = (pset, traces) if ok else None
         return self._cache
+
+    def _require_sensitivities(self, traces):
+        """Refuse a segment pass that came back carrying no derivatives at all.
+
+        A pass exists to build a local model, so a sensitivity-free segment is not a
+        property of the point the way a failed integration is -- it is a request that never
+        reached the simulator, and every point in the fit will come back the same way.
+        Saying so here, naming the segment seam, is the difference between a run that stops
+        with an actionable sentence and one that stops on the gradient assembly's own
+        message, which tells a ``job_type = ms`` user to enable a gradient path they did
+        enable: the sensitivity request is applied **per action** (#475/#482), so a segment
+        simulated under a suffix the request never reached carries a perfectly good
+        trajectory and nothing else (#584).
+        """
+        for experiment, per_segment in zip(self.experiments, traces):
+            for segment, trace in enumerate(per_segment):
+                if trace.data.output_sensitivities is None:
+                    raise PybnfError(
+                        "Multiple shooting simulated segment %i of experiment '%s' and got "
+                        "a trajectory carrying no forward sensitivities. A segment run has "
+                        "to return both axes -- d(y)/d(theta) for the data rows and "
+                        "d(end state)/d(start state) for the continuity block -- so there "
+                        "is no local model to assemble from this one."
+                        % (segment, experiment.key[1]),
+                        hint='This is an internal wiring error rather than a property of '
+                             'the fit: a sensitivity request is applied per action, so a '
+                             'segment simulated under a suffix the request never reached '
+                             'comes back bare. Please report it.')
 
     def _free_params(self, u, pset):
         """The augmented free-parameter list, in layout order.

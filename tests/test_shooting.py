@@ -20,7 +20,16 @@ claims that matter:
   own;
 * **the load-bearing claim** -- at convergence the transcription is equivalent to the
   uninterrupted fit, measured against a single-shoot optimum computed **independently** by
-  ``scipy.least_squares`` rather than against this package's own arithmetic written twice.
+  ``scipy.least_squares`` rather than against this package's own arithmetic written twice;
+* **behaviour at a point that misbehaves** -- the last section, and the one thing the four
+  above cannot see. A closed-form flow always integrates and its derivatives are finite by
+  construction, so the fixture's failures are made *switchable* instead
+  (:class:`TwoStateBackend`: a region that does not integrate, one whose sensitivities
+  overflow while its trajectory does not, a span the "model" cannot carry, a one-off
+  refusal, a missing tensor, a span that stops short of its knot). What is then asserted is
+  behaviour rather than arithmetic: an unusable local model backs the search off rather than
+  ending the run, a run that stops early still reports what it has already earned, and an
+  unusable point never becomes a reported fit (#584).
 
 The offline problem
 -------------------
@@ -57,6 +66,7 @@ from pybnf.shooting import (
     max_segments,
     run_multiple_shooting,
     seed_stage,
+    trace_from_data,
 )
 from pybnf.shooting.grid import KNOT
 from pybnf.transcription import AugmentedLagrangian, Multipliers, PenaltySchedule
@@ -79,9 +89,26 @@ class TwoStateBackend(SegmentBackend):
     :meth:`simulate` therefore runs unmodified.
     """
 
-    def __init__(self, n_lanes=1):
+    def __init__(self, n_lanes=1, **failures):
         self.n_simulations = 0
-        self.fail_beyond = None    # |k| above which this "model" refuses to integrate
+        # -- the controllable failures (#584). Every one is off by default, so the closed
+        #    form above is what the arithmetic tests see; each is one thing a real model
+        #    does at a pathological parameter point and an exponential never does by
+        #    itself. See the "pathological parameter points" section at the foot of this
+        #    module for what each one is for.
+        self.fail_beyond = None          # |k| above which this "model" refuses to integrate
+        self.overflow_beyond = None      # |k| above which the *sensitivities* go non-finite
+        self.refuse_span_beyond = None   # the longest span this "model" can integrate
+        self.fail_on_call = None         # the n-th call refuses, whatever the point
+        self.drop_sensitivities = False  # a trajectory, and no tensor at all
+        self.stop_short = 0              # come back this many rows short of the end knot
+        #: How many times a switch above refused a call, so a test can assert that the
+        #: pathology it configured actually fired rather than passing vacuously.
+        self.n_refusals = 0
+        for name, value in failures.items():
+            if not hasattr(self, name):
+                raise TypeError('%s has no failure switch %r' % (type(self).__name__, name))
+            setattr(self, name, value)
         self._n_lanes = int(n_lanes)
         #: Lanes currently mid-integration, so a test can assert that a scheduler never puts
         #: two segments in one lane at once -- the invariant a stateful simulator needs and
@@ -123,12 +150,10 @@ class TwoStateBackend(SegmentBackend):
 
     def _simulate(self, pset, sample_times, initial_state=None):
         k = float(pset['k'])
-        if self.fail_beyond is not None and abs(k) > self.fail_beyond:
-            raise SegmentSimulationFailed('the closed-form backend refuses |k| > %g'
-                                          % self.fail_beyond)
+        times = np.asarray(sample_times, dtype=float)
+        self._maybe_refuse(k, times)
         state = ({'y': float(pset['y0']), 'w': W0} if initial_state is None
                  else {name: float(value) for name, value in initial_state.items()})
-        times = np.asarray(sample_times, dtype=float)
         dt = times - times[0]
         grow, decay = np.exp(k * dt), np.exp(-k * dt)
         y, w = state['y'] * grow, state['w'] * decay
@@ -143,7 +168,73 @@ class TwoStateBackend(SegmentBackend):
         data.output_sensitivities = OutputSensitivities(
             selectors=['species:y', 'species:w'], param_names=['k'], ic_species=['y', 'w'],
             d_param=d_param, d_ic=d_ic)
+        return self._maybe_spoil(data, k)
+
+    # -- the failure switches ---------------------------------------------------
+
+    def _maybe_refuse(self, k, times):
+        """The calls this backend declines to integrate at all.
+
+        Three shapes, because a real refusal has three shapes: a *region* of parameter
+        space the model cannot be integrated in (``fail_beyond``); a *span* longer than the
+        integrator can carry, which is the failure multiple shooting exists to work around
+        -- every segment integrates while the whole horizon does not (``refuse_span_beyond``);
+        and a *one-off*, a step limit hit on one trial point and not on its neighbours
+        (``fail_on_call``), which is the only one of the three that can make an individual
+        inner-solver trial unusable without also making the start point unusable.
+        """
+        if self.fail_beyond is not None and abs(k) > self.fail_beyond:
+            self.n_refusals += 1
+            raise SegmentSimulationFailed('the closed-form backend refuses |k| > %g'
+                                          % self.fail_beyond)
+        if self.refuse_span_beyond is not None \
+                and times[-1] - times[0] > self.refuse_span_beyond:
+            self.n_refusals += 1
+            raise SegmentSimulationFailed(
+                'the closed-form backend refuses a span longer than %g'
+                % self.refuse_span_beyond)
+        if self.fail_on_call is not None and self.n_simulations == self.fail_on_call:
+            self.n_refusals += 1
+            raise SegmentSimulationFailed('the closed-form backend refuses call %i'
+                                          % self.fail_on_call)
+
+    def _maybe_spoil(self, data, k):
+        """The calls that come back, carrying something a consumer cannot use.
+
+        ``overflow_beyond`` is #581's exact shape and the reason this section exists: the
+        *trajectory* is finite and correct, and the forward sensitivities are not, which is
+        what a stiff oscillator does long before it stops integrating. ``drop_sensitivities``
+        is the tensor missing altogether, and ``stop_short`` is an integration that returned
+        a partial result rather than raising -- the span comes back finite, in the right
+        columns, and never reaches the knot its end state is read from.
+        """
+        if self.drop_sensitivities:
+            data.output_sensitivities = None
+        elif self.overflow_beyond is not None and abs(k) > self.overflow_beyond:
+            sens = data.output_sensitivities
+            sens.d_param = np.full_like(sens.d_param, np.inf)
+            sens.d_ic = np.full_like(sens.d_ic, np.inf)
+        if self.stop_short:
+            return _truncated(data, self.stop_short)
         return data
+
+
+def _truncated(data, rows):
+    """``data`` with its last ``rows`` output rows dropped, sensitivity tensor included.
+
+    What an integration that stopped early hands back: a shorter trajectory over the same
+    columns, finite everywhere, carrying nothing that says it is short.
+    """
+    keep = len(data.data) - int(rows)
+    out = Data.from_columns(np.asarray(data.data, dtype=float)[:keep, :], ['time', 'y', 'w'])
+    sens = data.output_sensitivities
+    if sens is not None:
+        out.output_sensitivities = OutputSensitivities(
+            selectors=sens.selectors, param_names=sens.param_names,
+            ic_species=sens.ic_species,
+            d_param=None if sens.d_param is None else sens.d_param[:keep],
+            d_ic=None if sens.d_ic is None else sens.d_ic[:keep])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -762,3 +853,249 @@ def _stale(problem, u, factor=1.6):
     for block in problem.layout.blocks:
         u[problem.layout.slice_of(block.name)] += np.log10(factor)
     return u
+
+
+# ---------------------------------------------------------------------------
+# Behaviour at pathological parameter points (#584)
+# ---------------------------------------------------------------------------
+#
+# Everything above this line verifies *arithmetic*: derivatives against central
+# differences, the equivalence claim against an independently computed optimum. A
+# closed-form flow is the right fixture for that, and it is exactly the wrong one for
+# asking what the method does when a **point** misbehaves -- it always integrates, it never
+# stiffens, and its sensitivities are finite by construction. Two defects reached ``main``
+# through that gap (#578, #581), both found by pointing ``job_type = ms`` at a real model
+# rather than by the suite above.
+#
+# So the backend's failures are switchable instead (see ``TwoStateBackend``), and the claims
+# below are behavioural rather than numerical -- the three ADR-0110 states as design
+# properties and nothing here checked:
+#
+#   * an unusable local model **backs the search off** rather than ending the run;
+#   * a run that stops early still **reports what it has already earned**;
+#   * an unusable point **never becomes a reported fit**.
+
+
+def run_ladder(backend, start=(0.55, 0.9), seed=4, **kwargs):
+    """One whole ``4-2-1`` run against ``backend``, from ``start`` in sampling space."""
+    times, obs = observations(seed=seed)
+    free = variables()
+    spec = make_spec(times, obs, backend=backend)
+    return run_multiple_shooting([spec], ChiSquareObjective(), free, pset_from_u_for(free),
+                                 np.asarray(start, dtype=float), **kwargs)
+
+
+def single_shoot_score(reported, seed=4):
+    """The ordinary unsegmented objective at ``reported``, computed here rather than by the
+    package under test -- the number ``certify`` has to reproduce."""
+    times, obs = observations(seed=seed)
+    residual = (reported[1] * np.exp(reported[0] * times) - obs) / SIGMA
+    return float(0.5 * residual @ residual)
+
+
+class TestOverflowingSensitivities:
+    """The trajectory integrates and the forward sensitivities do not (#581).
+
+    The shape a stiff oscillator reaches long before it stops integrating, and the one that
+    cost ``job_type = ms`` a whole reported fit: measured on ``Borghans_BiophysChem1997``,
+    1 of 8 oscillating box draws produced a point whose every segment returned ``OK`` and
+    whose every ``SegmentTrace.is_finite()`` was ``False``.
+    """
+
+    def test_the_local_model_is_refused_while_the_certificate_still_stands(self):
+        """Both halves of #581's asymmetry, in one place: the *augmented* model at the point
+        is unusable, and the *reconstruction* of the same point is perfectly good.
+
+        They are different computations -- certification discards every auxiliary state and
+        re-simulates the reported parameters through the ordinary unsegmented path, which
+        needs no forward sensitivities at all -- which is why one can fail while the other
+        succeeds, and why a run that discarded the second reported nothing from a point it
+        could score.
+        """
+        backend = TwoStateBackend(overflow_beyond=0.1)     # every point this stage visits
+        problem, _spec, free = build_stage(4, backend=backend, start_u=(0.5, 0.9))
+        u = problem.layout.initial_point([0.5, 0.9])
+
+        data = backend.simulate(pset_from_u_for(free)(np.array([0.5, 0.9])),
+                                np.linspace(0.0, 3.0, 7), None)
+        assert np.all(np.isfinite(np.asarray(data.data, dtype=float)))   # the trajectory
+        assert not np.all(np.isfinite(data.output_sensitivities.d_param))  # the derivatives
+
+        assert not problem.objective_at(u).is_finite()
+        assert not problem.equality_at(u).is_finite()
+        certificate = problem.certify(np.array([0.5, 0.9]))
+        assert certificate.accepted
+        assert certificate.objective == pytest.approx(single_shoot_score([0.5, 0.9]))
+
+    def test_a_run_that_starts_there_reports_the_certificate_it_already_holds(self):
+        """#581 end to end, offline and in milliseconds: the run stops -- there is no
+        surface at the start point to step from -- but it reports the score of the point it
+        was given rather than "no simulation completed"."""
+        result = run_ladder(TwoStateBackend(overflow_beyond=0.1), start=(0.55, 0.9))
+
+        assert result.stop_reason == 'inner_failed'
+        assert result.best is not None, 'the certificate at the start point was discarded'
+        np.testing.assert_allclose(result.reported, [0.55, 0.9])
+        assert result.best_score == pytest.approx(single_shoot_score([0.55, 0.9]))
+        assert result.certified
+
+    def test_an_overflowing_region_backs_the_search_off_rather_than_ending_the_run(self):
+        """The design property ADR-0110 states and nothing checked: a point whose local
+        model is not finite shrinks the trust region.
+
+        The overflow starts at ``k = 0.62``, between the start (``0.4``) and the optimum
+        (``0.702``), so the search walks up to a wall it cannot evaluate past. It is
+        supposed to stop *at* the wall and report what it earned on the good side of it --
+        not end the fit, and not report the optimum it never got to see.
+        """
+        times, obs = observations()
+        _target, target_objective = single_shoot_optimum(times, obs)
+        result = run_ladder(TwoStateBackend(overflow_beyond=0.62), start=(0.4, 0.8))
+
+        assert result.stop_reason == 'completed'
+        assert [stage.name for stage in result.stages] == ['m=4', 'm=2', 'm=1']
+        assert result.best is not None and np.isfinite(result.best_score)
+        assert result.best_score < single_shoot_score([0.4, 0.8])    # it moved
+        assert result.best_score > target_objective                  # and the wall cost it
+
+    def test_a_parallel_pass_reaches_the_same_verdict_as_a_serial_one(self):
+        """Parallel gives up the serial pass's short-circuit, not its verdict -- and the
+        verdict now has to be reached on a *finite* trajectory's derivatives rather than on
+        a failed integration."""
+        serial = TwoStateBackend(overflow_beyond=0.1)
+        problem, _spec, _free = build_stage(4, backend=serial, start_u=(0.5, 0.9))
+        u = problem.layout.initial_point([0.5, 0.9])
+        assert not problem.objective_at(u).is_finite()
+
+        backend = TwoStateBackend(n_lanes=4, overflow_beyond=0.1)
+        pool = SegmentPool(4)
+        try:
+            parallel, _s, _f = build_stage(4, backend=backend, start_u=(0.5, 0.9),
+                                           pool=pool)
+            model = parallel.objective_at(parallel.layout.initial_point([0.5, 0.9]))
+            assert not model.is_finite()
+        finally:
+            pool.close()
+
+
+class TestOneOffSegmentFailure:
+
+    def test_a_refused_trial_segment_does_not_derail_the_fit(self):
+        """A failure that is neither the start point's nor a whole region's: one call
+        refuses, the way a step limit is hit on one trial point and not on its neighbours.
+
+        Call 6 is a segment of the *second* augmented evaluation -- the first trial step the
+        inner solver takes -- so the trust region has somewhere to back off to, and the run
+        is held to the same optimum the healthy fixture reaches.
+        """
+        times, obs = observations()
+        target, _objective = single_shoot_optimum(times, obs)
+        backend = TwoStateBackend(fail_on_call=6)
+        result = run_ladder(backend, start=(0.55, 0.9))
+
+        assert backend.n_refusals == 1, 'the configured failure never fired'
+        assert result.stop_reason == 'completed'
+        np.testing.assert_allclose(result.reported, target, rtol=1e-3, atol=1e-4)
+
+
+class TestAnUnusablePointIsNeverAFit:
+
+    def test_a_run_whose_points_never_integrate_reports_no_fit(self):
+        """The honest empty answer. Nothing simulated, so nothing certified, so there is no
+        fit -- reported as such rather than as the augmented objective of a point whose
+        trajectories do not exist."""
+        result = run_ladder(TwoStateBackend(fail_beyond=0.0),    # no |k| it can integrate
+                        start=(0.55, 0.9))
+
+        assert result.best is None
+        assert result.reported is None
+        assert not np.isfinite(result.best_score)
+        assert 'best certified objective none' in result.summary()
+
+    def test_a_segmented_score_is_never_reported_when_it_cannot_be_reconstructed(self):
+        """The corner the method's own advantage creates: every *segment* integrates and the
+        *whole horizon* does not.
+
+        That is the case multiple shooting exists for, and it is also the one where the run
+        has a perfectly good augmented objective and no right to report it -- an ADR-0109
+        certificate is an ordinary single-shoot score, and a segmented score is not
+        comparable with any fit a user has ever run. So the stage solves, the trace prints
+        ``inf``, and the run says it has no fit rather than reporting a number nothing can
+        reproduce.
+        """
+        # A segment of the m=4 stage spans 0.75; the whole horizon is 3.0.
+        backend = TwoStateBackend(refuse_span_beyond=1.0)
+        problem, _spec, _free = build_stage(4, backend=backend, start_u=(0.55, 0.9))
+        u = problem.layout.initial_point([0.55, 0.9])
+        assert problem.objective_at(u).is_finite()          # the segmented fit is fine
+        assert not problem.certify(np.array([0.55, 0.9])).accepted
+
+        result = run_ladder(TwoStateBackend(refuse_span_beyond=1.0), start=(0.55, 0.9))
+        assert result.best is None and result.reported is None
+        assert result.trace().startswith('m=4: inf')
+
+    def test_a_run_stopped_by_its_budget_still_reports_what_it_earned(self):
+        """The ``stopped`` branch, which has always reported the work already done -- pinned
+        here at the shooting layer because ``wall_time_fit`` reaches this loop through the
+        same seam a pathological point does, and both end a run mid-ladder."""
+        backend = TwoStateBackend()
+        result = run_ladder(backend, start=(0.55, 0.9),
+                        stop_check=lambda: backend.n_simulations > 40)
+
+        assert result.stop_reason == 'stopped'
+        assert [stage.name for stage in result.stages] == ['m=4']    # it never got further
+        assert result.best is not None and np.isfinite(result.best_score)
+        assert result.best_score < single_shoot_score([0.55, 0.9])
+
+
+class TestTheSegmentOutputContract:
+    """What a segment simulation has to *return*, as opposed to what it has to compute.
+
+    Both of these come back finite, in the right columns, at a point that integrates -- so
+    neither the trajectory finiteness check nor ``SegmentTrace.is_finite`` sees anything
+    wrong with them.
+    """
+
+    def test_a_span_that_stops_short_of_its_end_knot_is_refused(self):
+        """An integration that returned a partial result rather than raising: the span is
+        finite and shorter than it was asked for, and the row its end state would be read
+        from is at the wrong time."""
+        backend = TwoStateBackend(stop_short=1)
+        times = np.linspace(1.0, 2.0, 6)
+        data = backend.simulate(pset_from_u_for(variables())(np.array([0.4, 0.8])), times,
+                                {'y': 1.0, 'w': W0})
+
+        with pytest.raises(SegmentSimulationFailed, match='end knot'):
+            trace_from_data(data, backend.state_names, end_time=float(times[-1]))
+
+        # ...and this is why it has to be refused rather than noticed downstream: read
+        # without the knot to check it against, the last row that *did* arrive is a
+        # perfectly plausible end state, at the wrong time.
+        loose = trace_from_data(data, backend.state_names)
+        assert np.all(np.isfinite(loose.end_state))
+        assert loose.end_state[0] == pytest.approx(np.exp(0.4 * (times[-2] - times[0])))
+        assert loose.end_state[0] != pytest.approx(np.exp(0.4 * (times[-1] - times[0])))
+
+    def test_a_short_segment_never_becomes_a_plausible_continuity_defect(self):
+        """The consequence at the layer that would have absorbed it: a stage seeded from a
+        continuous trajectory is feasible at iteration zero, so a wrong-time end state does
+        not read as an error -- it reads as a stage that started slightly infeasible and
+        would have been optimised against."""
+        healthy, _spec, _free = build_stage(4)
+        assert healthy.equality_at(healthy.layout.initial_point([0.4, 0.8])).defect_norm \
+            == pytest.approx(0.0, abs=1e-9)
+
+        short, _s, _f = build_stage(4, backend=TwoStateBackend(stop_short=1))
+        model = short.equality_at(short.layout.initial_point([0.4, 0.8]))
+        assert not model.is_finite()
+        assert not short.objective_at(short.layout.initial_point([0.4, 0.8])).is_finite()
+
+    def test_a_segment_carrying_no_sensitivity_tensor_names_the_segment_seam(self):
+        """A missing tensor is not a property of the point -- every point comes back the
+        same way -- so it is an error rather than a back-off, and it says which computation
+        is missing what."""
+        problem, _spec, _free = build_stage(
+            4, backend=TwoStateBackend(drop_sensitivities=True))
+
+        with pytest.raises(PybnfError, match='carrying no forward sensitivities'):
+            problem.objective_at(problem.layout.initial_point([0.4, 0.8]))
