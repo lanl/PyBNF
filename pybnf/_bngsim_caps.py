@@ -485,9 +485,9 @@ def bngsim_stale_core_report():
 # its own, because the codegen cache short-circuits the step that emits it: since
 # lanl/bngsim#174 the cache key is STRUCTURAL, so a warm cache resolves the ``.so``
 # without generating any source, and source generation is where the decline is
-# derived and logged. Measured on 0.13.0 against an ``abs()`` rate law: first
-# construction reports the decline, a second construction of the same model in the
-# same process reports nothing and is on the same fallback. The cache is on disk
+# derived and logged. Measured against an ``abs()`` rate law on 0.14.0 and 0.13.0
+# alike: first construction reports the decline, a second construction of the same
+# model in the same process reports nothing and is on the same fallback. The cache is on disk
 # and persists across runs, so the run that hears nothing is typically the SECOND
 # run of a fit -- exactly the one made after the first came back empty.
 #

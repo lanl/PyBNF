@@ -40,12 +40,17 @@ works across the whole supported range, which is exactly what recommends it.
 **It does not work, and it fails in the silent direction.** Since lanl/bngsim#174 the codegen
 cache key is *structural*, so a warm cache resolves the `.so` from a handful of C++ reads and
 **generates no source at all** — and source generation is where the decline is derived and
-logged. Measured on bngsim 0.13.0 with an `abs()` rate law, in one process:
+logged. Measured with an `abs()` rate law, in one process, on **bngsim 0.14.0** — the current
+release, and the one CI resolves — and reproduced identically on 0.13.0:
 
 | construction | verdict (artifact) | decline logged |
 |---|---|---|
 | first, cold cache | fallback | yes, with the reason |
 | second, warm cache | fallback | **nothing** |
+
+That the two builds agree is worth more than either measurement alone, because they do not
+agree by taking the same path: 0.14.0 answers through route 2 below and 0.13.0 through route 3,
+so one measurement exercises both rungs of the ladder and shows they return the same verdict.
 
 The cache lives on disk and persists across runs, so the construction that hears nothing is
 typically the *second run of the same fit* — the run a user makes after the first came back
