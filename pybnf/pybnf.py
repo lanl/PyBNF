@@ -2,6 +2,7 @@
 
 
 from . import __version__
+from . import _bngsim_caps
 from . import method_chain
 from .budget import FitBudget, format_duration, spend_reserve
 from .parse import load_config
@@ -25,6 +26,42 @@ import time
 import traceback
 import pickle
 from pathlib import Path
+
+
+def _report_bngsim_build():
+    """Name the compiled bngsim core this run loaded, and warn if it is stale (#558).
+
+    An editable/from-source bngsim serves live Python from the source tree while
+    loading its compiled core from a separately-built ``.so``, with auto-rebuild
+    deliberately off, so the two halves drift. bngsim detects that and warns -- but
+    it warns at *import*, which for PyBNF is while the ``pybnf`` package is loading:
+    before ``init_logging``, before the config is read, and long before the user has
+    decided anything. The warning scrolls past in import noise and the fit proceeds
+    on numbers produced by C++ that is no longer in the tree.
+
+    Repeating it here puts it at the top of the run's own log and console output,
+    where a reader still has the option to stop. The identity line goes to the log
+    unconditionally -- it carries the build commit, which is the only thing that
+    tells two installs declaring the same version apart -- and the staleness report
+    is promoted to a warning at verbosity 0, because it invalidates every capability
+    answer and every number that follows it.
+
+    Never raises: every read is guarded inside ``_bngsim_caps``, so an install
+    that cannot answer reports no opinion rather than taking the fit down.
+    """
+    logger = logging.getLogger(__name__)
+    identity = _bngsim_caps.bngsim_identity_line()
+    if identity:
+        logger.info(identity)
+    stale = _bngsim_caps.bngsim_stale_core_report()
+    if stale:
+        logger.warning('The installed bngsim\'s compiled core is older than its own '
+                       'C++ sources; every number this fit produces describes that '
+                       'older code.\n%s', stale)
+        print0("WARNING: the installed bngsim's compiled core is older than its own C++ "
+               "sources, so every number this fit produces describes that older code. "
+               "Rebuild bngsim before trusting this run.")
+        print1(stale)
 
 
 def _initialize_random_seed(config):
@@ -609,6 +646,7 @@ def main():
 
     print0(f"PyBNF v{__version__}")
     logger.info(f'Running PyBNF v{__version__}')
+    _report_bngsim_build()
 
     try:
         # Load the conf file and create the algorithm

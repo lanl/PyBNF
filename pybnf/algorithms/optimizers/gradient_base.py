@@ -444,8 +444,8 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         pre-flight gate, rather than let it surface mid-run at the first
         sensitivity-bearing ``simulate()``.
 
-        bngsim applies the jump now. From the version
-        :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS` reads it also *classifies*
+        bngsim applies the jump now. On a build
+        :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS` reports it also *classifies*
         each event honestly -- differentiating the subclasses it covers (a fixed
         trigger time; a trigger thresholding a fitted constant, lanl/bngsim#49; a
         state-dependent trigger whose crossing it differentiates in flight,
@@ -458,13 +458,20 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         only one an event can reach PyBNF through, since a ``.net`` model cannot
         author one.
 
-        Below that floor the refusal stays, and stays blanket, because an older
-        build does not merely lack a subclass -- it answers one *wrongly and
-        quietly*: a trigger reading the state came back as a finite tensor missing
-        the event's contribution instead of being refused (lanl/bngsim#52), and an
-        event assignment that reads the state dropped its carried term altogether
-        (lanl/bngsim#144). Refusing up front, with a message naming the upgrade,
-        beats a fit that runs to completion on a wrong gradient.
+        Otherwise the refusal stays, and stays blanket, because such a build does
+        not merely lack a subclass -- it answers one *wrongly and quietly*: a
+        trigger reading the state came back as a finite tensor missing the event's
+        contribution instead of being refused (lanl/bngsim#52), and an event
+        assignment that reads the state dropped its carried term altogether
+        (lanl/bngsim#144). Refusing up front beats a fit that runs to completion on
+        a wrong gradient.
+
+        The message says both what to install and *how the flag decided*
+        (:func:`~pybnf._bngsim_caps.event_sens_probe`), because since #558 the two
+        can disagree: the flag reads a capability rather than a version, so a
+        reader whose bngsim already reports a new enough number needs to be told
+        that the number was not the evidence -- otherwise the refusal reads as a
+        version complaint they have already answered.
 
         Models whose backend exposes no event count (``has_discrete_events``
         absent) pass through untouched."""
@@ -481,9 +488,15 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                     "-- so the gradient there would be silently wrong." % (
                         self._fit_type_label(), getattr(model, 'name', '?'),
                         _bngsim_caps.BNGSIM_VERSION or 'version unknown'),
-                    hint=["Upgrade to bngsim >= %s, which differentiates the event "
-                          "subclasses it supports and refuses the rest."
-                          % _bngsim_caps.event_sens_min_version(),
+                    hint=["Install bngsim >= %s, which differentiates the event "
+                          "subclasses it supports and refuses the rest. This gate "
+                          "reads a capability, not a version -- it decided from: %s "
+                          "-- so a build whose version already reads new enough is "
+                          "one that does not publish the capability, which a "
+                          "from-source build ahead of (or behind) its own release "
+                          "number can be."
+                          % (_bngsim_caps.event_sens_min_version(),
+                             _bngsim_caps.event_sens_probe()),
                           _FALLBACK_HINT])
 
     def _fit_type_label(self):

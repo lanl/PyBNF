@@ -5,6 +5,7 @@ and feature gating) against the issue #378 acceptance criteria:
 too-old BNGsim, PYBNF_NO_BNGSIM-disabled, and missing-capability cases.
 """
 
+import contextlib
 import importlib
 import logging
 import os
@@ -308,3 +309,331 @@ def test_unparseable_version_warns_and_accepts(version, caplog):
     with caplog.at_level(logging.WARNING, logger='pybnf._bngsim_caps'):
         assert _bngsim_caps._version_compatible(version) is True
     assert any('Could not parse bngsim version' in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# BNGSIM_HAS_EVENT_SENS — a capability probe, not a version compare (#558)
+# --------------------------------------------------------------------------- #
+#
+# The flag guards against a bngsim that answers a discrete event's forward
+# sensitivity *wrongly and quietly*. It used to be a version floor at exactly
+# 0.12.2, and the hazard with that is not hypothetical: bngsim bumps
+# ``__version__`` at the start of a release cycle, so every from-source build
+# between that bump and the fixes declares the same string as the release that
+# carries them. A floor reports the capability PRESENT on such a build, and the
+# symptom is not a refusal but a fit that runs to completion on a wrong gradient.
+#
+# The resolution order under test: a dedicated feature key first (bngsim
+# publishes none yet -- this is the hook that starts working on the first build
+# that grows one), then the ``effective_ic_sensitivity`` witness, and the version
+# floor only as a conjunct that can veto but never carry.
+
+_WITNESS = 'effective_ic_sensitivity'
+_DEDICATED = 'event_sensitivities'
+
+
+def _event_sens(monkeypatch, *, version, features):
+    """Reload the capability module against a fake bngsim; return (flag, route)."""
+    fake = _make_fake_bngsim(version=version, features=features)
+    try:
+        caps = _reload_caps_with(monkeypatch, fake)
+        return caps.BNGSIM_HAS_EVENT_SENS, caps.event_sens_probe()
+    finally:
+        _restore_caps()
+
+
+def test_event_sens_reads_a_dedicated_feature_key_when_one_exists(monkeypatch):
+    """Ask 1 of #558: the moment bngsim publishes a key for this, the flag reads it.
+
+    In BOTH directions, and ahead of everything else -- a published ``False`` on a
+    version that clears the floor must report absent, or the key is decoration.
+    """
+    present, route = _event_sens(
+        monkeypatch, version='0.9.0',
+        features={_DEDICATED: True})
+    assert present is True                     # ... even below the old floor
+    assert _DEDICATED in route
+
+    absent, route = _event_sens(
+        monkeypatch, version='0.13.0',
+        features={_DEDICATED: False, _WITNESS: True})
+    assert absent is False                     # ... and it outranks the witness
+    assert _DEDICATED in route
+
+
+def test_event_sens_reads_the_witness_key_when_there_is_no_dedicated_one(monkeypatch):
+    """``effective_ic_sensitivity`` stands in for a key bngsim does not publish.
+
+    It is not the capability. It is usable as evidence because of where it landed:
+    lanl/bngsim#155 added it inside the same 0.12.1 -> 0.12.2 window as the fixes
+    (#144, #146) and after both, so a build that publishes it necessarily carries
+    them.
+    """
+    present, route = _event_sens(
+        monkeypatch, version='0.12.2', features={_WITNESS: True})
+    assert present is True
+    assert _WITNESS in route
+
+
+def test_event_sens_refuses_a_prerelease_build_that_only_declares_the_version(monkeypatch):
+    """The #558 defect itself: version says 0.12.2, capabilities say otherwise.
+
+    A from-source bngsim built after the release cycle's version bump but before
+    the fixes declares ``0.12.2`` -- the same string as the release -- and the old
+    floor reported the capability present on it. It publishes no witness key,
+    because the key shipped IN 0.12.2, so reading capabilities instead of the
+    version tells the two apart and fails toward a refusal.
+    """
+    present, route = _event_sens(
+        monkeypatch, version='0.12.2', features={'codegen': True})
+    assert present is False
+    assert 'version floor alone is not evidence' in route
+
+
+def test_event_sens_does_not_regress_any_released_bngsim(monkeypatch):
+    """Every released bngsim at or above the floor publishes the witness, so this
+    change refuses nothing that worked before -- and still refuses everything below."""
+    for version in ('0.12.2', '0.13.0', '0.14.0'):
+        present, _ = _event_sens(
+            monkeypatch, version=version, features={_WITNESS: True})
+        assert present is True, version
+    for version in ('0.11.35', '0.12.0', '0.12.1'):
+        present, _ = _event_sens(
+            monkeypatch, version=version, features={'codegen': True})
+        assert present is False, version
+
+
+def test_event_sens_vetoes_a_witness_that_contradicts_the_version_floor(monkeypatch):
+    """The floor survives as a conjunct: it can veto, it can no longer carry.
+
+    A build below the floor that somehow publishes the witness is incoherent, and
+    an unparseable version is no evidence at all. Both read absent -- the
+    deliberate asymmetry with ``_version_compatible``, which accepts an unparseable
+    version rather than brick an install, because the cost of guessing wrong here
+    is a wrong gradient rather than a refusal.
+    """
+    below, route = _event_sens(monkeypatch, version='0.11.0', features={_WITNESS: True})
+    assert below is False
+    assert 'contradicts itself' in route
+    unparseable, _ = _event_sens(monkeypatch, version='unknown', features={_WITNESS: True})
+    assert unparseable is False
+
+
+def test_event_sens_resolves_on_a_first_import_not_only_on_a_reload():
+    """The resolution runs at module scope, and the tests above reach it by RELOAD --
+    which reuses the module dict, so a name the resolver reads before its own
+    definition still resolves to the previous load's copy. Only a fresh interpreter
+    sees the import-time ordering. Every route is exercised there, since the bug
+    class is per-branch."""
+    script = textwrap.dedent('''
+        import sys, types
+        version, features = sys.argv[1], eval(sys.argv[2])
+        fake = types.ModuleType('bngsim')
+        fake.__version__ = version
+        fake.capabilities = lambda: {
+            'version': version, 'features': features, 'missing': {}}
+        sys.modules['bngsim'] = fake
+        from pybnf import _bngsim_caps as caps
+        print('%s|%s' % (caps.BNGSIM_HAS_EVENT_SENS, caps.event_sens_probe()))
+    ''')
+    cases = [
+        ('0.13.0', "{'event_sensitivities': True}", 'True'),
+        ('0.13.0', "{'effective_ic_sensitivity': True}", 'True'),
+        ('0.12.2', "{'codegen': True}", 'False'),
+        ('0.11.0', "{'effective_ic_sensitivity': True}", 'False'),
+    ]
+    env = os.environ.copy()
+    env.pop('PYBNF_NO_BNGSIM', None)
+    for version, features, expected in cases:
+        result = subprocess.run(
+            [sys.executable, '-c', script, version, features],
+            env=env, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, (
+            '%s %s: stdout=%r stderr=%r' % (version, features, result.stdout, result.stderr))
+        assert result.stdout.startswith(expected + '|'), (version, features, result.stdout)
+
+
+def test_event_sens_is_absent_and_says_so_without_bngsim(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'bngsim', None)
+    monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
+    try:
+        caps = importlib.reload(_bngsim_caps)
+        assert caps.BNGSIM_HAS_EVENT_SENS is False
+        assert 'not available' in caps.event_sens_probe()
+    finally:
+        _restore_caps()
+
+
+def test_event_sens_refusal_names_the_probe_rather_than_the_version(monkeypatch):
+    """The refusal a user reads must not be a version complaint they have answered.
+
+    On a build that declares a new enough version but publishes no capability, the
+    old message said only "upgrade to >= 0.12.2" to someone who already had it.
+    """
+    import types
+
+    from pybnf.algorithms.optimizers.trf import TRFAlgorithm
+    from pybnf.printing import PybnfError
+
+    fake = _make_fake_bngsim(version='0.12.2', features={'codegen': True})
+    try:
+        caps = _reload_caps_with(monkeypatch, fake)
+        assert caps.BNGSIM_HAS_EVENT_SENS is False
+        alg = object.__new__(TRFAlgorithm)
+        alg.fit_type = 'trf'
+        alg.model_list = [types.SimpleNamespace(name='m', has_discrete_events=True)]
+        with pytest.raises(PybnfError) as exc:
+            alg._require_differentiable_dynamics()
+        message = exc.value.message
+        assert 'capability, not a version' in message
+        assert _WITNESS in message
+    finally:
+        _restore_caps()
+
+
+# --------------------------------------------------------------------------- #
+# Compiled-core provenance — the staleness a version cannot see (#558)
+# --------------------------------------------------------------------------- #
+
+
+def _fake_provenance_module(*, stale, build_commit='deadbeef1234', disabled=False):
+    """A stand-in for bngsim's private ``_build_provenance`` module."""
+    prov = types.SimpleNamespace(is_stale=stale, build_commit=build_commit)
+    module = types.ModuleType('bngsim._build_provenance')
+    module.gather = lambda **kwargs: prov
+    module.identity_line = lambda p=None: (
+        '[bngsim] _bngsim_core: /x/_bngsim_core.so | built=%s | mtime=? | %s'
+        % (build_commit, 'STALE' if stale else 'installed'))
+    module.format_report = lambda p=None: (
+        module.identity_line() + '\n[bngsim]   STALE: src/x.cpp is newer than the '
+        'loaded binary.')
+    module._checks_disabled = lambda: disabled
+    return module
+
+
+@contextlib.contextmanager
+def _caps_with_provenance(monkeypatch, provenance_module):
+    """Reload the capability module against a fake bngsim carrying ``provenance_module``.
+
+    A context manager rather than a plain call because of how the absent case has
+    to be spelled. ``from bngsim import _build_provenance`` falls back to importing
+    the *submodule* when the package object has no such attribute, and the real one
+    is already in ``sys.modules`` from this session's own import, so modelling an
+    install without it means putting ``None`` there -- the import system's spelling
+    of "unavailable". That stub must come back out **before** ``_restore_caps()``
+    re-imports the real bngsim, whose own ``__init__`` imports that submodule;
+    leaving it to monkeypatch's teardown (which runs after the ``finally``) would
+    make the restore reload find bngsim unimportable and poison every capability
+    constant for the rest of the session -- the ordering failure ``_restore_caps``
+    documents.
+    """
+    fake = _make_fake_bngsim(version='0.13.0', features={_WITNESS: True})
+    stub = 'bngsim._build_provenance'
+    stubbed = provenance_module is None
+    original = sys.modules.get(stub)
+    if stubbed:
+        sys.modules[stub] = None
+    else:
+        fake._build_provenance = provenance_module
+    try:
+        yield _reload_caps_with(monkeypatch, fake)
+    finally:
+        if stubbed:
+            if original is None:
+                sys.modules.pop(stub, None)
+            else:
+                sys.modules[stub] = original
+        _restore_caps()
+
+
+def test_build_id_distinguishes_two_installs_declaring_one_version(monkeypatch):
+    """The commit baked into the compiled core, which package metadata cannot give.
+
+    Two bngsim installs can report the same ``__version__`` and be different
+    builds; this is the identifier that tells them apart, and it describes the
+    *binary* rather than the package.
+    """
+    with _caps_with_provenance(monkeypatch, _fake_provenance_module(stale=False)) as caps:
+        assert caps.bngsim_build_id() == 'deadbeef1234'
+        assert 'built=deadbeef1234' in caps.bngsim_identity_line()
+        assert caps.bngsim_stale_core_report() == ''
+
+
+def test_stale_compiled_core_is_reported(monkeypatch):
+    """A core older than its own C++ passes every version and feature check.
+
+    Nothing in the Python layer moves, so ``capabilities()`` is as wrong as a
+    version string here -- bngsim's mtime comparison is the only thing that sees
+    it, and PyBNF has to ask.
+    """
+    with _caps_with_provenance(monkeypatch, _fake_provenance_module(stale=True)) as caps:
+        assert 'STALE' in caps.bngsim_stale_core_report()
+        assert caps.BNGSIM_HAS_EVENT_SENS is True   # every other check still passes
+
+
+def test_stale_report_honors_bngsims_own_opt_out(monkeypatch):
+    """``BNGSIM_NO_BUILD_CHECK`` is the user saying the heuristic misfires here;
+    PyBNF does not get a second vote."""
+    stubbed = _fake_provenance_module(stale=True, disabled=True)
+    with _caps_with_provenance(monkeypatch, stubbed) as caps:
+        assert caps.bngsim_stale_core_report() == ''
+
+
+def test_provenance_is_silent_when_bngsim_cannot_answer(monkeypatch):
+    """``_build_provenance`` is private to bngsim: an install without it (or one
+    whose reads raise) reports no opinion rather than taking the run down."""
+    with _caps_with_provenance(monkeypatch, None) as caps:
+        assert caps.bngsim_build_id() == ''
+        assert caps.bngsim_identity_line() == ''
+        assert caps.bngsim_stale_core_report() == ''
+
+    exploding = _fake_provenance_module(stale=True)
+    exploding.gather = lambda **kwargs: (_ for _ in ()).throw(RuntimeError('boom'))
+    with _caps_with_provenance(monkeypatch, exploding) as caps:
+        assert caps.bngsim_identity_line() == ''
+        assert caps.bngsim_stale_core_report() == ''
+
+
+@contextlib.contextmanager
+def _collect_warnings(logger_name):
+    """Collect warning records from one logger.
+
+    Not ``caplog``: these tests reload ``pybnf._bngsim_caps`` against fake modules,
+    and keeping the capture explicit keeps that dance out of the assertion.
+    """
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collect(level=logging.WARNING)
+    log = logging.getLogger(logger_name)
+    log.addHandler(handler)
+    try:
+        yield records
+    finally:
+        log.removeHandler(handler)
+
+
+def test_job_start_surfaces_a_stale_core_where_the_user_will_see_it(monkeypatch, capsys):
+    """Ask 3 of #558. bngsim warns at *import* -- for PyBNF that is while the
+    ``pybnf`` package loads, before logging is configured and before the user has
+    committed to anything, so the warning scrolls past in import noise. A fit is
+    hours; this repeats it at job start, on the console and in the run's own log."""
+    from pybnf import pybnf as pybnf_main
+
+    monkeypatch.setattr(pybnf_main._bngsim_caps, 'bngsim_identity_line',
+                        lambda: '[bngsim] _bngsim_core: ... | built=abc123 | STALE')
+    monkeypatch.setattr(pybnf_main._bngsim_caps, 'bngsim_stale_core_report',
+                        lambda: '[bngsim]   STALE: src/x.cpp is newer than the binary.')
+    with _collect_warnings('pybnf.pybnf') as records:
+        pybnf_main._report_bngsim_build()
+    out = capsys.readouterr().out
+    assert 'WARNING' in out and 'older than its own C++' in out
+    assert any('older than its own' in r.getMessage() for r in records)
+
+    monkeypatch.setattr(pybnf_main._bngsim_caps, 'bngsim_stale_core_report', lambda: '')
+    pybnf_main._report_bngsim_build()
+    assert 'WARNING' not in capsys.readouterr().out
+

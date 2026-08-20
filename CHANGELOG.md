@@ -169,6 +169,45 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **The discrete-event gradient gate reads a bngsim capability instead of a version floor, so a
+  from-source build that merely *declares* a new enough version no longer passes it (#558,
+  ADR-0119).** `BNGSIM_HAS_EVENT_SENS` gates forward sensitivities that survive a discrete
+  event, and it does not gate a missing feature — it gates **silent wrongness**: a build below
+  the line does not refuse an event it cannot differentiate, it returns a finite tensor with the
+  event's contribution missing. It decided by comparing `bngsim.__version__` against exactly
+  `0.12.2`. bngsim bumps its version at the *start* of a release cycle, so every from-source
+  build made between that bump and the fixes that set the line (lanl/bngsim#144, #146) declares
+  the same string as the release that carries them, clears the floor, and is reported as
+  carrying them. The two failure directions are not symmetric — a false *absent* is a refusal
+  and a metaheuristic fit; a false *present* is a gradient fit that runs to completion and
+  reports a converged wrong number — and a version compare could only ever be wrong the second
+  way. The neighbouring `BNGSIM_HAS_PER_SPECIES_ATOL` already carried the argument, for the same
+  version string, in a comment on the wrong flag.
+  The gate now resolves through published capabilities: `features['event_sensitivities']` if
+  bngsim ever publishes a dedicated key (both directions, so the flag starts reading the real
+  answer on the first build that grows one, with no PyBNF release), otherwise
+  `features['effective_ic_sensitivity']` — a **witness**, usable because lanl/bngsim#155 added it
+  three commits after #146 inside the same release window, so a build that publishes it
+  necessarily carries the fixes. The version survives only as a veto: it can no longer report the
+  capability present on its own, because the witness shipped *in* 0.12.2 and a build claiming
+  0.12.2-or-newer without it is exactly the pre-release build at issue. **No install that works
+  today is refused** — every released bngsim at or above the floor publishes the witness — and a
+  refusal now names the route that decided (`event_sens_probe()`) rather than telling a reader
+  who already has 0.12.2 to upgrade to 0.12.2.
+- **A fit whose bngsim loaded a compiled core older than its own C++ says so at job start, not in
+  import noise (#558, ADR-0119).** An editable bngsim serves live Python from the source tree
+  while loading `_bngsim_core*.so` from a separately built artifact with auto-rebuild off, so the
+  two halves drift — one install reporting `0.12.2` was found with a core binary three days older
+  than the `.cpp` beside it. Every version, metadata and feature-key check passes there, because
+  nothing in the Python layer moved. bngsim detects it by mtime and warns, but it warns at
+  *import*, which for PyBNF is while the `pybnf` package loads: before `init_logging`, before the
+  config is read, and before the user has committed to anything. PyBNF now repeats it at job
+  start — the core's identity line (path, build commit, mtime) to the log unconditionally, the
+  staleness report promoted to a console warning at verbosity 0 — where a reader can still stop a
+  run that would otherwise spend hours producing statements about code that is no longer in the
+  tree. `bngsim_build_id()` exposes the commit the core was built from, which is the only thing
+  on hand that tells two installs declaring one version apart. Every read is guarded and
+  memoized; an install that cannot answer reports no opinion rather than taking the fit down.
 - **A `parameter:` record is now held to the same declaration rules as the equivalent `*_var`
   line (#603, ADR-0118).** `_check_variable_keyword_combination` refuses an incoherent pairing
   of free-parameter declarations and `job_type` — an unbounded prior handed to a box-mode
