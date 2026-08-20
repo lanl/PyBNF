@@ -156,7 +156,10 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'ms_knot_placement',
               # Global qualitative (BPSL) penalty-family override:
               # auto | hinge | probit | logit.
-              'qualitative_loss']
+              'qualitative_loss',
+              # What a gradient fit does when bngsim declines a model's analytic
+              # sensitivity RHS (#606, ADR-0121): warn | error | ignore.
+              'sensitivity_fallback']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
                # profile likelihood (#446/#466): the subset of free parameters to profile
                # (a list of parameter ids; absent -> profile every free parameter).

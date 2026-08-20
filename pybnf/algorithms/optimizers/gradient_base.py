@@ -43,6 +43,8 @@ re-transforms. Leaves own their ``start_run`` / ``got_result`` state machine and
 must be picklable for backup/resume, exactly like Powell and CMA-ES (ADR-0007).
 """
 
+import logging
+
 import numpy as np
 
 from .concurrent_multistart import DONE, ConcurrentMultiStartOptimizer
@@ -55,12 +57,14 @@ from ...gradient import (
     assemble_marginal_time_gradient,
     route_for_model,
 )
-from ...printing import PybnfError, print1, print2
+from ...printing import PybnfError, print0, print1, print2
 
 # ``DONE`` is the shared multi-start sentinel, re-exported here so a gradient leaf's
 # ``from .gradient_base import DONE`` keeps resolving to the one object the base's
 # ``got_result`` identity-checks (#500).
 __all__ = ['DONE', 'GradientRunner', 'GradientOptimizer']
+
+logger = logging.getLogger(__name__)
 
 
 class GradientRunner:
@@ -281,6 +285,11 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         # _setup_gradient_path (needs the initialized models). None until then, and
         # restored as None by reset() so a bootstrap refit rebuilds it.
         self._routings = None
+        # Whether _report_sensitivity_rhs has already spoken. Deliberately NOT reset by
+        # _after_reset: the routings are rebuilt per bootstrap refit, but which
+        # sensitivity RHS each model runs on is not a function of the resampled data
+        # (#606).
+        self._sens_rhs_reported = False
         # Backend gate: every model must expose bngsim's forward-sensitivity hooks
         # (the capability gate itself fires later, at apply_routing).
         self._require_sensitivity_backend()
@@ -364,7 +373,9 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         print2('Current best objective: %f, %s' % (runner.fval, runner.progress_detail()))
 
     # --- gates ------------------------------------------------------------- #
-    # The gradient path is gated in four places, each as early as it can be:
+    # The gradient path is gated in four places, each as early as it can be (a fifth
+    # check, :meth:`_report_sensitivity_rhs`, sits beside them and is a *report* unless
+    # the user asks it to be a gate -- see its own docstring):
     #
     # * **edition** (:meth:`_require_edition_2`, before model build) -- the gradient
     #   consumes the edition-2 surface (bind-by-id routing, the noise-model /
@@ -379,6 +390,14 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
     #   than mid-run, and on a current one the model passes straight through;
     # * **capability** (deferred to :meth:`_setup_gradient_path`'s ``apply_routing``,
     #   #447) -- raises if the bngsim build lacks the ``output_sensitivities`` feature.
+    #
+    # Every one of those is a property of the BUILD or of the CONFIG, which is why each
+    # can be decided from a module-level flag or a config read. The fifth is not: whether
+    # bngsim supplies an analytic ``∂f/∂p`` for a given model is a property of the
+    # (build, model) pair, decided at codegen, so :meth:`_report_sensitivity_rhs` has to
+    # build a Simulator to find out (#606, ADR-0121). It warns by default rather than
+    # refusing, because the fallback is correct -- just N times the cost -- and only
+    # refuses under ``sensitivity_fallback = error``.
     #
     # The per-evaluation gate (an unsupported *objective* -- Laplace residual,
     # estimated scale, … raising :class:`GradientNotSupported`) is caught at the first
@@ -545,6 +564,132 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             for suffix, routing in model_routings.items():
                 routings[(model.name, suffix)] = routing
         self._routings = routings
+        self._report_sensitivity_rhs()
+
+    def _report_sensitivity_rhs(self):
+        """Say which sensitivity right-hand side each model's gradient will run on (#606).
+
+        ``CVodeSensInit1`` takes one sensitivity-RHS callback for every column, so a
+        single rate law bngsim cannot differentiate declines the analytic ``∂f/∂p`` for
+        the **whole** model and CVODES' internal difference quotient carries every
+        column instead. That is a correctness-preserving substitution and a
+        cost-multiplying one: an extra RHS evaluation per column per step, so an
+        N-column request pays roughly N times the sensitivity cost. On a fit measured
+        in hours that is not a slower answer, it is no answer -- on
+        ``Smith_BMCSystBiol2013`` all 25 columns fell back, every start timed out to
+        ``inf``, and thirteen hours produced nothing, with the only signal a bngsim log
+        line on a worker that nobody had a reason to look for (#558).
+
+        This is the only pre-flight check here that is a property of the **(build,
+        model)** pair rather than of the build or the config, so unlike the four gates
+        above it cannot be answered from a module-level flag or a config read: it
+        builds one sensitivity-bearing Simulator per model and reads the verdict off
+        the codegen artifact that Simulator installs
+        (:func:`~pybnf._bngsim_caps.probe_sens_rhs`). Running it here rather than on a
+        worker is what makes it useful -- the answer arrives before the fit has spent
+        anything, which is the whole complaint the log line could not answer.
+
+        The verdict is what policy keys off, because the verdict is stable. bngsim's
+        own *reason* for a decline is captured too, but only ever as prose: it is
+        emitted during codegen source generation, which a warm structural cache skips
+        entirely, so it is present on the first run of a fit and absent on the second.
+        A model reporting no opinion (``None`` -- no codegen artifact to read) is
+        logged and not warned about, in either direction.
+
+        Reported **once per run**, not once per pass: ``reset()`` drops the routings so
+        a bootstrap refit rebuilds them, and a model's differentiability does not change
+        with resampled data, so ``bootstrap = 100`` would otherwise print the same
+        warning a hundred times. The refusal is once-only for the same reason -- it has
+        already ended the run the first time.
+
+        Never raises except under ``sensitivity_fallback = error``, which is a user
+        asking to be stopped."""
+        policy = str(self.config.config.get('sensitivity_fallback', 'warn')).lower()
+        if policy == 'ignore' or getattr(self, '_sens_rhs_reported', False):
+            return
+        self._sens_rhs_reported = True
+        declined = []
+        for model in self.model_list:
+            probe = getattr(model, 'analytic_sens_rhs_status', None)
+            if not callable(probe):
+                # A backend with no opinion to give (a test double, a non-bngsim
+                # model). The sensitivity-backend gate above already refused anything
+                # that cannot supply a gradient at all, so this is not a failure.
+                continue
+            status = probe()
+            if status.analytic is None:
+                logger.info(
+                    "Model %s: cannot tell whether the forward sensitivities run on "
+                    "bngsim's analytic df/dp -- %s.", model.name, status.route)
+            elif status.analytic:
+                logger.info(
+                    "Model %s: forward sensitivities run on bngsim's analytic df/dp "
+                    "(read from %s).", model.name, status.route)
+            else:
+                declined.append((model, status))
+                self._warn_sensitivity_fallback(model, status)
+        if declined and policy == 'error':
+            raise PybnfError(
+                "Gradient-based fitting (job_type = %s) was asked to require the "
+                "analytic sensitivity right-hand side (sensitivity_fallback = error), "
+                "and bngsim declined it for %s." % (
+                    self._fit_type_label(),
+                    ', '.join("model '%s'" % m.name for m, _ in declined)),
+                hint=["Re-encode the declined rate law in a form bngsim can "
+                      "differentiate. Its own reason is in the warning above when it "
+                      "gave one -- it reports the reason while generating codegen "
+                      "source, so a warm codegen cache has none to give.",
+                      "Or accept the fallback with 'sensitivity_fallback = warn' (the "
+                      "default) and expect roughly one extra right-hand-side "
+                      "evaluation per sensitivity column per step.",
+                      _FALLBACK_HINT])
+
+    def _warn_sensitivity_fallback(self, model, status):
+        """One model's difference-quotient warning, to the log and to the console.
+
+        Console rather than log-only on purpose, and at verbosity 0 rather than 1. The
+        decline already reaches ``<prefix>.log`` today -- bngsim's logger propagates to
+        root and PyBNF puts a FileHandler there -- and that is exactly the channel that
+        failed: a shared, noisy file written from N worker processes, one line per
+        model, arriving mid-run. It is discoverable by someone who already suspects the
+        problem, which is the wrong order. A reader who turned the verbosity down is
+        still a reader who would rather not spend the next thirteen hours, which is the
+        same call ``_report_bngsim_build`` makes for a stale compiled core (#558).
+        """
+        columns = status.columns or len(self.variables)
+        cost = ("each of this model's %d sensitivity columns costs an extra "
+                "right-hand-side evaluation per step, so expect roughly %dx the "
+                "sensitivity cost of the analytic path" % (columns, columns))
+        reason = '; '.join(reason for reason, _ in status.reasons)
+        detail = (' bngsim declined it because %s.' % reason if reason else
+                  ' bngsim did not say why in this run: it reports the reason while '
+                  'generating the codegen source, which a warm codegen cache skips.')
+        logger.warning(
+            "Model %s: bngsim declined the analytic sensitivity RHS, so CVODES' "
+            "internal difference quotient carries every column (%s; read from %s).%s",
+            model.name, cost, status.route, detail)
+        print0("WARNING: model '%s' has no analytic sensitivity right-hand side, so "
+               "this gradient fit runs on CVODES' internal difference quotient -- %s. "
+               "The gradient stays correct.%s" % (model.name, cost, detail))
+        print1('  -> Read from %s.' % status.route)
+        if status.fallback_is_wrong:
+            # The half of the decline space where "correct, but slower" is FALSE. This
+            # is a statement about the NUMBERS rather than the cost, so it goes to
+            # print0, past the verbosity the cost line respects.
+            #
+            # From 0.14.0 bngsim refuses such a run outright rather than returning the
+            # gradient it has flagged as wrong (lanl/bngsim#414/#416) -- and it decides
+            # that from its own ground truth, re-scanning the model rather than trusting
+            # the codegen warning, so its refusal survives a warm cache where this line
+            # does not. The wording therefore has to be true on both sides of that
+            # line: on a carrying build the fit is about to stop at the first
+            # simulation, and on an older one it is about to run.
+            print0("WARNING: model '%s' also branches at a crossing whose time moves, "
+                   "and the difference quotient integrates straight through it, so "
+                   "every sensitivity column is wrong at and after that crossing by "
+                   "the jump it drops. bngsim refuses this case outright from 0.14.0; "
+                   "if this fit proceeds, validate against a finite difference of the "
+                   "trajectory before relying on it." % model.name)
 
     def _condition_for_suffix(self, model, suffix):
         """Resolve a scored ``suffix`` to the condition (``MutationSet``) it was

@@ -90,6 +90,11 @@ _EXCLUDE = frozenset({
     # each .target names direct_pass or ave_norm_sos, and no information criterion is defined
     # for an objective that is not a proper likelihood, so nothing is computed or written.
     'backup_information_criteria',
+    # Post-freeze gradient key (#606): what to do when bngsim declines a model's analytic
+    # sensitivity RHS. Read only by the gradient optimizers' _setup_gradient_path, and every
+    # benchmark here is a sampler/metaheuristic that never activates the gradient path, so
+    # its value is inert for this oracle.
+    'sensitivity_fallback',
 })
 
 

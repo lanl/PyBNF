@@ -1540,6 +1540,48 @@ Algorithm Options
     * ``sbml_atol = auto``
     * ``sbml_atol = tracking 6``
 
+.. _sensitivity_fallback:
+
+**sensitivity_fallback**
+  Relevant only to a gradient-based ``job_type`` (``trf``, ``lbfgs``, ``gntr``, ``ms``,
+  ``profile_likelihood``): what to do when bngsim declines the **analytic sensitivity
+  right-hand side** for one of your models.
+
+  bngsim derives ``∂f/∂θ`` in closed form and compiles it, but CVODES takes one
+  sensitivity-RHS callback for every column, so a single rate law it cannot
+  differentiate — an ``abs()``/``floor()``/``erf()`` term, a comparison in a place it
+  cannot solve, or simply a derivation that ran out of its build-time budget — declines
+  the analytic path for the **whole model**. CVODES' internal difference quotient carries
+  every column instead. That answer is still correct; it costs an extra right-hand-side
+  evaluation per column per step, so an ``N``-parameter fit pays roughly ``N`` times the
+  sensitivity cost. On a fit measured in hours that is often the difference between a
+  result and a run that times out with nothing.
+
+  PyBNF checks once per model at job start, before the fit has spent anything, by
+  building one sensitivity-bearing simulator and reading back whether the compiled
+  artifact carries the analytic RHS. The settings are:
+
+  * ``warn`` (default) — name the model, the number of sensitivity columns, the expected
+    cost multiplier, and bngsim's own reason when it gave one, then run the fit.
+  * ``error`` — refuse the fit instead, for a long unattended run where discovering this
+    from the log afterwards is too late.
+  * ``ignore`` — skip the check entirely, including the one simulator construction per
+    model that it costs.
+
+  Two limits are worth knowing. bngsim reports its *reason* while generating codegen
+  source, which a warm codegen cache skips, so the reason is present the first time a
+  model is built and absent afterwards — the verdict itself is read off the artifact and
+  is unaffected. And the check describes the model at the fit's start point: one step of
+  bngsim's codegen reads parameter values, so a model that branches on a fitted threshold
+  could in principle change its answer mid-search.
+
+  Default: warn
+
+  Examples:
+
+    * ``sensitivity_fallback = error``
+    * ``sensitivity_fallback = ignore``
+
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
   ``parallelize_models`` to run model partitions independently within each replicate.

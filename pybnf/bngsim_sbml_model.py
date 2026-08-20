@@ -363,8 +363,10 @@ from ._bngsim_caps import (
     BNGSIM_HAS_SBML,
     BNGSIM_HAS_TRACKING_ATOL,
     BNGSIM_SBML_ERROR,
+    SensRhsStatus,
     bngsim,
     feature_missing_reason,
+    probe_sens_rhs,
 )
 
 try:
@@ -1763,6 +1765,29 @@ class BngsimSbmlModelNoTimeout(Model):
         self._sensitivity_request = _SensitivityRequest(
             params=list(params or []), ic=list(ic or []),
         )
+
+    def analytic_sens_rhs_status(self):
+        """What this model's forward sensitivities will actually run on (#606).
+
+        The SBML twin of :meth:`BngsimModel.analytic_sens_rhs_status`. Probes the
+        **wildtype** engine model with no action suffix resolved, which is the
+        sensitivity-bearing construction every scored ODE action makes: a
+        ``condition:`` perturbs parameter values, not the rate-law expressions that
+        decide differentiability, so one probe stands for the model.
+
+        It stands for it *at the start point*, though, not for the whole fit. One
+        verdict in bngsim's codegen pipeline reads parameter values and species
+        initials (the switch gate), so a model that branches on a threshold can in
+        principle cross the line mid-search. Probing every evaluation is not a trade
+        worth making; the caveat is written down instead.
+        """
+        if self._sensitivity_request is None:
+            return SensRhsStatus(None, 'this model has no sensitivity request', [], 0)
+        req = self._sensitivity_request
+        self._current_action_suffix = None
+        return probe_sens_rhs(
+            lambda: self._make_simulator(self._engine_model_for_action(), 'ode'),
+            columns=len(req.params or ()) + len(req.ic or ()))
 
     def set_scored_suffixes(self, suffixes):
         """Record which output suffixes are scored gradient targets (#475/#482).

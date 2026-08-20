@@ -25,3 +25,5 @@ BNGSIM_HAS_SS_OUTPUT_SENS = _bngsim_caps.BNGSIM_HAS_SS_OUTPUT_SENS
 BNGSIM_HAS_SCAN_SENS_CARRY = _bngsim_caps.BNGSIM_HAS_SCAN_SENS_CARRY
 BNGSIM_VERSION = _bngsim_caps.BNGSIM_VERSION
 feature_missing_reason = _bngsim_caps.feature_missing_reason
+probe_sens_rhs = _bngsim_caps.probe_sens_rhs
+SensRhsStatus = _bngsim_caps.SensRhsStatus
