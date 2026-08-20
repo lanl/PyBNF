@@ -1241,6 +1241,15 @@ def ploop(ls):  # parse loop
                       "experiment's time-course endpoint), 't_start: <number>' / 'n_steps: <number>' " \
                       "(a constraint-only experiment's integration start / output resolution), or " \
                       "'measurement_params: file.tsv' in any order (requires edition >= 2)"
+            elif key == 'data':
+                # `data` is a real key (data_gram, above) -- narrow, but real. Without this
+                # branch it fell through to the `fmt == ''` fallback and a malformed line was
+                # told "data is not a valid configuration key", which is simply untrue and
+                # sends the reader looking for a typo in the key rather than in the file list.
+                fmt = "'data = file1.exp[, file2.exp ...]' binding experimental data to a " \
+                      "bring-your-own callable objective -- each file is one experiment, " \
+                      "presented to the callable as a name->Data mapping keyed by file stem " \
+                      "(ADR-0050). Valid only with 'objective = callable'"
             elif key == 'observable':
                 fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
                       "differently-named data column header (requires edition >= 2)"

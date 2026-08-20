@@ -371,7 +371,7 @@ class TestFileTokensStopAtAComment:
     the shared tokens: every consumer gets it at once.
     """
 
-    # Each line invents a file out of its comment. Four of the five are consumers #599 did
+    # Each line invents a file out of its comment. Three of the five are consumers #599 did
     # not name -- the defect was in the token, not in any one declaration.
     @pytest.mark.parametrize('line', [
         'model: a.xml, # note about b.xml',                      # new-era declaration
@@ -448,3 +448,31 @@ class TestFileTokensStopAtAComment:
             except PybnfError:
                 legacy = 'refused'
             assert decl == legacy, name
+
+
+class TestDataKeyFormatHint:
+    """A malformed ``data = ...`` line reports what the key takes, not that it does not exist.
+
+    ``data`` is a real key -- narrow, but real: a comma list of ``.exp`` files bound to a
+    bring-your-own callable objective (ADR-0050), valid only with ``objective = callable``.
+    It had no branch in ploop's per-key format-hint chain, so it fell through to the generic
+    ``'{key} is not a valid configuration key.'`` fallback, which is untrue for this key and
+    sends the reader hunting for a typo in the key rather than in the file list.
+    """
+
+    def test_a_malformed_data_line_reports_the_data_format(self):
+        with pytest.raises(PybnfError) as exc:
+            parse.ploop(['data = d.exp, # note about f.exp\n'])
+        message = str(exc.value)
+        assert 'data = file1.exp' in message
+        assert 'objective = callable' in message
+
+    def test_a_malformed_data_line_no_longer_denies_the_key_exists(self):
+        # The specific regression: the old fallback text must not come back.
+        with pytest.raises(PybnfError) as exc:
+            parse.ploop(['data = not_a_file\n'])
+        assert 'data is not a valid configuration key' not in str(exc.value)
+
+    def test_a_well_formed_data_line_still_parses(self):
+        # The hint is reached only on failure -- the happy path is untouched.
+        assert parse.ploop(['data = d.exp, e.exp\n'])['data'] == ['d.exp', 'e.exp']
