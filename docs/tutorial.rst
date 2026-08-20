@@ -92,6 +92,9 @@ Objectives and noise models
   (``noise_model = lognormal, location = mean``).
 - `43. Custom objective <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/43_custom_objective>`__
   — bring your own objective: a custom Python callable (``objective = callable``).
+- `48. State-dependent noise <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/48_state_dependent_noise>`__
+  — a noise scale that depends on the prediction: a combined additive+proportional
+  error model (``sigma = prediction_formula``).
 - `49. Measurement-time uncertainty <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/49_measurement_time_uncertainty>`__
   — when the reported sampling times are uncertain, integrate the latent time out
   of the likelihood (``time_error`` / ``sigma_t``).
@@ -123,6 +126,9 @@ Data, experiments and protocols
 - `30. Data fusion <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/30_data_fusion>`__
   — one fit to time-course, steady-state, and qualitative data at once
   (multi-experiment + ``.prop``).
+- `47. Condition perturbations <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/47_condition_perturbations>`__
+  — one model, many conditions: fit a wildtype and a knockout with one model file
+  (``condition:`` / ``perturbations:``).
 
 Bayesian inference and uncertainty
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
