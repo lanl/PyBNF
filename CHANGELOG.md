@@ -189,9 +189,9 @@ All notable changes to PyBNF are documented below. This project adheres to
   artifact — whether it exports the analytic sensitivity RHS symbol, the exact symbol bngsim's
   C++ resolves to choose between the two paths. That matters because bngsim reports a decline
   while *generating* codegen source, and since lanl/bngsim#174 a warm structural cache skips
-  source generation entirely: measured on 0.13.0, the same declining model reports its decline on
-  the first construction and says nothing on the second, while running on the same fallback both
-  times. Since the cache persists on disk, the run that hears nothing is typically the second run
+  source generation entirely: measured on 0.14.0 and 0.13.0 alike, the same declining model
+  reports its decline on the first construction and says nothing on the second, while running on
+  the same fallback both times. Since the cache persists on disk, the run that hears nothing is typically the second run
   of a fit — the one made after the first came back empty. bngsim's reason is still captured and
   reported when it is heard, but only ever as prose; nothing keys off its absence.
   The new `sensitivity_fallback` key chooses what happens next: `warn` (the default — today's
