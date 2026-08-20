@@ -360,8 +360,9 @@ class BngsimModel(NetModel):
         arrives **up front**, with an actionable "use a metaheuristic job_type"
         message, instead of at the first sensitivity-bearing ``simulate()``. bngsim
         now applies the jump and refuses only the subclasses it cannot cross, so on a
-        build at or above :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS`'s floor
-        the gate no longer fires and this property only documents the structure.
+        build :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS` reports (a published
+        capability since #558, not a version compare) the gate no longer fires and
+        this property only documents the structure.
 
         Only true state-jumping events are counted (the engine core's ``n_events``).
         Discontinuity triggers -- forcing pulses / piecewise-time dosing schedules --

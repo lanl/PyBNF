@@ -777,9 +777,9 @@ right only if the solver applies the event's own jump to it at each fire,
          + \frac{\partial h}{\partial p}
          - f^+\frac{\partial t^*}{\partial p}
 
-for a state assignment :math:`x^+ = h(x^-, p)` firing at :math:`t^*`. On a bngsim **newer than
-0.12.1** it does, so an event-bearing model fits on ``trf`` / ``lbfgs`` / ``gntr`` like any
-other. The event shapes it covers are:
+for a state assignment :math:`x^+ = h(x^-, p)` firing at :math:`t^*`. A bngsim that applies it
+— every release from **0.12.2** — lets an event-bearing model fit on ``trf`` / ``lbfgs`` /
+``gntr`` like any other. The event shapes it covers are:
 
 * a **fixed trigger time** (``time >= 5``), where the crossing does not move with the parameters
   (:math:`\partial t^*/\partial p = 0`) and the jump is the assignment Jacobian alone;
@@ -794,16 +794,35 @@ one differentiable surface — is refused per simulation with a message naming t
 fit stops with an actionable error rather than a wrong gradient. Use a metaheuristic ``job_type``
 for those.
 
-**On bngsim 0.12.1 or older** the refusal is instead *blanket* and arrives up front, at
-construction. The floor is set by silent wrongness, not by a missing feature: such a build can
-answer an event it cannot actually differentiate without saying so. A trigger reading the state
-came back as a finite tensor with the event's contribution missing rather than being refused
-(lanl/bngsim#52, through 0.11.x); an assignment reading the state — ``A := A + dose``, the
-repeat-dosing idiom — dropped the carried term and restarted the assigned row from zero
-(lanl/bngsim#144, through 0.12.1); and a solver root that fires nothing rewound the state but not
-the sensitivity history (lanl/bngsim#146, through 0.12.1). PyBNF declines the whole class on
-those builds rather than run a fit to completion on a wrong gradient, and the message names the
-upgrade.
+**On an older bngsim** the refusal is instead *blanket* and arrives up front, at construction.
+The line is drawn by silent wrongness, not by a missing feature: such a build can answer an event
+it cannot actually differentiate without saying so. A trigger reading the state came back as a
+finite tensor with the event's contribution missing rather than being refused (lanl/bngsim#52,
+through 0.11.x); an assignment reading the state — ``A := A + dose``, the repeat-dosing idiom —
+dropped the carried term and restarted the assigned row from zero (lanl/bngsim#144, through
+0.12.1); and a solver root that fires nothing rewound the state but not the sensitivity history
+(lanl/bngsim#146, through 0.12.1). PyBNF declines the whole class on those builds rather than run
+a fit to completion on a wrong gradient, and the message names what to install.
+
+**PyBNF decides this from a capability, not from a version string** (ADR-0119). It reads
+``bngsim.capabilities()`` and asks whether the build publishes the feature key that only a build
+carrying those fixes publishes; the version is a veto on the answer, never the answer itself.
+The distinction matters for anyone running bngsim from source: bngsim bumps its version at the
+*start* of a release cycle, so a from-source build made between that bump and the fixes declares
+the same string as the release that carries them — and a version compare reports the capability
+present on it, which is the direction that costs a wrong gradient rather than a refusal. If you
+are refused on a build whose version already looks new enough, that is what happened; the
+refusal names the key it looked for. Install a released bngsim ≥ 0.12.2, or a source build at or
+past lanl/bngsim#155.
+
+**A compiled core older than its own C++ is the same trap one level down.** An editable bngsim
+serves live Python from the source tree while loading its compiled extension from a separately
+built artifact, with auto-rebuild deliberately off, so the two halves drift — and a version, a
+feature key and every other metadata check pass regardless, because nothing in the Python layer
+moved. bngsim detects this by comparing mtimes and warns at import, which for PyBNF is while the
+package is loading, before logging is configured. PyBNF repeats that warning **at job start**,
+together with the commit the loaded core was built from, where a reader can still stop the run;
+if you see it, rebuild bngsim before trusting any number the fit produces.
 
 **Discontinuity triggers are not events.** A forcing pulse or a piecewise-time schedule written
 as ``if(t >= tau)`` in a rate law breaks the integrator step but never jumps the state, so it

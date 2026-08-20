@@ -1817,8 +1817,8 @@ class BngsimSbmlModelNoTimeout(Model):
         arrives **up front**, with an actionable "use a metaheuristic job_type"
         message, instead of at the first sensitivity-bearing ``simulate()``. bngsim
         now applies the jump and refuses only the subclasses it cannot cross, so on a
-        build at or above :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS`'s floor
-        the gate no longer fires. The net backend's property documents the same
+        build :data:`~pybnf._bngsim_caps.BNGSIM_HAS_EVENT_SENS` reports (a published
+        capability since #558, not a version compare) the gate no longer fires. The net backend's property documents the same
         contract; this is its SBML twin -- and, since a ``.net`` model cannot author
         events, the one that is reachable in practice.
 

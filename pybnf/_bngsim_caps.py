@@ -158,9 +158,9 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
 #     s+ = dh/dx . (s- + f-.dt*/dp) + dh/dp - f+.dt*/dp
 #
 # bngsim applies at each fire, for the event subclasses it can classify (#536).
-# The floor is set by the last build that could return a wrong jump *without
-# saying so*, because that -- not a missing feature -- is what this flag guards
-# against. Three separate silent derivatives had to go first:
+# The line this flag draws is set by the last build that could return a wrong
+# jump *without saying so*, because that -- not a missing feature -- is what it
+# guards against. Three separate silent derivatives had to go first:
 #
 # * a trigger that reads the state through an SBML document (``S < 30``) was
 #   neither refused nor differentiated, returning a finite tensor missing the
@@ -176,26 +176,107 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
 #   history, injecting a spurious step into every column (lanl/bngsim#146),
 #   also after 0.12.1.
 #
-# So the floor is "newer than 0.12.1", which every later release satisfies
-# whether the next one bumps the minor or the major. What the qualifying build
-# then *supports* is a separate, wider question -- a fixed trigger time
-# (bngsim GH #212), a threshold that is a fitted constant (lanl/bngsim#49), a
-# state-dependent trigger differentiated in flight (lanl/bngsim#144) -- and it
-# refuses the rest per simulation rather than guessing, which is exactly why
-# PyBNF can stop classifying events itself.
+# What a qualifying build then *supports* is a separate, wider question -- a
+# fixed trigger time (bngsim GH #212), a threshold that is a fitted constant
+# (lanl/bngsim#49), a state-dependent trigger differentiated in flight
+# (lanl/bngsim#144) -- and it refuses the rest per simulation rather than
+# guessing, which is exactly why PyBNF can stop classifying events itself.
 #
-# ``capabilities()`` has no feature key to read here -- it reports compiled
-# backends and build options, and what separates these builds is a set of bug
-# fixes -- so this is a version floor rather than a probe. An unparseable
-# version reads as *absent* (fail closed): elsewhere in this module an
-# unparseable version is accepted, because rejecting it would brick an
+# HOW THE LINE IS DRAWN (#558). It used to be drawn by a version floor at
+# exactly 0.12.2, and a version floor is the wrong instrument for it: the three
+# fixes above are behaviour, and a build's version string is a claim about
+# behaviour that a from-source build does not have to honour. bngsim bumps
+# ``__version__`` at the start of a release cycle, so every dev build between
+# that bump and the fixes *also* declares 0.12.2 -- and a floor reports the
+# capability PRESENT on one, which is the expensive direction: a gradient that
+# is wrong rather than a refusal. The neighbouring ``BNGSIM_HAS_PER_SPECIES_ATOL``
+# comment states the same hazard for the same version string, and it cost a real
+# fit (#558). "Probe capability, never version."
+#
+# So the flag resolves through three routes, first match wins, and each is
+# reported by :func:`event_sens_probe` so a refusal can say how it decided:
+#
+# 1. ``features['event_sensitivities']`` -- a dedicated key. bngsim publishes no
+#    such key today; naming it here costs nothing and means the flag starts
+#    reading the real answer, in BOTH directions, on the first build that grows
+#    one. That is #558's ask 1, and it is why this route is checked first even
+#    though it never fires yet.
+#
+# 2. ``features['effective_ic_sensitivity']`` -- a WITNESS. This key is not the
+#    capability; it reports ``Model.effective_ic_sensitivity``, the dx(0)/dtheta
+#    reader ADR-0100 consumes. It is usable here because of WHERE it landed:
+#    lanl/bngsim#155 added it three commits after #146 and seven after #144, inside
+#    the same 0.12.1 -> 0.12.2 window, so a build that publishes it necessarily
+#    carries every fix above. The implication runs one way only, and that is the
+#    safe way -- a build from the handful of commits between #146 and #155 has
+#    the fixes and lacks the witness, and is refused. A refusal on a build that
+#    would have been right is a metaheuristic fit; the converse is a wrong
+#    gradient nobody sees. Being a published ``capabilities()`` key rather than a
+#    ``hasattr`` also means bngsim's own "existing names will not be renamed or
+#    removed" contract covers it.
+#
+# 3. Neither key published -- absent. The version floor survives ONLY as a
+#    conjunct on route 2, where it vetoes an incoherent build; it can no longer
+#    report *present* on its own. The witness shipped IN 0.12.2, so a build
+#    claiming 0.12.2-or-newer that does not publish it is precisely the lying
+#    pre-release build, and a build below 0.12.2 was refused before this change
+#    too. Every released bngsim at or above the floor publishes the witness, so
+#    no install that works today is refused by this change.
+#
+# An unparseable version reads as *absent* (fail closed): elsewhere in this
+# module an unparseable version is accepted, because rejecting it would brick an
 # otherwise-working install, but here the cost of guessing wrong is a wrong
 # gradient rather than a refusal.
 _BNGSIM_EVENT_SENS_VERSION = (0, 12, 2)
-BNGSIM_HAS_EVENT_SENS = bool(
-    BNGSIM_AVAILABLE
-    and (_parse_version(BNGSIM_VERSION) or ()) >= _BNGSIM_EVENT_SENS_VERSION
-)
+_BNGSIM_EVENT_SENS_FEATURE = 'event_sensitivities'
+_BNGSIM_EVENT_SENS_WITNESS = 'effective_ic_sensitivity'
+
+
+def _feature_key(name):
+    """Tri-state read of a bngsim feature key: the flag, or ``None`` if unpublished.
+
+    ``BNGSIM_FEATURES.get(name, False)`` cannot tell a build that says "no" from a
+    build too old to have been asked, and that distinction is the whole of #558:
+    an unpublished key must fall through to the next route, while a published
+    ``False`` is an answer and must be honoured.
+    """
+    if not BNGSIM_AVAILABLE or name not in BNGSIM_FEATURES:
+        return None
+    return bool(BNGSIM_FEATURES[name])
+
+
+def _resolve_event_sens():
+    """``(present, route)`` for :data:`BNGSIM_HAS_EVENT_SENS` -- see the block above."""
+    if not BNGSIM_AVAILABLE:
+        return False, 'bngsim is not available'
+    declared = _feature_key(_BNGSIM_EVENT_SENS_FEATURE)
+    if declared is not None:
+        return declared, "bngsim feature key %r" % _BNGSIM_EVENT_SENS_FEATURE
+    floor_ok = (_parse_version(BNGSIM_VERSION) or ()) >= _BNGSIM_EVENT_SENS_VERSION
+    witness = _feature_key(_BNGSIM_EVENT_SENS_WITNESS)
+    if witness is not None:
+        if witness and not floor_ok:
+            # The witness says yes and the version cannot corroborate it. Not a
+            # coherent build; the veto stands, and the message has to name the
+            # veto rather than the witness or it describes the wrong evidence.
+            return False, (
+                "bngsim feature key %r is published, but the reported version (%s) "
+                "is below %s, so the build contradicts itself"
+                % (_BNGSIM_EVENT_SENS_WITNESS, BNGSIM_VERSION or 'unparseable',
+                   '%d.%d.%d' % _BNGSIM_EVENT_SENS_VERSION)
+            )
+        return bool(witness), (
+            "bngsim feature key %r, which is published only by a build that also "
+            "carries the event-sensitivity fixes" % _BNGSIM_EVENT_SENS_WITNESS
+        )
+    return False, (
+        "no bngsim feature key to read (%r is unpublished by this build), and a "
+        "version floor alone is not evidence of a behavioural fix"
+        % _BNGSIM_EVENT_SENS_WITNESS
+    )
+
+
+BNGSIM_HAS_EVENT_SENS, _BNGSIM_EVENT_SENS_ROUTE = _resolve_event_sens()
 
 
 # A **per-species** absolute tolerance: ``Simulator.run(atol=...)`` accepts a vector and
@@ -237,8 +318,26 @@ BNGSIM_HAS_TRACKING_ATOL = bool(
 
 
 def event_sens_min_version():
-    """The bngsim version whose forward sensitivities survive a discrete event (#536)."""
+    """The first bngsim RELEASE whose forward sensitivities survive a discrete event (#536).
+
+    A release number is the actionable half of the refusal -- it is what a reader
+    installs -- but it is no longer what :data:`BNGSIM_HAS_EVENT_SENS` decides on,
+    because a from-source build can declare it without carrying it (#558). Pair it
+    with :func:`event_sens_probe` when a message has to explain a *refusal*, so a
+    reader who already has this version learns why it did not count.
+    """
     return '%d.%d.%d' % _BNGSIM_EVENT_SENS_VERSION
+
+
+def event_sens_probe():
+    """How :data:`BNGSIM_HAS_EVENT_SENS` was decided, as a phrase for a message (#558).
+
+    Names the route that actually answered -- a dedicated feature key, the
+    ``effective_ic_sensitivity`` witness, or neither -- so a refusal on a build
+    whose version *looks* new enough says which evidence it was missing instead of
+    reading as a version complaint the reader has already satisfied.
+    """
+    return _BNGSIM_EVENT_SENS_ROUTE
 
 
 def feature_missing_reason(name):
@@ -260,3 +359,102 @@ BNGSIM_SBML_ERROR = feature_missing_reason('sbml_import') if BNGSIM_AVAILABLE el
 BNGSIM_ANTIMONY_ERROR = (
     feature_missing_reason('antimony_import') if BNGSIM_AVAILABLE else BNGSIM_ERROR
 )
+
+
+# --- compiled-core provenance (#558) ---------------------------------------- #
+#
+# A version floor is blind to two different things, and the section above deals
+# with only the first. Which COMMITS the Python layer carries is one; whether the
+# COMPILED layer matches its own C++ sources is the other, and it is worse,
+# because nothing in the Python layer moves at all. An editable bngsim serves live
+# Python from the source tree but loads ``_bngsim_core*.so`` from a separately
+# built artifact with auto-rebuild deliberately off (lanl/bngsim#23), so the two
+# halves drift: an install reporting a perfectly good version has been observed
+# with a core binary three days older than the ``.cpp`` next to it. Every
+# version-, metadata- and feature-key-based check passes there.
+#
+# bngsim already detects this and warns at import. The problem is WHEN: PyBNF
+# imports bngsim while loading its own package, which is before ``init_logging``
+# has run and long before a fit is a commitment, so the warning lands in import
+# noise on a terminal nobody is reading yet. A fit is hours; the warning is worth
+# one line at job start, where it is still cheap to abort.
+#
+# ``bngsim._build_provenance`` is a private module, so every read here is guarded
+# and every failure is silent -- an install that cannot answer is reported as "no
+# opinion", never as an error. This is the module that owns such shims. The reads
+# are also LAZY and memoized: ``gather()`` walks the whole C++ source tree
+# (src/, include/, third_party/, cmake/), which is not a cost to pay at import on
+# behalf of callers who never ask.
+
+_provenance = None
+
+
+def _bngsim_provenance():
+    """bngsim's own build-provenance snapshot, or ``None`` when it cannot say.
+
+    Memoized, including the negative answer: a wheel install has no ``src/`` to
+    walk, and re-deciding that per call would still pay for the import attempt.
+    """
+    global _provenance
+    if _provenance is None:
+        _provenance = (False, None, None)
+        if BNGSIM_AVAILABLE:
+            try:
+                from bngsim import _build_provenance
+                _provenance = (True, _build_provenance,
+                               _build_provenance.gather(include_head=False))
+            except Exception:
+                # Private module, absent on some installs, and a filesystem walk:
+                # three independent ways to fail, none of them worth a traceback
+                # in front of a user who asked for a fit.
+                logger.debug('bngsim build provenance is unavailable', exc_info=True)
+    ok, module, prov = _provenance
+    return (module, prov) if ok else (None, None)
+
+
+def bngsim_build_id():
+    """The commit the loaded ``_bngsim_core`` was BUILT from, or ``''``.
+
+    The identifier #558 asks for: two installs can declare the same version and
+    be different builds, and this is the only thing on hand that tells them apart.
+    Baked into the extension by bngsim's CMake, so it describes the binary rather
+    than the package metadata -- which is exactly the distinction a version string
+    cannot make. ``''`` for a wheel built without it.
+    """
+    _, prov = _bngsim_provenance()
+    return getattr(prov, 'build_commit', None) or ''
+
+
+def bngsim_identity_line():
+    """One line naming the loaded compiled core -- path, build commit, mtime, state.
+
+    For the job-start log. ``''`` when bngsim cannot say, so a caller can simply
+    skip the line rather than print a placeholder.
+    """
+    module, prov = _bngsim_provenance()
+    if module is None:
+        return ''
+    try:
+        return module.identity_line(prov)
+    except Exception:                                  # pragma: no cover - defensive
+        return ''
+
+
+def bngsim_stale_core_report():
+    """bngsim's multi-line staleness report, or ``''`` when the core is not stale.
+
+    Truthy exactly when the loaded binary predates its own C++ sources -- i.e.
+    when every capability answer this module gives, and every number the fit is
+    about to produce, describes code that is no longer in the tree. Honours
+    bngsim's own ``BNGSIM_NO_BUILD_CHECK`` opt-out, since that is the user saying
+    the heuristic misfires here.
+    """
+    module, prov = _bngsim_provenance()
+    if module is None or prov is None:
+        return ''
+    try:
+        if module._checks_disabled() or not prov.is_stale:
+            return ''
+        return module.format_report(prov)
+    except Exception:                                  # pragma: no cover - defensive
+        return ''
