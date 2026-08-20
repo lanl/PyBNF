@@ -236,12 +236,32 @@ def parse(s):
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
     nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
-    model_file = pp.Regex(r".*?\.(bngl|xml|ant|target)")
-    exp_file = pp.Regex(r".*?\.(exp|con|prop)")
+    # The shared file tokens. Every ``model``, ``mutant``, ``data``, ``condition: model:`` and
+    # ``experiment: model:/data:/measurement_params:`` line runs through one of these three, so
+    # they are the widest-blast-radius tokens in the grammar and are deliberately permissive:
+    # unanchored (a path may start with anything -- ``../``, ``~``, a drive letter) and lazy (so
+    # a comma list stops at the first extension rather than swallowing the whole line).
+    #
+    # The one thing they are NOT permissive about is ``#`` (#599, ADR-0120). Being unanchored,
+    # a ``.*?`` would start mid-line and run across spaces and a ``#`` to reach the next
+    # extension it could find, so a stray trailing comma followed by a COMMENT became a second
+    # file: ``model: a.xml, # note about b.xml`` declared a model named
+    # ``# note about b.xml``, and ``model = a.xml : d.exp, # note about e.exp`` invented an exp
+    # file the same way. ``[^#\n]`` is the fix and it is the only narrowing -- a comment is
+    # never part of a filename, in this format or any other, because ``#`` is what ENDS the
+    # part of the line a filename could live in. The cost is that a filename containing a
+    # literal ``#`` is no longer expressible; nothing in the corpus or the tutorial suite has
+    # one, and a conf file that supports ``#`` comments could not round-trip such a name
+    # anyway. It lands on all three tokens at once so the two spellings of a model-data
+    # mapping (``model:`` and ``model = ... : ...``) can never disagree about which files
+    # exist. ``[^#\n]`` rather than ``[^#]`` keeps the historical no-crossing-a-newline
+    # behaviour of ``.`` explicit now that the class is spelled out.
+    model_file = pp.Regex(r"[^#\n]*?\.(bngl|xml|ant|target)")
+    exp_file = pp.Regex(r"[^#\n]*?\.(exp|con|prop)")
     # A per-measurement binding-table sidecar (ADR-0045): a .tsv referenced by an
     # experiment's ``measurement_params:`` field, carrying a row-varying placeholder's
     # per-row token (an estimated id that cannot ride a float .exp column).
-    param_file = pp.Regex(r".*?\.tsv")
+    param_file = pp.Regex(r"[^#\n]*?\.tsv")
     mdmgram = mdmkey - equals - model_file - colon - (_DelimitedList(exp_file) ^ nonetoken) - comment
 
     # new-era model declaration grammar (ADR-0028):
@@ -284,24 +304,22 @@ def parse(s):
     md_tolerance_fields = (pp.Optional(md_atol_field) & pp.Optional(md_rtol_field)
                            & pp.Optional(md_species_atol_field))
     # The declaration's file token is the shared ``model_file`` regex behind a guard, and the
-    # guard exists because that regex is UNANCHORED and lazy: it will start mid-line and run
-    # across commas, colons, spaces and ``#`` to reach the next extension it can find.
-    # Harmless while a ``model:`` line was files-and-nothing-else, and not harmless once a
-    # comma can be followed by something that is not a file. Without it,
-    # ``model: decay.xml, atol: 1e-10  # tighter for decay.xml`` hands ``_DelimitedList`` the
-    # comma and lets the regex swallow the field, the comment and all, as a second "model
-    # file" named ``atol: 1e-10  # tighter for decay.xml`` -- and
-    # ``model: a.xml, atol: 1e-4, b.xml`` swallows ``b.xml`` the same way, walking straight
-    # past the one-model rule the field list is supposed to obey.
+    # guard exists because that regex is still UNANCHORED and lazy: it will start mid-line and
+    # run across commas, colons and spaces to reach the next extension it can find. (It no
+    # longer runs across ``#`` -- see the token above -- so the comment half of what this
+    # guard was built for in #586 is now closed at the token as well; the guard is what
+    # covers the rest of the line.) Harmless while a ``model:`` line was
+    # files-and-nothing-else, and not harmless once a comma can be followed by something that
+    # is not a file. Without it, ``model: a.xml, atol: 1e-4, b.xml`` hands ``_DelimitedList``
+    # the comma and lets the regex swallow the field as part of a second "model file" named
+    # ``atol: 1e-4, b.xml``, walking straight past the one-model rule the field list is
+    # supposed to obey.
     #
     # A tolerance field label is never a filename, so the file list ends where the fields
     # begin. The lookahead needs the label AND its colon, so a model genuinely named
     # ``rtol.xml`` still parses. A file written *after* a field is then a plain parse error
     # carrying the ``model`` format hint, which is where the line's legal shape is spelled
-    # out. Nothing else about the token is narrowed -- in particular ``#`` stays legal
-    # inside a filename, because the legacy ``model = ... : ...`` form still accepts it and
-    # two spellings of one declaration disagreeing about which files exist would be worse
-    # than the corner it would close.
+    # out.
     md_field_label = _one_of('atol rtol species_atol', caseless=True)
     model_decl_file = ~(md_field_label + pp.Literal(':')) + model_file
     model_decl_gram = (mdmkey + colon - _DelimitedList(model_decl_file)
