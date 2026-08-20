@@ -352,3 +352,99 @@ class TestParameterRecord:
         # A field missing its value -> the parameter-specific format hint.
         with pytest.raises(PybnfError, match='parameter:'):
             parse.ploop(['parameter: k, prior'])
+
+
+class TestFileTokensStopAtAComment:
+    """The shared ``model_file``/``exp_file``/``param_file`` regexes stop at ``#`` (#599,
+    ADR-0120).
+
+    All three are unanchored and lazy on purpose -- unanchored so a path may start with
+    anything (``../``, ``~``, an absolute root, a directory with a space in it), lazy so a
+    comma list stops at the first extension rather than swallowing the line. Neither
+    property is the defect. The defect was that they also ran straight *through* a comment
+    to reach the next extension they could find, so a stray trailing comma followed by a
+    comment that happened to mention a file declared that comment as a second file.
+
+    ADR-0116 closed one corner of this at the ``model:`` declaration's own guard and
+    deliberately left ``#`` alone, because the legacy ``model = ... : ...`` spelling still
+    accepted it and the two spellings disagreeing would be worse. That is why the fix is on
+    the shared tokens: every consumer gets it at once.
+    """
+
+    # Each line invents a file out of its comment. Four of the five are consumers #599 did
+    # not name -- the defect was in the token, not in any one declaration.
+    @pytest.mark.parametrize('line', [
+        'model: a.xml, # note about b.xml',                      # new-era declaration
+        'model = a.xml : d.exp, # note about e.exp',             # legacy mapping (invents an .exp)
+        'mutant = a.xml m1 x*2.0 : d.exp, # note about e.exp',   # mutant's data list
+        'experiment: e, data: d.exp, # note about f.exp',        # experiment's data: field
+        'data = d.exp, # note about f.exp',                      # the callable-objective data key
+    ])
+    def test_a_comment_after_a_trailing_comma_is_not_a_file(self, line):
+        # A dangling comma is malformed, and refusing it is the point: before this, the
+        # comment reached the loaders and died there with a message about a file the user
+        # never wrote -- and *which* message depended on the extension the comment happened
+        # to contain (a bogus `.xml` reported an SBML parse error, a bogus `.ant` demanded
+        # an optional dependency). The parse error names the line instead.
+        with pytest.raises(PybnfError):
+            parse.ploop([line + '\n'])
+
+    def test_none_with_a_trailing_comment_still_means_none(self):
+        # `(_DelimitedList(exp_file) ^ nonetoken)` is an Or -- LONGEST match wins. While
+        # exp_file could cross the '#', it matched all of `none # note about e.exp` (23
+        # chars) and beat `nonetoken` (4), silently turning "this model has no data" into
+        # "this model has one data file". Nothing special-cases the alternation; the token
+        # narrowing is what lets `none` win.
+        d = parse.ploop(['model = a.xml : none # note about e.exp\n'])
+        assert d['models'] == {'a.xml'}
+        assert d['exp_data'] == set()
+        assert d['a.xml'] == []
+
+    # Well-formed lines are untouched: a comment with no dangling comma before it was never
+    # the problem, and is still stripped.
+    @pytest.mark.parametrize('line, models, exp_data', [
+        ('model: a.xml # note about b.xml', {'a.xml'}, set()),
+        ('model: a.xml, b.xml # note about c.xml', {'a.xml', 'b.xml'}, set()),
+        ('model = a.xml : d.exp # note about e.exp', {'a.xml'}, {'d.exp'}),
+        ('model = a.xml : d.exp, e.exp # trailing note', {'a.xml'}, {'d.exp', 'e.exp'}),
+    ])
+    def test_a_comment_without_a_dangling_comma_is_still_stripped(self, line, models, exp_data):
+        d = parse.ploop([line + '\n'])
+        assert d['models'] == models
+        assert d['exp_data'] == exp_data
+
+    # Unanchored is preserved: `[^#\n]` still admits every path shape `.` did.
+    @pytest.mark.parametrize('path', [
+        '../models/a.xml', './sub dir/a.xml', '/abs/path/a.xml', '~/a.xml', 'sub dir/a.xml',
+    ])
+    def test_a_path_may_still_start_with_anything(self, path):
+        assert parse.ploop(['model: %s\n' % path])['models'] == {path}
+
+    def test_the_narrowing_is_a_literal_hash_in_a_filename(self):
+        # The one thing given up, stated so it is a decision rather than a surprise: a
+        # filename containing '#' no longer parses. Nothing in the repo, the tutorial suite
+        # or the BNGL-Models corpus has one, and a format with '#' comments could not
+        # round-trip such a name anyway.
+        for line in ('model: a#b.xml',
+                     'model = a#b.xml : d#e.exp',
+                     'experiment: e, data: d.exp, measurement_params: a#b.tsv'):
+            with pytest.raises(PybnfError):
+                parse.ploop([line + '\n'])
+
+    def test_both_spellings_of_a_model_mapping_agree_about_which_files_exist(self):
+        # The reason the fix had to land on the shared tokens rather than on one
+        # declaration's guard (ADR-0116's stated objection). Whatever the rule is, the
+        # new-era and legacy forms must reach the same verdict on the same filename.
+        for name in ('a#b.xml', 'a.xml'):
+            decl = legacy = None
+            try:
+                parse.ploop(['model: %s\n' % name])
+                decl = 'accepted'
+            except PybnfError:
+                decl = 'refused'
+            try:
+                parse.ploop(['model = %s : none\n' % name])
+                legacy = 'accepted'
+            except PybnfError:
+                legacy = 'refused'
+            assert decl == legacy, name
