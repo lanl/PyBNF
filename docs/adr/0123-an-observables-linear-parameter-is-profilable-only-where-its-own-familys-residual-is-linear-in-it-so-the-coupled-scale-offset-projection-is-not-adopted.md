@@ -52,7 +52,7 @@ Three self-checks carry the result, and all three passed:
 * The **reference optimum** re-scores at `-248.0524` against the recorded `-248.0692`, and the
   PEtab nominal point at `-198.207` against the recorded `-198.1017`; both differences are the
   σ-profiling and the bngsim build, not the harness.
-* The profiled score is **never worse than the searched score** at any of the 250-odd points
+* The profiled score is **never worse than the searched score** at any of the **279** points
   measured, which it cannot be, since the searched value is in the set being minimized over.
 
 ## Finding 1 — the scope in #572 is wrong in both directions
@@ -129,7 +129,7 @@ item 2 verbatim, "scale, offset and σ all profiled".
 | draws whose profiled `scale < 1e-6` | — | **39 / 76** |
 | Spearman rank correlation, searched ~ profiled | — | **0.035** |
 
-The reference optimum is untouched (`-248.0524 -> -248.0525`, gain `1.1e-4`) and so is the
+The reference optimum is untouched (`-248.054331 -> -248.054446`, gain `1.1e-4`) and so is the
 nominal point (`-198.207 -> -198.262`, gain `0.055`) — the envelope theorem doing exactly what
 #572 says it does. What moves is everything else: **the entire box collapses into a 1.16-unit
 band sitting on the no-dynamics score**, while the reference optimum stays 82 units below it.
