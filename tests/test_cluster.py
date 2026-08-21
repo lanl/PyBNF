@@ -10,6 +10,13 @@ per-node arithmetic, or the ``Client(...)``/``LocalCluster(...)`` call the
 config selects. (For glue with no math, "the right command/Client call was
 made" *is* the oracle — not the mock-the-world anti-pattern.)
 
+The srun launcher (#614, ADR-0122) is tested the same way: its oracle is the
+``dask scheduler`` / ``srun ... dask worker`` argument lists PyBNF constructs,
+the readiness polls it makes on the scheduler file and the worker count, and
+the branch dispatch that keeps it away from ``dask-ssh``. No SLURM and no dask
+is involved -- ``Popen``, ``time.sleep`` and the ``Client`` are substituted, and
+the scheduler file is a real file in ``tmp_path``.
+
 Substitution strategy (per dependency):
   * ``cluster.run`` (subprocess) — **mock**: a recorder returning a fake proc
     with canned ``.stdout`` bytes, or raising ``TimeoutExpired`` /
@@ -26,7 +33,9 @@ dask/distributed internals or a pinned dask version (the version-specific
 ``reinit_logging`` workaround is asserted *to be called*, not pinned), so they
 remain a valid safety net across the dask-unpinning upgrade.
 """
+import json
 import os
+import sys
 import types
 
 import pytest
@@ -41,7 +50,7 @@ from .context import cluster, printing
 # --------------------------------------------------------------------------- #
 def _cfg(**overrides):
     base = {'scheduler_file': None, 'scheduler_node': None, 'worker_nodes': None,
-            'parallel_count': None, 'cluster_type': None}
+            'parallel_count': None, 'cluster_type': None, 'output_dir': 'pybnf_output'}
     base.update(overrides)
     return types.SimpleNamespace(config=base)
 
@@ -55,12 +64,17 @@ class _FakeProc:
 
 
 class _FakeDaskProc:
-    """Stand-in for the dask-ssh Popen object: setup_cluster only calls poll()."""
+    """Stand-in for a launched Popen object: the bring-up paths only poll it, and
+    terminate it when they have to abandon a partly-built cluster."""
     def __init__(self, returncode=None):
         self._returncode = returncode
+        self.terminated = False
 
     def poll(self):
         return self._returncode
+
+    def terminate(self):
+        self.terminated = True
 
 
 class TestReadNodeNames:
@@ -141,6 +155,16 @@ class TestReadNodeNames:
         capitalization takes the SLURM branch (and runs scontrol)."""
         monkeypatch.setattr(cluster, 'run', lambda *a, **k: _FakeProc(b'a\nb\n'))
         assert cluster.Cluster.read_node_names(_cfg(cluster_type=ctype)) == ('a', 'a b')
+
+    @pytest.mark.parametrize('ctype', ['slurm-srun', 'slurm_srun', 'SLURM-SRUN', 'srun'])
+    def test_srun_cluster_types_read_the_same_slurm_node_list(self, monkeypatch, ctype):
+        """#614: the srun launcher is a SLURM cluster too -- it reads the node list
+        the same way and only starts the workers differently -- so every srun
+        spelling takes the SLURM branch and returns the same names. This also pins
+        the ordering hazard: ``re.match('slurm', 'slurm-srun')`` succeeds, so a
+        prefix test placed first would have swallowed ``slurm-srun`` silently."""
+        monkeypatch.setattr(cluster, 'run', lambda *a, **k: _FakeProc(b'n1\nn2\n'))
+        assert cluster.Cluster.read_node_names(_cfg(cluster_type=ctype)) == ('n1', 'n1 n2')
 
     def test_timeout_maps_to_pybnf_error(self, monkeypatch):
         """scontrol hanging past the 10s timeout (TimeoutExpired) is translated to
@@ -296,13 +320,30 @@ class TestSetupCluster:
 # --------------------------------------------------------------------------- #
 # __init__ — node-detection dispatch + Client-construction dispatch
 # --------------------------------------------------------------------------- #
+class _ProcStub:
+    """Stand-in for a process PyBNF started and later terminates."""
+    def __init__(self, returncode=None):
+        self.terminated = False
+        self._returncode = returncode
+
+    def poll(self):
+        return self._returncode
+
+    def terminate(self):
+        self.terminated = True
+
+
 class _ClientStub:
-    def __init__(self):
+    def __init__(self, workers=('tcp://n1:1',)):
         self.run_calls = []
         self.closed = False
+        self._workers = dict.fromkeys(workers, {})
 
     def run(self, *args, **kwargs):
         self.run_calls.append((args, kwargs))
+
+    def scheduler_info(self):
+        return {'workers': self._workers}
 
     def close(self):
         self.closed = True
@@ -321,6 +362,8 @@ class _Recorder:
         self.reinit_logging_calls = []
         self.read_calls = []
         self.setup_calls = []
+        self.srun_setup_calls = []   # (scheduler_file, out_dir, node_count, parallel_count)
+        self.srun_wait_calls = []    # (client, srun_proc, worker_log)
 
     def Client(self, *args, **kwargs):
         self.client_calls.append((args, kwargs))
@@ -333,7 +376,7 @@ class _Recorder:
         return self.last_lc
 
 
-def _patch_init(monkeypatch, read_returns=(None, None)):
+def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None):
     rec = _Recorder()
     monkeypatch.setattr(cluster, 'Client', rec.Client)
     monkeypatch.setattr(cluster, 'LocalCluster', rec.LocalCluster)
@@ -350,8 +393,21 @@ def _patch_init(monkeypatch, read_returns=(None, None)):
         rec.setup_calls.append((node_string, out_dir, parallel_count))
         return 'PROC'
 
+    def fake_setup_srun(scheduler_file, out_dir, node_count, parallel_count):
+        rec.srun_setup_calls.append((scheduler_file, out_dir, node_count, parallel_count))
+        return _ProcStub(), _ProcStub()
+
+    def fake_wait(client, srun_proc, worker_log, **kwargs):
+        rec.srun_wait_calls.append((client, srun_proc, worker_log))
+        if srun_raises:
+            raise srun_raises
+        return 1
+
     monkeypatch.setattr(cluster.Cluster, 'read_node_names', staticmethod(fake_read))
     monkeypatch.setattr(cluster.Cluster, 'setup_cluster', staticmethod(fake_setup))
+    monkeypatch.setattr(cluster.Cluster, 'setup_srun_cluster', staticmethod(fake_setup_srun))
+    monkeypatch.setattr(cluster.Cluster, 'wait_for_srun_workers', staticmethod(fake_wait))
+    monkeypatch.setattr(cluster.Cluster, 'require_slurm_allocation', staticmethod(lambda: None))
     return rec
 
 
@@ -535,12 +591,14 @@ class TestLocalClusterKwargs:
 # --------------------------------------------------------------------------- #
 # teardown — close the client, terminate the dask-ssh proc only if it exists
 # --------------------------------------------------------------------------- #
-class _ProcStub:
-    def __init__(self):
-        self.terminated = False
-
-    def terminate(self):
-        self.terminated = True
+def _torn_down(client=None, dask_proc=None, scheduler_proc=None, scheduler_file=None):
+    """A Cluster built by hand, carrying only the attributes teardown reads."""
+    c = object.__new__(cluster.Cluster)
+    c.client = client if client is not None else _ClientStub()
+    c._dask_proc = dask_proc
+    c._scheduler_proc = scheduler_proc
+    c._own_scheduler_file = scheduler_file
+    return c
 
 
 class TestTeardown:
@@ -548,23 +606,604 @@ class TestTeardown:
     def test_closes_client_and_terminates_proc(self):
         """With a live dask-ssh proc, teardown closes the client and terminates
         the proc."""
-        c = object.__new__(cluster.Cluster)
-        c.client = _ClientStub()
-        c._dask_proc = _ProcStub()
+        proc = _ProcStub()
+        c = _torn_down(dask_proc=proc)
 
         c.teardown()
 
         assert c.client.closed is True
-        assert c._dask_proc.terminated is True
+        assert proc.terminated is True
 
     def test_no_proc_only_closes_client(self):
         """When _dask_proc is None (a local client with no dask-ssh subprocess),
         teardown closes the client and must NOT attempt to terminate None — an
         unconditional terminate would raise AttributeError here."""
-        c = object.__new__(cluster.Cluster)
-        c.client = _ClientStub()
-        c._dask_proc = None
+        c = _torn_down()
 
         c.teardown()  # must not raise
 
         assert c.client.closed is True
+
+    def test_srun_teardown_stops_workers_then_scheduler_and_removes_the_file(self, tmp_path):
+        """#614: under the srun launcher PyBNF owns both processes and the
+        scheduler file, so teardown terminates both and deletes the file. Order
+        matters -- srun (the workers) is signalled before the scheduler they talk
+        to -- and the file must go, since a connection file naming a scheduler
+        that is shutting down is exactly what the next run would mistake for a
+        live cluster."""
+        order = []
+        sched_file = tmp_path / 'dask_scheduler.json'
+        sched_file.write_text('{"address": "tcp://n1:8786"}')
+        srun_proc, scheduler_proc = _ProcStub(), _ProcStub()
+        srun_proc.terminate = lambda: order.append('workers')
+        scheduler_proc.terminate = lambda: order.append('scheduler')
+        c = _torn_down(dask_proc=srun_proc, scheduler_proc=scheduler_proc,
+                       scheduler_file=str(sched_file))
+
+        c.teardown()
+
+        assert c.client.closed is True
+        assert order == ['workers', 'scheduler']
+        assert not sched_file.exists()
+
+    def test_teardown_leaves_a_scheduler_file_pybnf_did_not_write(self, tmp_path):
+        """A ``scheduler_file`` run attaches to a cluster someone else brought up:
+        PyBNF neither started those processes nor wrote that file, so teardown
+        must not delete it (_own_scheduler_file is None on that path)."""
+        sched_file = tmp_path / 'their_cluster.json'
+        sched_file.write_text('{"address": "tcp://n1:8786"}')
+        c = _torn_down()
+
+        c.teardown()
+
+        assert sched_file.exists()
+
+    def test_stop_own_processes_is_idempotent(self, tmp_path):
+        """stop_own_processes runs both from a failed bring-up and from teardown,
+        so calling it twice must not terminate an already-terminated process or
+        fail on the file it just deleted."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        sched_file.write_text('{}')
+        srun_proc, scheduler_proc = _ProcStub(), _ProcStub()
+        c = _torn_down(dask_proc=srun_proc, scheduler_proc=scheduler_proc,
+                       scheduler_file=str(sched_file))
+
+        c.stop_own_processes()
+        c.stop_own_processes()  # must not raise
+
+        assert (srun_proc.terminated, scheduler_proc.terminated) == (True, True)
+        assert (c._dask_proc, c._scheduler_proc, c._own_scheduler_file) == (None, None, None)
+
+
+# --------------------------------------------------------------------------- #
+# The srun launcher (#614, ADR-0122)
+# --------------------------------------------------------------------------- #
+class TestUsesSrun:
+    """Which cluster_type values select the srun launcher."""
+
+    @pytest.mark.parametrize('ctype', ['slurm-srun', 'slurm_srun', 'slurmsrun', 'srun',
+                                       'SLURM-SRUN', 'Slurm_Srun', '  slurm-srun  '])
+    def test_accepted_spellings(self, ctype):
+        """The documented spelling is ``slurm-srun``; the underscore, run-together
+        and bare-``srun`` forms are accepted too, case-insensitively and with
+        surrounding whitespace stripped, so a reasonable guess is not answered
+        with "Unknown cluster type"."""
+        assert cluster.uses_srun(ctype) is True
+
+    @pytest.mark.parametrize('ctype', [None, '', 'slurm', 'SLURM', 'torque', 'pbs',
+                                       'srunny', 'slurm srun', 'srun-slurm'])
+    def test_rejected_spellings(self, ctype):
+        """Everything else is not the srun launcher. ``slurm`` in particular must
+        stay on the SSH launcher (matched here by fullmatch, so a value that
+        merely *starts* with a recognized word does not select it)."""
+        assert cluster.uses_srun(ctype) is False
+
+
+class TestRequireSlurmAllocation:
+
+    def test_allocation_present_is_accepted(self, monkeypatch):
+        """Inside an allocation, the check passes silently."""
+        monkeypatch.setenv('SLURM_JOB_ID', '12345')
+        cluster.Cluster.require_slurm_allocation()  # must not raise
+
+    def test_legacy_variable_is_accepted(self, monkeypatch):
+        """Older SLURM exports the allocation as $SLURM_JOBID; either name counts."""
+        monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+        monkeypatch.setenv('SLURM_JOBID', '12345')
+        cluster.Cluster.require_slurm_allocation()  # must not raise
+
+    def test_no_allocation_is_refused_with_a_remedy(self, monkeypatch):
+        """Outside an allocation, srun does not *place* a task -- it submits a job
+        and waits for one, which would read as PyBNF hanging with no output. That
+        is refused up front, and the message says where to start PyBNF instead."""
+        monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+        monkeypatch.delenv('SLURM_JOBID', raising=False)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.require_slurm_allocation()
+        assert 'SLURM_JOB_ID' in str(exc.value)
+        # The remedy is a hint, so it reaches the user's message without displacing
+        # the diagnosis (#527): both are present in what gets printed.
+        assert 'SLURM_JOB_ID' in exc.value.message
+        assert 'salloc' in exc.value.message
+
+
+class TestSrunSchedulerFile:
+
+    def test_defaults_into_the_output_directory(self):
+        """With no scheduler_file set, PyBNF writes the connection file into the
+        output directory -- which a cluster run already requires to be on the
+        shared filesystem the workers read. Absolute, so it means the same thing
+        in the srun command as it does here."""
+        path = cluster.Cluster.srun_scheduler_file(_cfg(output_dir='out'))
+        assert path == os.path.abspath(os.path.join('out', 'dask_scheduler.json'))
+
+    def test_scheduler_file_chooses_where_it_is_written(self):
+        """Under this launcher the scheduler file is an *output* (PyBNF starts the
+        scheduler that writes it), so scheduler_file selects the path rather than
+        naming a cluster to attach to."""
+        path = cluster.Cluster.srun_scheduler_file(
+            _cfg(scheduler_file='/shared/mine.json', output_dir='out'))
+        assert path == '/shared/mine.json'
+
+
+class TestCpusPerNode:
+
+    def test_reads_what_slurm_granted(self, monkeypatch):
+        """$SLURM_CPUS_ON_NODE is what the *allocation* granted, which is the
+        number the launcher can actually ask SLURM for."""
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '12')
+        monkeypatch.setattr(cluster, 'cpu_count', lambda: 64)
+        assert cluster.Cluster.cpus_per_node() == 12
+
+    @pytest.mark.parametrize('value', [None, '', 'many', '0', '-4'])
+    def test_falls_back_to_the_machine_core_count(self, monkeypatch, value):
+        """With nothing usable in the environment, fall back to the machine's own
+        core count (the number the SSH launcher uses unconditionally)."""
+        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
+        if value is not None:
+            monkeypatch.setenv('SLURM_CPUS_ON_NODE', value)
+        monkeypatch.setattr(cluster, 'cpu_count', lambda: 64)
+        assert cluster.Cluster.cpus_per_node() == 64
+
+
+class TestSrunWorkerCommand:
+
+    def _patch(self, monkeypatch, granted=8):
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', str(granted))
+
+    def test_default_is_one_worker_per_granted_cpu(self, monkeypatch):
+        """parallel_count unset ⇒ one single-threaded worker per CPU the job holds
+        on a node, one srun task per node, and that task given all the CPUs its
+        workers need. Oracle: the exact argument list (a literal argv list run
+        with no shell, ROB-3), including the interpreter running the workers --
+        this process's own, not whatever ``dask`` the remote PATH resolves to."""
+        self._patch(monkeypatch, granted=8)
+        cmd = cluster.Cluster.srun_worker_command('/shared/s.json', 3, parallel_count=None)
+        assert cmd == ['srun', '--nodes', '3', '--ntasks', '3', '--ntasks-per-node', '1',
+                       '--cpus-per-task', '8', '--label',
+                       sys.executable, '-m', 'dask', 'worker',
+                       '--scheduler-file', '/shared/s.json',
+                       '--nworkers', '8', '--nthreads', '1']
+
+    def test_parallel_count_divides_per_node_with_ceil(self, monkeypatch):
+        """parallel_count is a total over all nodes, divided the same way the SSH
+        launcher divides it: ceil(5/3) = 2 workers per node (floor would give 1)."""
+        self._patch(monkeypatch, granted=8)
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 3, parallel_count=5)
+        assert cmd[cmd.index('--nworkers') + 1] == '2'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '2'
+
+    def test_cpus_requested_match_the_workers_started(self, monkeypatch):
+        """The CPU request is not decoration: with task/cgroup binding, a task that
+        took the default single CPU would confine every worker it forks to that one
+        CPU and quietly serialize the node. So --cpus-per-task tracks --nworkers."""
+        self._patch(monkeypatch, granted=16)
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 2, parallel_count=8)
+        assert cmd[cmd.index('--nworkers') + 1] == '4'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '4'
+
+    def test_oversubscription_caps_the_cpu_request_not_the_worker_count(self, monkeypatch):
+        """A parallel_count above what the job holds is the user deliberately
+        oversubscribing, which the SSH launcher has always allowed. SLURM refuses a
+        request for more CPUs than the job holds, so the *request* is capped at the
+        allocation while the requested number of workers still starts."""
+        self._patch(monkeypatch, granted=4)
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 1, parallel_count=16)
+        assert cmd[cmd.index('--nworkers') + 1] == '16'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '4'
+
+    def test_never_asks_for_zero_workers(self, monkeypatch):
+        """parallel_count = 0 is not validated anywhere upstream; ``--nworkers 0``
+        would start a cluster that can never run a job, so the floor is one."""
+        self._patch(monkeypatch, granted=4)
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 2, parallel_count=0)
+        assert cmd[cmd.index('--nworkers') + 1] == '1'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '1'
+
+    def test_workers_are_single_threaded(self, monkeypatch):
+        """Same policy as every other worker PyBNF starts (#526, ADR-0089): the
+        simulation backends hold process-wide state that is not thread-safe, so a
+        worker process runs one job at a time."""
+        self._patch(monkeypatch)
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 2)
+        assert cmd[cmd.index('--nthreads') + 1] == '1'
+
+    def test_scheduler_file_is_one_literal_argument(self, monkeypatch):
+        """ROB-3: the path reaches srun as a single literal argv entry, so a path
+        carrying shell metacharacters is never interpreted by a shell."""
+        self._patch(monkeypatch)
+        cmd = cluster.Cluster.srun_worker_command('/tmp/a b$(whoami).json', 1)
+        assert cmd[cmd.index('--scheduler-file') + 1] == '/tmp/a b$(whoami).json'
+
+
+class _SchedulerSpy:
+    """A fake ``Popen`` for the srun launcher: records each command, and optionally
+    writes the scheduler file the way ``dask scheduler`` would."""
+
+    def __init__(self, scheduler_file=None, address='tcp://n1:8786', returncode=None,
+                 write_after=0, log_text=b''):
+        self.calls = []                       # (cmd, kwargs) per launch
+        self.procs = []
+        self._scheduler_file = scheduler_file
+        self._address = address
+        self._returncode = returncode
+        self._write_after = write_after       # polls to wait before the file appears
+        self._log_text = log_text
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        if self._log_text:
+            kwargs['stdout'].write(self._log_text)
+            kwargs['stdout'].flush()
+        proc = _FakeDaskProc(self._returncode if len(self.calls) == 1 else None)
+        self.procs.append(proc)
+        if self._scheduler_file is not None and len(self.calls) == 1:
+            self._sleeps = 0
+        return proc
+
+    def sleep(self, _seconds):
+        """Stands in for time.sleep: the scheduler file appears after N polls."""
+        self._sleeps = getattr(self, '_sleeps', 0) + 1
+        if self._scheduler_file is not None and self._sleeps >= self._write_after:
+            with open(self._scheduler_file, 'w') as f:
+                json.dump({'type': 'Scheduler', 'address': self._address}, f)
+
+
+class TestWaitForSchedulerFile:
+
+    def test_returns_the_address_once_the_file_is_complete(self, monkeypatch, tmp_path):
+        """The scheduler's readiness signal is its connection file: the wait returns
+        the address the file names, so the caller can log where the cluster is."""
+        sched_file = tmp_path / 's.json'
+        spy = _SchedulerSpy(str(sched_file), address='tcp://10.0.0.1:8786', write_after=2)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        address = cluster.Cluster.wait_for_scheduler_file(
+            str(sched_file), _FakeDaskProc(), str(tmp_path / 'sched.log'))
+        assert address == 'tcp://10.0.0.1:8786'
+
+    def test_a_half_written_file_is_not_treated_as_ready(self, monkeypatch, tmp_path):
+        """dask writes the file in place rather than renaming it into place, so a
+        reader can catch it half-written. Requiring it to parse as JSON carrying an
+        address is what makes its appearance a readiness signal and not a race:
+        here the first poll sees a truncated file and the wait continues."""
+        sched_file = tmp_path / 's.json'
+        sched_file.write_text('{"type": "Sched')          # torn mid-write
+        polls = []
+
+        def fake_sleep(_seconds):
+            polls.append(1)
+            if len(polls) == 2:
+                sched_file.write_text('{"address": "tcp://n2:8786"}')
+
+        monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
+        address = cluster.Cluster.wait_for_scheduler_file(
+            str(sched_file), _FakeDaskProc(), str(tmp_path / 'sched.log'))
+        assert address == 'tcp://n2:8786'
+        assert len(polls) == 2                            # it kept waiting rather than failing
+
+    def test_a_dead_scheduler_is_reported_immediately_with_its_log(self, monkeypatch, tmp_path):
+        """A scheduler that exits (an occupied port, a bad interpreter) is reported
+        as soon as it exits rather than after the full timeout, and its log is
+        quoted -- that text is the only place the reason exists."""
+        log = tmp_path / 'sched.log'
+        log.write_text('OSError: [Errno 48] Address already in use')
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.wait_for_scheduler_file(
+                str(tmp_path / 'absent.json'), _FakeDaskProc(returncode=1), str(log))
+        assert 'code 1' in str(exc.value)
+        assert 'Address already in use' in str(exc.value)
+
+    def test_a_file_that_never_appears_times_out_naming_the_log(self, monkeypatch, tmp_path):
+        """A scheduler that stays alive but never writes the file cannot be waited
+        on forever; the error names the file and the log to read."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.wait_for_scheduler_file(
+                str(tmp_path / 'absent.json'), _FakeDaskProc(), str(tmp_path / 'sched.log'),
+                timeout=1.)
+        assert 'absent.json' in str(exc.value)
+        assert 'sched.log' in str(exc.value)
+
+
+class TestWaitForSrunWorkers:
+
+    def test_returns_once_a_worker_registers(self, monkeypatch):
+        """The readiness signal for the workers is a worker registering with the
+        scheduler -- not srun having been launched, which says nothing."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        n = cluster.Cluster.wait_for_srun_workers(
+            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), _FakeDaskProc(), '/log')
+        assert n == 2
+
+    def test_waits_while_the_cluster_is_still_empty(self, monkeypatch):
+        """A scheduler with no workers yet is not an error: the poll continues
+        until the workers arrive."""
+        client = _ClientStub(workers=())
+        polls = []
+
+        def fake_sleep(_seconds):
+            polls.append(1)
+            if len(polls) == 3:
+                client._workers = {'tcp://n1:1': {}}
+
+        monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
+        assert cluster.Cluster.wait_for_srun_workers(client, _FakeDaskProc(), '/log') == 1
+        assert len(polls) == 3
+
+    def test_a_transient_scheduler_error_is_not_fatal(self, monkeypatch):
+        """A failed round-trip to the scheduler during bring-up is a hiccup, not a
+        verdict: it counts as "no workers yet" and the poll continues."""
+        class _FlakyClient(_ClientStub):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+
+            def scheduler_info(self):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise OSError('connection reset')
+                return {'workers': {'tcp://n1:1': {}}}
+
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        assert cluster.Cluster.wait_for_srun_workers(_FlakyClient(), _FakeDaskProc(), '/log') == 1
+
+    def test_srun_exiting_early_is_reported_with_its_log(self, monkeypatch, tmp_path):
+        """srun exiting before any worker registered means the placement failed --
+        a bad flag, a request larger than the allocation. Reported at once, quoting
+        srun's own message rather than waiting out the timeout."""
+        log = tmp_path / 'workers.log'
+        log.write_text('srun: error: Unable to allocate resources')
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.wait_for_srun_workers(
+                _ClientStub(workers=()), _FakeDaskProc(returncode=1), str(log))
+        assert 'code 1' in str(exc.value)
+        assert 'Unable to allocate resources' in str(exc.value)
+
+    def test_no_worker_in_time_names_the_log_and_the_step_hazard(self, monkeypatch, tmp_path):
+        """srun still running with no worker registered is the shape of a queued
+        job step: connecting to our own scheduler succeeded, so nothing else would
+        report it, and the fit would submit jobs no one takes. The message points
+        at srun's own log and at the likely cause."""
+        log = tmp_path / 'workers.log'
+        log.write_text('srun: Job step creation temporarily disabled, retrying')
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.wait_for_srun_workers(
+                _ClientStub(workers=()), _FakeDaskProc(), str(log), timeout=1.)
+        assert 'srun: Job step creation' in str(exc.value)   # srun's own words, in the log
+        assert 'workers.log' in exc.value.message            # ... and where to read more
+        assert 'job step' in exc.value.message.lower()
+
+
+class TestSetupSrunCluster:
+
+    def test_starts_the_scheduler_here_then_the_workers_with_srun(self, monkeypatch, tmp_path):
+        """The whole point of the launcher: two commands, neither of which logs in
+        anywhere. The scheduler runs on this node as an ordinary subprocess and is
+        told to write the connection file; the workers are one srun task per node
+        reading that same file. Both are argv lists run with no shell, and both
+        write to a named log in the output directory (an undrained pipe would
+        deadlock a process that outlives this call)."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+
+        scheduler_proc, srun_proc = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), 2, parallel_count=None)
+
+        (sched_cmd, sched_kwargs), (srun_cmd, srun_kwargs) = spy.calls
+        assert sched_cmd == [sys.executable, '-m', 'dask', 'scheduler',
+                             '--scheduler-file', str(sched_file)]
+        assert srun_cmd[0] == 'srun'
+        assert srun_cmd[srun_cmd.index('--scheduler-file') + 1] == str(sched_file)
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '4'
+        for kwargs in (sched_kwargs, srun_kwargs):
+            assert kwargs.get('shell', False) is False
+            assert kwargs['stderr'] is cluster.STDOUT
+            assert hasattr(kwargs['stdout'], 'write')
+        assert (tmp_path / 'dask_scheduler.log').exists()
+        assert (tmp_path / 'dask_workers.log').exists()
+        assert (scheduler_proc, srun_proc) == (spy.procs[0], spy.procs[1])
+
+    def test_the_workers_are_started_only_after_the_scheduler_is_ready(self, monkeypatch, tmp_path):
+        """Ordering is load-bearing: a worker started before the scheduler file
+        exists has nothing to read. srun is launched only after the wait returns."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=3)
+        launched_at = []
+
+        def fake_sleep(seconds):
+            launched_at.append(len(spy.calls))
+            spy.sleep(seconds)
+
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
+        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), 1)
+
+        assert launched_at == [1, 1, 1]      # only the scheduler was running while waiting
+        assert len(spy.calls) == 2
+
+    def test_a_stale_scheduler_file_is_removed_before_the_scheduler_starts(self, monkeypatch, tmp_path):
+        """A file left by an earlier run names a scheduler that is no longer
+        listening. It is removed first, so the file's reappearance is proof that
+        *this* scheduler started -- otherwise the wait would return instantly and
+        the client would connect to nothing."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        sched_file.write_text('{"address": "tcp://dead:8786"}')
+        spy = _SchedulerSpy(str(sched_file), address='tcp://live:8786', write_after=1)
+        seen = []
+        monkeypatch.setattr(cluster, 'Popen',
+                            lambda cmd, **k: seen.append(sched_file.exists()) or spy(cmd, **k))
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+
+        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), 1)
+
+        assert seen[0] is False                             # gone before the scheduler started
+        assert json.loads(sched_file.read_text())['address'] == 'tcp://live:8786'
+
+    def test_a_scheduler_that_dies_takes_no_srun_with_it(self, monkeypatch, tmp_path):
+        """If the scheduler never comes up, the workers are not started at all --
+        and the dead scheduler process is terminated rather than left behind by a
+        constructor that raised before there was a Cluster to tear down."""
+        spy = _SchedulerSpy(returncode=1, log_text=b'Address already in use')
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+
+        with pytest.raises(printing.PybnfError, match='scheduler exited'):
+            cluster.Cluster.setup_srun_cluster(
+                str(tmp_path / 'dask_scheduler.json'), str(tmp_path), 2)
+
+        assert len(spy.calls) == 1                          # srun was never launched
+        assert spy.procs[0].terminated is True
+
+    def test_a_missing_scheduler_file_directory_is_refused_up_front(self, tmp_path):
+        """A scheduler file in a directory that does not exist would fail inside
+        dask, as a traceback in a log file nobody is watching. Checked here, where
+        it can be a configuration error naming the path."""
+        with pytest.raises(printing.PybnfError, match='scheduler file .* does not exist'):
+            cluster.Cluster.setup_srun_cluster(
+                str(tmp_path / 'no_such_dir' / 's.json'), str(tmp_path), 1)
+
+    def test_a_missing_log_directory_is_refused_up_front(self, tmp_path):
+        """Likewise for the directory the logs go in: opening that file is the first
+        thing the bring-up does, and a bare OSError from it would reach the user as
+        "an unknown error ... please report this bug"."""
+        with pytest.raises(printing.PybnfError, match='logs .* does not exist'):
+            cluster.Cluster.setup_srun_cluster(
+                str(tmp_path / 's.json'), str(tmp_path / 'no_such_dir'), 1)
+
+
+class TestInitSrunDispatch:
+
+    def _cfg_srun(self, **overrides):
+        return _cfg(cluster_type='slurm-srun', **overrides)
+
+    def test_srun_type_never_reaches_dask_ssh(self, monkeypatch):
+        """#614's whole point: with the srun launcher selected, the SSH bring-up
+        must not run. (``re.match('slurm', 'slurm-srun')`` succeeds, so a dispatch
+        that tested the SSH branch first would have started dask-ssh here and
+        failed the login this issue is about.)"""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2'))
+        c = _build(self._cfg_srun())
+
+        assert rec.setup_calls == []                        # no dask-ssh
+        assert len(rec.srun_setup_calls) == 1
+        assert c.local is False
+
+    def test_brings_up_srun_with_the_node_count_and_connects_by_file(self, monkeypatch):
+        """The srun bring-up gets the scheduler-file path, the output directory,
+        the *number* of nodes (all srun needs -- it places the workers itself) and
+        parallel_count; the client then connects through that file."""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2 n3'))
+        c = _build(self._cfg_srun(output_dir='out', parallel_count=12))
+
+        expected_file = os.path.abspath(os.path.join('out', 'dask_scheduler.json'))
+        assert rec.srun_setup_calls == [(expected_file, 'out', 3, 12)]
+        assert rec.client_calls == [((), {'scheduler_file': expected_file})]
+        assert c._own_scheduler_file == expected_file
+
+    def test_scheduler_file_chooses_the_path_rather_than_an_existing_cluster(self, monkeypatch):
+        """With the srun launcher, scheduler_file says *where PyBNF writes*; the
+        cluster is still brought up. (Without the launcher the same key means the
+        opposite -- attach to a cluster someone else started -- and that path must
+        keep starting nothing.)"""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1'))
+        _build(self._cfg_srun(scheduler_file='/shared/mine.json'))
+        assert rec.srun_setup_calls[0][0] == '/shared/mine.json'
+        assert rec.client_calls == [((), {'scheduler_file': '/shared/mine.json'})]
+
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1'))
+        c = _build(_cfg(scheduler_file='/shared/theirs.json'))
+        assert rec.srun_setup_calls == []
+        assert c._scheduler_proc is None
+
+    def test_the_allocation_is_checked_before_anything_is_started(self, monkeypatch):
+        """The refusal outside an allocation is a precondition, not a diagnosis
+        after the fact: nothing is launched and no client is built."""
+        real_check = cluster.Cluster.require_slurm_allocation
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1'))
+        monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+        monkeypatch.delenv('SLURM_JOBID', raising=False)
+        monkeypatch.setattr(cluster.Cluster, 'require_slurm_allocation', staticmethod(real_check))
+        with pytest.raises(printing.PybnfError, match='SLURM_JOB_ID'):
+            _build(self._cfg_srun())
+        assert rec.srun_setup_calls == []
+        assert rec.client_calls == []
+
+    def test_waits_for_the_workers_before_returning(self, monkeypatch):
+        """Handing back a client whose cluster has no workers would turn a failed
+        placement into a fit that submits jobs and never gets one back, so the
+        constructor does not return until a worker has registered."""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2'))
+        c = _build(self._cfg_srun(output_dir='out'))
+
+        assert len(rec.srun_wait_calls) == 1
+        client, srun_proc, worker_log = rec.srun_wait_calls[0]
+        assert client is rec.last_client
+        assert srun_proc is c._dask_proc
+        assert worker_log == os.path.join('out', 'dask_workers.log')
+
+    def test_a_failed_worker_wait_stops_what_it_started(self, monkeypatch):
+        """A constructor that raises never becomes a Cluster, so no one else can
+        tear it down: the scheduler and srun processes it started are stopped on
+        the way out rather than left running in the allocation."""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1'),
+                          srun_raises=printing.PybnfError('no workers'))
+        started = []
+        faked_setup = cluster.Cluster.setup_srun_cluster   # the recorder _patch_init installed
+
+        def spy_setup(*args):
+            procs = faked_setup(*args)
+            started.extend(procs)
+            return procs
+
+        monkeypatch.setattr(cluster.Cluster, 'setup_srun_cluster', staticmethod(spy_setup))
+        with pytest.raises(printing.PybnfError, match='no workers'):
+            _build(self._cfg_srun())
+
+        assert [p.terminated for p in started] == [True, True]
+
+    def test_node_keys_are_ignored_with_a_warning(self, monkeypatch, caplog):
+        """scheduler_node / worker_nodes name machines to log in to, which this
+        launcher never does. They are ignored -- but loudly, since a user who set
+        them is expecting them to decide something."""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2'))
+        with caplog.at_level('WARNING'):
+            _build(self._cfg_srun(scheduler_node='head', worker_nodes=['w1', 'w2']))
+
+        assert rec.setup_calls == []                       # no dask-ssh to those nodes
+        assert rec.client_calls[0][1].get('scheduler_file')  # connected by file, not to head:8786
+        assert any('ignored' in r.message for r in caplog.records)
+
+    def test_no_logging_broadcast_to_srun_workers(self, monkeypatch):
+        """Like every other remote path, the srun workers are not local processes
+        sharing this run's log file; init_logging is broadcast only to workers a
+        LocalCluster spawned here."""
+        rec = _patch_init(monkeypatch, read_returns=('n1', 'n1'))
+        _build(self._cfg_srun())
+        assert rec.last_client.run_calls == []
+        assert rec.reinit_logging_calls == [(('pf', False, 'INFO'), {})]

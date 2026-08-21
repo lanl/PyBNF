@@ -128,9 +128,13 @@ def _build_arg_parser():
     parser.add_argument('-o', '--overwrite', action='store_true',
                         help='automatically overwrites existing folders if necessary')
     parser.add_argument('-t', '--cluster_type', action='store',
-                        help='optional string denoting the type of cluster')
+                        help='optional string denoting the type of cluster: "slurm" to start workers on the '
+                             'allocated nodes over SSH, or "slurm-srun" to start them with srun, which needs no '
+                             'login and so works on clusters that use host-based or Kerberos SSH')
     parser.add_argument('-s', '--scheduler_file', action='store',
-                        help='optional file on shared filesystem to get scheduler location, should be same as passed to dask-scheduler and dask-worker.')
+                        help='optional file on shared filesystem to get scheduler location, should be the same as '
+                             'the one passed to the dask scheduler and workers. With cluster_type "slurm-srun", '
+                             'PyBNF starts the scheduler itself and this instead chooses where it writes the file.')
     parser.add_argument('-r', '--resume', action='store', nargs='?', const=0, default=None, type=int,
                         metavar='iterations',
                         help='automatically resume the previously stopped fitting run; '

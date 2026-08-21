@@ -39,7 +39,43 @@ The above instructions assume that PyBNF can access all allocated nodes via SSH.
 
 To confirm that SSH keys are set up correctly, make sure that you are able to SSH into all allocated nodes without needing to enter a password.
 
-If SSH access is not possible on your cluster, you will have to use `Manual configuration with Dask`_.
+Setting up SSH keys does not help on every cluster. If your cluster's nodes authenticate to each other by host-based or Kerberos SSH, use `Starting workers without SSH`_ instead; if SSH access is not possible for some other reason, you can also fall back on `Manual configuration with Dask`_.
+
+.. _srun:
+
+Starting workers without SSH
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``-t slurm`` starts the workers by logging in to each allocated node over SSH, using dask's ``dask-ssh`` command. That command logs in with the paramiko library, which offers only two ways of authenticating: a public key, or a password. Clusters commonly use two others:
+
+* **host-based authentication**, where the machines are configured to trust each other and no user credential is involved. paramiko does not support this at all.
+* **Kerberos (GSSAPI)**. paramiko can do this, but dask never turns it on.
+
+On a cluster that relies on either one, the login fails no matter what you configure -- even though ``ssh`` from the same shell succeeds -- and setting up SSH keys cannot fix it.
+
+Pass ``-t slurm-srun`` instead (or set ``cluster_type = slurm-srun``) to start the workers with SLURM's own ``srun`` command, which needs no credentials at all: the scheduler has already granted the allocation. PyBNF then
+
+1. starts a Dask scheduler on the node PyBNF itself is running on, and has it write a connection file -- ``dask_scheduler.json`` in the output directory, or wherever ``scheduler_file`` points;
+2. runs ``srun`` to start one Dask worker process group on each node of the allocation, each reading that file; and
+3. connects through that same file, waiting until at least one worker has registered before the fit starts.
+
+Run PyBNF from the shell that holds the allocation: the one ``salloc`` opened, or your ``sbatch`` script. A separate login into one of the allocated nodes does not inherit the allocation, and ``srun`` would then queue a new job rather than start the workers; PyBNF refuses to start in that case instead of appearing to hang. For the same reason, PyBNF should be the only job step running in the allocation, since a concurrent second ``srun`` can leave the workers waiting for resources.
+
+An example batch script, the ``-t slurm`` one with a single word changed::
+
+    #!/bin/bash
+    #SBATCH --nodes=4
+    #SBATCH --mincpus=32
+    #SBATCH --time=1-00:00:00
+    #SBATCH --job-name=pybnf
+
+    # Your cluster may require loading a module to get the right Python environment.
+    module load anaconda/Anaconda3
+
+    pybnf -c tcr-ss.conf -t slurm-srun -o
+
+By default, each node runs one single-threaded worker process per CPU the job was granted on that node. Setting ``parallel_count`` overrides that with a total number of worker processes over all nodes, divided evenly among them.
+
+Two log files are written to the output directory: ``dask_scheduler.log`` and ``dask_workers.log``. The second is where ``srun`` reports anything that went wrong with placing the workers, and PyBNF quotes from it in the error message if no worker ever registers.
 
 
 TORQUE/PBS
