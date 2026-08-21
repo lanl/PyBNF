@@ -14,7 +14,9 @@ authenticate to each other by host-based or Kerberos (GSSAPI) SSH: ``dask ssh`` 
 with paramiko, which offers only public-key and password authentication -- it has no
 host-based support and dask never enables its GSSAPI support -- so on such a cluster the
 login fails no matter what the user configures, and no amount of ``ssh-keygen`` helps. See
-docs/adr/0122 for the full argument.
+docs/adr/0122 for the full argument. When that login is what fails, the SSH launcher says
+so, quotes what ``dask ssh`` said, and names both ways of running that need no login
+(#618) -- the failure ends the run, so the message is the whole of what the user gets.
 
 Both launchers size their default worker pool from what the *job* was granted rather than
 from how big the machine is, and record which number they used and where it came from
@@ -26,7 +28,7 @@ from .printing import PybnfError
 
 from importlib.metadata import entry_points
 from importlib.util import find_spec
-from subprocess import run, TimeoutExpired, Popen, PIPE, CalledProcessError, DEVNULL, STDOUT
+from subprocess import run, TimeoutExpired, Popen, PIPE, CalledProcessError, STDOUT
 from tempfile import TemporaryFile
 
 import json
@@ -95,6 +97,25 @@ READINESS_POLL_INTERVAL = 0.25
 # Python than the one running the fit. ``-m`` makes the environment that runs the workers
 # the same one that runs PyBNF, by construction.
 DASK_CLI = [sys.executable, '-m', 'dask']
+
+
+# What a failed SSH bring-up says when the *login* is what failed (#618). The words can
+# come from either half of what PyBNF captures: dask prints its own account of the failure
+# ("SSH reported this exception: <the paramiko exception>") and lets paramiko's traceback
+# fall to stderr, and both now land in one file. This is the vocabulary of a refused
+# credential only -- "Authentication failed", "No authentication methods available", an
+# encrypted key (PasswordRequiredException), a host key that did not match. Deliberately
+# not dask's own "SSH connection error" heading, which it prints for a machine that could
+# not be reached at all just as readily: a network failure is a different problem, and
+# answering it with advice about keys and passwords would send the user the wrong way.
+SSH_LOGIN_FAILURE_RE = re.compile(
+    r'authentication|SSHException|permission denied|publickey|password|host ?key',
+    flags=re.IGNORECASE)
+
+# Terminal colour codes, which dask wraps its failure lines in. They have to come out
+# before that text is quoted into a log file or an error message, where they would
+# otherwise appear as literal escape characters.
+ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
 
 def check_dask_subcommand(subcommand):
@@ -355,6 +376,9 @@ class Cluster:
             nodes, divided evenly among them. If None, one worker per CPU the job was
             granted on a node (``cpus_per_node``)
         :return: subprocess.Popen
+        :raises PybnfError: if ``dask ssh`` has already exited when the bring-up wait is
+            over -- quoting everything it said, naming the login as the likely cause when
+            it looks like one, and naming the ways of running that need no login (#618)
         """
         # Ask before launching, so a dask that cannot do this reads as a configuration
         # error rather than as a FileNotFoundError traceback from Popen (#615).
@@ -389,25 +413,152 @@ class Cluster:
                         % (n_per_node, len(nodes), parallel_count))
             dask_ssh_cmd = [*DASK_CLI, 'ssh', *nodes,
                             '--log-directory', out_dir, '--nworkers', str(n_per_node), '--nthreads', '1']
-        # Capture stderr to a temp file rather than a PIPE: dask ssh stays
-        # running for the whole fit, and an undrained PIPE would deadlock once
-        # its buffer fills. A regular file lets us surface an early bring-up
-        # failure below without that risk.
-        dask_ssh_err = TemporaryFile()
-        dask_ssh_proc = Popen(dask_ssh_cmd, stdout=DEVNULL, stderr=dask_ssh_err)
+        # Capture what dask ssh says to a temp file rather than to a PIPE: dask ssh stays
+        # running for the whole fit, and an undrained PIPE would deadlock once its buffer
+        # fills. A regular file lets us surface an early bring-up failure below without
+        # that risk.
+        #
+        # stdout is captured too rather than discarded (#618). When a login fails, dask
+        # prints its own account of it -- which node it was connecting to, and the
+        # exception paramiko raised -- with ``print``, and only the traceback falls to
+        # stderr. Sending stdout to DEVNULL therefore threw away the half of the output
+        # that names the cause, which is how a refused login could reach the user as a
+        # bare exit code with nothing else attached. Keeping the stream costs nothing for
+        # the rest of a healthy run: ``--log-directory`` above makes dask redirect each
+        # remote command's output into a file on its own node, so the SSH channels carry
+        # almost nothing back.
+        #
+        # ``PYTHONUNBUFFERED`` is what makes capturing stdout worth anything. dask ends a
+        # failed bring-up with ``os._exit(1)``, which does not flush Python's buffers, and
+        # stdout writing to a file is block-buffered -- so its account of the failure, a
+        # few hundred bytes short of the buffer's 8 KB, is discarded at exit and never
+        # reaches the file at all. Measured against dask 2026.7.1 on a login that fails:
+        # 0 of dask's own lines survive without this, all 15 with it.
+        dask_ssh_out = TemporaryFile()
+        dask_ssh_proc = Popen(dask_ssh_cmd, stdout=dask_ssh_out, stderr=STDOUT,
+                              env=dict(os.environ, PYTHONUNBUFFERED='1'))
         time.sleep(10)
         # If dask ssh has already exited, the cluster never came up. Surface the
         # failure here instead of letting it resurface later as an opaque dask
         # Client connection error.
         returncode = dask_ssh_proc.poll()
         if returncode is not None:
-            dask_ssh_err.seek(0)
-            err_text = dask_ssh_err.read().decode('UTF-8', errors='replace').strip()
-            dask_ssh_err.close()
-            logger.error(f'dask ssh exited with code {returncode} during cluster bring-up. stderr:\n{err_text}')
-            raise PybnfError('Failed to start the dask ssh cluster (dask ssh exited with code {}). {}'.format(returncode, (f'Details:\n{err_text}') if err_text
-                                else 'Check the cluster log directory for details.'))
+            output = Cluster.captured_text(dask_ssh_out)
+            dask_ssh_out.close()
+            # The log keeps every line, including the traceback frames; the message keeps
+            # what a user can act on.
+            logger.error('dask ssh exited with code %s during cluster bring-up. Output:\n%s'
+                         % (returncode, output if output else '(it produced none)'))
+            raise PybnfError(
+                'Could not start the workers on the other machines: dask ssh exited with code '
+                '%s during cluster bring-up.\n%s'
+                % (returncode,
+                   ('This is what it said:\n%s' % Cluster.fold_traceback_frames(output))
+                   if output else
+                   ('It produced no output at all. Anything the nodes themselves wrote is '
+                    'in %s on each of them.' % out_dir)),
+                hint=Cluster.ssh_bringup_hints(output))
         return dask_ssh_proc
+
+    @staticmethod
+    def captured_text(handle):
+        """
+        Read back everything a launched process wrote to its capture file, as plain text.
+
+        Colour escapes are removed: dask colours its own failure lines, and those bytes
+        would otherwise reach a log file and an error message as literal characters.
+
+        :param handle: The open binary file the process was given as its output
+        :return: the captured text, or '' if nothing was captured or it cannot be read
+        :rtype: str
+        """
+        try:
+            handle.seek(0)
+            text = handle.read().decode('UTF-8', errors='replace')
+        except (OSError, ValueError):
+            return ''
+        return ANSI_ESCAPE_RE.sub('', text).strip()
+
+    @staticmethod
+    def fold_traceback_frames(text, lines=40):
+        """
+        The same output with Python traceback frames folded away, for an error message.
+
+        What ``dask ssh`` writes when a login fails is mostly traceback: one per node per
+        retry, three retries each, every one of them a dozen frames of dask's and
+        paramiko's own source. Quoted whole, the sentences that say what happened -- dask's
+        "SSH reported this exception: ...", and the exception line each traceback ends with
+        -- are buried in code the user did not write and cannot act on, and are the first
+        thing a length limit throws away. Folding the frames left 32 lines of a measured
+        137, and lost none of the sentences.
+
+        Each traceback is recognized by its header and ends at the first line that is not
+        indented, which is the exception itself; that line is kept, the frames between are
+        dropped. The full text still goes to the log.
+
+        :param text: The captured output
+        :type text: str
+        :param lines: Number of trailing lines to keep after folding
+        :type lines: int
+        :return: the output without traceback frames, at most ``lines`` lines
+        :rtype: str
+        """
+        kept = []
+        in_frames = False
+        for line in text.splitlines():
+            if line.startswith('Traceback (most recent call last)'):
+                in_frames = True
+                continue
+            if in_frames:
+                if not line.strip() or line[:1].isspace():
+                    continue
+                in_frames = False
+            kept.append(line)
+        return '\n'.join(kept[-lines:])
+
+    @staticmethod
+    def ssh_bringup_hints(output):
+        """
+        What to suggest to a user whose SSH bring-up failed (#618).
+
+        Two things a bare exit code does not tell them. First, whether the login is the
+        problem: on the cluster this was reported from it was, and no part of the message
+        said so. A login failure is worth naming outright because the obvious remedy --
+        creating SSH keys -- fixes only one of its causes, and because ``ssh`` succeeding
+        from the same shell makes the failure look impossible (``dask ssh`` does not run
+        ``ssh``; it logs in with paramiko, which offers a public key or a password and
+        nothing else).
+
+        Second, that a failed login is not the end of the run: two of the ways PyBNF can
+        use several machines never log in anywhere, and both remain open. They are named
+        whatever the cause, since anything that stops ``dask ssh`` leaves them as the ways
+        forward.
+
+        :param output: What dask ssh wrote before exiting
+        :type output: str
+        :return: suggested remedies, most specific first
+        :rtype: list
+        """
+        hints = []
+        if SSH_LOGIN_FAILURE_RE.search(output or ''):
+            hints.append(
+                'This looks like a failed login. PyBNF starts the workers with `dask ssh`, '
+                'which does not run your `ssh` command: it logs in with the paramiko '
+                'library, which can offer a public key or a typed password and nothing '
+                'else. A cluster whose nodes authenticate to each other by host-based or '
+                'Kerberos (GSSAPI) SSH refuses that login however you configure it, and '
+                'creating SSH keys does not help -- the cluster is not asking for a key. '
+                '`ssh OTHERNODE hostname` succeeding proves nothing here; the "Running on '
+                'a cluster" documentation gives a one-line test of the login PyBNF makes.')
+        hints.append(
+            'Two ways of running on several machines need no login at all. On a SLURM '
+            'cluster, cluster_type = slurm-srun (or pybnf -t slurm-srun) starts the workers '
+            'with srun, inside the allocation SLURM already granted.')
+        hints.append(
+            'The other: start a dask scheduler and workers yourself, by whatever means your '
+            'cluster supports, and give PyBNF the scheduler file with -s or the '
+            'scheduler_file key. PyBNF then only connects to a cluster that is already up.')
+        return hints
 
     # ----------------------------------------------------------------------- #
     # The srun launcher (#614, ADR-0122): bring the cluster up without an SSH

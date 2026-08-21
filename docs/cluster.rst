@@ -70,6 +70,8 @@ If you use one of the first two, the login must succeed without a password promp
 * It raises ``AuthenticationException`` while plain ``ssh`` to the same node succeeds: your cluster authenticates its nodes to each other by a method paramiko cannot use -- most often host-based or Kerberos (GSSAPI) SSH. **Creating SSH keys cannot fix this**, because the cluster is not asking for a key. Use `Starting workers without SSH`_.
 * It asks for a password, or fails in the same way plain ``ssh`` does: this is the case SSH keys do fix. Create a key pair with ``ssh-keygen`` (documented in many places, such as `here <https://www.ssh.com/ssh/keygen/>`__) and append the public half to ``~/.ssh/authorized_keys``. Where the nodes share your home directory, that covers all of them at once. Then run the check above again.
 
+**What a failed login looks like.** PyBNF stops about ten seconds into the run rather than carrying on with fewer machines than you asked for, and quotes what ``dask ssh`` said -- including dask's own account of the failure, which names the node it was connecting to and the exception paramiko raised. When that output reads as a refused credential, the message says the login is the likely cause, says what PyBNF logs in with, and names the two ways of running that need no login at all. The same output is in the log file, tracebacks and all.
+
 If SSH cannot be made to work for some other reason, `Starting workers without SSH`_ and `Manual configuration with Dask`_ both avoid it entirely.
 
 .. _srun:

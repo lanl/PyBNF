@@ -209,6 +209,26 @@ of the run). It is still an estimated parameter, so it is still counted in ``k``
 as an ordinary free parameter and reported alongside the model parameters.
 
 
+Could not start the workers on the other machines
+-------------------------------------------------
+
+``dask ssh``, which PyBNF runs to start the workers of a multi-machine run, exited before any
+worker started, so the run stops about ten seconds in. Everything ``dask ssh`` said is quoted
+in the message and repeated in the log file.
+
+The most common cause is the login itself. ``dask ssh`` does not run your ``ssh`` command: it
+logs in with the paramiko library, which can offer a public key or a typed password and nothing
+else. A cluster whose nodes authenticate to each other by host-based or Kerberos (GSSAPI) SSH
+therefore refuses it however you configure it -- on a machine where ``ssh othernode hostname``
+from the same shell succeeds -- and creating SSH keys cannot fix it, because the cluster is not
+asking for a key. :ref:`Which ways of starting a run log in to other machines <sshlogin>` gives
+a one-line test of the login PyBNF actually makes.
+
+Two ways of running on several machines need no login at all, and neither is affected:
+:ref:`starting the workers with srun <srun>` (``-t slurm-srun``), inside the allocation SLURM
+already granted, and :ref:`starting the scheduler and workers yourself <manualdask>` and giving
+PyBNF the scheduler file with ``-s``.
+
 PyBNF has encountered a fatal error
 -----------------------------------
 This error occurs when the scheduler loses connection with the cluster. The simulation data is generally backed up and the simulation can be resumed from the point it exited using the -r flag 'pybnf -c .conf -r'. 
