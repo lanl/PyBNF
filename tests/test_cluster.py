@@ -21,8 +21,11 @@ Substitution strategy (per dependency):
   * ``cluster.run`` (subprocess) — **mock**: a recorder returning a fake proc
     with canned ``.stdout`` bytes, or raising ``TimeoutExpired`` /
     ``CalledProcessError``.
-  * ``cluster.Popen`` / ``cluster.time.sleep`` / ``cluster.cpu_count`` —
-    **mock**: capture the command; stub the 10s sleep so the test is instant.
+  * ``cluster.Popen`` / ``cluster.time.sleep`` — **mock**: capture the command;
+    stub the 10s sleep so the test is instant.
+  * the worker-count sources — ``$SLURM_CPUS_ON_NODE``, ``cluster.DASK_CPU_COUNT``
+    and ``cluster.cpu_count`` — **stubbed to three different numbers**, so a test
+    pins which source PyBNF consulted and not merely a plausible count (#616).
   * ``cluster.Client`` / ``cluster.LocalCluster`` / ``cluster.init_logging`` /
     ``cluster.reinit_logging`` and ``Cluster.read_node_names`` /
     ``Cluster.setup_cluster`` — **fakes** recording their call args, so the
@@ -263,9 +266,15 @@ DASK_SSH = [sys.executable, '-m', 'dask', 'ssh']
 
 class TestSetupCluster:
 
-    def _patch(self, monkeypatch, cpu=4, returncode=None, stderr_bytes=b''):
-        """Patch the three externals setup_cluster touches: Popen (capture the
-        command), time.sleep (don't actually wait 10s), cpu_count (deterministic).
+    def _patch(self, monkeypatch, granted=None, affinity=4, cpu=64,
+               returncode=None, stderr_bytes=b''):
+        """Patch what setup_cluster touches: Popen (capture the command),
+        time.sleep (don't actually wait 10s), and every source the default worker
+        count can come from, so the count is deterministic *and* it is visible which
+        source produced it -- ``$SLURM_CPUS_ON_NODE`` (what the job was granted;
+        removed from the environment unless ``granted`` is passed), the
+        affinity/cgroup count dask derives, and the whole machine's ``cpu_count()``.
+        The three defaults are deliberately three different numbers.
         The fake proc's ``poll()`` returns ``returncode`` (None = still running,
         the healthy default); if ``stderr_bytes`` is given the fake writes it to
         the stderr file setup_cluster handed to Popen, so the early-exit error
@@ -280,15 +289,21 @@ class TestSetupCluster:
 
         monkeypatch.setattr(cluster, 'Popen', fake_popen)
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
+        if granted is not None:
+            monkeypatch.setenv('SLURM_CPUS_ON_NODE', str(granted))
+        monkeypatch.setattr(cluster, 'DASK_CPU_COUNT', affinity)
         monkeypatch.setattr(cluster, 'cpu_count', lambda: cpu)
         return popen_calls
 
-    def test_default_parallel_count_uses_cpu_count(self, monkeypatch):
-        """parallel_count=None ⇒ dask ssh's own default of one worker per CPU:
-        ``--nthreads 1 --nworkers {cpu_count()}`` (note this branch's flag order is
-        --nthreads then --nworkers). Oracle: the exact argument list (ROB-3: an argv
-        list launched with no shell, each node its own entry) with cpu_count()=7."""
-        popen_calls = self._patch(monkeypatch, cpu=7)
+    def test_default_worker_count_is_what_the_job_was_granted(self, monkeypatch):
+        """parallel_count=None ⇒ one single-threaded worker per CPU **the job holds
+        on a node**: ``--nthreads 1 --nworkers {cpus_per_node()}`` (note this
+        branch's flag order is --nthreads then --nworkers). Oracle: the exact
+        argument list (ROB-3: an argv list launched with no shell, each node its own
+        entry) with SLURM having granted 7, over an affinity count of 4 and a
+        machine of 64."""
+        popen_calls = self._patch(monkeypatch, granted=7, affinity=4, cpu=64)
         proc = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
 
         assert proc.poll() is None
@@ -301,6 +316,55 @@ class TestSetupCluster:
         # bring-up failure can be surfaced — see test_failed_bringup_*.
         assert kwargs['stderr'] is not cluster.DEVNULL
         assert hasattr(kwargs['stderr'], 'read')
+
+    def test_default_worker_count_is_not_the_size_of_the_machine(self, monkeypatch):
+        """#616, stated as the reported case: a job granted 4 CPUs of a
+        128-processor node must start 4 workers per node, not 128. This is the
+        assertion the old code failed -- it passed ``multiprocessing.cpu_count()``,
+        which reports every processor the machine has whatever the scheduler
+        granted, so the pool overshot the job by 32x. The two numbers agree only
+        when whole nodes were allocated, which is why the defect could hide."""
+        popen_calls = self._patch(monkeypatch, granted=4, affinity=4, cpu=128)
+        cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
+
+        (args, _), = popen_calls
+        assert args[0][args[0].index('--nworkers') + 1] == '4'
+        assert '128' not in args[0]
+
+    def test_default_worker_count_falls_back_to_affinity_not_the_machine(self, monkeypatch):
+        """With no scheduler count published, the next-best number is what the
+        operating system will let this process run on -- CPU affinity narrowed by
+        any cgroup quota, which is what dask derives and what a local PyBNF run
+        already sizes itself by -- rather than the whole machine."""
+        popen_calls = self._patch(monkeypatch, granted=None, affinity=6, cpu=64)
+        cluster.Cluster.setup_cluster('n1', '/out', parallel_count=None)
+
+        (args, _), = popen_calls
+        assert args[0][args[0].index('--nworkers') + 1] == '6'
+
+    def test_default_worker_count_and_its_source_are_logged(self, monkeypatch, caplog):
+        """A user who sees an unexpected number of workers has to be able to find
+        out which number PyBNF believed and where it read it, so the count, the node
+        count and the source are all logged (#616)."""
+        self._patch(monkeypatch, granted=7)
+        with caplog.at_level('INFO', logger='pybnf.cluster'):
+            cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
+
+        line, = [r.message for r in caplog.records if 'worker process' in r.message]
+        assert '7' in line and '2 node' in line
+        assert 'SLURM_CPUS_ON_NODE' in line
+
+    def test_explicit_parallel_count_is_logged_as_its_own_source(self, monkeypatch, caplog):
+        """When parallel_count decides the count, the log says so: the number did
+        not come from the job's CPUs, and a user comparing the two needs to know
+        which one is in force."""
+        self._patch(monkeypatch, granted=7)
+        with caplog.at_level('INFO', logger='pybnf.cluster'):
+            cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=6)
+
+        line, = [r.message for r in caplog.records if 'worker process' in r.message]
+        assert 'parallel_count' in line
+        assert 'SLURM_CPUS_ON_NODE' not in line
 
     def test_the_launcher_is_dask_ssh_through_this_interpreter(self, monkeypatch):
         """#615: the command is the ``dask ssh`` *subcommand*, run through the
@@ -616,7 +680,7 @@ class TestInitClientDispatch:
         monkeypatch.setattr(cluster, 'Popen',
                             lambda *a, **k: popen_calls.append((a, k)) or _FakeDaskProc())
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
-        monkeypatch.setattr(cluster, 'cpu_count', lambda: 7)
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '7')
         cluster.Cluster.setup_cluster('n1', '/out', parallel_count=None)
         (ssh_args, _), = popen_calls
         cmd = ssh_args[0]
@@ -828,23 +892,54 @@ class TestSrunSchedulerFile:
 
 
 class TestCpusPerNode:
+    """The one place either launcher decides how many workers a node gets (#616).
+
+    The three sources are given three different numbers throughout, so each test
+    pins *which* one was consulted rather than merely a plausible count.
+    """
+
+    def _sources(self, monkeypatch, granted=None, affinity=6, cpu=64):
+        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
+        if granted is not None:
+            monkeypatch.setenv('SLURM_CPUS_ON_NODE', str(granted))
+        monkeypatch.setattr(cluster, 'DASK_CPU_COUNT', affinity)
+        monkeypatch.setattr(cluster, 'cpu_count', lambda: cpu)
 
     def test_reads_what_slurm_granted(self, monkeypatch):
-        """$SLURM_CPUS_ON_NODE is what the *allocation* granted, which is the
-        number the launcher can actually ask SLURM for."""
-        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '12')
-        monkeypatch.setattr(cluster, 'cpu_count', lambda: 64)
-        assert cluster.Cluster.cpus_per_node() == 12
+        """$SLURM_CPUS_ON_NODE is what the *allocation* granted. It is preferred
+        over both local numbers because it describes the allocation rather than the
+        process asking, so it is still right for a worker started on another
+        machine -- and because it is the number the srun launcher can actually ask
+        SLURM for."""
+        self._sources(monkeypatch, granted=12, affinity=6, cpu=64)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 12
+        assert 'SLURM_CPUS_ON_NODE' in source
 
     @pytest.mark.parametrize('value', [None, '', 'many', '0', '-4'])
-    def test_falls_back_to_the_machine_core_count(self, monkeypatch, value):
-        """With nothing usable in the environment, fall back to the machine's own
-        core count (the number the SSH launcher uses unconditionally)."""
-        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
-        if value is not None:
-            monkeypatch.setenv('SLURM_CPUS_ON_NODE', value)
-        monkeypatch.setattr(cluster, 'cpu_count', lambda: 64)
-        assert cluster.Cluster.cpus_per_node() == 64
+    def test_an_unusable_slurm_value_falls_through_to_the_affinity_count(self, monkeypatch, value):
+        """With no usable scheduler count, the next-best number is what the OS will
+        let this process run on -- CPU affinity narrowed by any cgroup quota, the
+        number dask derives and a local PyBNF run already uses -- not the machine."""
+        self._sources(monkeypatch, granted=value, affinity=6, cpu=64)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 6
+        assert 'affinity' in source
+
+    def test_the_whole_machine_is_the_last_resort(self, monkeypatch):
+        """The machine's own processor count is right only when nothing is limiting
+        the job at all, so it is reached only when neither better number exists."""
+        self._sources(monkeypatch, granted=None, affinity=0, cpu=64)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 64
+        assert 'machine' in source
+
+    def test_a_granted_count_never_reports_the_machine_count(self, monkeypatch):
+        """The #616 oracle, stated once for both launchers: a job granted a small
+        share of a large node is sized by the share. The old SSH-launcher code
+        returned 128 here, oversubscribing the job 32-fold."""
+        self._sources(monkeypatch, granted=4, affinity=4, cpu=128)
+        assert cluster.Cluster.cpus_per_node()[0] == 4
 
 
 class TestSrunWorkerCommand:

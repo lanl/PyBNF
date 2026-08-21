@@ -198,6 +198,27 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **A multi-machine fit sizes its worker pool by what the job was granted, not by how big the
+  machine is (#616).** PyBNF decided how many worker processes to start on each node by calling
+  `multiprocessing.cpu_count()`, which reports every processor the machine has whatever the job
+  scheduler granted. On a cluster where this was measured, a job that asked for **4** CPUs was
+  told the node had **128**: PyBNF would have started one worker per processor and overshot the
+  job's real capacity **32-fold**. Every worker is a separate process, so that multiplies memory
+  use and leaves the workers competing for the same four CPUs — a fit that runs slower than it
+  would have on the share it was given, or that runs out of memory. The defect could hide because
+  a job that asks for *whole* nodes gets the right answer by coincidence: there the two numbers
+  are equal.
+  Both launchers now take the count from `Cluster.cpus_per_node`, the one place that decides it,
+  which prefers **`$SLURM_CPUS_ON_NODE`** — what the allocation granted, and the only one of the
+  three numbers that describes the *allocation* rather than the process asking, so it is still
+  right for a worker started on another machine — then **`dask.system.CPU_COUNT`**, the machine's
+  processors narrowed by CPU affinity and by any cgroup quota, which is what a single-machine run
+  already sizes itself by, and only then the machine's whole processor count, which is correct
+  only when nothing is limiting the job. The count and **which of the three it came from** are
+  written to the log at the start of the run, so an unexpected number of workers can be traced to
+  the number PyBNF believed; setting `parallel_count` still overrides all of it, and the log then
+  names that key as the source. `-t slurm-srun`, which already read what SLURM granted, is
+  unchanged apart from logging the source.
 - **Multi-machine fits run the command dask actually installs, so a cluster run gets past
   its first second (#615).** PyBNF started remote workers by running **`dask-ssh`** — one of
   three standalone scripts (with `dask-scheduler` and `dask-worker`) that distributed stopped

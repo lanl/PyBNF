@@ -15,6 +15,10 @@ with paramiko, which offers only public-key and password authentication -- it ha
 host-based support and dask never enables its GSSAPI support -- so on such a cluster the
 login fails no matter what the user configures, and no amount of ``ssh-keygen`` helps. See
 docs/adr/0122 for the full argument.
+
+Both launchers size their default worker pool from what the *job* was granted rather than
+from how big the machine is, and record which number they used and where it came from
+(#616); ``Cluster.cpus_per_node`` is the one place that decides it.
 """
 
 
@@ -35,6 +39,11 @@ import os
 from multiprocessing import cpu_count
 from distributed import Client, LocalCluster
 from dask import __version__ as daskv
+# What the operating system will actually let this process run on: the machine's
+# processors narrowed by CPU affinity and by any cgroup CPU quota. Bound to a module
+# global (rather than read through ``dask.system``) both because dask computes it once at
+# import time and because that makes it substitutable in tests, the way ``cpu_count`` is.
+from dask.system import CPU_COUNT as DASK_CPU_COUNT
 from distributed import __version__ as distributedv
 from .config import init_logging, reinit_logging
 
@@ -342,8 +351,9 @@ class Cluster:
 
         :param node_string: A string composed of a list of compute nodes
         :param out_dir: A directory for cluster logging output
-        :param parallel_count: Total number of parallel threads to use over all nodes. If None, use all available threads
-            (the dask ssh default)
+        :param parallel_count: Total number of single-threaded worker processes over all
+            nodes, divided evenly among them. If None, one worker per CPU the job was
+            granted on a node (``cpus_per_node``)
         :return: subprocess.Popen
         """
         # Ask before launching, so a dask that cannot do this reads as a configuration
@@ -362,11 +372,21 @@ class Cluster:
         # (pyproject pins dask/distributed >=2024.1.0).
         nodes = node_string.split()
         if parallel_count is None:
+            # One worker per CPU the *job* holds on a node, not per processor the machine
+            # has (#616). The two differ by more than an order of magnitude on a job that
+            # asked for a small share of a large node, and the machine's count is the one
+            # that oversubscribes it. The source is logged because a user who sees an
+            # unexpected worker count needs to know which number PyBNF believed.
+            n_per_node, source = Cluster.cpus_per_node()
+            logger.info('Starting %i worker process(es) on each of %i node(s), one per CPU, '
+                        'from %s' % (n_per_node, len(nodes), source))
             dask_ssh_cmd = [*DASK_CLI, 'ssh', *nodes,
-                            '--log-directory', out_dir, '--nthreads', '1', '--nworkers', str(cpu_count())]
+                            '--log-directory', out_dir, '--nthreads', '1', '--nworkers', str(n_per_node)]
         else:
             n_per_node = int(np.ceil(parallel_count/len(nodes)))
-            logger.info('Manually setting %i workers per node' % n_per_node)
+            logger.info('Manually setting %i worker process(es) on each of %i node(s), from the '
+                        'parallel_count key (%i over all nodes)'
+                        % (n_per_node, len(nodes), parallel_count))
             dask_ssh_cmd = [*DASK_CLI, 'ssh', *nodes,
                             '--log-directory', out_dir, '--nworkers', str(n_per_node), '--nthreads', '1']
         # Capture stderr to a temp file rather than a PIPE: dask ssh stays
@@ -442,23 +462,46 @@ class Cluster:
     @staticmethod
     def cpus_per_node():
         """
-        The number of CPUs the running job was granted on a node.
+        The number of CPUs the running job was granted on a node, and where that came from.
 
-        ``$SLURM_CPUS_ON_NODE`` is what the allocation actually granted; ``cpu_count()`` is
-        the size of the whole machine, which is only the same number when whole nodes were
-        allocated. The srun launcher reads the former because it does not merely count
-        workers with it -- it also asks SLURM for that many CPUs per task, and a request
-        larger than the allocation is refused outright. (The SSH launcher still uses
-        ``cpu_count()``; correcting that is issue #616, and it has to be corrected there
-        too rather than here.)
+        Both launchers size their default worker pool with this, because the number that
+        decides how many processes to start has to describe what the *job* holds, not what
+        the machine has (#616). ``multiprocessing.cpu_count()`` answers the second question:
+        it reports every processor on the machine whatever the scheduler granted, so a job
+        given 4 CPUs of a 128-processor node is told 128, and one worker process per
+        processor oversubscribes it 32-fold -- 32 times the memory, and workers competing
+        for time rather than a fit that runs faster. The two numbers agree only when whole
+        nodes were allocated, which is why the defect stayed hidden.
 
-        :return: CPUs granted per node, falling back to the machine's core count
-        :rtype: int
+        Three sources are consulted, best first:
+
+        * ``$SLURM_CPUS_ON_NODE`` -- what the allocation granted on a node. Preferred
+          because it is the only one that describes the *allocation* rather than the process
+          doing the asking, so it is still the right number for a worker the SSH launcher
+          starts on some other machine. (When nodes differ in size it describes this node;
+          per-node counts are issue #617.)
+        * ``dask.system.CPU_COUNT`` -- what the operating system will let this process run
+          on: the machine's processors narrowed by CPU affinity and by any cgroup CPU quota.
+          This is the number a local run already sizes itself by, and it is the right one
+          whenever the job is confined on the machine PyBNF is running on but no scheduler
+          published a count.
+        * ``multiprocessing.cpu_count()`` -- the whole machine, correct only when nothing is
+          limiting the job at all, and reached only if neither number above is usable.
+
+        The srun launcher does not merely count workers with this: it also asks SLURM for
+        that many CPUs per task, and a request larger than the allocation is refused
+        outright.
+
+        :return: CPUs granted per node, and a phrase naming where that number came from
+        :rtype: tuple
         """
         granted = os.environ.get('SLURM_CPUS_ON_NODE', '').strip()
         if granted.isdigit() and int(granted) > 0:
-            return int(granted)
-        return cpu_count()
+            return int(granted), 'what SLURM granted the job ($SLURM_CPUS_ON_NODE)'
+        if DASK_CPU_COUNT > 0:
+            return DASK_CPU_COUNT, ("this process's CPU affinity and cgroup limits "
+                                    '(dask.system.CPU_COUNT)')
+        return cpu_count(), "this machine's whole processor count (multiprocessing.cpu_count)"
 
     @staticmethod
     def srun_worker_command(scheduler_file, node_count, parallel_count=None):
@@ -475,7 +518,7 @@ class Cluster:
         :return: the srun argument list
         :rtype: list
         """
-        granted = Cluster.cpus_per_node()
+        granted, source = Cluster.cpus_per_node()
         if parallel_count is None:
             n_per_node = granted
         else:
@@ -490,8 +533,9 @@ class Cluster:
         # a deliberately oversubscribed parallel_count still runs (SLURM refuses a request
         # for more CPUs than the job holds) rather than failing the run.
         cpus_per_task = max(1, min(n_per_node, granted))
-        logger.info('Starting %i worker process(es) per node on %i node(s), %i CPU(s) per node'
-                    % (n_per_node, node_count, cpus_per_task))
+        logger.info('Starting %i worker process(es) per node on %i node(s), asking SLURM for %i '
+                    'CPU(s) per node; %i available per node, from %s'
+                    % (n_per_node, node_count, cpus_per_task, granted, source))
         return ['srun',
                 '--nodes', str(node_count), '--ntasks', str(node_count),
                 '--ntasks-per-node', '1', '--cpus-per-task', str(cpus_per_task),

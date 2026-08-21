@@ -120,6 +120,16 @@ that number, it asks SLURM for that many CPUs, and a number taken from the whole
 refused. The SSH launcher still uses `multiprocessing.cpu_count()`; that it does so is issue #616,
 and it has to be fixed there rather than here.
 
+**Superseded by issue #616:** the launchers no longer differ. `Cluster.cpus_per_node` is now the one
+place either of them decides how many workers a node gets, and it returns the count together with a
+phrase naming where it came from, which both launchers log. The precedence is `$SLURM_CPUS_ON_NODE`,
+then `dask.system.CPU_COUNT`, then `multiprocessing.cpu_count()`: the scheduler's number is
+preferred because it describes the *allocation* rather than the process asking, so it remains the
+right number for a worker the SSH launcher starts on some other machine; the affinity- and
+cgroup-aware count is next because it is what the operating system will actually permit here, and is
+what a local run already sizes itself by; the whole machine is last, since it is correct only when
+nothing is limiting the job at all.
+
 ### `scheduler_file` names an output under this launcher
 
 Everywhere else, `scheduler_file` means *attach to a cluster someone else brought up* -- PyBNF starts
