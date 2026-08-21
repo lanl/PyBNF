@@ -17,6 +17,7 @@ handle are listed by handle, in the same sequence.
 - Eshan D. Mitra
 - Jacob Neumann
 - Richard G. Posner
+- psamuelvijay
 - Herbert M. Sauro
 - Ryan Suderman
 - Brandon R. Thomas

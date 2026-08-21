@@ -169,6 +169,18 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **The temporary directory dask leaves behind is now removed under the name dask actually
+  creates (#620).** `_cleanup_dask_workspace` deleted `dask-worker-space` — the name dask used
+  before it renamed the directory to `dask-scratch-space`. Every dask version the project
+  supports (`>=2024.1.0`) creates the new name, so the cleanup matched nothing and the scratch
+  directories accumulated in the working directory and in the home directory, one per run. The
+  failure was invisible by construction: the cleanup ran, raised nothing, reported nothing, and
+  looked exactly like a cleanup that had worked. On a cluster, where home is usually shared
+  storage under a quota, that ends with a user unable to write at all — with no indication that
+  a fit was the thing filling the quota. Both names are now removed, from both locations, so
+  directories left by earlier runs are cleared alongside new ones. There is no public API that
+  reports the name: `distributed` hardcodes the `dask-scratch-space` literal itself, so the
+  cleanup carries both names deliberately rather than deriving one.
 - **A multiple-shooting segment that comes back short of its end knot is refused instead of
   being read at the wrong time (#584).** `job_type = ms` builds every continuity row from the
   **last row** of a segment's trajectory, which is the end knot only if the integration
