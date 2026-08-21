@@ -614,7 +614,7 @@ Simplex is a local search algorithm that operates solely on objective evaluation
 
 Parallelization
 ^^^^^^^^^^^^^^^
-The PyBNF Simplex implementation is parallel and synchronous. Synchronization is required at the end of every iteration. Parallelization is achieved by simultaneously evaluating a subset of the N+1 points in the simplex. Therefore, this parallelization can take advantage of at most N+1 processors, where N is the number of free parameters. 
+The PyBNF Simplex implementation is parallel and synchronous. Synchronization is required at the end of every iteration. Parallelization is achieved by simultaneously evaluating a subset of the N+1 points in the simplex, where N is the number of free parameters. One simplex evaluates min(``population_size``, N-1) points per iteration -- never fewer than 1 -- so a single search can take advantage of at most that many processors. Running several starts concurrently with ``n_starts`` multiplies it: ``n_starts`` x min(``population_size``, N-1) points are in flight at once. 
 
 
 Implementation details
@@ -631,7 +631,7 @@ The initial simplex consists of N+1 points chosen deterministically based on the
 
    Illustration of the simplex algorithm, modifying point P on a 3-point simplex in 2 dimensions
 
-Each iteration, we operate on the k worst points in the simplex, where k is the number of available processors (``parallel_count``). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible.
+Each iteration, we operate on the k worst points in the simplex, where k is min(``population_size``, N-1). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible.
 
 1) The new point is better than the current global minimum: We try a second point continuing in the same direction for a distance of d \* ``simplex_expansion`` away from the hyperplane (P\ :sub:`2,1`).
 2) The new point is worse than the global minimum, but better than the next worst point in the simplex: We don't try a second point.

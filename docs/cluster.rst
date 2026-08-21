@@ -27,25 +27,56 @@ Load the appropriate Python environment
 
 Initiate a PyBNF fitting run, including the flag ``-t slurm``
 
+If you intend to use ``-t slurm-srun`` instead, skip the ``slogin`` step and run PyBNF from the shell ``salloc`` opened: a separate login into a node does not inherit the allocation, and that launcher needs it. See `Starting workers without SSH`_.
+
 Batch
 ^^^^^
 Write a shell script specifying the desired nodes and their properties `according to SLURM specifications <https://slurm.schedmd.com/sbatch.html>`_. Be sure that your script includes loading the appropriate Python environment if this step is required for your cluster, and that your call to pybnf includes the flag ``-t slurm``. For an example shell script, see examples/tcr/tcr_batch.sh. 
 
 Submit the batch job to the queueing system using the command ``sbatch script.sh`` where ``script.sh`` is the name of the shell script.
 
-Troubleshooting: SSH access to nodes
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-The above instructions assume that PyBNF can access all allocated nodes via SSH. For some clusters, additional configuration is necessary to enable SSH access: use ``ssh_keygen`` (documented in many places, such as `here <https://www.ssh.com/ssh/keygen/>`__, or `here <http://tomdlt.github.io/blog/dask_distributed_joblib.html>`__ for instructions specific to PyBNF's Dask scheduler) to set up SSH keys. 
+.. _sshlogin:
 
-To confirm that SSH keys are set up correctly, make sure that you are able to SSH into all allocated nodes without needing to enter a password.
+Which ways of starting a run log in to other machines
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Not every way of running PyBNF on several machines logs in to them, so before troubleshooting an SSH problem, check whether the way you start your run involves an SSH login at all.
 
-Setting up SSH keys does not help on every cluster. If your cluster's nodes authenticate to each other by host-based or Kerberos SSH, use `Starting workers without SSH`_ instead; if SSH access is not possible for some other reason, you can also fall back on `Manual configuration with Dask`_.
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - How the run is started
+     - Does PyBNF log in to the other machines?
+   * - ``-t slurm``
+     - **Yes.** PyBNF runs ``dask ssh``, which opens an SSH connection from the node PyBNF is running on to every allocated node.
+   * - ``scheduler_node`` / ``worker_nodes`` (`Manual configuration with node names`_)
+     - **Yes** -- the same ``dask ssh`` launcher, over node names you supplied instead of ones read from SLURM.
+   * - ``-t slurm-srun`` (`Starting workers without SSH`_)
+     - **No.** SLURM starts the workers inside the allocation it already granted, and no credential is involved.
+   * - ``-s cluster.json`` (`Manual configuration with Dask`_)
+     - **No.** You start the scheduler and the workers yourself; PyBNF only connects to the scheduler.
+   * - A single-machine run
+     - There are no other machines.
+
+If you use one of the first two, the login must succeed without a password prompt, from the node PyBNF runs on to every other node of the job.
+
+**Test the login PyBNF makes, not the one you can make.** ``ssh othernode hostname`` succeeding proves little here, because it is not the login PyBNF attempts: ``dask ssh`` does not run ``ssh``. It connects with the paramiko library, which can offer a public key or a typed password and nothing else. From a node of your allocation, make the same connection paramiko will make::
+
+    python -c "import paramiko; c = paramiko.SSHClient(); \
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy()); \
+        c.connect('OTHERNODE'); print('paramiko login ok')"
+
+* It prints ``paramiko login ok``: ``-t slurm`` can start your workers.
+* It raises ``AuthenticationException`` while plain ``ssh`` to the same node succeeds: your cluster authenticates its nodes to each other by a method paramiko cannot use -- most often host-based or Kerberos (GSSAPI) SSH. **Creating SSH keys cannot fix this**, because the cluster is not asking for a key. Use `Starting workers without SSH`_.
+* It asks for a password, or fails in the same way plain ``ssh`` does: this is the case SSH keys do fix. Create a key pair with ``ssh-keygen`` (documented in many places, such as `here <https://www.ssh.com/ssh/keygen/>`__) and append the public half to ``~/.ssh/authorized_keys``. Where the nodes share your home directory, that covers all of them at once. Then run the check above again.
+
+If SSH cannot be made to work for some other reason, `Starting workers without SSH`_ and `Manual configuration with Dask`_ both avoid it entirely.
 
 .. _srun:
 
 Starting workers without SSH
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-``-t slurm`` starts the workers by logging in to each allocated node over SSH, using dask's ``dask ssh`` command. That command logs in with the paramiko library, which offers only two ways of authenticating: a public key, or a password. Clusters commonly use two others:
+As `Which ways of starting a run log in to other machines`_ describes, ``-t slurm`` starts the workers by logging in to each allocated node with ``dask ssh``, which authenticates through paramiko. Clusters commonly use two methods paramiko cannot offer:
 
 * **host-based authentication**, where the machines are configured to trust each other and no user credential is involved. paramiko does not support this at all.
 * **Kerberos (GSSAPI)**. paramiko can do this, but dask never turns it on.
@@ -60,16 +91,17 @@ Pass ``-t slurm-srun`` instead (or set ``cluster_type = slurm-srun``) to start t
 
 Run PyBNF from the shell that holds the allocation: the one ``salloc`` opened, or your ``sbatch`` script. A separate login into one of the allocated nodes does not inherit the allocation, and ``srun`` would then queue a new job rather than start the workers; PyBNF refuses to start in that case instead of appearing to hang. For the same reason, PyBNF should be the only job step running in the allocation, since a concurrent second ``srun`` can leave the workers waiting for resources.
 
-An example batch script, the ``-t slurm`` one with a single word changed::
+An example batch script -- ``examples/tcr/tcr_batch.sh`` with a single word changed::
 
     #!/bin/bash
     #SBATCH --nodes=4
-    #SBATCH --mincpus=32
+    #SBATCH --mincpus=18
     #SBATCH --time=1-00:00:00
     #SBATCH --job-name=pybnf
 
-    # Your cluster may require loading a module to get the right Python environment.
-    module load anaconda/Anaconda3
+    # EDIT THIS LINE for your cluster: load a module (or activate a virtual
+    # environment) that provides Python 3.11 or newer with PyBNF installed.
+    module load python/3.11
 
     pybnf -c tcr-ss.conf -t slurm-srun -o
 
@@ -91,6 +123,69 @@ PyBNF takes that number from the first of these that is available:
 Which number was used, and which of the three it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
 
 Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares.
+
+
+.. _sizing:
+
+Sizing a run
+------------
+
+Reserving processors does not by itself make PyBNF use them. Two numbers decide how many are busy, and they are set in different places:
+
+* **How many worker processes exist.** By default, the number of CPUs your job was granted (nodes times CPUs per node), or ``parallel_count`` if you set it. See `How many workers run on each node`_.
+* **How many simulations the algorithm can have running at once.** For almost every algorithm this is ``population_size``.
+
+Make the second at least as large as the first. ``population_size = 50`` on a 128-processor allocation leaves 78 processors idle for the whole fit, and the queue was waited out for all 128 -- so processors the algorithm cannot use cost twice, once in the wait for a bigger allocation and again in the share of it that sits doing nothing.
+
+For a **synchronized** algorithm -- the Parallelization column of the table in :ref:`Algorithms <algorithms>` says which -- the population is evaluated in waves, and an iteration costs ``ceil(population_size / workers)`` waves however uneven the last one is. Going from 128 parameter sets to 129 on 128 workers therefore nearly doubles the time per iteration in exchange for one extra parameter set, so prefer a ``population_size`` that is a whole multiple of the worker count. An **asynchronous** algorithm (``ade`` or ``pso``, or ``de`` with ``islands`` greater than 1) starts a new simulation the moment one finishes and so has no such cliff, which also makes it the better choice when simulation times vary a lot; it still needs ``population_size`` at least the worker count to fill the machine.
+
+How many simulations each algorithm runs at once
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - ``fit_type``
+     - Simulations that can run at the same time
+   * - ``de``, ``ade``, ``pso``, ``cmaes``, ``dream``, ``p_dream``, ``mh``, ``am``, ``sa``, ``pt``
+     - ``population_size``. For ``pt`` that is the replicas at all temperatures together; for the Markov chain samplers it is the number of independent chains.
+   * - ``ss``
+     - ``population_size`` x (``population_size`` - 1), since every parent-helper pair is a simulation. A reference set of 9 fills 72 processors.
+   * - ``sim``
+     - min(``population_size``, N - 1) per start, never fewer than 1, where N is the number of free parameters; times ``n_starts`` concurrent starts.
+   * - ``powell``
+     - One per start, so ``n_starts``: each line search is serial by construction.
+   * - ``trf``, ``lbfgs``, ``gntr``
+     - ``population_size``, which the gradient optimizers use as their number of concurrent starts.
+   * - ``pl``
+     - Two directional walks per profiled parameter (one per direction), capped by ``profile_likelihood_max_parallel`` -- ``0``, the default, runs all of them at once.
+   * - ``hmc``
+     - None. Its chains are an in-process numeric loop rather than dask jobs (and it runs only on analytical models), so extra nodes do not help.
+
+Multiply any of these by ``smoothing`` and by ``parallelize_models``, if you set them: every replicate and every model partition is a separate job. ``n_starts`` adds nothing for the metaheuristics (``de``, ``ade``, ``ss``, ``pso``), whose starts run one after another rather than at the same time.
+
+The processors an algorithm cannot use are worth reserving only for the memory attached to them. Each worker is a separate process holding its own copy of the models, so a memory-hungry model may need ``parallel_count`` set below the CPU count rather than a bigger population.
+
+A worked example
+^^^^^^^^^^^^^^^^
+
+``examples/tcr/tcr-ss.conf`` runs scatter search with ``population_size = 9``, which is 9 x 8 = 72 simulations per iteration. Its batch script therefore reserves 72 processors (4 nodes of 18), and its ``parallel_count = 72`` states the same number a second time. Reserving 144 instead would not make that fit finish any sooner: the reference set, not the allocation, sets the work. Scatter search fills 72, 90, 110, 132 or 156 processors as ``population_size`` goes 9, 10, 11, 12, 13, so with this algorithm it is the allocation that should be chosen to match the population.
+
+.. _simdir:
+
+Where simulation files are written
+----------------------------------
+
+Every simulation runs in its own directory under ``output_dir``, so a large fit creates and deletes a great many small files. On the ordinary shared network filesystem most clusters give you -- an NFS home or project space -- that is unremarkable, and the default (simulations beside the results) is the right setting. Leave ``simulation_dir`` unset.
+
+It is worth changing on a **parallel filesystem** such as Lustre or GPFS, which is tuned for a few large streaming reads and writes and handles storms of small-file metadata operations worst; some sites also meter it. There, set ``simulation_dir`` to a path on storage better suited to the traffic, and only the results are written to the parallel filesystem::
+
+    simulation_dir = /scratch/username/pybnf
+
+Whatever you point it at must exist and be writable on every node, since it is the workers that write there. Keep it on shared storage: PyBNF looks for the best fit's simulation output under ``simulation_dir`` from the node it is running on, so with node-local storage and ``delete_old_files = 0``, the copy of the best-fit ``gdat`` files into ``Results/`` cannot find them.
+
+If you do not know which kind of filesystem your ``output_dir`` lives on, ask your administrators rather than guessing. Setting this key on a cluster that does not need it gains nothing, and pointing it somewhere the compute nodes cannot write turns a working fit into a failing one.
 
 
 TORQUE/PBS
