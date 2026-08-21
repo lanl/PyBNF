@@ -610,21 +610,30 @@ def _teardown_cluster(cluster):
 
 
 def _cleanup_dask_workspace():
-    """Remove any leftover ``dask-worker-space`` directories (cwd and home)."""
-    # Attempt to remove dask-worker-space directory if necessary
-    # (exists in directory where workers were instantiated)
-    # Tries current and home directories
-    if os.path.isdir('dask-worker-space'):
-        if os.name == 'nt':  # Windows
-            shutil.rmtree('dask-worker-space', ignore_errors=True)
-        else:
-            run(['rm', '-rf', 'dask-worker-space'])  # More likely to succeed than rmtree()
-    home_dask_dir = os.path.expanduser(os.path.join('~', 'dask-worker-space'))
-    if os.path.isdir(home_dask_dir):
-        if os.name == 'nt':  # Windows
-            shutil.rmtree(home_dask_dir, ignore_errors=True)
-        else:
-            run(['rm', '-rf', home_dask_dir])
+    """Remove any leftover dask workspace directories (cwd and home).
+    
+    Cleans up both ``dask-scratch-space`` (current dask versions) and
+    ``dask-worker-space`` (legacy name from older dask versions).
+    """
+    # Dask changed the directory name from 'dask-worker-space' to 'dask-scratch-space'.
+    # Clean both so leftover directories from old and new versions are removed.
+    dir_names = ['dask-scratch-space', 'dask-worker-space']
+    
+    for dir_name in dir_names:
+        # Try current working directory
+        if os.path.isdir(dir_name):
+            if os.name == 'nt':  # Windows
+                shutil.rmtree(dir_name, ignore_errors=True)
+            else:
+                run(['rm', '-rf', dir_name])  # More likely to succeed than rmtree()
+        
+        # Try home directory
+        home_dask_dir = os.path.expanduser(os.path.join('~', dir_name))
+        if os.path.isdir(home_dask_dir):
+            if os.name == 'nt':  # Windows
+                shutil.rmtree(home_dask_dir, ignore_errors=True)
+            else:
+                run(['rm', '-rf', home_dask_dir])
 
 
 def main():
