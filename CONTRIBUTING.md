@@ -1,7 +1,21 @@
 Thanks for your interest in contributing to PyBioNetFit!
 
-When making your first contribution, please complete LANL's
-<a href="https://www.clahub.com/agreements/lanl/PyBNF">Contributor License Agreement</a>.
+## Certificate of origin
+
+Contributions are accepted under the project's [BSD-3-Clause license](LICENSE),
+the same terms PyBNF is distributed under.
+
+Please sign off on your commits, certifying that you wrote the contribution or
+otherwise have the right to submit it under that license — the
+[Developer Certificate of Origin](https://developercertificate.org). Add `-s`
+when you commit:
+
+```sh
+git commit -s -m "your message"
+```
+
+which appends a `Signed-off-by:` line using the name and email from your
+`git config`.
 
 ## Development setup
 
