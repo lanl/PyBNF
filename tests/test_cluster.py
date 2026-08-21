@@ -4,7 +4,7 @@ Orchestration tests for ``pybnf.cluster.Cluster`` — the SSH/HPC dask bring-up.
 This is glue code, not numerical math: the only deterministic contracts are
 *which external call PyBNF constructs, with what arguments, and which branch
 fires for which config*. So the oracle for each test is the constructed
-``scontrol``/``dask-ssh`` command string, the SLURM stdout parse, the
+``scontrol``/``dask ssh`` command string, the SLURM stdout parse, the
 subprocess-error → PybnfError mapping, the ``ceil(parallel_count/num_nodes)``
 per-node arithmetic, or the ``Client(...)``/``LocalCluster(...)`` call the
 config selects. (For glue with no math, "the right command/Client call was
@@ -13,7 +13,7 @@ made" *is* the oracle — not the mock-the-world anti-pattern.)
 The srun launcher (#614, ADR-0122) is tested the same way: its oracle is the
 ``dask scheduler`` / ``srun ... dask worker`` argument lists PyBNF constructs,
 the readiness polls it makes on the scheduler file and the worker count, and
-the branch dispatch that keeps it away from ``dask-ssh``. No SLURM and no dask
+the branch dispatch that keeps it away from ``dask ssh``. No SLURM and no dask
 is involved -- ``Popen``, ``time.sleep`` and the ``Client`` are substituted, and
 the scheduler file is a real file in ``tmp_path``.
 
@@ -204,8 +204,63 @@ class TestReadNodeNames:
 
 
 # --------------------------------------------------------------------------- #
-# setup_cluster — the dask-ssh command string + per-node arithmetic
+# check_dask_subcommand — the pre-flight on the dask CLI (#615)
 # --------------------------------------------------------------------------- #
+class _FakeEntryPoint:
+    def __init__(self, name):
+        self.name = name
+
+
+class TestCheckDaskSubcommand:
+
+    @pytest.mark.parametrize('subcommand', ['ssh', 'scheduler', 'worker'])
+    def test_the_installed_dask_really_provides_what_pybnf_runs(self, subcommand):
+        """Deliberately NOT mocked: this asks the installed environment, through the
+        same ``dask_cli`` entry point group dask's own CLI builds its command set
+        from. It is the one assertion in this file that would go red if dask renamed
+        or dropped a command PyBNF runs -- which is exactly what happened in #615,
+        where every other test here stayed green against a ``dask-ssh`` that no
+        longer existed on any current install."""
+        cluster.check_dask_subcommand(subcommand)   # must not raise
+
+    def test_missing_subcommand_names_what_is_available(self, monkeypatch):
+        """The refusal has to be actionable: it says which subcommand was wanted,
+        what the installation does offer, and which package supplies it."""
+        monkeypatch.setattr(cluster, 'entry_points',
+                            lambda group: [_FakeEntryPoint('scheduler'), _FakeEntryPoint('worker')])
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.check_dask_subcommand('ssh')
+        assert "no 'ssh' subcommand" in str(exc.value)
+        assert 'scheduler, worker' in str(exc.value)          # what is there instead
+        assert 'distributed' in exc.value.message             # the hint names the package
+
+    def test_no_dask_cli_at_all_is_a_distinct_error(self, monkeypatch):
+        """A dask too old to have a command line interface is a different problem
+        from a dask whose CLI lacks one command, and says so."""
+        monkeypatch.setattr(cluster, 'find_spec', lambda name: None)
+        with pytest.raises(printing.PybnfError, match='no command line interface'):
+            cluster.check_dask_subcommand('ssh')
+
+    def test_the_group_queried_is_the_one_dask_itself_reads(self, monkeypatch):
+        """The check is only as good as the question it asks: dask assembles its
+        subcommands from the ``dask_cli`` entry point group, so anything this cannot
+        see, ``dask`` cannot run either."""
+        groups = []
+        monkeypatch.setattr(cluster, 'entry_points',
+                            lambda group: groups.append(group) or [_FakeEntryPoint('ssh')])
+        cluster.check_dask_subcommand('ssh')
+        assert groups == ['dask_cli']
+
+
+# --------------------------------------------------------------------------- #
+# setup_cluster — the dask ssh command string + per-node arithmetic
+# --------------------------------------------------------------------------- #
+# What PyBNF prepends to every worker-launch command (#615). Spelled out here
+# rather than imported from cluster.DASK_CLI so that the tests below pin the
+# actual argv, not merely agree with whatever the module happens to build.
+DASK_SSH = [sys.executable, '-m', 'dask', 'ssh']
+
+
 class TestSetupCluster:
 
     def _patch(self, monkeypatch, cpu=4, returncode=None, stderr_bytes=b''):
@@ -229,7 +284,7 @@ class TestSetupCluster:
         return popen_calls
 
     def test_default_parallel_count_uses_cpu_count(self, monkeypatch):
-        """parallel_count=None ⇒ dask-ssh's own default of one worker per CPU:
+        """parallel_count=None ⇒ dask ssh's own default of one worker per CPU:
         ``--nthreads 1 --nworkers {cpu_count()}`` (note this branch's flag order is
         --nthreads then --nworkers). Oracle: the exact argument list (ROB-3: an argv
         list launched with no shell, each node its own entry) with cpu_count()=7."""
@@ -238,7 +293,7 @@ class TestSetupCluster:
 
         assert proc.poll() is None
         (args, kwargs), = popen_calls
-        assert args[0] == ['dask-ssh', 'n1', 'n2',
+        assert args[0] == [*DASK_SSH, 'n1', 'n2',
                            '--log-directory', '/out', '--nthreads', '1', '--nworkers', '7']
         assert kwargs.get('shell', False) is False         # no shell -> no injection
         assert kwargs['stdout'] is cluster.DEVNULL
@@ -247,15 +302,41 @@ class TestSetupCluster:
         assert kwargs['stderr'] is not cluster.DEVNULL
         assert hasattr(kwargs['stderr'], 'read')
 
+    def test_the_launcher_is_dask_ssh_through_this_interpreter(self, monkeypatch):
+        """#615: the command is the ``dask ssh`` *subcommand*, run through the
+        interpreter running PyBNF -- not the standalone ``dask-ssh`` script, which
+        distributed stopped installing in 2026.6.0 and whose absence killed every
+        multi-machine run on FileNotFoundError, and not a bare ``dask`` from PATH,
+        which could belong to a different environment than this fit (dask ssh
+        passes its own sys.executable on to the remote workers)."""
+        popen_calls = self._patch(monkeypatch)
+        cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
+
+        (args, _), = popen_calls
+        assert args[0][:4] == [sys.executable, '-m', 'dask', 'ssh']
+        assert 'dask-ssh' not in args[0]
+        assert args[0][0] != 'dask'
+
+    def test_a_missing_subcommand_is_refused_before_launching(self, monkeypatch):
+        """The pre-flight runs *before* Popen, so a dask that cannot do this reads
+        as a configuration error naming what is installed, rather than as a
+        FileNotFoundError traceback ("an unknown error ... please report this bug")
+        from a process PyBNF already tried to start."""
+        popen_calls = self._patch(monkeypatch)
+        monkeypatch.setattr(cluster, 'entry_points', lambda group: [])
+        with pytest.raises(printing.PybnfError, match="no 'ssh' subcommand"):
+            cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
+        assert popen_calls == []
+
     def test_running_proc_is_returned_without_raising(self, monkeypatch):
-        """The happy path: dask-ssh is still running after the startup wait
+        """The happy path: dask ssh is still running after the startup wait
         (poll() is None), so setup_cluster returns the proc rather than raising."""
         self._patch(monkeypatch)
         proc = cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
         assert proc.poll() is None
 
     def test_failed_bringup_raises_with_stderr(self, monkeypatch):
-        """If dask-ssh has already exited after the startup wait, the cluster
+        """If dask ssh has already exited after the startup wait, the cluster
         never came up. setup_cluster must raise PybnfError (not return a dead
         proc that later surfaces as an opaque Client connection error), and the
         captured stderr is included for diagnosis."""
@@ -276,7 +357,7 @@ class TestSetupCluster:
         cluster.Cluster.setup_cluster('a b c', '/log', parallel_count=5)
 
         (args, _), = popen_calls
-        assert args[0] == ['dask-ssh', 'a', 'b', 'c',
+        assert args[0] == [*DASK_SSH, 'a', 'b', 'c',
                            '--log-directory', '/log', '--nworkers', '2', '--nthreads', '1']
 
     def test_parallel_count_exact_division(self, monkeypatch):
@@ -285,7 +366,7 @@ class TestSetupCluster:
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('h1 h2', '/log', parallel_count=4)
         (args, _), = popen_calls
-        assert args[0] == ['dask-ssh', 'h1', 'h2',
+        assert args[0] == [*DASK_SSH, 'h1', 'h2',
                            '--log-directory', '/log', '--nworkers', '2', '--nthreads', '1']
 
     def test_single_node_gets_all_workers(self, monkeypatch):
@@ -294,21 +375,21 @@ class TestSetupCluster:
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('only', '/log', parallel_count=6)
         (args, _), = popen_calls
-        assert args[0] == ['dask-ssh', 'only',
+        assert args[0] == [*DASK_SSH, 'only',
                            '--log-directory', '/log', '--nworkers', '6', '--nthreads', '1']
 
     def test_node_names_passed_as_literal_argv_no_shell(self, monkeypatch):
-        """ROB-3: node names reach dask-ssh as their own literal argv entries with
+        """ROB-3: node names reach dask ssh as their own literal argv entries with
         shell off, so a metacharacter-bearing node name can't be interpreted by a
         shell."""
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('n1$(whoami) n2', '/log', parallel_count=2)
         (args, kwargs), = popen_calls
-        assert args[0][:3] == ['dask-ssh', 'n1$(whoami)', 'n2']  # literal, unexpanded
+        assert args[0][:len(DASK_SSH) + 2] == [*DASK_SSH, 'n1$(whoami)', 'n2']  # literal, unexpanded
         assert kwargs.get('shell', False) is False
 
     def test_sleeps_ten_seconds_for_startup(self, monkeypatch):
-        """After launching dask-ssh, setup_cluster waits 10s for workers to come
+        """After launching dask ssh, setup_cluster waits 10s for workers to come
         up before returning the proc. Oracle: time.sleep called once with 10."""
         self._patch(monkeypatch)
         sleeps = []
@@ -419,7 +500,7 @@ class TestInitNodeDispatch:
 
     def test_scheduler_file_skips_setup_and_uses_scheduler_file_client(self, monkeypatch):
         """scheduler_file set ⇒ the scheduler is read from the shared-FS file:
-        no dask-ssh bring-up (_dask_proc is None, setup_cluster never called) and
+        no dask ssh bring-up (_dask_proc is None, setup_cluster never called) and
         the client is built via Client(scheduler_file=...). read_node_names is
         bypassed entirely."""
         rec = _patch_init(monkeypatch)
@@ -433,7 +514,7 @@ class TestInitNodeDispatch:
 
     def test_scheduler_node_plus_worker_nodes_joins_worker_list(self, monkeypatch):
         """scheduler_node + explicit worker_nodes ⇒ node_string is the
-        space-joined worker list (read_node_names is NOT consulted), dask-ssh is
+        space-joined worker list (read_node_names is NOT consulted), dask ssh is
         brought up on that list, and the client connects to scheduler_node:8786."""
         rec = _patch_init(monkeypatch)
         c = _build(_cfg(scheduler_node='head', worker_nodes=['w1', 'w2', 'w3'],
@@ -462,7 +543,7 @@ class TestInitNodeDispatch:
     def test_detected_cluster_uses_both_outputs_of_read_node_names(self, monkeypatch):
         """Neither scheduler_file nor scheduler_node ⇒ both the scheduler and the
         worker list come from read_node_names. With a non-empty node_string,
-        dask-ssh is set up and the client connects to the *detected* scheduler."""
+        dask ssh is set up and the client connects to the *detected* scheduler."""
         rec = _patch_init(monkeypatch, read_returns=('sched9', 'sched9 c1 c2'))
         c = _build(_cfg(parallel_count=4))
 
@@ -524,12 +605,12 @@ class TestInitClientDispatch:
         assert lc_kwargs['threads_per_worker'] == 1
 
     def test_local_and_dask_ssh_defaults_agree_on_one_thread(self, monkeypatch):
-        """The two default paths -- local and dask-ssh -- must request the same
+        """The two default paths -- local and dask ssh -- must request the same
         thread-per-worker policy, since the same non-thread-safe backends run on
-        both. Oracle: with nothing configured, dask-ssh asks for --nthreads 1 and
+        both. Oracle: with nothing configured, dask ssh asks for --nthreads 1 and
         the local LocalCluster asks for threads_per_worker=1.
 
-        (The dask-ssh half runs first: _patch_init replaces setup_cluster with a
+        (The dask ssh half runs first: _patch_init replaces setup_cluster with a
         fake, so the real one has to be exercised before that.)"""
         popen_calls = []
         monkeypatch.setattr(cluster, 'Popen',
@@ -589,7 +670,7 @@ class TestLocalClusterKwargs:
 
 
 # --------------------------------------------------------------------------- #
-# teardown — close the client, terminate the dask-ssh proc only if it exists
+# teardown — close the client, terminate the launcher proc only if it exists
 # --------------------------------------------------------------------------- #
 def _torn_down(client=None, dask_proc=None, scheduler_proc=None, scheduler_file=None):
     """A Cluster built by hand, carrying only the attributes teardown reads."""
@@ -604,7 +685,7 @@ def _torn_down(client=None, dask_proc=None, scheduler_proc=None, scheduler_file=
 class TestTeardown:
 
     def test_closes_client_and_terminates_proc(self):
-        """With a live dask-ssh proc, teardown closes the client and terminates
+        """With a live dask ssh proc, teardown closes the client and terminates
         the proc."""
         proc = _ProcStub()
         c = _torn_down(dask_proc=proc)
@@ -615,7 +696,7 @@ class TestTeardown:
         assert proc.terminated is True
 
     def test_no_proc_only_closes_client(self):
-        """When _dask_proc is None (a local client with no dask-ssh subprocess),
+        """When _dask_proc is None (a local client with no dask ssh subprocess),
         teardown closes the client and must NOT attempt to terminate None — an
         unconditional terminate would raise AttributeError here."""
         c = _torn_down()
@@ -1105,12 +1186,12 @@ class TestInitSrunDispatch:
     def test_srun_type_never_reaches_dask_ssh(self, monkeypatch):
         """#614's whole point: with the srun launcher selected, the SSH bring-up
         must not run. (``re.match('slurm', 'slurm-srun')`` succeeds, so a dispatch
-        that tested the SSH branch first would have started dask-ssh here and
+        that tested the SSH branch first would have started dask ssh here and
         failed the login this issue is about.)"""
         rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2'))
         c = _build(self._cfg_srun())
 
-        assert rec.setup_calls == []                        # no dask-ssh
+        assert rec.setup_calls == []                        # no dask ssh
         assert len(rec.srun_setup_calls) == 1
         assert c.local is False
 
@@ -1195,7 +1276,7 @@ class TestInitSrunDispatch:
         with caplog.at_level('WARNING'):
             _build(self._cfg_srun(scheduler_node='head', worker_nodes=['w1', 'w2']))
 
-        assert rec.setup_calls == []                       # no dask-ssh to those nodes
+        assert rec.setup_calls == []                       # no dask ssh to those nodes
         assert rec.client_calls[0][1].get('scheduler_file')  # connected by file, not to head:8786
         assert any('ignored' in r.message for r in caplog.records)
 

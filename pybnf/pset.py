@@ -221,9 +221,9 @@ def _subprocess_env(cmd, env=None):
 # or normal completion) by SIGKILL-ing each recorded group -- see
 # reap_active_sims(). The directory is node-local (each host's own tempdir), so
 # its PGIDs are only ever killed by a process on the same host, because killpg is
-# host-local. Remote dask-ssh worker nodes get no registry (the env var below is
-# not inherited across ssh); their orphans are cleaned by SLURM's cgroup tracking
-# at step/job teardown.
+# host-local. Remote cluster worker nodes get no registry (the env var below is
+# inherited by neither an ssh login nor an srun task); their orphans are cleaned by
+# SLURM's cgroup tracking at step/job teardown.
 #
 # Storage is bounded: the files are empty (the PGID *is* the filename) and are
 # removed when their sim finishes, so the live count tracks the number of

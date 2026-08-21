@@ -588,7 +588,7 @@ def _reap_running_sims():
     Called from ``main()``'s finally on every exit. On a clean finish it is a
     no-op (finished sims have deregistered); on a Ctrl-C or crash it kills the
     in-flight, detached sim process groups that would otherwise orphan (the
-    "kill -9 needed" problem). Local node only: sims on remote dask-ssh worker
+    "kill -9 needed" problem). Local node only: sims on remote worker
     nodes are cleaned by SLURM's cgroup tracking at step/job teardown.
     """
     try:
@@ -601,7 +601,7 @@ def _reap_running_sims():
 
 def _teardown_cluster(cluster):
     """Tear down the dask cluster after a run, logging (not raising on) any failure."""
-    # Stop dask-ssh regardless of success
+    # Stop the cluster's worker launcher (dask ssh, or srun) regardless of success
     if cluster:
         try:
             cluster.teardown()

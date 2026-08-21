@@ -3,14 +3,14 @@
 Two launchers bring up a multi-machine cluster, chosen by ``cluster_type``:
 
 * the **SSH launcher** (``cluster_type = slurm``, or ``scheduler_node`` / ``worker_nodes``
-  set by hand), which runs ``dask-ssh`` and therefore logs in to every node; and
+  set by hand), which runs ``dask ssh`` and therefore logs in to every node; and
 * the **srun launcher** (``cluster_type = slurm-srun``, #614), which never logs in
   anywhere. It starts the scheduler here, has SLURM place one ``dask worker`` per node
   inside the allocation the scheduler already granted, and connects through the scheduler
   file the scheduler writes.
 
 The srun launcher exists because the SSH one cannot work at all on a cluster whose nodes
-authenticate to each other by host-based or Kerberos (GSSAPI) SSH: ``dask-ssh`` logs in
+authenticate to each other by host-based or Kerberos (GSSAPI) SSH: ``dask ssh`` logs in
 with paramiko, which offers only public-key and password authentication -- it has no
 host-based support and dask never enables its GSSAPI support -- so on such a cluster the
 login fails no matter what the user configures, and no amount of ``ssh-keygen`` helps. See
@@ -20,6 +20,8 @@ docs/adr/0122 for the full argument.
 
 from .printing import PybnfError
 
+from importlib.metadata import entry_points
+from importlib.util import find_spec
 from subprocess import run, TimeoutExpired, Popen, PIPE, CalledProcessError, DEVNULL, STDOUT
 from tempfile import TemporaryFile
 
@@ -65,6 +67,60 @@ SRUN_WORKER_TIMEOUT = 120.
 READINESS_POLL_INTERVAL = 0.25
 
 
+# How PyBNF invokes dask's command line interface (#615). Two things are decided here.
+#
+# **The subcommand form.** PyBNF used to run ``dask-ssh``, one of three standalone scripts
+# (with ``dask-scheduler`` and ``dask-worker``) that distributed stopped installing in
+# 2026.6.0 -- so on any current install every multi-machine run died immediately on
+# ``FileNotFoundError: dask-ssh``, before a single simulation. The same features are
+# subcommands of the unified ``dask`` program, and have been since well before 2024.1.0,
+# the oldest dask/distributed pyproject.toml allows: that release already registers
+# ``ssh``, ``scheduler`` and ``worker`` in the ``dask_cli`` entry point group the CLI
+# builds itself from. So the new form works across the whole supported range, and no
+# version floor has to move.
+#
+# **Through this interpreter, not through PATH.** ``dask ssh`` propagates its own
+# ``sys.executable`` into the commands it starts on the remote nodes, so a ``dask``
+# resolved from PATH -- a system-wide one, say, when PyBNF is run from a virtualenv by
+# absolute path without activating it -- would start the remote workers under a different
+# Python than the one running the fit. ``-m`` makes the environment that runs the workers
+# the same one that runs PyBNF, by construction.
+DASK_CLI = [sys.executable, '-m', 'dask']
+
+
+def check_dask_subcommand(subcommand):
+    """
+    Confirm that ``dask <subcommand>`` can be run by this interpreter, before running it.
+
+    A missing command surfaces as ``FileNotFoundError`` or an unrecognized-command exit
+    from a subprocess PyBNF launched -- either an "unknown error ... please report this
+    bug" traceback or, worse, a bring-up that fails ten seconds later for a reason the
+    user has to go digging for (#615). This is the same question dask's own CLI asks when
+    it assembles its command group: subcommands come from the ``dask_cli`` entry point
+    group, so anything this check cannot see, ``dask`` cannot run either.
+
+    :param subcommand: The dask subcommand PyBNF is about to run, e.g. 'ssh'
+    :type subcommand: str
+    :raises PybnfError: if this interpreter has no dask CLI, or no such subcommand
+    """
+    if find_spec('dask.__main__') is None:
+        logger.error('The installed dask has no command line interface (dask.__main__)')
+        raise PybnfError('The installed dask (v%s) has no command line interface, which PyBNF '
+                         'needs to start workers on other machines.' % daskv,
+                         hint=['Install dask 2024.1.0 or newer in the environment running '
+                               'PyBNF (%s).' % sys.executable])
+    available = sorted(ep.name for ep in entry_points(group='dask_cli'))
+    if subcommand not in available:
+        logger.error("The dask CLI has no '%s' subcommand; it offers: %s"
+                     % (subcommand, ', '.join(available) or 'nothing'))
+        raise PybnfError("The installed dask has no '%s' subcommand, which PyBNF needs to start "
+                         "workers on other machines. Available subcommands: %s."
+                         % (subcommand, ', '.join(available) or 'none'),
+                         hint=["'%s' is provided by the distributed package (v%s here); install "
+                               'distributed 2024.1.0 or newer alongside dask in the environment '
+                               'running PyBNF (%s).' % (subcommand, distributedv, sys.executable)])
+
+
 def uses_srun(cluster_type):
     """
     Whether this ``cluster_type`` selects the srun launcher (#614).
@@ -100,13 +156,13 @@ class Cluster:
         """
         logger.info('Initializing the Cluster')
 
-        # The process that starts the workers: dask-ssh on the SSH launcher, srun on the
+        # The process that starts the workers: dask ssh on the SSH launcher, srun on the
         # srun launcher. None for a local run or when attaching to a cluster someone else
         # brought up.
         self._dask_proc = None
         # A dask scheduler PyBNF started itself, and the scheduler file it was told to
         # write. Both are None unless the srun launcher is in use -- every other path
-        # either attaches to an existing scheduler or lets dask-ssh start one (#614).
+        # either attaches to an existing scheduler or lets dask ssh start one (#614).
         self._scheduler_proc = None
         self._own_scheduler_file = None
         self._srun_worker_log = None
@@ -206,13 +262,13 @@ class Cluster:
         (issue #525 caught exactly that: concurrent emissions through bngsim's cached
         sympy->C printer intermittently reported ordinary quotients as non-differentiable,
         which killed a `trf` fit). Every other client PyBNF builds is already single-threaded
-        per worker: both ``dask-ssh`` branches pass ``--nthreads 1``, and the manual-setup
+        per worker: both ``dask ssh`` branches pass ``--nthreads 1``, and the manual-setup
         documentation recommends the same. Only the local *default* used to let dask pick,
         so a user who set nothing got the less safe configuration.
 
         ``n_workers`` is left to dask when ``parallel_count`` is None: given one thread per
         worker, dask sizes the pool at one worker per available core (``dask.system.CPU_COUNT``,
-        which honors CPU affinity and cgroup quotas), matching the ``dask-ssh`` default of
+        which honors CPU affinity and cgroup quotas), matching the ``dask ssh`` default of
         ``--nworkers <cores> --nthreads 1``. Total concurrency is therefore unchanged from the
         old default -- the same number of jobs run at once, each in its own process.
 
@@ -282,39 +338,45 @@ class Cluster:
     @staticmethod
     def setup_cluster(node_string, out_dir, parallel_count=None):
         """
-        Sets up a Dask cluster using the `dask-ssh` convenience script
+        Sets up a Dask cluster using the `dask ssh` command
 
         :param node_string: A string composed of a list of compute nodes
         :param out_dir: A directory for cluster logging output
         :param parallel_count: Total number of parallel threads to use over all nodes. If None, use all available threads
-            (the dask-ssh default)
+            (the dask ssh default)
         :return: subprocess.Popen
         """
-        logger.info(f'Starting dask-ssh subprocess using nodes {node_string}')
-        # Build the dask-ssh invocation as an argument list and launch it WITHOUT
+        # Ask before launching, so a dask that cannot do this reads as a configuration
+        # error rather than as a FileNotFoundError traceback from Popen (#615).
+        check_dask_subcommand('ssh')
+        logger.info(f'Starting dask ssh subprocess using nodes {node_string}')
+        # Build the dask ssh invocation as an argument list and launch it WITHOUT
         # a shell (ROB-3): each node name becomes its own literal argv entry, so
         # node names from config/SLURM can't be interpreted by a shell.
+        # The command is `dask ssh`, not the `dask-ssh` script PyBNF used to run:
+        # distributed stopped installing that script in 2026.6.0 (#615). See DASK_CLI
+        # for why it is invoked through this interpreter rather than found on PATH.
         # The per-host worker-count flag is --nworkers. distributed renamed it
         # from --nprocs (the old name was deprecated ~2022.10 and removed by
         # 2023.x), so --nprocs no longer parses on any supported dask version
         # (pyproject pins dask/distributed >=2024.1.0).
         nodes = node_string.split()
         if parallel_count is None:
-            dask_ssh_cmd = ['dask-ssh', *nodes,
+            dask_ssh_cmd = [*DASK_CLI, 'ssh', *nodes,
                             '--log-directory', out_dir, '--nthreads', '1', '--nworkers', str(cpu_count())]
         else:
             n_per_node = int(np.ceil(parallel_count/len(nodes)))
             logger.info('Manually setting %i workers per node' % n_per_node)
-            dask_ssh_cmd = ['dask-ssh', *nodes,
+            dask_ssh_cmd = [*DASK_CLI, 'ssh', *nodes,
                             '--log-directory', out_dir, '--nworkers', str(n_per_node), '--nthreads', '1']
-        # Capture stderr to a temp file rather than a PIPE: dask-ssh stays
+        # Capture stderr to a temp file rather than a PIPE: dask ssh stays
         # running for the whole fit, and an undrained PIPE would deadlock once
         # its buffer fills. A regular file lets us surface an early bring-up
         # failure below without that risk.
         dask_ssh_err = TemporaryFile()
         dask_ssh_proc = Popen(dask_ssh_cmd, stdout=DEVNULL, stderr=dask_ssh_err)
         time.sleep(10)
-        # If dask-ssh has already exited, the cluster never came up. Surface the
+        # If dask ssh has already exited, the cluster never came up. Surface the
         # failure here instead of letting it resurface later as an opaque dask
         # Client connection error.
         returncode = dask_ssh_proc.poll()
@@ -322,8 +384,8 @@ class Cluster:
             dask_ssh_err.seek(0)
             err_text = dask_ssh_err.read().decode('UTF-8', errors='replace').strip()
             dask_ssh_err.close()
-            logger.error(f'dask-ssh exited with code {returncode} during cluster bring-up. stderr:\n{err_text}')
-            raise PybnfError('Failed to start the dask-ssh cluster (dask-ssh exited with code {}). {}'.format(returncode, (f'Details:\n{err_text}') if err_text
+            logger.error(f'dask ssh exited with code {returncode} during cluster bring-up. stderr:\n{err_text}')
+            raise PybnfError('Failed to start the dask ssh cluster (dask ssh exited with code {}). {}'.format(returncode, (f'Details:\n{err_text}') if err_text
                                 else 'Check the cluster log directory for details.'))
         return dask_ssh_proc
 
@@ -439,8 +501,8 @@ class Cluster:
                 # Run the worker with *this* interpreter rather than whatever ``dask`` the
                 # remote PATH resolves to: the launcher exists to remove ambiguity about
                 # which environment starts the workers, and PyBNF already requires the
-                # shared filesystem that makes this path valid on every node.
-                sys.executable, '-m', 'dask', 'worker',
+                # shared filesystem that makes this path valid on every node (DASK_CLI).
+                *DASK_CLI, 'worker',
                 '--scheduler-file', scheduler_file,
                 '--nworkers', str(n_per_node),
                 # One thread per worker, for the same reason every other PyBNF-built worker
@@ -485,8 +547,10 @@ class Cluster:
             logger.info('Removing a scheduler file left over from an earlier run: %s' % scheduler_file)
             os.remove(scheduler_file)
 
+        check_dask_subcommand('scheduler')
+        check_dask_subcommand('worker')
         scheduler_log = os.path.join(out_dir, SRUN_SCHEDULER_LOG)
-        scheduler_cmd = [sys.executable, '-m', 'dask', 'scheduler', '--scheduler-file', scheduler_file]
+        scheduler_cmd = [*DASK_CLI, 'scheduler', '--scheduler-file', scheduler_file]
         logger.info('Starting the dask scheduler on this node, logging to %s' % scheduler_log)
         scheduler_proc = Cluster.popen_logged(scheduler_cmd, scheduler_log)
         try:
