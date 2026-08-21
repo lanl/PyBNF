@@ -504,6 +504,22 @@ class Cluster:
         return cpu_count(), "this machine's whole processor count (multiprocessing.cpu_count)"
 
     @staticmethod
+    def dask_scheduler_command(scheduler_file):
+        """
+        Build the ``dask scheduler`` invocation that starts the scheduler on this node.
+
+        A one-line command, named anyway so that it sits beside
+        :meth:`srun_worker_command` and can be read -- and checked against the dask that
+        is actually installed (#619) -- without starting a cluster to see it.
+
+        :param scheduler_file: Path the scheduler should write its connection information to
+        :type scheduler_file: str
+        :return: the dask scheduler argument list
+        :rtype: list
+        """
+        return [*DASK_CLI, 'scheduler', '--scheduler-file', scheduler_file]
+
+    @staticmethod
     def srun_worker_command(scheduler_file, node_count, parallel_count=None):
         """
         Build the srun invocation that starts one ``dask worker`` process group per node.
@@ -594,7 +610,7 @@ class Cluster:
         check_dask_subcommand('scheduler')
         check_dask_subcommand('worker')
         scheduler_log = os.path.join(out_dir, SRUN_SCHEDULER_LOG)
-        scheduler_cmd = [*DASK_CLI, 'scheduler', '--scheduler-file', scheduler_file]
+        scheduler_cmd = Cluster.dask_scheduler_command(scheduler_file)
         logger.info('Starting the dask scheduler on this node, logging to %s' % scheduler_log)
         scheduler_proc = Cluster.popen_logged(scheduler_cmd, scheduler_log)
         try:

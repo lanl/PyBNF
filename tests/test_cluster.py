@@ -31,6 +31,14 @@ Substitution strategy (per dependency):
     ``Cluster.setup_cluster`` — **fakes** recording their call args, so the
     ``__init__`` branch dispatch is asserted without a real dask cluster.
 
+Deliberately *not* substituted (#619): one section asks the programs that are
+actually installed whether they still exist and still take the options PyBNF
+passes them. Substituting the outside world is right for everything else here,
+but it is also why nothing here could notice #615 -- an outside program renamed
+out from under PyBNF, every multi-machine run dead, and every test still green.
+Those checks build their commands by calling the real builders, so no argv is
+written down twice, and they skip where the program is not installed.
+
 #393 note: these assert PyBNF's *own* command-string / branch logic, never
 dask/distributed internals or a pinned dask version (the version-specific
 ``reinit_logging`` workaround is asserted *to be called*, not pinned), so they
@@ -38,12 +46,16 @@ remain a valid safety net across the dask-unpinning upgrade.
 """
 import json
 import os
+import re
 import sys
 import types
 
 import pytest
 
-from subprocess import TimeoutExpired, CalledProcessError
+from functools import lru_cache
+from importlib.util import find_spec
+from shutil import which
+from subprocess import run, PIPE, STDOUT, TimeoutExpired, CalledProcessError
 
 from .context import cluster, printing
 
@@ -256,14 +268,233 @@ class TestCheckDaskSubcommand:
 
 
 # --------------------------------------------------------------------------- #
+# The programs PyBNF runs, against the programs that are actually installed
+# (#619)
+# --------------------------------------------------------------------------- #
+# Every other test in this file substitutes the outside world. That is right --
+# they are about PyBNF's own branch and command-building logic -- but it is also
+# why none of them could notice #615, where distributed stopped installing
+# ``dask-ssh``, every multi-machine run died on FileNotFoundError before a single
+# simulation, and every test here kept passing: the name they compared against was
+# a copy of the wrong name, written into this file.
+#
+# These checks close that gap by asking the installed programs themselves. Each
+# one takes a command from the code that builds it for a real fit -- no argv is
+# written down a second time here -- and asks the program named in it whether it
+# runs, whether it still has that subcommand, and whether its ``--help`` still
+# declares every option PyBNF passes. A renamed command or a renamed option fails
+# here, loudly, while the mocked tests below go on pinning the argv PyBNF is
+# supposed to build.
+
+
+# What PyBNF prepends to every command it hands to dask (#615). Written out once,
+# rather than imported from cluster.DASK_CLI, so that the mocked tests below pin
+# the actual argv instead of agreeing with the module by construction -- and
+# written out only *once*, because #619 is in part about a name that had to be
+# corrected in seven places. The copy and the original are compared in
+# test_the_invocation_these_tests_pin_is_the_modules_own, so the copy cannot drift
+# away unnoticed either.
+DASK = [sys.executable, '-m', 'dask']
+DASK_SSH = [*DASK, 'ssh']
+
+
+@lru_cache(maxsize=None)
+def _help_text(argv):
+    """Run a program's help screen and return what it printed.
+
+    ``argv`` is a tuple so that it can be a cache key: several checks read the
+    same screen, and each reading costs a process.
+    """
+    proc = run([*argv, '--help'], stdout=PIPE, stderr=STDOUT, timeout=120)
+    output = proc.stdout.decode('UTF-8', errors='replace')
+    assert proc.returncode == 0, ('`%s --help` failed (exit %s), so PyBNF cannot run it '
+                                  'either:\n%s' % (' '.join(argv), proc.returncode, output))
+    return output
+
+
+_DECLARED_OPTION_RE = re.compile(r'^ {1,4}(-[^\s,]+(?:,\s+-[^\s,]+)*)')
+
+
+def _declared_options(help_text):
+    """The option names a click ``--help`` screen declares.
+
+    Read from the option column alone -- a declaration begins within the first
+    few columns of its line, while the description beside it wraps far deeper in.
+    The distinction earns its keep: ``dask worker --help`` names ``--nworkers``
+    inside the prose describing three *other* options, so a search of the whole
+    screen would go on passing after the option itself was gone.
+    """
+    declared = set()
+    for line in help_text.splitlines():
+        match = _DECLARED_OPTION_RE.match(line)
+        if match:
+            declared.update(word.strip() for word in match.group(1).split(','))
+    return declared
+
+
+def _help_mentions(help_text, option):
+    """Whether a help screen names an option anywhere, as a whole word.
+
+    Weaker than :func:`_declared_options`, and used only for a program whose help
+    is not laid out by click and whose layout cannot be checked from a developer
+    machine. It still catches the failure that matters: an option that no longer
+    exists, whose name has left the screen entirely.
+    """
+    return re.search(r'(?<![\w-])%s(?![\w-])' % re.escape(option), help_text) is not None
+
+
+def _split_at_dask_cli(argv):
+    """Split a command PyBNF builds into (what comes before dask, dask's own argv).
+
+    The dask CLI is *located* in the argv rather than assumed to start it, since
+    the srun launcher puts srun's own arguments in front. Failing to find it is an
+    error, which makes this the check that every worker-launch command goes
+    through ``cluster.DASK_CLI`` -- the one place that decides how dask is invoked
+    -- rather than through a spelling of its own.
+    """
+    width = len(cluster.DASK_CLI)
+    for i in range(len(argv) - width + 1):
+        if argv[i:i + width] == cluster.DASK_CLI:
+            return argv[:i], argv[i + width:]
+    raise AssertionError('%r does not invoke the dask CLI (%r)' % (argv, cluster.DASK_CLI))
+
+
+def _options_in(argv):
+    """The options a command passes, deduplicated and in a stable order."""
+    return sorted({a for a in argv if a.startswith('-')})
+
+
+def _ssh_command(monkeypatch):
+    """The argv ``setup_cluster`` hands to Popen, built by the real code path."""
+    launched = []
+    monkeypatch.setattr(cluster, 'Popen',
+                        lambda cmd, **kwargs: launched.append(cmd) or _FakeDaskProc())
+    monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+    monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+    cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
+    return launched[0]
+
+
+def _scheduler_command(monkeypatch):
+    """The argv the srun launcher starts its scheduler with. Takes ``monkeypatch``
+    it does not need, so that all three builders can be called the same way."""
+    return cluster.Cluster.dask_scheduler_command('/shared/dask_scheduler.json')
+
+
+def _worker_command(monkeypatch):
+    """The argv the srun launcher starts its workers with -- srun's own arguments
+    in front, then the dask CLI."""
+    monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+    return cluster.Cluster.srun_worker_command('/shared/dask_scheduler.json', 2)
+
+
+# Every dask command PyBNF builds, keyed by the subcommand it runs and produced
+# by calling the code that produces it for a real fit.
+DASK_COMMAND_BUILDERS = {'ssh': _ssh_command,
+                         'scheduler': _scheduler_command,
+                         'worker': _worker_command}
+
+
+class TestTheInstalledDaskIsTheOnePyBNFRuns:
+
+    # dask itself is a hard dependency -- this module cannot even import without
+    # it -- but its command line interface is a separate module that an unusually
+    # trimmed install can lack, and PyBNF already treats that as its own error.
+    pytestmark = pytest.mark.skipif(find_spec('dask.__main__') is None,
+                                    reason='the installed dask has no command line interface')
+
+    def test_the_dask_cli_pybnf_invokes_can_actually_be_run(self):
+        """The plainest form of what #615 broke: the program does not exist. Asked
+        of ``cluster.DASK_CLI`` itself, so what is proved runnable is the
+        invocation PyBNF uses rather than a spelling of it kept here."""
+        assert 'Usage' in _help_text(tuple(cluster.DASK_CLI))
+
+    @pytest.mark.parametrize('subcommand', sorted(DASK_COMMAND_BUILDERS))
+    def test_each_command_runs_a_dask_subcommand_that_still_exists(self, subcommand, monkeypatch):
+        """Every command PyBNF builds goes through the dask CLI and names a
+        subcommand the installed dask really has -- established by running it, not
+        by reading an entry point (which is what ``check_dask_subcommand`` does,
+        one step further from what happens at bring-up)."""
+        _, dask_argv = _split_at_dask_cli(DASK_COMMAND_BUILDERS[subcommand](monkeypatch))
+        assert dask_argv[0] == subcommand
+        assert 'Usage' in _help_text((*cluster.DASK_CLI, subcommand))
+
+    @pytest.mark.parametrize('subcommand', sorted(DASK_COMMAND_BUILDERS))
+    def test_every_option_pybnf_passes_is_still_declared_by_dask(self, subcommand, monkeypatch):
+        """The half of #619 the subcommand check cannot reach: a command that still
+        exists but no longer takes the option PyBNF hands it. ``--nworkers`` is
+        itself a survivor of that -- distributed renamed it from ``--nprocs`` --
+        and the next rename would otherwise reach a user as a bring-up that fails
+        ten seconds in, with dask's complaint in a log nobody is reading."""
+        _, dask_argv = _split_at_dask_cli(DASK_COMMAND_BUILDERS[subcommand](monkeypatch))
+        declared = _declared_options(_help_text((*cluster.DASK_CLI, subcommand)))
+        missing = [opt for opt in _options_in(dask_argv) if opt not in declared]
+        assert not missing, ('`dask %s` no longer declares %s, which PyBNF passes it'
+                             % (subcommand, ', '.join(missing)))
+
+    def test_dask_ssh_accepts_the_whole_command_pybnf_builds(self, monkeypatch):
+        """Stronger than reading the help screen, because dask does the reading:
+        the real command is handed to the real program with ``--help`` appended,
+        which parses every option and its value and then stops before an SSH login
+        is attempted. An unknown option is refused there with a non-zero exit.
+        Only ``dask ssh`` can be asked this way -- ``scheduler`` and ``worker``
+        forward unrecognized arguments to preload modules rather than refusing
+        them, so for those two the help screen is the only witness."""
+        assert 'Usage' in _help_text(tuple(_ssh_command(monkeypatch)))
+
+    def test_the_invocation_these_tests_pin_is_the_modules_own(self):
+        """The mocked tests below spell the invocation out, so that they pin the
+        real argv rather than agreeing with the module by construction. This is
+        what keeps that spelling honest: the copy and ``cluster.DASK_CLI`` are
+        compared here, once, so a change made to one and not the other is a
+        failure rather than a silent divergence."""
+        assert DASK == cluster.DASK_CLI
+
+
+class TestTheInstalledSlurmIsTheOnePyBNFRuns:
+    """The same question asked of SLURM's own programs.
+
+    Skipped wherever SLURM is not installed, which is every developer machine and
+    every CI runner. That does not make it dead weight: PyBNF's tests are run on
+    clusters, and a cluster is the one place where a renamed ``srun`` option can be
+    caught before a fit walks into it. #619 is about the whole class of outside
+    programs, not about dask alone.
+    """
+
+    # ``srun``'s presence is what says SLURM is installed here at all; the checks
+    # below then hold the individual programs to what PyBNF names.
+    pytestmark = pytest.mark.skipif(which('srun') is None, reason='SLURM is not installed here')
+
+    def test_srun_still_takes_every_option_the_launcher_passes(self, monkeypatch):
+        """The srun half of the worker-launch command, held to the srun that is
+        installed. ``--cpus-per-task`` in particular is load-bearing rather than
+        decorative -- without it a task confines every worker it forks to one CPU
+        -- so a rename there would quietly serialize a node rather than fail."""
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+        srun_argv, _ = _split_at_dask_cli(
+            cluster.Cluster.srun_worker_command('/shared/dask_scheduler.json', 2))
+        help_text = _help_text((srun_argv[0],))
+        missing = [opt for opt in _options_in(srun_argv) if not _help_mentions(help_text, opt)]
+        assert not missing, ('`%s` no longer mentions %s, which PyBNF passes it'
+                             % (srun_argv[0], ', '.join(missing)))
+
+    def test_the_node_list_is_read_with_a_program_that_is_installed(self, monkeypatch):
+        """``scontrol`` is the other SLURM program PyBNF runs, and the one whose
+        absence would stop a cluster fit first: the node list is read before
+        anything is launched. Its name is taken from the command PyBNF builds, so
+        this fails if PyBNF starts naming something this SLURM does not ship."""
+        named = []
+        monkeypatch.setattr(cluster, 'run',
+                            lambda cmd, **kwargs: named.append(cmd) or _FakeProc(b'n1\n'))
+        cluster.Cluster.read_node_names(_cfg(cluster_type='slurm'))
+        program = named[0][0]
+        assert which(program) is not None, ('PyBNF reads the node list with %r, which is not '
+                                            'installed on this SLURM system' % program)
+
+
+# --------------------------------------------------------------------------- #
 # setup_cluster — the dask ssh command string + per-node arithmetic
 # --------------------------------------------------------------------------- #
-# What PyBNF prepends to every worker-launch command (#615). Spelled out here
-# rather than imported from cluster.DASK_CLI so that the tests below pin the
-# actual argv, not merely agree with whatever the module happens to build.
-DASK_SSH = [sys.executable, '-m', 'dask', 'ssh']
-
-
 class TestSetupCluster:
 
     def _patch(self, monkeypatch, granted=None, affinity=4, cpu=64,
@@ -377,7 +608,7 @@ class TestSetupCluster:
         cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
 
         (args, _), = popen_calls
-        assert args[0][:4] == [sys.executable, '-m', 'dask', 'ssh']
+        assert args[0][:4] == DASK_SSH
         assert 'dask-ssh' not in args[0]
         assert args[0][0] != 'dask'
 
@@ -957,7 +1188,7 @@ class TestSrunWorkerCommand:
         cmd = cluster.Cluster.srun_worker_command('/shared/s.json', 3, parallel_count=None)
         assert cmd == ['srun', '--nodes', '3', '--ntasks', '3', '--ntasks-per-node', '1',
                        '--cpus-per-task', '8', '--label',
-                       sys.executable, '-m', 'dask', 'worker',
+                       *DASK, 'worker',
                        '--scheduler-file', '/shared/s.json',
                        '--nworkers', '8', '--nthreads', '1']
 
@@ -1192,8 +1423,7 @@ class TestSetupSrunCluster:
             str(sched_file), str(tmp_path), 2, parallel_count=None)
 
         (sched_cmd, sched_kwargs), (srun_cmd, srun_kwargs) = spy.calls
-        assert sched_cmd == [sys.executable, '-m', 'dask', 'scheduler',
-                             '--scheduler-file', str(sched_file)]
+        assert sched_cmd == [*DASK, 'scheduler', '--scheduler-file', str(sched_file)]
         assert srun_cmd[0] == 'srun'
         assert srun_cmd[srun_cmd.index('--scheduler-file') + 1] == str(sched_file)
         assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '4'
