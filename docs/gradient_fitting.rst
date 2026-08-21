@@ -234,7 +234,12 @@ are worth leaving alone unless you have a reason:
 * ``ms_segments`` (default ``4``) — the **finest** rung of the ladder, and ``ms_coarsening``
   (default ``2``) the factor between rungs. Starting with many short segments is the wrong end:
   under partial observability an over-segmented stage is under-determined and routinely certifies
-  worse than its own start.
+  worse than its own start. Where that bites is a property of the fit rather than of ``m``: the
+  ``4`` was chosen on the *median* over eight starts at one perturbation radius of the motivating
+  problem, which observes one state of three and leaves ~14 points per segment at ``m = 8``. A
+  repeat at a wider radius favoured ``m = 8`` on the *tail* with the medians close (#585), and a
+  more fully observed or more densely sampled fit can afford a finer rung — but neither
+  measurement is evidence about a different model, which is why the default has not moved.
 * ``ms_penalty`` (default ``10``) and ``ms_penalty_growth`` (default ``5``) — the augmented
   Lagrangian's initial penalty and its growth factor, capped at ``ms_max_penalty``. Deliberately
   **tight**: a loose start was measured both worse *and* twice as expensive, because the inner
