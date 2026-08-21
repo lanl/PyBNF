@@ -498,7 +498,7 @@ class TestTheInstalledSlurmIsTheOnePyBNFRuns:
 class TestSetupCluster:
 
     def _patch(self, monkeypatch, granted=None, affinity=4, cpu=64,
-               returncode=None, stderr_bytes=b''):
+               returncode=None, output_bytes=b''):
         """Patch what setup_cluster touches: Popen (capture the command),
         time.sleep (don't actually wait 10s), and every source the default worker
         count can come from, so the count is deterministic *and* it is visible which
@@ -507,15 +507,17 @@ class TestSetupCluster:
         affinity/cgroup count dask derives, and the whole machine's ``cpu_count()``.
         The three defaults are deliberately three different numbers.
         The fake proc's ``poll()`` returns ``returncode`` (None = still running,
-        the healthy default); if ``stderr_bytes`` is given the fake writes it to
-        the stderr file setup_cluster handed to Popen, so the early-exit error
-        path can read it back. Returns the recorder list of Popen (args, kwargs)."""
+        the healthy default); if ``output_bytes`` is given the fake writes it to
+        the capture file setup_cluster handed to Popen, so the early-exit error
+        path can read it back. It is written to the **stdout** handle because that
+        is the stream dask explains an SSH failure on (#618), and because stderr is
+        merged into it. Returns the recorder list of Popen (args, kwargs)."""
         popen_calls = []
 
         def fake_popen(*args, **kwargs):
             popen_calls.append((args, kwargs))
-            if stderr_bytes:
-                kwargs['stderr'].write(stderr_bytes)
+            if output_bytes:
+                kwargs['stdout'].write(output_bytes)
             return _FakeDaskProc(returncode)
 
         monkeypatch.setattr(cluster, 'Popen', fake_popen)
@@ -542,11 +544,10 @@ class TestSetupCluster:
         assert args[0] == [*DASK_SSH, 'n1', 'n2',
                            '--log-directory', '/out', '--nthreads', '1', '--nworkers', '7']
         assert kwargs.get('shell', False) is False         # no shell -> no injection
-        assert kwargs['stdout'] is cluster.DEVNULL
-        # stderr is captured to a readable file (not discarded), so an early
-        # bring-up failure can be surfaced — see test_failed_bringup_*.
-        assert kwargs['stderr'] is not cluster.DEVNULL
-        assert hasattr(kwargs['stderr'], 'read')
+        # Both streams are captured to one readable file (nothing is discarded), so an
+        # early bring-up failure can be surfaced — see test_failed_bringup_*.
+        assert hasattr(kwargs['stdout'], 'read')
+        assert kwargs['stderr'] is cluster.STDOUT
 
     def test_default_worker_count_is_not_the_size_of_the_machine(self, monkeypatch):
         """#616, stated as the reported case: a job granted 4 CPUs of a
@@ -630,18 +631,178 @@ class TestSetupCluster:
         proc = cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
         assert proc.poll() is None
 
-    def test_failed_bringup_raises_with_stderr(self, monkeypatch):
+    def test_failed_bringup_raises_with_the_captured_output(self, monkeypatch):
         """If dask ssh has already exited after the startup wait, the cluster
         never came up. setup_cluster must raise PybnfError (not return a dead
-        proc that later surfaces as an opaque Client connection error), and the
-        captured stderr is included for diagnosis."""
+        proc that later surfaces as an opaque Client connection error), and
+        everything dask ssh said is included for diagnosis."""
         self._patch(monkeypatch, returncode=1,
-                    stderr_bytes=b'ssh: connect to host node9 port 22: Connection refused')
+                    output_bytes=b'ssh: connect to host node9 port 22: Connection refused')
         with pytest.raises(printing.PybnfError) as exc:
             cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
         msg = str(exc.value)
         assert 'code 1' in msg
         assert 'Connection refused' in msg
+
+    def test_bringup_captures_the_stream_dask_explains_itself_on(self, monkeypatch):
+        """#618: dask's own account of a failed login -- the node it was connecting
+        to and the exception paramiko raised -- is ``print``ed, i.e. written to
+        **stdout**; only the traceback falls to stderr. Sending stdout to DEVNULL
+        discarded the half of the output that names the cause, which is how a
+        refused login reached the user as a bare exit code. Oracle: what dask writes
+        to stdout comes back in the message."""
+        self._patch(monkeypatch, returncode=1,
+                    output_bytes=b'[ dask ssh ] : SSH connection error when connecting to '
+                                 b'node9:22\n               SSH reported this exception: '
+                                 b'Authentication failed.\n')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        assert 'SSH reported this exception: Authentication failed.' in str(exc.value)
+
+    def test_dask_is_run_unbuffered_so_its_own_account_survives(self, monkeypatch):
+        """#618, and the reason capturing stdout is worth anything: dask ends a failed
+        bring-up with ``os._exit(1)``, which does not flush Python's buffers. Its
+        stdout, writing to a file, is block-buffered, and its few hundred bytes of
+        explanation never reach the 8 KB that would force a write -- so the whole of
+        it is discarded at exit. Measured against dask 2026.7.1 on a login that
+        fails: 0 of dask's own lines survive without ``PYTHONUNBUFFERED``, all 15
+        with it. The rest of the environment is passed through, since the workers dask
+        starts inherit it (PATH, a loaded module's variables, BNGPATH)."""
+        monkeypatch.setenv('BNGPATH', '/opt/bng')
+        popen_calls = self._patch(monkeypatch)
+        cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
+
+        (_, kwargs), = popen_calls
+        assert kwargs['env']['PYTHONUNBUFFERED'] == '1'
+        assert kwargs['env']['BNGPATH'] == '/opt/bng'
+
+    def test_traceback_frames_are_folded_out_of_the_message(self, monkeypatch):
+        """What dask ssh writes on a failed login is mostly traceback -- one per node
+        per retry, a dozen frames of dask's and paramiko's own source each -- and the
+        sentences that say what happened are buried in it, or pushed out of the
+        message by them. The frames come out of the message; the exception line each
+        traceback ends with, and dask's own lines, stay."""
+        self._patch(monkeypatch, returncode=1, output_bytes=(
+            b'[ dask ssh ] : SSH connection error when connecting to node9:22\n'
+            b'Traceback (most recent call last):\n'
+            b'  File "/x/distributed/deploy/old_ssh.py", line 47, in async_ssh\n'
+            b'    ssh.connect(\n'
+            b'    ^^^^^^^^^^^^\n'
+            b'paramiko.ssh_exception.AuthenticationException: Authentication failed.\n'
+            b'               Retrying... (attempt 1/3)\n'))
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        message = exc.value.message
+        assert 'SSH connection error when connecting to node9:22' in message
+        assert 'AuthenticationException: Authentication failed.' in message
+        assert 'Retrying... (attempt 1/3)' in message      # indented, but not a frame
+        assert 'old_ssh.py' not in message                 # the frames themselves
+        assert 'Traceback' not in message
+
+    def test_the_log_keeps_the_frames_the_message_folds(self, monkeypatch, caplog):
+        """The folding is a choice about the *message*, which a user reads once and
+        has to act on. Nothing is lost: the log keeps the output as it was written,
+        for whoever ends up reading the traceback."""
+        self._patch(monkeypatch, returncode=1, output_bytes=(
+            b'Traceback (most recent call last):\n'
+            b'  File "/x/distributed/deploy/old_ssh.py", line 47, in async_ssh\n'
+            b'paramiko.ssh_exception.AuthenticationException: Authentication failed.\n'))
+        with caplog.at_level('ERROR', logger='pybnf.cluster'):
+            with pytest.raises(printing.PybnfError):
+                cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        line, = [r.message for r in caplog.records if 'dask ssh exited' in r.message]
+        assert 'old_ssh.py' in line
+
+    def test_a_login_failure_is_named_as_one(self, monkeypatch):
+        """#618: the reported case was a failed login, and nothing in the message
+        said so. When the output carries the vocabulary of a refused credential, the
+        message says the login is the likely cause and says what PyBNF logs in with
+        -- a library that can offer only a public key or a password -- since that is
+        what makes the failure survive ``ssh-keygen``, and makes plain ``ssh``
+        succeeding from the same shell no evidence at all."""
+        self._patch(monkeypatch, returncode=1,
+                    output_bytes=b'paramiko.ssh_exception.AuthenticationException: '
+                                 b'Authentication failed.')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        message = exc.value.message
+        assert 'login' in message
+        assert 'paramiko' in message
+        assert 'public key' in message and 'password' in message
+        assert 'host-based' in message and 'GSSAPI' in message
+
+    def test_a_network_failure_is_not_blamed_on_the_login(self, monkeypatch):
+        """The converse, and the reason the test above is not satisfied by saying
+        "login" every time: a machine that could not be reached at all is a
+        different problem, and answering it with advice about keys and passwords
+        would send the user off to fix something that is not broken."""
+        self._patch(monkeypatch, returncode=1,
+                    output_bytes=b'paramiko.ssh_exception.NoValidConnectionsError: '
+                                 b'[Errno None] Unable to connect to port 22 on 10.0.0.9')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        message = exc.value.message
+        assert 'failed login' not in message                    # no diagnosis is offered
+        assert 'public key' not in message
+        assert 'Unable to connect to port 22' in message        # ... but the output is quoted
+
+    def test_failure_names_both_ways_of_running_without_a_login(self, monkeypatch):
+        """#618: the failure ends the run, so the message is the whole of what the
+        user gets, and both ways of using several machines that never log in
+        anywhere are named -- srun inside the allocation (#614) and a scheduler file
+        naming a cluster that is already up. Named whatever the cause, since
+        anything that stops dask ssh leaves them as the ways forward: this is the
+        no-login-vocabulary case."""
+        self._patch(monkeypatch, returncode=1, output_bytes=b'exit status 127')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        message = exc.value.message
+        assert 'slurm-srun' in message
+        assert 'scheduler_file' in message
+
+    def test_output_is_reported_even_when_there_is_none(self, monkeypatch):
+        """#618: the old message quoted the captured output only when it happened to
+        be non-empty, and otherwise said "Check the cluster log directory" without
+        naming a directory -- so a user could not tell a silent failure from one
+        whose explanation had been thrown away. Silence is now reported as such, and
+        the directory the nodes write to is named."""
+        self._patch(monkeypatch, returncode=1, output_bytes=b'')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/logdir', parallel_count=1)
+        message = exc.value.message
+        assert 'no output' in message
+        assert '/logdir' in message
+
+    def test_captured_output_is_logged_as_well_as_raised(self, monkeypatch, caplog):
+        """The message goes to a user who may not have kept the terminal; the log is
+        the copy that survives. Both carry what dask ssh said."""
+        self._patch(monkeypatch, returncode=1, output_bytes=b'Authentication failed.')
+        with caplog.at_level('ERROR', logger='pybnf.cluster'):
+            with pytest.raises(printing.PybnfError):
+                cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        line, = [r.message for r in caplog.records if 'dask ssh exited' in r.message]
+        assert 'Authentication failed.' in line
+
+    def test_colour_codes_are_stripped_from_the_quoted_output(self, monkeypatch):
+        """dask wraps its failure lines in terminal colour escapes. Quoted as they
+        are, they reach the log file and the message as literal characters."""
+        self._patch(monkeypatch, returncode=1,
+                    output_bytes=b'\x1b[91mSSH connection failed after 3 retries.\x1b[0m')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        assert 'SSH connection failed after 3 retries.' in str(exc.value)
+        assert '\x1b' not in exc.value.message
+
+    def test_only_the_tail_of_a_long_output_is_quoted(self, monkeypatch):
+        """One failure per node, each retried three times, would otherwise put
+        hundreds of lines in front of the advice at the end of the message."""
+        self._patch(monkeypatch, returncode=1,
+                    output_bytes=b'\n'.join(b'line %i' % i for i in range(200)))
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        quoted = str(exc.value)
+        assert 'line 199' in quoted
+        assert 'line 0\n' not in quoted
 
     def test_parallel_count_divides_per_node_with_ceil(self, monkeypatch):
         """With an explicit parallel_count, workers are spread over nodes:

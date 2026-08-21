@@ -198,6 +198,38 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **When the workers cannot be started, the message says what went wrong and what to try
+  instead (#618).** A multi-machine run whose workers failed to start stopped with
+  `Failed to start the dask-ssh cluster (dask-ssh exited with code 1)` and, on the cluster this
+  was reported from, nothing else. The real cause was that the login to the other machines had
+  failed, and no part of the message said so, named a cause, or named a way of running that
+  needs no login. Stopping was right — carrying on with fewer machines than were asked for
+  wastes the whole run — but a hard stop makes that message the entirety of what the user gets.
+  It was empty because the half of dask's output that explains the failure was discarded twice
+  over. `dask ssh` prints its own account of a refused login — the node it was connecting to,
+  and the exception paramiko raised — to **stdout**, and lets only the traceback fall to stderr;
+  PyBNF captured stderr and sent stdout to `DEVNULL`. And dask ends a failed bring-up with
+  `os._exit(1)`, which does not flush Python's buffers, so its few hundred bytes of stdout never
+  reached the 8 KB that would have forced a write to the file. Measured against dask 2026.7.1 on
+  a login that fails: **0** of dask's own lines survived; **15** survive now that PyBNF captures
+  both streams into one file and runs dask unbuffered.
+  The message now quotes what dask said, and says so plainly when there was nothing to quote
+  rather than falling back to "Check the cluster log directory" without naming a directory. The
+  traceback frames are folded out of it — a failed login writes one traceback per node per
+  retry, three retries each, and the sentences that say what happened are buried in dask's and
+  paramiko's own source: **137** captured lines became **32**, losing none of those sentences.
+  The log still keeps every line.
+  When the output reads as a refused credential — "Authentication failed", "No authentication
+  methods available", an encrypted key, a host key that did not match — the message says the
+  login is the likely cause and says what PyBNF logs in with: paramiko, which can offer a public
+  key or a typed password and nothing else, so a cluster that authenticates its nodes to each
+  other by host-based or Kerberos (GSSAPI) SSH refuses it however it is configured, `ssh` from
+  the same shell succeeds anyway, and `ssh-keygen` cannot help. A machine that could not be
+  reached at all is deliberately *not* answered that way. Whatever the cause, the message names
+  both ways of running on several machines that need no login: `cluster_type = slurm-srun`
+  (#614), which starts the workers inside the allocation SLURM already granted, and a
+  `scheduler_file` naming a cluster that is already up. `docs/cluster.rst` and
+  `docs/troubleshooting.rst` now say the same.
 - **The cluster tests now notice when an outside program is renamed (#619).** The tests for
   starting a cluster checked that PyBNF built a particular command, against a copy of that
   command written into the test file. Nothing checked that the command could be run. When
