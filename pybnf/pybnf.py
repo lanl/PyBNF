@@ -601,12 +601,12 @@ def _reap_running_sims():
 
 def _teardown_cluster(cluster):
     """Tear down the dask cluster after a run, logging (not raising on) any failure."""
-    # Stop the cluster's worker launcher (dask ssh, or srun) regardless of success
+    # Stop the cluster's worker launcher (dask ssh, or srun) regardless of success. The wait
+    # for those processes to actually exit lives in Cluster.teardown now, which waits on each
+    # one rather than sleeping a fixed ten seconds and hoping (#398).
     if cluster:
         try:
             cluster.teardown()
-            if not cluster.local:
-                time.sleep(10)  # wait for teardown before continuing
         except Exception:
             logging.exception('Failed to tear down cluster')
     else:

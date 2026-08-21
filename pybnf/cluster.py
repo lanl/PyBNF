@@ -67,15 +67,28 @@ SRUN_SCHEDULER_FILENAME = 'dask_scheduler.json'
 SRUN_SCHEDULER_LOG = 'dask_scheduler.log'
 SRUN_WORKER_LOG = 'dask_workers.log'
 
-# Readiness limits for the srun launcher. Both waits are polls on a real signal -- the
-# scheduler file appearing, and a worker registering with the scheduler -- rather than a
-# fixed sleep, and both also watch the launched process, so a bring-up that fails outright
-# is reported in the time it takes to fail rather than after the whole timeout (#398 asks
-# for the same treatment of the SSH path's two fixed 10 s sleeps, which this does not
-# touch).
+# Readiness limits for both launchers. Every wait is a poll on a real signal -- the
+# scheduler file appearing, a worker registering with the scheduler -- rather than a fixed
+# sleep, and every one also watches the launched process, so a bring-up that fails outright
+# is reported in the time it takes to fail rather than after the whole timeout.
+#
+# SSH_WORKER_TIMEOUT is the SSH launcher's share of this (#398). It replaces a fixed 10 s
+# sleep in setup_cluster that assumed the cluster was up after ten seconds whatever the
+# truth: on a real SLURM cluster the workers took 26-59 s to register (measured, see #398),
+# so ten seconds connected before they were ready; on a fast cluster it was longer than
+# needed. The wait now polls for the workers dask ssh brings up and reports a login that
+# fails as soon as dask ssh exits. Sized like SRUN_WORKER_TIMEOUT, with headroom over the
+# slowest bring-up observed.
 SCHEDULER_FILE_TIMEOUT = 60.
 SRUN_WORKER_TIMEOUT = 120.
+SSH_WORKER_TIMEOUT = 120.
 READINESS_POLL_INTERVAL = 0.25
+
+# How long teardown waits for a process PyBNF started (the worker launcher, the scheduler) to
+# exit after being asked to stop, before killing it outright (#398). This replaces a fixed
+# 10 s sleep that followed every cluster teardown: teardown now returns as soon as the
+# processes are really gone, and still bounds the wait for one that will not stop.
+TEARDOWN_TIMEOUT = 30.
 
 
 # How PyBNF invokes dask's command line interface (#615). Two things are decided here.
@@ -196,6 +209,13 @@ class Cluster:
         self._scheduler_proc = None
         self._own_scheduler_file = None
         self._srun_worker_log = None
+        # SSH launcher readiness (#398). When PyBNF starts the cluster with dask ssh, these
+        # hold what the readiness wait needs: the file dask ssh's output was captured to (so a
+        # failed login can be quoted), how many workers it should bring up, and the directory
+        # it was told to log each node to.
+        self._ssh_output_file = None
+        self._ssh_expected_workers = None
+        self._ssh_out_dir = None
 
         # Where the client should look for the scheduler. This is the user's
         # ``scheduler_file`` when they are attaching to a cluster of their own, and the
@@ -236,7 +256,11 @@ class Cluster:
             scheduler_node, node_string = self.read_node_names(config)
 
         if node_string:
-            self._dask_proc = self.setup_cluster(node_string, os.getcwd(), config.config['parallel_count'])
+            ssh_out_dir = os.getcwd()
+            self._ssh_out_dir = ssh_out_dir
+            (self._dask_proc, self._ssh_expected_workers,
+             self._ssh_output_file) = self.setup_cluster(node_string, ssh_out_dir,
+                                                          config.config['parallel_count'])
 
         logger.info(f'Initializing dask Client with dask v{daskv}, distributed v{distributedv}')
 
@@ -264,6 +288,20 @@ class Cluster:
             logger.info(f'Creating a client by connecting to the scheduler node {scheduler_node}:8786')
             self.client = Client(f'{scheduler_node}:8786')
             self.local = False
+            if self._dask_proc is not None:
+                # PyBNF started this cluster with dask ssh, so it is the one that can tell
+                # whether the workers arrived. Connecting to the scheduler says nothing about
+                # that -- a scheduler with no workers connects fine -- so without this wait a
+                # failed or slow bring-up would surface later as a fit that submits jobs and
+                # never gets one back (#398, and the silent-degradation risk of #200). Anything
+                # that fails here leaves the dask ssh process running, so stop it first.
+                try:
+                    self.wait_for_ssh_workers(self.client, self._dask_proc,
+                                              self._ssh_expected_workers, self._ssh_output_file,
+                                              self._ssh_out_dir)
+                except Exception:
+                    self.stop_own_processes()
+                    raise
         else:
             # One local branch, one thread policy (#526). `parallel_count` chooses how many
             # worker *processes* there are; it never decides how many threads run inside one.
@@ -375,10 +413,11 @@ class Cluster:
         :param parallel_count: Total number of single-threaded worker processes over all
             nodes, divided evenly among them. If None, one worker per CPU the job was
             granted on a node (``cpus_per_node``)
-        :return: subprocess.Popen
-        :raises PybnfError: if ``dask ssh`` has already exited when the bring-up wait is
-            over -- quoting everything it said, naming the login as the likely cause when
-            it looks like one, and naming the ways of running that need no login (#618)
+        :return: a tuple of the ``dask ssh`` process, the number of worker processes it
+            should bring up (one per node times the per-node count), and the open file its
+            output was captured to. The caller waits on that worker count and quotes the
+            captured file if the bring-up fails (:meth:`wait_for_ssh_workers`, #398)
+        :rtype: tuple
         """
         # Ask before launching, so a dask that cannot do this reads as a configuration
         # error rather than as a FileNotFoundError traceback from Popen (#615).
@@ -437,28 +476,12 @@ class Cluster:
         dask_ssh_out = TemporaryFile()
         dask_ssh_proc = Popen(dask_ssh_cmd, stdout=dask_ssh_out, stderr=STDOUT,
                               env=dict(os.environ, PYTHONUNBUFFERED='1'))
-        time.sleep(10)
-        # If dask ssh has already exited, the cluster never came up. Surface the
-        # failure here instead of letting it resurface later as an opaque dask
-        # Client connection error.
-        returncode = dask_ssh_proc.poll()
-        if returncode is not None:
-            output = Cluster.captured_text(dask_ssh_out)
-            dask_ssh_out.close()
-            # The log keeps every line, including the traceback frames; the message keeps
-            # what a user can act on.
-            logger.error('dask ssh exited with code %s during cluster bring-up. Output:\n%s'
-                         % (returncode, output if output else '(it produced none)'))
-            raise PybnfError(
-                'Could not start the workers on the other machines: dask ssh exited with code '
-                '%s during cluster bring-up.\n%s'
-                % (returncode,
-                   ('This is what it said:\n%s' % Cluster.fold_traceback_frames(output))
-                   if output else
-                   ('It produced no output at all. Anything the nodes themselves wrote is '
-                    'in %s on each of them.' % out_dir)),
-                hint=Cluster.ssh_bringup_hints(output))
-        return dask_ssh_proc
+        # No fixed wait here any more (#398). The caller connects a Client and then calls
+        # wait_for_ssh_workers, which polls for these workers to register and watches this
+        # process, so a failed login is reported as soon as dask ssh exits and a healthy
+        # bring-up proceeds the moment the workers are up rather than after a fixed guess.
+        expected_workers = n_per_node * len(nodes)
+        return dask_ssh_proc, expected_workers, dask_ssh_out
 
     @staticmethod
     def captured_text(handle):
@@ -911,6 +934,83 @@ class Cluster:
                                'A message about job step creation means another step already holds '
                                'the allocation; run PyBNF as the only job step.'])
 
+    @staticmethod
+    def wait_for_ssh_workers(client, dask_proc, expected, output_file, out_dir,
+                             timeout=SSH_WORKER_TIMEOUT, poll=READINESS_POLL_INTERVAL):
+        """
+        Wait until the workers dask ssh is bringing up have registered with the scheduler (#398).
+
+        This is what replaces the fixed 10 s sleep the SSH launcher used to take after starting
+        dask ssh. It watches two things on every pass. The dask ssh process: if it exits, the
+        login or launch failed, and its captured output is quoted the same way an immediate
+        failure was before -- naming the login as the likely cause when it looks like one, and
+        naming the ways of running that need no login (#618). And the worker count the scheduler
+        reports: once ``expected`` workers have connected the cluster is ready and the wait
+        returns, usually well before the old ten seconds and, on a slow cluster, well after.
+
+        The full ``expected`` count is required rather than just one worker. A run that connected
+        with fewer workers than were asked for is the silent-degradation problem of #200: it does
+        not fail, it just quietly uses less than was reserved. Waiting for all of them turns that
+        into a clear, bounded error instead.
+
+        :param client: The connected dask Client
+        :param dask_proc: The running dask ssh process
+        :param expected: Number of worker processes dask ssh should bring up
+        :type expected: int
+        :param output_file: Open file dask ssh's output was captured to, quoted on failure
+        :param out_dir: Directory dask ssh logged each node to, named when it said nothing here
+        :type out_dir: str
+        :param timeout: Seconds to wait before giving up
+        :type timeout: float
+        :param poll: Seconds between checks
+        :type poll: float
+        :return: the number of workers that had registered
+        :rtype: int
+        :raises PybnfError: if dask ssh exits, or fewer than ``expected`` workers register in time
+        """
+        n_workers = 0
+        for _ in range(max(1, int(timeout / poll))):
+            returncode = dask_proc.poll()
+            if returncode is not None:
+                # dask ssh exited during bring-up, so the cluster never came up -- almost always
+                # a refused login (see ssh_bringup_hints). The log keeps every line, including
+                # the traceback frames; the message keeps what a user can act on.
+                output = Cluster.captured_text(output_file)
+                logger.error('dask ssh exited with code %s during cluster bring-up. Output:\n%s'
+                             % (returncode, output if output else '(it produced none)'))
+                raise PybnfError(
+                    'Could not start the workers on the other machines: dask ssh exited with code '
+                    '%s during cluster bring-up.\n%s'
+                    % (returncode,
+                       ('This is what it said:\n%s' % Cluster.fold_traceback_frames(output))
+                       if output else
+                       ('It produced no output at all. Anything the nodes themselves wrote is '
+                        'in %s on each of them.' % out_dir)),
+                    hint=Cluster.ssh_bringup_hints(output))
+            try:
+                n_workers = len(client.scheduler_info()['workers'])
+            except Exception:
+                n_workers = 0
+            if n_workers >= expected:
+                logger.info('%i of %i dask worker process(es) registered with the scheduler'
+                            % (n_workers, expected))
+                return n_workers
+            time.sleep(poll)
+        output = Cluster.captured_text(output_file)
+        logger.error('Only %i of the %i expected dask worker process(es) registered within %s s. '
+                     'dask ssh output:\n%s' % (n_workers, expected, timeout,
+                                               output if output else '(it produced none)'))
+        raise PybnfError(
+            'Only %i of the %i expected worker process(es) started over SSH registered with the '
+            'scheduler within %s s.%s'
+            % (n_workers, expected, timeout,
+               ('\nThis is what dask ssh said:\n%s' % Cluster.fold_traceback_frames(output))
+               if output else ''),
+            hint=['Anything the workers themselves wrote is in the log directory %s on each '
+                  'node.' % out_dir,
+                  'A slow or busy cluster may need longer; the wait is SSH_WORKER_TIMEOUT in '
+                  'pybnf/cluster.py.'])
+
     def teardown(self):
         """
         Terminates the processes PyBNF started for this run, after the fitting run completes
@@ -932,13 +1032,19 @@ class Cluster:
         close, and the processes started up to that point still have to be stopped.
         """
         if self._dask_proc:
-            logger.info('Closing the worker launcher subprocess')
-            self._dask_proc.terminate()
+            self.stop_process(self._dask_proc, 'worker launcher subprocess')
             self._dask_proc = None
         if self._scheduler_proc:
-            logger.info('Closing the dask scheduler subprocess')
-            self._scheduler_proc.terminate()
+            self.stop_process(self._scheduler_proc, 'dask scheduler subprocess')
             self._scheduler_proc = None
+        if self._ssh_output_file is not None:
+            # The captured dask ssh output is only needed while waiting for the workers; once
+            # the run is over, close it so the temporary file is released.
+            try:
+                self._ssh_output_file.close()
+            except OSError:
+                pass
+            self._ssh_output_file = None
         if self._own_scheduler_file and os.path.exists(self._own_scheduler_file):
             # The file names a scheduler that is being shut down, so leaving it in place
             # would leave a live-looking connection file behind for the next run to find.
@@ -947,3 +1053,32 @@ class Cluster:
             except OSError:
                 logger.debug('Could not remove the scheduler file %s' % self._own_scheduler_file)
             self._own_scheduler_file = None
+
+    @staticmethod
+    def stop_process(proc, description, timeout=TEARDOWN_TIMEOUT):
+        """
+        Ask a process PyBNF started to stop, and wait until it actually has (#398).
+
+        This is what replaces the fixed 10 s sleep that used to follow every cluster teardown.
+        The process is asked to terminate and then waited on, so teardown returns as soon as it
+        is really gone rather than after a fixed guess. A process that ignores the request is
+        killed after ``timeout`` seconds, so a stuck one cannot hold the run open forever.
+
+        :param proc: The process to stop
+        :param description: What to call it in the log
+        :type description: str
+        :param timeout: Seconds to wait for it to exit before killing it
+        :type timeout: float
+        """
+        logger.info('Closing the %s' % description)
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except TimeoutExpired:
+            logger.warning('The %s did not exit within %s s of being asked to; killing it.'
+                           % (description, timeout))
+            proc.kill()
+            try:
+                proc.wait(timeout=timeout)
+            except TimeoutExpired:
+                logger.error('The %s did not exit even after being killed.' % description)
