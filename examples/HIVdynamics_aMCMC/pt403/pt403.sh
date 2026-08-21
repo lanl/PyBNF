@@ -1,7 +1,7 @@
 #!/bin/bash
 # Example batch script for running MCMC for the degranulation model on a SLURM cluster
 
-# set the number of nodesT
+# set the number of nodes
 #SBATCH --nodes=1
 
 # set the number of cpus per node.
@@ -15,10 +15,11 @@
 # set name of job
 #SBATCH --job-name=pybnf
 
-# Enable Anaconda Python 3.5
-# Your cluster might require something different here, or might not require anything. 
+# EDIT THIS LINE for your cluster: load a module (or activate a virtual environment)
+# that provides Python 3.11 or newer with PyBNF installed. Some clusters need nothing
+# here at all.
 module purge
-module load anaconda3/2020.02
+module load python/3.11
 
 # Run PyBNF
 pybnf -c pt403.conf -t SLURM -o

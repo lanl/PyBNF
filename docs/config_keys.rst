@@ -632,7 +632,8 @@ Required Keys
 
 **population_size**
   The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more
-  information.
+  information. This is also the key that decides how many simulations can run at the same time, so on a cluster it
+  should be chosen against the number of processors reserved -- see :ref:`Sizing a run <sizing>`.
 
   Example:
   
@@ -1031,9 +1032,12 @@ Parallel Computing
 
 **simulation_dir**
   Optional setting for a different directory where we should save (or temporarily store) simulation output. Usually
-  not necessary to set separately from `output_dir`. However, if you are running on a cluster with a Lustre filesystem, 
-  you may want to set this to a different disk to avoid excessive reads and writes to the Lustre disk. 
-  
+  not necessary to set separately from `output_dir`, and on an ordinary shared network filesystem there is no reason
+  to. It is worth setting when `output_dir` is on a parallel filesystem such as Lustre or GPFS, which handles the many
+  small files a fit creates and deletes worst; point this key at storage better suited to that traffic and only the
+  results are written to the parallel filesystem. It must exist and be writable on every node, and should be on shared
+  storage -- see :ref:`Where simulation files are written <simdir>`.
+
   Default: Use the same directory as `output_dir`.
   
   Example:
