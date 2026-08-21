@@ -136,32 +136,49 @@ def test_cleanup_when_no_dask_directories_exist(tmp_path):
 
 
 def test_cleanup_dask_scratch_space_in_home(tmp_path, monkeypatch):
-    """Cleanup removes dask-scratch-space from the home directory."""
-    # Mock home directory to point to our temp directory
-    monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.setenv('USERPROFILE', str(tmp_path))  # Windows
-    
+    """Cleanup removes dask-scratch-space from the home directory.
+
+    Home and cwd are deliberately different directories. If they were the
+    same, the cwd branch of the cleanup would remove the directory and this
+    test would pass even with the home branch broken.
+    """
+    home = tmp_path / 'home'
+    home.mkdir()
+    workdir = tmp_path / 'work'
+    workdir.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))  # Windows
+    monkeypatch.chdir(workdir)
+
     # Create the directory in "home"
-    scratch_dir = tmp_path / 'dask-scratch-space'
+    scratch_dir = home / 'dask-scratch-space'
     scratch_dir.mkdir()
     (scratch_dir / 'test_file.txt').write_text('test')
-    
+
     _cleanup_dask_workspace()
     # The directory should be removed
     assert not scratch_dir.exists()
 
 
 def test_cleanup_dask_worker_space_in_home(tmp_path, monkeypatch):
-    """Cleanup removes dask-worker-space (legacy name) from the home directory."""
-    # Mock home directory to point to our temp directory
-    monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.setenv('USERPROFILE', str(tmp_path))  # Windows
-    
+    """Cleanup removes dask-worker-space (legacy name) from the home directory.
+
+    Home and cwd are deliberately different directories, for the same reason
+    as the test above.
+    """
+    home = tmp_path / 'home'
+    home.mkdir()
+    workdir = tmp_path / 'work'
+    workdir.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))  # Windows
+    monkeypatch.chdir(workdir)
+
     # Create the legacy directory in "home"
-    worker_dir = tmp_path / 'dask-worker-space'
+    worker_dir = home / 'dask-worker-space'
     worker_dir.mkdir()
     (worker_dir / 'test_file.txt').write_text('test')
-    
+
     _cleanup_dask_workspace()
     # The directory should be removed
     assert not worker_dir.exists()
