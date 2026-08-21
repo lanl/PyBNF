@@ -44,6 +44,7 @@ dask/distributed internals or a pinned dask version (the version-specific
 ``reinit_logging`` workaround is asserted *to be called*, not pinned), so they
 remain a valid safety net across the dask-unpinning upgrade.
 """
+import io
 import json
 import os
 import re
@@ -79,17 +80,27 @@ class _FakeProc:
 
 
 class _FakeDaskProc:
-    """Stand-in for a launched Popen object: the bring-up paths only poll it, and
-    terminate it when they have to abandon a partly-built cluster."""
+    """Stand-in for a launched Popen object: the bring-up paths poll it, and
+    terminate then wait on it when they have to abandon a partly-built cluster."""
     def __init__(self, returncode=None):
         self._returncode = returncode
         self.terminated = False
+        self.killed = False
 
     def poll(self):
         return self._returncode
 
     def terminate(self):
         self.terminated = True
+        if self._returncode is None:
+            self._returncode = -15
+
+    def wait(self, timeout=None):
+        return self._returncode
+
+    def kill(self):
+        self.killed = True
+        self._returncode = -9
 
 
 class TestReadNodeNames:
@@ -424,8 +435,8 @@ class TestTheInstalledDaskIsTheOnePyBNFRuns:
         """The half of #619 the subcommand check cannot reach: a command that still
         exists but no longer takes the option PyBNF hands it. ``--nworkers`` is
         itself a survivor of that -- distributed renamed it from ``--nprocs`` --
-        and the next rename would otherwise reach a user as a bring-up that fails
-        ten seconds in, with dask's complaint in a log nobody is reading."""
+        and the next rename would otherwise reach a user as a bring-up that fails,
+        with dask's complaint in a log nobody is reading."""
         _, dask_argv = _split_at_dask_cli(DASK_COMMAND_BUILDERS[subcommand](monkeypatch))
         declared = _declared_options(_help_text((*cluster.DASK_CLI, subcommand)))
         missing = [opt for opt in _options_in(dask_argv) if opt not in declared]
@@ -529,6 +540,21 @@ class TestSetupCluster:
         monkeypatch.setattr(cluster, 'cpu_count', lambda: cpu)
         return popen_calls
 
+    @staticmethod
+    def _bringup_then_wait(node_string='node9', out_dir='/log', parallel_count=1):
+        """Launch dask ssh and run the readiness wait that watches it (#398).
+
+        setup_cluster no longer waits or reports a failure by itself; it launches dask ssh
+        and hands back the process, the worker count, and the captured-output file. The
+        readiness wait is what then watches the process and reports a bring-up that has
+        already died, reading the output setup_cluster captured. These tests drive the two
+        together, with a client reporting no workers so the only thing that can happen is the
+        dead-process branch."""
+        proc, expected, out_file = cluster.Cluster.setup_cluster(node_string, out_dir,
+                                                                 parallel_count=parallel_count)
+        return cluster.Cluster.wait_for_ssh_workers(_ClientStub(workers=()), proc, expected,
+                                                    out_file, out_dir)
+
     def test_default_worker_count_is_what_the_job_was_granted(self, monkeypatch):
         """parallel_count=None ⇒ one single-threaded worker per CPU **the job holds
         on a node**: ``--nthreads 1 --nworkers {cpus_per_node()}`` (note this
@@ -537,9 +563,10 @@ class TestSetupCluster:
         entry) with SLURM having granted 7, over an affinity count of 4 and a
         machine of 64."""
         popen_calls = self._patch(monkeypatch, granted=7, affinity=4, cpu=64)
-        proc = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
+        proc, expected, out_file = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
 
         assert proc.poll() is None
+        assert expected == 14           # 7 workers on each of 2 nodes
         (args, kwargs), = popen_calls
         assert args[0] == [*DASK_SSH, 'n1', 'n2',
                            '--log-directory', '/out', '--nthreads', '1', '--nworkers', '7']
@@ -624,12 +651,16 @@ class TestSetupCluster:
             cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
         assert popen_calls == []
 
-    def test_running_proc_is_returned_without_raising(self, monkeypatch):
-        """The happy path: dask ssh is still running after the startup wait
-        (poll() is None), so setup_cluster returns the proc rather than raising."""
+    def test_setup_returns_the_proc_expected_count_and_output_file(self, monkeypatch):
+        """setup_cluster launches dask ssh and hands back what the readiness wait needs
+        (#398): the running process, the number of workers it should bring up (one per node
+        times the per-node count), and the open file its output was captured to. It no longer
+        waits or decides success itself."""
         self._patch(monkeypatch)
-        proc = cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
+        proc, expected, out_file = cluster.Cluster.setup_cluster('n1 n2', '/log', parallel_count=6)
         assert proc.poll() is None
+        assert expected == 6            # ceil(6/2)=3 per node, over 2 nodes
+        assert hasattr(out_file, 'read')
 
     def test_failed_bringup_raises_with_the_captured_output(self, monkeypatch):
         """If dask ssh has already exited after the startup wait, the cluster
@@ -639,7 +670,7 @@ class TestSetupCluster:
         self._patch(monkeypatch, returncode=1,
                     output_bytes=b'ssh: connect to host node9 port 22: Connection refused')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         msg = str(exc.value)
         assert 'code 1' in msg
         assert 'Connection refused' in msg
@@ -656,7 +687,7 @@ class TestSetupCluster:
                                  b'node9:22\n               SSH reported this exception: '
                                  b'Authentication failed.\n')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         assert 'SSH reported this exception: Authentication failed.' in str(exc.value)
 
     def test_dask_is_run_unbuffered_so_its_own_account_survives(self, monkeypatch):
@@ -691,7 +722,7 @@ class TestSetupCluster:
             b'paramiko.ssh_exception.AuthenticationException: Authentication failed.\n'
             b'               Retrying... (attempt 1/3)\n'))
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         message = exc.value.message
         assert 'SSH connection error when connecting to node9:22' in message
         assert 'AuthenticationException: Authentication failed.' in message
@@ -709,7 +740,7 @@ class TestSetupCluster:
             b'paramiko.ssh_exception.AuthenticationException: Authentication failed.\n'))
         with caplog.at_level('ERROR', logger='pybnf.cluster'):
             with pytest.raises(printing.PybnfError):
-                cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+                self._bringup_then_wait('node9', '/log')
         line, = [r.message for r in caplog.records if 'dask ssh exited' in r.message]
         assert 'old_ssh.py' in line
 
@@ -724,7 +755,7 @@ class TestSetupCluster:
                     output_bytes=b'paramiko.ssh_exception.AuthenticationException: '
                                  b'Authentication failed.')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         message = exc.value.message
         assert 'login' in message
         assert 'paramiko' in message
@@ -740,7 +771,7 @@ class TestSetupCluster:
                     output_bytes=b'paramiko.ssh_exception.NoValidConnectionsError: '
                                  b'[Errno None] Unable to connect to port 22 on 10.0.0.9')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         message = exc.value.message
         assert 'failed login' not in message                    # no diagnosis is offered
         assert 'public key' not in message
@@ -755,7 +786,7 @@ class TestSetupCluster:
         no-login-vocabulary case."""
         self._patch(monkeypatch, returncode=1, output_bytes=b'exit status 127')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         message = exc.value.message
         assert 'slurm-srun' in message
         assert 'scheduler_file' in message
@@ -768,7 +799,7 @@ class TestSetupCluster:
         the directory the nodes write to is named."""
         self._patch(monkeypatch, returncode=1, output_bytes=b'')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/logdir', parallel_count=1)
+            self._bringup_then_wait('node9', '/logdir')
         message = exc.value.message
         assert 'no output' in message
         assert '/logdir' in message
@@ -779,7 +810,7 @@ class TestSetupCluster:
         self._patch(monkeypatch, returncode=1, output_bytes=b'Authentication failed.')
         with caplog.at_level('ERROR', logger='pybnf.cluster'):
             with pytest.raises(printing.PybnfError):
-                cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+                self._bringup_then_wait('node9', '/log')
         line, = [r.message for r in caplog.records if 'dask ssh exited' in r.message]
         assert 'Authentication failed.' in line
 
@@ -789,7 +820,7 @@ class TestSetupCluster:
         self._patch(monkeypatch, returncode=1,
                     output_bytes=b'\x1b[91mSSH connection failed after 3 retries.\x1b[0m')
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         assert 'SSH connection failed after 3 retries.' in str(exc.value)
         assert '\x1b' not in exc.value.message
 
@@ -799,7 +830,7 @@ class TestSetupCluster:
         self._patch(monkeypatch, returncode=1,
                     output_bytes=b'\n'.join(b'line %i' % i for i in range(200)))
         with pytest.raises(printing.PybnfError) as exc:
-            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+            self._bringup_then_wait('node9', '/log')
         quoted = str(exc.value)
         assert 'line 199' in quoted
         assert 'line 0\n' not in quoted
@@ -844,23 +875,15 @@ class TestSetupCluster:
         assert args[0][:len(DASK_SSH) + 2] == [*DASK_SSH, 'n1$(whoami)', 'n2']  # literal, unexpanded
         assert kwargs.get('shell', False) is False
 
-    def test_sleeps_ten_seconds_for_startup(self, monkeypatch):
-        """After launching dask ssh, setup_cluster waits 10s for workers to come
-        up before returning the proc. Oracle: time.sleep called once with 10."""
-        self._patch(monkeypatch)
-        sleeps = []
-        monkeypatch.setattr(cluster.time, 'sleep', lambda s: sleeps.append(s))
-        cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
-        assert sleeps == [10]
-
-
 # --------------------------------------------------------------------------- #
 # __init__ — node-detection dispatch + Client-construction dispatch
 # --------------------------------------------------------------------------- #
 class _ProcStub:
-    """Stand-in for a process PyBNF started and later terminates."""
+    """Stand-in for a process PyBNF started and later terminates. Teardown asks it to
+    stop and then waits on it, so it records both and reports itself as exited."""
     def __init__(self, returncode=None):
         self.terminated = False
+        self.killed = False
         self._returncode = returncode
 
     def poll(self):
@@ -868,6 +891,15 @@ class _ProcStub:
 
     def terminate(self):
         self.terminated = True
+        if self._returncode is None:
+            self._returncode = -15
+
+    def wait(self, timeout=None):
+        return self._returncode
+
+    def kill(self):
+        self.killed = True
+        self._returncode = -9
 
 
 class _ClientStub:
@@ -899,6 +931,8 @@ class _Recorder:
         self.reinit_logging_calls = []
         self.read_calls = []
         self.setup_calls = []
+        self.setup_proc = None       # the dask ssh process fake_setup handed back
+        self.ssh_wait_calls = []     # (client, dask_proc, expected, output_file, out_dir)
         self.srun_setup_calls = []   # (scheduler_file, out_dir, node_count, parallel_count)
         self.srun_wait_calls = []    # (client, srun_proc, worker_log)
 
@@ -913,7 +947,7 @@ class _Recorder:
         return self.last_lc
 
 
-def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None):
+def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None, ssh_raises=None):
     rec = _Recorder()
     monkeypatch.setattr(cluster, 'Client', rec.Client)
     monkeypatch.setattr(cluster, 'LocalCluster', rec.LocalCluster)
@@ -928,11 +962,21 @@ def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None):
 
     def fake_setup(node_string, out_dir, parallel_count):
         rec.setup_calls.append((node_string, out_dir, parallel_count))
-        return 'PROC'
+        # setup_cluster returns the process, the worker count it should bring up, and the
+        # file its output was captured to (#398). The count and file are placeholders here;
+        # wait_for_ssh_workers, which consumes them, is faked below.
+        rec.setup_proc = _ProcStub()
+        return rec.setup_proc, 2, None
 
     def fake_setup_srun(scheduler_file, out_dir, node_count, parallel_count):
         rec.srun_setup_calls.append((scheduler_file, out_dir, node_count, parallel_count))
         return _ProcStub(), _ProcStub()
+
+    def fake_ssh_wait(client, dask_proc, expected, output_file, out_dir, **kwargs):
+        rec.ssh_wait_calls.append((client, dask_proc, expected, output_file, out_dir))
+        if ssh_raises:
+            raise ssh_raises
+        return expected
 
     def fake_wait(client, srun_proc, worker_log, **kwargs):
         rec.srun_wait_calls.append((client, srun_proc, worker_log))
@@ -942,6 +986,7 @@ def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None):
 
     monkeypatch.setattr(cluster.Cluster, 'read_node_names', staticmethod(fake_read))
     monkeypatch.setattr(cluster.Cluster, 'setup_cluster', staticmethod(fake_setup))
+    monkeypatch.setattr(cluster.Cluster, 'wait_for_ssh_workers', staticmethod(fake_ssh_wait))
     monkeypatch.setattr(cluster.Cluster, 'setup_srun_cluster', staticmethod(fake_setup_srun))
     monkeypatch.setattr(cluster.Cluster, 'wait_for_srun_workers', staticmethod(fake_wait))
     monkeypatch.setattr(cluster.Cluster, 'require_slurm_allocation', staticmethod(lambda: None))
@@ -978,9 +1023,12 @@ class TestInitNodeDispatch:
 
         assert rec.read_calls == []
         assert rec.setup_calls == [('w1 w2 w3', os.getcwd(), 12)]
-        assert c._dask_proc == 'PROC'
+        assert c._dask_proc is rec.setup_proc
         assert rec.client_calls == [(('head:8786',), {})]
         assert c.local is False
+        # Having started dask ssh itself, PyBNF waits for those workers to register (#398).
+        assert len(rec.ssh_wait_calls) == 1
+        assert rec.ssh_wait_calls[0][1] is rec.setup_proc
 
     def test_scheduler_node_alone_detects_workers_via_read_node_names(self, monkeypatch):
         """scheduler_node set but no worker_nodes ⇒ the worker list comes from
@@ -993,6 +1041,7 @@ class TestInitNodeDispatch:
 
         assert len(rec.read_calls) == 1
         assert rec.setup_calls == [('d1 d2', os.getcwd(), 8)]
+        assert c._dask_proc is rec.setup_proc
         assert rec.client_calls == [(('head:8786',), {})]
         assert c.local is False
 
@@ -1005,8 +1054,21 @@ class TestInitNodeDispatch:
 
         assert len(rec.read_calls) == 1
         assert rec.setup_calls == [('sched9 c1 c2', os.getcwd(), 4)]
+        assert c._dask_proc is rec.setup_proc
         assert rec.client_calls == [(('sched9:8786',), {})]
         assert c.local is False
+
+    def test_a_failed_worker_wait_stops_the_dask_ssh_it_started(self, monkeypatch):
+        """If the workers never register, the readiness wait raises and the constructor
+        never becomes a Cluster, so no one else can tear it down. The dask ssh process it
+        started is stopped on the way out rather than left running (#398)."""
+        rec = _patch_init(monkeypatch, read_returns=('sched9', 'sched9 c1 c2'),
+                          ssh_raises=printing.PybnfError('workers never came up'))
+        with pytest.raises(printing.PybnfError, match='workers never came up'):
+            _build(_cfg(parallel_count=4))
+
+        assert len(rec.ssh_wait_calls) == 1
+        assert rec.setup_proc.terminated is True
 
 
 class TestInitClientDispatch:
@@ -1135,6 +1197,7 @@ def _torn_down(client=None, dask_proc=None, scheduler_proc=None, scheduler_file=
     c._dask_proc = dask_proc
     c._scheduler_proc = scheduler_proc
     c._own_scheduler_file = scheduler_file
+    c._ssh_output_file = None
     return c
 
 
@@ -1563,6 +1626,85 @@ class TestWaitForSrunWorkers:
         assert 'srun: Job step creation' in str(exc.value)   # srun's own words, in the log
         assert 'workers.log' in exc.value.message            # ... and where to read more
         assert 'job step' in exc.value.message.lower()
+
+
+class TestPollForWorkers:
+    """The readiness loop both launchers share (#398). The srun and SSH waits are thin wrappers
+    that add their own worker count and their own failure vocabulary on top of this; the loop
+    itself is what a real srun run exercises, so pin its three outcomes here. It reports the
+    outcome rather than raising, leaving each launcher to phrase the error its own way."""
+
+    def test_ready_when_the_expected_count_is_reached(self, monkeypatch):
+        """Enough workers registered, process still running: 'ready', with the count."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), _FakeDaskProc(),
+            expected=2, timeout=5., poll=0.25)
+        assert (outcome, n, rc) == ('ready', 2, None)
+
+    def test_exited_when_the_process_is_gone(self, monkeypatch):
+        """The bring-up process exited before the workers arrived: 'exited', with its code,
+        so the caller can quote whatever that launcher logged."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=()), _FakeDaskProc(returncode=1),
+            expected=2, timeout=5., poll=0.25)
+        assert (outcome, rc) == ('exited', 1)
+
+    def test_timeout_when_too_few_arrive_in_time(self, monkeypatch):
+        """Process still running but short of the count when time runs out: 'timeout', with
+        how many did register."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=('tcp://n1:1',)), _FakeDaskProc(),
+            expected=3, timeout=1., poll=0.25)
+        assert (outcome, n, rc) == ('timeout', 1, None)
+
+
+class TestWaitForSSHWorkers:
+    """The SSH launcher's startup readiness check (#398), driven directly. The dead-process
+    branch is covered through setup_cluster in TestSetupCluster; these pin the worker-count
+    branch: dask ssh still running, the scheduler filling up over time."""
+
+    def test_returns_once_the_full_expected_count_registers(self, monkeypatch):
+        """The readiness signal is all of the expected workers registering, not dask ssh
+        having been launched. Two asked for, two connected, so the wait returns two."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        n = cluster.Cluster.wait_for_ssh_workers(
+            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), _FakeDaskProc(),
+            expected=2, output_file=io.BytesIO(), out_dir='/log')
+        assert n == 2
+
+    def test_a_partial_cluster_is_not_ready_yet(self, monkeypatch):
+        """Fewer workers than were asked for is the silent-degradation case of #200: the poll
+        keeps waiting rather than returning a cluster smaller than reserved. Here one of two
+        is up, then the second arrives, and only then does the wait return."""
+        client = _ClientStub(workers=('tcp://n1:1',))
+        polls = []
+
+        def fake_sleep(_seconds):
+            polls.append(1)
+            if len(polls) == 2:
+                client._workers = dict.fromkeys(('tcp://n1:1', 'tcp://n2:1'), {})
+
+        monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
+        n = cluster.Cluster.wait_for_ssh_workers(
+            client, _FakeDaskProc(), expected=2, output_file=io.BytesIO(), out_dir='/log')
+        assert n == 2
+        assert len(polls) == 2
+
+    def test_too_few_in_time_names_the_expected_and_connected_counts(self, monkeypatch):
+        """dask ssh still running but short of the count means some workers never came up --
+        a fit would quietly use less than was reserved. The message names how many of how
+        many arrived and where to read what the missing ones wrote."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.wait_for_ssh_workers(
+                _ClientStub(workers=('tcp://n1:1',)), _FakeDaskProc(),
+                expected=3, output_file=io.BytesIO(), out_dir='/logdir', timeout=1.)
+        message = exc.value.message
+        assert '1 of the 3' in message
+        assert '/logdir' in ' '.join(exc.value.hints)
 
 
 class TestSetupSrunCluster:
