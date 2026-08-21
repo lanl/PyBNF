@@ -971,7 +971,7 @@ Parallel Computing
 
   Each parallel job runs in its own **single-threaded worker process**, whether or not this key is set: the simulation backends hold process-wide state that is not thread-safe, so PyBNF never places two concurrently running jobs in one process. This key therefore sets a process count, not a thread count. Lowering it is the way to reduce the memory a run uses, since each worker process holds its own copy of the models.
 
-  Default: Use all available cores -- one single-threaded worker per core. Locally, the core count comes from Dask, which honors CPU affinity and cgroup quotas (so a run confined to 4 cores gets 4 workers, not the host's full count). On a cluster, the number of available cores per node is determined by running ``multiprocessing.cpu_count()`` from the scheduler node.
+  Default: Use all available cores -- one single-threaded worker per core. Locally, the core count comes from Dask, which honors CPU affinity and cgroup quotas (so a run confined to 4 cores gets 4 workers, not the host's full count). On a cluster, the number of available cores per node is determined by running ``multiprocessing.cpu_count()`` from the scheduler node; with ``cluster_type = slurm-srun`` it is instead the number of cores SLURM granted the job on a node (``$SLURM_CPUS_ON_NODE``).
 
   Example:
   
@@ -979,7 +979,12 @@ Parallel Computing
 
 **cluster_type**
   Type of cluster used for running the fit. This key may be omitted, and instead specified on the command line with the
-  ``-t`` flag. Currently supports ``slurm`` or ``none``.
+  ``-t`` flag. Currently supports ``slurm``, ``slurm-srun``, or ``none``.
+
+  ``slurm`` starts the workers by logging in to each allocated node over SSH. ``slurm-srun`` starts them with SLURM's
+  ``srun`` command instead, which requires no login and therefore works on clusters whose nodes authenticate to each
+  other by host-based or Kerberos SSH -- where the SSH route cannot work at all. It must be run from the shell that
+  holds the allocation. See :ref:`Starting workers without SSH <srun>`.
 
   Default: None (local fitting run).
 
@@ -1002,6 +1007,10 @@ Parallel Computing
 **scheduler_file**
   Provide a scheduler file to link PyBNF to a Dask scheduler already created outside of PyBNF. See :ref:`Manual configuration with Dask <manualdask>` for more information. 
   This option may also be specified on the command line with the ``-s`` flag. 
+
+  With ``cluster_type = slurm-srun``, PyBNF starts the scheduler itself, so this key instead chooses the path that
+  scheduler writes its connection information to. It must be on a filesystem the compute nodes share. Default in that
+  case: ``dask_scheduler.json`` inside ``output_dir``.
   
   Default: None
   

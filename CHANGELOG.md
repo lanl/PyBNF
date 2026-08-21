@@ -6,6 +6,35 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **A multi-machine fit can start its workers without logging in anywhere, so clusters that
+  use host-based or Kerberos SSH can run one at all (#614, ADR-0122).** PyBNF had exactly one
+  way to run across several machines: `dask-ssh`, which logs in to every node with **paramiko**
+  rather than with the operating system's `ssh`. paramiko offers a public key or a password and
+  nothing else. A cluster whose nodes authenticate to each other by **host-based** SSH (no user
+  credential exists to offer) or by **Kerberos/GSSAPI** (paramiko can, dask never enables it)
+  therefore refused every login PyBNF attempted, on a machine where `ssh OTHER hostname` from
+  the same shell succeeds — and the advice in `docs/cluster.rst`, to set up SSH keys, could not
+  fix a cluster that is not asking for a key. The run stopped before a single simulation.
+  **`cluster_type = slurm-srun`** (or `pybnf -t slurm-srun`) starts the workers with SLURM's own
+  `srun` instead. No credential is involved because the scheduler granted the allocation before
+  PyBNF started: PyBNF runs a dask scheduler on its own node, has `srun` place one worker process
+  group on each node of the allocation, and connects through the scheduler file the scheduler
+  writes — a file it now also *creates*, so under this launcher `scheduler_file` chooses where it
+  goes (default `dask_scheduler.json` in `output_dir`) rather than naming a cluster to attach to.
+  `-t slurm` and every other path construct exactly the calls they did before; this is a second
+  launcher, not a change to the existing one.
+  Both bring-up steps wait on a real signal rather than a fixed sleep, and watch the process they
+  started while waiting: the scheduler is ready when its connection file *parses* with an address
+  (dask writes that file in place, so a reader can catch it half-written), and the workers are
+  ready when one has registered. That second check is the one that cannot be dropped — connecting
+  to our own scheduler always succeeds, so a failed placement would otherwise turn into a fit that
+  submits jobs and never gets one back, with `srun`'s explanation sitting unread. Both failures
+  quote that output. Running outside an allocation is refused up front, since `srun` there does not
+  place a task but submits a job and waits, which would read as PyBNF hanging.
+  The workers are placed one task per node with the CPUs their processes need, taken from what
+  SLURM granted (`$SLURM_CPUS_ON_NODE`): under cgroup binding a task that took the default single
+  CPU would confine every worker it forked to that one CPU and quietly serialize the node. Two logs,
+  `dask_scheduler.log` and `dask_workers.log`, are written to the output directory.
 - **A fit's start point is a supported, validated, per-parameter fact that every optimizer
   reads, and the resolved start is recorded beside the results (#583, #559, ADR-0117).**
   There was no supported way to say "start this fit at exactly this point, inside the
