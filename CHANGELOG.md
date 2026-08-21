@@ -198,6 +198,25 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **The cluster tests now notice when an outside program is renamed (#619).** The tests for
+  starting a cluster checked that PyBNF built a particular command, against a copy of that
+  command written into the test file. Nothing checked that the command could be run. When
+  distributed stopped installing `dask-ssh` (#615), every test kept passing while every real
+  multi-machine run died on `FileNotFoundError` — and because the outdated name was written
+  in as the expected answer, *correcting* PyBNF would have read as a test failure.
+  A handful of checks now ask the installed programs themselves. They take each command from
+  the code that builds it for a real fit — no argument list is written down a second time —
+  and confirm that the dask command line interface PyBNF invokes runs, that it still has the
+  `ssh`, `scheduler` and `worker` subcommands, and that its `--help` still declares every
+  option PyBNF passes it, so a renamed *option* fails as loudly as a renamed command. The
+  `ssh` command is checked the stricter way, by handing dask the whole command PyBNF builds
+  and letting dask parse it. The same questions are asked of `srun` and `scontrol`, skipped
+  wherever SLURM is not installed — which is every developer machine, but not the clusters
+  where PyBNF's tests are also run, and where a renamed `srun` option is worth catching
+  before a fit walks into it. Nothing was taken away: the existing tests go on pinning the
+  argument lists PyBNF is supposed to build, and the one copy of the dask invocation they
+  keep is now compared against `cluster.DASK_CLI`, so it cannot drift away from the original
+  unnoticed either.
 - **A multi-machine fit sizes its worker pool by what the job was granted, not by how big the
   machine is (#616).** PyBNF decided how many worker processes to start on each node by calling
   `multiprocessing.cpu_count()`, which reports every processor the machine has whatever the job
