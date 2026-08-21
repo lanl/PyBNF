@@ -1628,6 +1628,39 @@ class TestWaitForSrunWorkers:
         assert 'job step' in exc.value.message.lower()
 
 
+class TestPollForWorkers:
+    """The readiness loop both launchers share (#398). The srun and SSH waits are thin wrappers
+    that add their own worker count and their own failure vocabulary on top of this; the loop
+    itself is what a real srun run exercises, so pin its three outcomes here. It reports the
+    outcome rather than raising, leaving each launcher to phrase the error its own way."""
+
+    def test_ready_when_the_expected_count_is_reached(self, monkeypatch):
+        """Enough workers registered, process still running: 'ready', with the count."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), _FakeDaskProc(),
+            expected=2, timeout=5., poll=0.25)
+        assert (outcome, n, rc) == ('ready', 2, None)
+
+    def test_exited_when_the_process_is_gone(self, monkeypatch):
+        """The bring-up process exited before the workers arrived: 'exited', with its code,
+        so the caller can quote whatever that launcher logged."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=()), _FakeDaskProc(returncode=1),
+            expected=2, timeout=5., poll=0.25)
+        assert (outcome, rc) == ('exited', 1)
+
+    def test_timeout_when_too_few_arrive_in_time(self, monkeypatch):
+        """Process still running but short of the count when time runs out: 'timeout', with
+        how many did register."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=('tcp://n1:1',)), _FakeDaskProc(),
+            expected=3, timeout=1., poll=0.25)
+        assert (outcome, n, rc) == ('timeout', 1, None)
+
+
 class TestWaitForSSHWorkers:
     """The SSH launcher's startup readiness check (#398), driven directly. The dead-process
     branch is covered through setup_cluster in TestSetupCluster; these pin the worker-count

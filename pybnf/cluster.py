@@ -892,10 +892,59 @@ class Cluster:
                          'See %s for details.' % (scheduler_file, timeout, scheduler_log))
 
     @staticmethod
+    def _poll_for_workers(client, worker_proc, expected, timeout, poll):
+        """
+        Poll the scheduler until enough workers have registered, watching the process (#398).
+
+        This is the readiness mechanism both launchers share. Whether PyBNF started the workers
+        with srun or with dask ssh, the question is the same: have the workers registered with
+        the scheduler yet, and is the process that was meant to bring them up still running?
+        Both are checked on every pass, so a bring-up that dies is caught in the time it takes
+        to die rather than after the whole timeout. What differs between the launchers -- how
+        many workers to wait for, and what to say when it goes wrong -- is left to the caller,
+        which is why this returns an outcome rather than raising: the srun path quotes its log,
+        the SSH path quotes what dask ssh said and names the login, and neither vocabulary
+        belongs here.
+
+        The srun launcher is the one path that runs on a cluster whose nodes need no login, so
+        this shared loop is what a real multi-machine run actually exercises (#398's own reason
+        for staying open was that the SSH login could not be tested on the cluster available).
+
+        :param client: The connected dask Client
+        :param worker_proc: The process that is bringing the workers up (srun, or dask ssh)
+        :param expected: Number of registered workers that counts as ready
+        :type expected: int
+        :param timeout: Seconds to wait before giving up
+        :type timeout: float
+        :param poll: Seconds between checks
+        :type poll: float
+        :return: a tuple of the outcome (``'ready'``, ``'exited'`` or ``'timeout'``), the number
+            of workers that had registered, and the process return code (only set on ``'exited'``)
+        :rtype: tuple
+        """
+        n_workers = 0
+        for _ in range(max(1, int(timeout / poll))):
+            returncode = worker_proc.poll()
+            if returncode is not None:
+                return 'exited', n_workers, returncode
+            try:
+                n_workers = len(client.scheduler_info()['workers'])
+            except Exception:
+                n_workers = 0
+            if n_workers >= expected:
+                return 'ready', n_workers, None
+            time.sleep(poll)
+        return 'timeout', n_workers, None
+
+    @staticmethod
     def wait_for_srun_workers(client, srun_proc, worker_log,
                               timeout=SRUN_WORKER_TIMEOUT, poll=READINESS_POLL_INTERVAL):
         """
         Wait until at least one srun-launched worker has registered with the scheduler.
+
+        The waiting itself is :meth:`_poll_for_workers`, the loop both launchers share; this
+        adds what is specific to srun -- that one worker is enough to call the cluster up, and
+        what to say, quoting srun's own log, when srun dies or no worker ever arrives.
 
         :param client: The connected dask Client
         :param srun_proc: The running srun process
@@ -909,23 +958,18 @@ class Cluster:
         :rtype: int
         :raises PybnfError: if srun exits, or no worker registers in time
         """
-        for _ in range(max(1, int(timeout / poll))):
-            returncode = srun_proc.poll()
-            if returncode is not None:
-                details = Cluster.log_tail(worker_log)
-                logger.error('srun exited with code %s before any worker started. Log:\n%s'
-                             % (returncode, details))
-                raise PybnfError('srun exited with code %s before any dask worker started. %s'
-                                 % (returncode, ('Details:\n%s' % details) if details
-                                    else 'See %s for details.' % worker_log))
-            try:
-                n_workers = len(client.scheduler_info()['workers'])
-            except Exception:
-                n_workers = 0
-            if n_workers:
-                logger.info('%i dask worker process(es) registered with the scheduler' % n_workers)
-                return n_workers
-            time.sleep(poll)
+        outcome, n_workers, returncode = Cluster._poll_for_workers(
+            client, srun_proc, expected=1, timeout=timeout, poll=poll)
+        if outcome == 'ready':
+            logger.info('%i dask worker process(es) registered with the scheduler' % n_workers)
+            return n_workers
+        if outcome == 'exited':
+            details = Cluster.log_tail(worker_log)
+            logger.error('srun exited with code %s before any worker started. Log:\n%s'
+                         % (returncode, details))
+            raise PybnfError('srun exited with code %s before any dask worker started. %s'
+                             % (returncode, ('Details:\n%s' % details) if details
+                                else 'See %s for details.' % worker_log))
         details = Cluster.log_tail(worker_log)
         logger.error('No dask worker registered within %s s. Log:\n%s' % (timeout, details))
         raise PybnfError('No dask worker started by srun registered with the scheduler within '
@@ -941,12 +985,12 @@ class Cluster:
         Wait until the workers dask ssh is bringing up have registered with the scheduler (#398).
 
         This is what replaces the fixed 10 s sleep the SSH launcher used to take after starting
-        dask ssh. It watches two things on every pass. The dask ssh process: if it exits, the
-        login or launch failed, and its captured output is quoted the same way an immediate
-        failure was before -- naming the login as the likely cause when it looks like one, and
-        naming the ways of running that need no login (#618). And the worker count the scheduler
-        reports: once ``expected`` workers have connected the cluster is ready and the wait
-        returns, usually well before the old ten seconds and, on a slow cluster, well after.
+        dask ssh. The waiting itself is :meth:`_poll_for_workers`, the loop the srun launcher
+        also uses, so the behaviour this adds is exercised on a real cluster through the srun
+        path even though the SSH login cannot be (#398). What this adds is specific to dask ssh.
+        If dask ssh exits, the login or launch failed, and its captured output is quoted the way
+        an immediate failure was before -- naming the login as the likely cause when it looks
+        like one, and naming the ways of running that need no login (#618).
 
         The full ``expected`` count is required rather than just one worker. A run that connected
         with fewer workers than were asked for is the silent-degradation problem of #200: it does
@@ -968,34 +1012,28 @@ class Cluster:
         :rtype: int
         :raises PybnfError: if dask ssh exits, or fewer than ``expected`` workers register in time
         """
-        n_workers = 0
-        for _ in range(max(1, int(timeout / poll))):
-            returncode = dask_proc.poll()
-            if returncode is not None:
-                # dask ssh exited during bring-up, so the cluster never came up -- almost always
-                # a refused login (see ssh_bringup_hints). The log keeps every line, including
-                # the traceback frames; the message keeps what a user can act on.
-                output = Cluster.captured_text(output_file)
-                logger.error('dask ssh exited with code %s during cluster bring-up. Output:\n%s'
-                             % (returncode, output if output else '(it produced none)'))
-                raise PybnfError(
-                    'Could not start the workers on the other machines: dask ssh exited with code '
-                    '%s during cluster bring-up.\n%s'
-                    % (returncode,
-                       ('This is what it said:\n%s' % Cluster.fold_traceback_frames(output))
-                       if output else
-                       ('It produced no output at all. Anything the nodes themselves wrote is '
-                        'in %s on each of them.' % out_dir)),
-                    hint=Cluster.ssh_bringup_hints(output))
-            try:
-                n_workers = len(client.scheduler_info()['workers'])
-            except Exception:
-                n_workers = 0
-            if n_workers >= expected:
-                logger.info('%i of %i dask worker process(es) registered with the scheduler'
-                            % (n_workers, expected))
-                return n_workers
-            time.sleep(poll)
+        outcome, n_workers, returncode = Cluster._poll_for_workers(
+            client, dask_proc, expected=expected, timeout=timeout, poll=poll)
+        if outcome == 'ready':
+            logger.info('%i of %i dask worker process(es) registered with the scheduler'
+                        % (n_workers, expected))
+            return n_workers
+        if outcome == 'exited':
+            # dask ssh exited during bring-up, so the cluster never came up -- almost always
+            # a refused login (see ssh_bringup_hints). The log keeps every line, including
+            # the traceback frames; the message keeps what a user can act on.
+            output = Cluster.captured_text(output_file)
+            logger.error('dask ssh exited with code %s during cluster bring-up. Output:\n%s'
+                         % (returncode, output if output else '(it produced none)'))
+            raise PybnfError(
+                'Could not start the workers on the other machines: dask ssh exited with code '
+                '%s during cluster bring-up.\n%s'
+                % (returncode,
+                   ('This is what it said:\n%s' % Cluster.fold_traceback_frames(output))
+                   if output else
+                   ('It produced no output at all. Anything the nodes themselves wrote is '
+                    'in %s on each of them.' % out_dir)),
+                hint=Cluster.ssh_bringup_hints(output))
         output = Cluster.captured_text(output_file)
         logger.error('Only %i of the %i expected dask worker process(es) registered within %s s. '
                      'dask ssh output:\n%s' % (n_workers, expected, timeout,
