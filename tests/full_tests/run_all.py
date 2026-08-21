@@ -6,7 +6,7 @@ The problems are designed to be as short as possible while testing all / as many
 The total run time is about 30 minutes
 
 Run with no arguments to run locally
-Run with the argument ssh to use PyBNF's automatic cluster setup with dask-ssh
+Run with the argument ssh to use PyBNF's automatic cluster setup with dask ssh
 Run with the argument sf to use manual cluster setup, with a preconfigured dask cluster with scheduler file named sf
 Bash files are provided in this folder to run this script using the cluster options. 
 

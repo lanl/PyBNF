@@ -198,6 +198,30 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **Multi-machine fits run the command dask actually installs, so a cluster run gets past
+  its first second (#615).** PyBNF started remote workers by running **`dask-ssh`** — one of
+  three standalone scripts (with `dask-scheduler` and `dask-worker`) that distributed stopped
+  installing in **2026.6.0**. On any current install, every run that used more than one machine
+  died immediately with `FileNotFoundError: dask-ssh`, before a single simulation, on both
+  routes through that code: `-t slurm` and a hand-set `scheduler_node` / `worker_nodes`. The
+  same feature is now a subcommand of the unified `dask` program, and PyBNF runs it as
+  **`dask ssh`**.
+  The subcommand form is not a version trade: `ssh`, `scheduler` and `worker` are registered in
+  the `dask_cli` entry point group in **2024.1.0**, the oldest dask/distributed `pyproject.toml`
+  allows, so the fix works across the whole supported range and no floor had to move. PyBNF
+  invokes it as `<its own interpreter> -m dask ssh` rather than as a bare `dask` from `PATH`,
+  because `dask ssh` passes its own `sys.executable` on to the workers it starts remotely — a
+  `dask` picked up from `PATH` could therefore run the fit's workers under a different Python
+  than the fit.
+  A missing command is now **refused before anything is launched**, naming the subcommands the
+  installation does offer and the package that provides them, instead of surfacing as
+  `FileNotFoundError` inside "an unknown error … please report this bug". The check asks the
+  same `dask_cli` entry point group dask's own CLI builds its command set from, so it cannot
+  disagree with what `dask` will actually run — and the test that exercises it against the real
+  environment is the one that would have gone red for this issue, where every mocked assertion
+  stayed green against a command that no longer existed.
+  `docs/cluster.rst` and `tests/full_tests/cluster_manual.sh` now give `dask scheduler` and
+  `dask worker` for manual setups, for the same reason.
 - **The temporary directory dask leaves behind is now removed under the name dask actually
   creates (#620).** `_cleanup_dask_workspace` deleted `dask-worker-space` — the name dask used
   before it renamed the directory to `dask-scratch-space`. Every dask version the project
