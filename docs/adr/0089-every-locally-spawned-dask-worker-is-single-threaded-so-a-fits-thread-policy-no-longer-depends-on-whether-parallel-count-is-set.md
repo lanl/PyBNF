@@ -66,6 +66,12 @@ CPU affinity and cgroup quotas, so a run confined to 4 cores of a 64-core host g
 64. (`setup_cluster` still uses `multiprocessing.cpu_count()` for `dask-ssh`, where the number
 being computed is a remote node's core count anyway.)
 
+**Superseded by issue #616:** the parenthesis above was the defect. A remote node's core count is
+not what a *job* holds on that node -- a job granted 4 CPUs of a 128-processor node was told 128 --
+so `setup_cluster` now takes its default from `Cluster.cpus_per_node`, which prefers what the
+scheduler granted (`$SLURM_CPUS_ON_NODE`) and falls back to `dask.system.CPU_COUNT` before ever
+reaching `multiprocessing.cpu_count()`. Both launchers now decide this in that one place.
+
 **Total concurrency is unchanged.** Measured on a 6-core machine, before and after:
 
 ```text

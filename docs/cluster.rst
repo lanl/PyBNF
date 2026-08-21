@@ -73,9 +73,24 @@ An example batch script, the ``-t slurm`` one with a single word changed::
 
     pybnf -c tcr-ss.conf -t slurm-srun -o
 
-By default, each node runs one single-threaded worker process per CPU the job was granted on that node. Setting ``parallel_count`` overrides that with a total number of worker processes over all nodes, divided evenly among them.
-
 Two log files are written to the output directory: ``dask_scheduler.log`` and ``dask_workers.log``. The second is where ``srun`` reports anything that went wrong with placing the workers, and PyBNF quotes from it in the error message if no worker ever registers.
+
+.. _workercount:
+
+How many workers run on each node
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default -- with either launcher -- each node runs one single-threaded worker process per CPU **the job was granted** on that node. That is the number your allocation asked for, not the number of processors the machine happens to have: a job given 4 CPUs of a 128-processor node runs 4 workers on it, not 128. Each worker is a separate process, so a pool sized to the machine rather than to the job would multiply memory use and leave the workers competing for the same few CPUs.
+
+PyBNF takes that number from the first of these that is available:
+
+* ``$SLURM_CPUS_ON_NODE``, which is what SLURM granted the job on a node;
+* the CPU count dask derives for this process, which is the machine's processors narrowed by CPU affinity and by any cgroup CPU quota -- the same number a single-machine PyBNF run sizes itself by; or
+* the machine's whole processor count, which is correct only when nothing is limiting the job.
+
+Which number was used, and which of the three it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
+
+Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares.
 
 
 TORQUE/PBS
@@ -102,7 +117,7 @@ PyBNF uses `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.
 
 For a local (single-machine) run, PyBNF builds a Dask ``LocalCluster`` with one thread per worker process, and as many worker processes as there are available cores (or ``parallel_count`` of them, if that key is set). One thread per worker is not tunable: the simulation backends hold process-wide state that is not thread-safe, so two jobs running concurrently in one process can interfere with each other.
 
-In the automatic PyBNF setup, the command ``dask ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask ssh`` is run with ``--nthreads 1`` and ``--nworkers`` equal to the number of available cores per node. The default number of available processes per core is the value returned by ``multiprocessing.cpu_count()``; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
+In the automatic PyBNF setup, the command ``dask ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask ssh`` is run with ``--nthreads 1`` and ``--nworkers`` equal to the number of CPUs the job was granted on a node, as described under `How many workers run on each node`_; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
 
 For manual configuration, you will need to run the series of commands described below. All of these commands must remain running during the entire PyBNF run. Utilites such as ``nohup`` or ``screen`` are helpful for keeping multiple commands running at once. 
 
