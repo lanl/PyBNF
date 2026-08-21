@@ -7,9 +7,11 @@ cleanup must propagate, not be masked by the ``exit()`` call (which previously
 sat in a ``finally`` block that swallowed any in-flight exception).
 """
 
+import os
+
 import pytest
 
-from pybnf.pybnf import _finalize
+from pybnf.pybnf import _cleanup_dask_workspace, _finalize
 
 
 class _StubAlg:
@@ -60,3 +62,106 @@ def test_finalize_does_not_mask_keyboard_interrupt():
     alg = _StubAlg(exc=KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
         _finalize(success=False, alg=alg, start_time=0.0)
+
+
+# Tests for _cleanup_dask_workspace (issue #620)
+
+
+def test_cleanup_dask_scratch_space_in_cwd(tmp_path):
+    """Cleanup removes dask-scratch-space (current dask directory name) from cwd."""
+    # Create the directory that modern dask creates
+    scratch_dir = tmp_path / 'dask-scratch-space'
+    scratch_dir.mkdir()
+    (scratch_dir / 'test_file.txt').write_text('test')
+    
+    # Change to the temp directory and run cleanup
+    original_dir = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        _cleanup_dask_workspace()
+        # The directory should be removed
+        assert not scratch_dir.exists()
+    finally:
+        os.chdir(original_dir)
+
+
+def test_cleanup_dask_worker_space_in_cwd(tmp_path):
+    """Cleanup removes dask-worker-space (legacy dask directory name) from cwd."""
+    # Create the directory that old dask created
+    worker_dir = tmp_path / 'dask-worker-space'
+    worker_dir.mkdir()
+    (worker_dir / 'test_file.txt').write_text('test')
+    
+    # Change to the temp directory and run cleanup
+    original_dir = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        _cleanup_dask_workspace()
+        # The directory should be removed
+        assert not worker_dir.exists()
+    finally:
+        os.chdir(original_dir)
+
+
+def test_cleanup_both_dask_directories(tmp_path):
+    """Cleanup removes both old and new dask directory names when both exist."""
+    scratch_dir = tmp_path / 'dask-scratch-space'
+    worker_dir = tmp_path / 'dask-worker-space'
+    scratch_dir.mkdir()
+    worker_dir.mkdir()
+    (scratch_dir / 'file1.txt').write_text('test')
+    (worker_dir / 'file2.txt').write_text('test')
+    
+    original_dir = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        _cleanup_dask_workspace()
+        # Both should be removed
+        assert not scratch_dir.exists()
+        assert not worker_dir.exists()
+    finally:
+        os.chdir(original_dir)
+
+
+def test_cleanup_when_no_dask_directories_exist(tmp_path):
+    """Cleanup runs without error when no dask directories exist."""
+    # No directories created - just run cleanup
+    original_dir = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        # Should not raise any errors
+        _cleanup_dask_workspace()
+    finally:
+        os.chdir(original_dir)
+
+
+def test_cleanup_dask_scratch_space_in_home(tmp_path, monkeypatch):
+    """Cleanup removes dask-scratch-space from the home directory."""
+    # Mock home directory to point to our temp directory
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))  # Windows
+    
+    # Create the directory in "home"
+    scratch_dir = tmp_path / 'dask-scratch-space'
+    scratch_dir.mkdir()
+    (scratch_dir / 'test_file.txt').write_text('test')
+    
+    _cleanup_dask_workspace()
+    # The directory should be removed
+    assert not scratch_dir.exists()
+
+
+def test_cleanup_dask_worker_space_in_home(tmp_path, monkeypatch):
+    """Cleanup removes dask-worker-space (legacy name) from the home directory."""
+    # Mock home directory to point to our temp directory
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))  # Windows
+    
+    # Create the legacy directory in "home"
+    worker_dir = tmp_path / 'dask-worker-space'
+    worker_dir.mkdir()
+    (worker_dir / 'test_file.txt').write_text('test')
+    
+    _cleanup_dask_workspace()
+    # The directory should be removed
+    assert not worker_dir.exists()
