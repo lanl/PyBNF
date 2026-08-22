@@ -203,6 +203,11 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
 
     """
 
+    # This fit runs one generation at a time and waits for the whole generation to finish
+    # before proposing the next, so some idle workers toward the end of each generation are
+    # expected (#621). The asynchronous variant below does not wait, so it leaves this False.
+    waits_for_full_generation = True
+
     def __init__(self, config):
         """
         Initializes algorithm based on the config object.

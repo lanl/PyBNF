@@ -54,11 +54,28 @@ class _FakeFuture:
 
 class _FakeClient:
     """Synchronous stand-in for a distributed.Client. Runs submitted callables
-    inline and records cancellations."""
+    inline and records cancellations.
 
-    def __init__(self):
+    ``_report_parallelism`` reads two things off a real client: ``client.cluster``
+    (set only for a local LocalCluster run) and ``client.scheduler_info()`` (the
+    connected workers). By default this fake looks like a *local* run -- ``cluster``
+    is a sentinel object -- so the parallelism report returns immediately and the
+    orchestration tests are unaffected. Pass ``n_workers`` to make it look like a
+    *cluster* run with that many workers connected (``cluster`` becomes None), which
+    is what the parallelism-report tests use."""
+
+    def __init__(self, n_workers=None):
         self.submitted = []      # list of (fn, args)
         self.cancelled = []
+        if n_workers is None:
+            self.cluster = object()   # a local run owns its LocalCluster
+            self._n_workers = 0
+        else:
+            self.cluster = None       # a cluster run connects to an outside scheduler
+            self._n_workers = n_workers
+
+    def scheduler_info(self):
+        return {'workers': {'tcp://w%d' % i: {} for i in range(self._n_workers)}}
 
     def scatter(self, objs, broadcast=False):
         return [_FakeFuture(o) for o in objs]
@@ -353,6 +370,102 @@ def _scored(name, score):
     res = algorithms.Result(_pset(name, score), {}, name)
     res.score = score
     return res
+
+
+class TestReportParallelism:
+    """``_report_parallelism`` compares how many jobs a fit starts with against how many
+    workers connected, logs both numbers on a cluster run, and warns when they differ by a
+    large margin (#621). Driven directly with the fake client, which models a local run by
+    default and a cluster run when given a worker count."""
+
+    def _algo(self, tmp_path, generational=False):
+        algo = _make_algorithm(tmp_path, [[_pset('a', 1.0)]])
+        algo.waits_for_full_generation = generational
+        return algo
+
+    def test_local_run_is_not_reported(self, tmp_path, caplog):
+        """A local run's worker count is exactly what the user asked for, so there is
+        nothing to compare and nothing is logged or warned."""
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(), 4)
+        assert 'Parallelism' not in caplog.text
+
+    def test_cluster_run_logs_both_numbers(self, tmp_path, caplog):
+        """A well-matched cluster run logs both numbers and warns about neither."""
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=4), 4)
+        assert 'starts with 4 job(s) running and 4 worker(s) connected' in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_idle_workers_warn_and_name_population_size(self, tmp_path, caplog, capsys):
+        """Many more workers than jobs warns that workers will sit idle, names both numbers
+        and population_size, and prints the warning to the console."""
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=8), 2)
+        assert 'about 6 worker(s) will sit idle' in caplog.text
+        assert 'population_size' in caplog.text
+        assert 'Warning:' in capsys.readouterr().out
+
+    def test_more_jobs_than_workers_warns_about_queueing(self, tmp_path, caplog):
+        """Many more jobs than workers warns that jobs will queue."""
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=2), 8)
+        assert 'jobs will queue' in caplog.text
+        assert 'population_size' in caplog.text
+
+    def test_generational_note_added_to_idle_warning(self, tmp_path, caplog):
+        """A generational fit's idle warning also says the idle time is expected."""
+        algo = self._algo(tmp_path, generational=True)
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=8), 2)
+        assert 'one generation at a time' in caplog.text
+
+    def test_generational_note_logged_even_when_counts_match(self, tmp_path, caplog):
+        """With counts well matched there is no warning, but a generational fit still idles
+        toward the end of each generation, so that note is logged for the record."""
+        algo = self._algo(tmp_path, generational=True)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=4), 4)
+        assert 'one generation at a time' in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_zero_workers_is_not_reported(self, tmp_path, caplog):
+        """No connected workers means there is nothing to compare against, so nothing is
+        logged. (A cluster with no workers is caught earlier, at cluster start-up.)"""
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=0), 4)
+        assert 'Parallelism' not in caplog.text
+
+    def test_unreadable_worker_count_is_not_fatal(self, tmp_path, caplog):
+        """If reading the worker count from dask fails, the fit is not stopped; the failure
+        is logged and the report is skipped."""
+        class _BrokenClient:
+            cluster = None
+
+            def scheduler_info(self):
+                raise RuntimeError('scheduler unreachable')
+
+        algo = self._algo(tmp_path)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_BrokenClient(), 4)  # must not raise
+        assert 'parallelism report is skipped' in caplog.text
+
+
+def test_cluster_run_reports_parallelism_end_to_end(tmp_path, monkeypatch, caplog):
+    """run() calls the parallelism report after submitting the initial jobs: a cluster
+    client with more workers than the one initial job draws the idle-workers warning."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    gens = [[_pset('iter0run0', 10.0)]]
+    algo = _make_algorithm(tmp_path, gens)
+    with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+        algo.run(_FakeClient(n_workers=6))
+    assert 'starts with 1 job(s) running and 6 worker(s) connected' in caplog.text
+    assert 'will sit idle' in caplog.text
 
 
 class TestRecordResultAndDecide:
