@@ -6,6 +6,24 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **On a cluster whose machines are not all the same size, each machine now runs a worker per
+  CPU it was granted rather than one count for all of them (#617, ADR-0124).** When PyBNF started
+  workers across several machines it sent the same worker count to every one. On a cluster whose
+  machines differ in size, that single count is too many workers for a small machine, where they
+  compete for its processors, and too few for a large one, which sits partly idle. The `srun`
+  launcher (`-t slurm-srun`) now works out each machine's count from what SLURM granted it and
+  starts that many there. A single worker count cannot express this, because one `srun` job step
+  binds every machine in it to the same number of CPUs, so PyBNF starts one job step per distinct
+  machine size, each on its own machines, which SLURM runs at the same time. A run on two
+  40-processor machines and one 96-processor machine starts 40 workers on each of the first two and
+  96 on the third. The arrangement is written to the log, and each job step writes its own worker
+  log (`dask_workers.log`, `dask_workers_2.log` and so on) so their output does not interleave. An
+  allocation whose machines are all the same size, which is the common case, still runs as one job
+  step exactly as before. If SLURM does not report a per-machine list PyBNF can line up with its
+  machines, it falls back to sizing every machine the same, with a warning saying so. This applies
+  only to the `srun` launcher. The SSH launcher (`-t slurm`) still uses one count for all machines,
+  because `dask ssh` takes only one. Setting `parallel_count` still splits that total evenly across
+  the machines on either launcher.
 - **A multi-machine fit can start its workers without logging in anywhere, so clusters that
   use host-based or Kerberos SSH can run one at all (#614, ADR-0122).** PyBNF had exactly one
   way to run across several machines: `dask-ssh`, which logs in to every node with **paramiko**

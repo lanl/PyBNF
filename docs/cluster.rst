@@ -109,16 +109,21 @@ An example batch script -- ``examples/tcr/tcr_batch.sh`` with a single word chan
 
     pybnf -c tcr-ss.conf -t slurm-srun -o
 
-Two log files are written to the output directory: ``dask_scheduler.log`` and ``dask_workers.log``. The second is where ``srun`` reports anything that went wrong with placing the workers, and PyBNF quotes from it in the error message if no worker ever registers.
+Two log files are written to the output directory: ``dask_scheduler.log`` and ``dask_workers.log``. The second is where ``srun`` reports anything that went wrong with placing the workers, and PyBNF quotes from it in the error message if no worker ever registers. When the allocation holds machines of more than one size, each size runs as its own ``srun`` job step and writes its own worker log (``dask_workers.log``, ``dask_workers_2.log`` and so on), so their output does not interleave.
 
 .. _workercount:
 
 How many workers run on each node
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default -- with either launcher -- each node runs one single-threaded worker process per CPU **the job was granted** on that node. That is the number your allocation asked for, not the number of processors the machine happens to have: a job given 4 CPUs of a 128-processor node runs 4 workers on it, not 128. Each worker is a separate process, so a pool sized to the machine rather than to the job would multiply memory use and leave the workers competing for the same few CPUs.
+By default, each node runs one single-threaded worker process per CPU **the job was granted** on that node. That is the number your allocation asked for, not the number of processors the machine happens to have: a job given 4 CPUs of a 128-processor node runs 4 workers on it, not 128. Each worker is a separate process, so a pool sized to the machine rather than to the job would multiply memory use and leave the workers competing for the same few CPUs.
 
-PyBNF takes that number from the first of these that is available:
+The two launchers differ in what happens when the machines in one allocation are not all the same size:
+
+* The **srun** launcher (``-t slurm-srun``) sizes each machine on its own, one worker per CPU that machine was granted. When the machines differ in size it starts one ``srun`` job step per distinct size, so a run on two 40-processor machines and one 96-processor machine starts 40 workers on each of the first two and 96 on the third. The per-machine arrangement is written to the log at the start of the run.
+* The **SSH** launcher (``-t slurm``) uses one worker count for every machine, because ``dask ssh`` takes only a single count for all hosts. The count comes from the node PyBNF is running on, so on a mixed allocation it is right for that machine and may be too high or too low for the others.
+
+The count for a machine comes from the first of these that is available:
 
 * ``$SLURM_CPUS_ON_NODE``, which is what SLURM granted the job on a node;
 * the CPU count dask derives for this process, which is the machine's processors narrowed by CPU affinity and by any cgroup CPU quota -- the same number a single-machine PyBNF run sizes itself by; or
@@ -126,7 +131,7 @@ PyBNF takes that number from the first of these that is available:
 
 Which number was used, and which of the three it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
 
-Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares.
+Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares, on either launcher.
 
 
 .. _sizing:

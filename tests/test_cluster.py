@@ -489,6 +489,20 @@ class TestTheInstalledSlurmIsTheOnePyBNFRuns:
         assert not missing, ('`%s` no longer mentions %s, which PyBNF passes it'
                              % (srun_argv[0], ', '.join(missing)))
 
+    def test_srun_still_takes_every_option_the_group_builder_passes(self, monkeypatch):
+        """The heterogeneous path (#617) hands srun a few more options than the single
+        step does: ``--nodelist``, ``--nodes``, ``--ntasks`` and ``--ntasks-per-node``,
+        which name exactly the machines one size group runs on. Held to the installed
+        srun the same way, so a rename in any of them is caught on a cluster rather than
+        in a fit."""
+        srun_argv, _ = _split_at_dask_cli(
+            cluster.Cluster.srun_worker_command_for_group(
+                '/shared/dask_scheduler.json', ['n1', 'n2'], 40))
+        help_text = _help_text((srun_argv[0],))
+        missing = [opt for opt in _options_in(srun_argv) if not _help_mentions(help_text, opt)]
+        assert not missing, ('`%s` no longer mentions %s, which PyBNF passes it'
+                             % (srun_argv[0], ', '.join(missing)))
+
     def test_the_node_list_is_read_with_a_program_that_is_installed(self, monkeypatch):
         """``scontrol`` is the other SLURM program PyBNF runs, and the one whose
         absence would stop a cluster fit first: the node list is read before
@@ -933,8 +947,9 @@ class _Recorder:
         self.setup_calls = []
         self.setup_proc = None       # the dask ssh process fake_setup handed back
         self.ssh_wait_calls = []     # (client, dask_proc, expected, output_file, out_dir)
-        self.srun_setup_calls = []   # (scheduler_file, out_dir, node_count, parallel_count)
-        self.srun_wait_calls = []    # (client, srun_proc, worker_log)
+        self.srun_setup_calls = []   # (scheduler_file, out_dir, node_names, parallel_count)
+        self.srun_worker_procs = None  # the srun worker procs fake_setup_srun handed back
+        self.srun_wait_calls = []    # (client, worker_procs, expected, worker_logs)
 
     def Client(self, *args, **kwargs):
         self.client_calls.append((args, kwargs))
@@ -968,9 +983,13 @@ def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None, ssh_ra
         rec.setup_proc = _ProcStub()
         return rec.setup_proc, 2, None
 
-    def fake_setup_srun(scheduler_file, out_dir, node_count, parallel_count):
-        rec.srun_setup_calls.append((scheduler_file, out_dir, node_count, parallel_count))
-        return _ProcStub(), _ProcStub()
+    def fake_setup_srun(scheduler_file, out_dir, node_names, parallel_count):
+        rec.srun_setup_calls.append((scheduler_file, out_dir, node_names, parallel_count))
+        # scheduler proc, the list of srun worker procs, the total worker count to wait for,
+        # and the log each srun step writes. wait_for_srun_workers, which consumes them, is
+        # faked below, so the count and logs here are placeholders.
+        rec.srun_worker_procs = [_ProcStub()]
+        return _ProcStub(), rec.srun_worker_procs, 1, [os.path.join(out_dir, 'dask_workers.log')]
 
     def fake_ssh_wait(client, dask_proc, expected, output_file, out_dir, **kwargs):
         rec.ssh_wait_calls.append((client, dask_proc, expected, output_file, out_dir))
@@ -978,11 +997,11 @@ def _patch_init(monkeypatch, read_returns=(None, None), srun_raises=None, ssh_ra
             raise ssh_raises
         return expected
 
-    def fake_wait(client, srun_proc, worker_log, **kwargs):
-        rec.srun_wait_calls.append((client, srun_proc, worker_log))
+    def fake_wait(client, worker_procs, expected, worker_logs, **kwargs):
+        rec.srun_wait_calls.append((client, worker_procs, expected, worker_logs))
         if srun_raises:
             raise srun_raises
-        return 1
+        return expected
 
     monkeypatch.setattr(cluster.Cluster, 'read_node_names', staticmethod(fake_read))
     monkeypatch.setattr(cluster.Cluster, 'setup_cluster', staticmethod(fake_setup))
@@ -1397,6 +1416,104 @@ class TestCpusPerNode:
         assert cluster.Cluster.cpus_per_node()[0] == 4
 
 
+class TestExpandCpusPerNode:
+    """Reading $SLURM_JOB_CPUS_PER_NODE into one count per machine (#617). SLURM
+    writes the counts run-length encoded, in the same order as the node list."""
+
+    @pytest.mark.parametrize('spec, expected', [
+        ('40(x2),96', [40, 40, 96]),      # the mixed-size case this issue is about
+        ('8', [8]),                       # a single machine
+        ('8(x3)', [8, 8, 8]),             # one size, several machines
+        ('4(x2),8,16(x2)', [4, 4, 8, 16, 16]),
+        (' 40(x2) , 96 ', [40, 40, 96]),  # whitespace around the groups is tolerated
+    ])
+    def test_expands_the_run_length_form(self, spec, expected):
+        assert cluster.expand_cpus_per_node(spec) == expected
+
+    @pytest.mark.parametrize('spec', [None, '', '   ', 'many', '4(x)', '(x2)', '4,', 'a,b'])
+    def test_unusable_text_is_none(self, spec):
+        """Anything that is not the run-length form -- unset, empty, or a value this
+        code does not recognize -- returns None, so the caller falls back to sizing
+        every machine the same rather than acting on a misread."""
+        assert cluster.expand_cpus_per_node(spec) is None
+
+
+class TestPerNodeCpus:
+    """How many CPUs each machine was granted, one number per node (#617)."""
+
+    def test_reads_the_per_machine_counts_in_node_order(self, monkeypatch):
+        """The preferred source is $SLURM_JOB_CPUS_PER_NODE, which lines up with the
+        node list; each machine is sized by what it was granted."""
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')
+        counts, source = cluster.Cluster.per_node_cpus(['n1', 'n2', 'n3'])
+        assert counts == [40, 40, 96]
+        assert 'SLURM_JOB_CPUS_PER_NODE' in source
+
+    def test_unset_variable_sizes_every_machine_the_same(self, monkeypatch):
+        """With the per-machine variable unset, there is nothing to size each machine
+        by, so every machine gets the single cpus_per_node count -- the behaviour
+        before this change. Here that count comes from $SLURM_CPUS_ON_NODE."""
+        monkeypatch.delenv('SLURM_JOB_CPUS_PER_NODE', raising=False)
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '8')
+        counts, source = cluster.Cluster.per_node_cpus(['n1', 'n2', 'n3'])
+        assert counts == [8, 8, 8]
+        assert 'SLURM_CPUS_ON_NODE' in source            # the fallback source, named
+
+    def test_a_length_mismatch_falls_back_rather_than_misaligning(self, monkeypatch):
+        """A per-machine list that does not have one entry per node cannot be trusted
+        to line up, so it is not used: every machine is sized the same instead."""
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40,96')   # two, but three nodes
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '8')
+        counts, _ = cluster.Cluster.per_node_cpus(['n1', 'n2', 'n3'])
+        assert counts == [8, 8, 8]
+
+    def test_unparseable_variable_falls_back(self, monkeypatch):
+        """A value this code cannot read is treated as unavailable, not guessed at."""
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', 'nonsense')
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '8')
+        counts, _ = cluster.Cluster.per_node_cpus(['n1', 'n2'])
+        assert counts == [8, 8]
+
+    def test_the_fallback_is_logged_so_a_mixed_cluster_user_is_told(self, monkeypatch, caplog):
+        """A user on a mixed cluster is expecting each machine to be sized on its own,
+        so falling back to one size for all is worth a warning that says why."""
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40,96')
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '8')
+        with caplog.at_level('WARNING'):
+            cluster.Cluster.per_node_cpus(['n1', 'n2', 'n3'])
+        assert any('SLURM_JOB_CPUS_PER_NODE' in r.message for r in caplog.records)
+
+
+class TestSrunWorkerCommandForGroup:
+    """The srun command for one group of same-sized machines (#617). One worker per
+    granted CPU on each machine, the machines named so concurrent groups stay
+    disjoint, and the CPU request tracking the worker count for the same cgroup
+    reason srun_worker_command has."""
+
+    def test_names_the_machines_and_sizes_them_by_their_grant(self):
+        cmd = cluster.Cluster.srun_worker_command_for_group('/s.json', ['n1', 'n2'], 40)
+        assert cmd == ['srun', '--nodelist', 'n1,n2',
+                       '--nodes', '2', '--ntasks', '2', '--ntasks-per-node', '1',
+                       '--cpus-per-task', '40', '--label',
+                       *DASK, 'worker', '--scheduler-file', '/s.json',
+                       '--nworkers', '40', '--nthreads', '1']
+
+    def test_a_single_machine_group(self):
+        cmd = cluster.Cluster.srun_worker_command_for_group('/s.json', ['big'], 96)
+        assert cmd[cmd.index('--nodelist') + 1] == 'big'
+        assert cmd[cmd.index('--nodes') + 1] == '1'
+        assert cmd[cmd.index('--nworkers') + 1] == '96'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '96'
+
+    def test_workers_are_single_threaded(self):
+        cmd = cluster.Cluster.srun_worker_command_for_group('/s.json', ['n1'], 4)
+        assert cmd[cmd.index('--nthreads') + 1] == '1'
+
+    def test_scheduler_file_is_one_literal_argument(self):
+        cmd = cluster.Cluster.srun_worker_command_for_group('/tmp/a b$(whoami).json', ['n1'], 2)
+        assert cmd[cmd.index('--scheduler-file') + 1] == '/tmp/a b$(whoami).json'
+
+
 class TestSrunWorkerCommand:
 
     def _patch(self, monkeypatch, granted=8):
@@ -1559,27 +1676,31 @@ class TestWaitForSchedulerFile:
 
 class TestWaitForSrunWorkers:
 
-    def test_returns_once_a_worker_registers(self, monkeypatch):
-        """The readiness signal for the workers is a worker registering with the
-        scheduler -- not srun having been launched, which says nothing."""
+    def test_returns_once_all_the_workers_register(self, monkeypatch):
+        """The readiness signal for the workers is all of them registering with the
+        scheduler -- not srun having been launched, which says nothing. Two expected,
+        two connected, so the wait returns two."""
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
         n = cluster.Cluster.wait_for_srun_workers(
-            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), _FakeDaskProc(), '/log')
+            _ClientStub(workers=('tcp://n1:1', 'tcp://n2:1')), [_FakeDaskProc()],
+            expected=2, worker_logs=['/log'])
         assert n == 2
 
-    def test_waits_while_the_cluster_is_still_empty(self, monkeypatch):
-        """A scheduler with no workers yet is not an error: the poll continues
-        until the workers arrive."""
-        client = _ClientStub(workers=())
+    def test_waits_while_the_cluster_is_still_filling_up(self, monkeypatch):
+        """A scheduler short of the expected count is not ready and not an error: the
+        poll continues until the last worker arrives (#200, #617). Here one of two is
+        up, then the second arrives, and only then does the wait return."""
+        client = _ClientStub(workers=('tcp://n1:1',))
         polls = []
 
         def fake_sleep(_seconds):
             polls.append(1)
             if len(polls) == 3:
-                client._workers = {'tcp://n1:1': {}}
+                client._workers = dict.fromkeys(('tcp://n1:1', 'tcp://n2:1'), {})
 
         monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
-        assert cluster.Cluster.wait_for_srun_workers(client, _FakeDaskProc(), '/log') == 1
+        assert cluster.Cluster.wait_for_srun_workers(
+            client, [_FakeDaskProc()], expected=2, worker_logs=['/log']) == 2
         assert len(polls) == 3
 
     def test_a_transient_scheduler_error_is_not_fatal(self, monkeypatch):
@@ -1597,32 +1718,36 @@ class TestWaitForSrunWorkers:
                 return {'workers': {'tcp://n1:1': {}}}
 
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
-        assert cluster.Cluster.wait_for_srun_workers(_FlakyClient(), _FakeDaskProc(), '/log') == 1
+        assert cluster.Cluster.wait_for_srun_workers(
+            _FlakyClient(), [_FakeDaskProc()], expected=1, worker_logs=['/log']) == 1
 
-    def test_srun_exiting_early_is_reported_with_its_log(self, monkeypatch, tmp_path):
-        """srun exiting before any worker registered means the placement failed --
-        a bad flag, a request larger than the allocation. Reported at once, quoting
-        srun's own message rather than waiting out the timeout."""
+    def test_any_srun_step_exiting_early_is_reported_with_its_log(self, monkeypatch, tmp_path):
+        """An srun step exiting before its workers registered means the placement
+        failed -- a bad flag, a request larger than that part of the allocation. With
+        machines of different sizes there is one step per size, so any of them exiting
+        is caught, reported at once and quoting srun's own message."""
         log = tmp_path / 'workers.log'
         log.write_text('srun: error: Unable to allocate resources')
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
         with pytest.raises(printing.PybnfError) as exc:
             cluster.Cluster.wait_for_srun_workers(
-                _ClientStub(workers=()), _FakeDaskProc(returncode=1), str(log))
+                _ClientStub(workers=()), [_FakeDaskProc(returncode=1)],
+                expected=1, worker_logs=[str(log)])
         assert 'code 1' in str(exc.value)
         assert 'Unable to allocate resources' in str(exc.value)
 
-    def test_no_worker_in_time_names_the_log_and_the_step_hazard(self, monkeypatch, tmp_path):
-        """srun still running with no worker registered is the shape of a queued
-        job step: connecting to our own scheduler succeeded, so nothing else would
-        report it, and the fit would submit jobs no one takes. The message points
-        at srun's own log and at the likely cause."""
+    def test_too_few_in_time_names_the_logs_and_the_step_hazard(self, monkeypatch, tmp_path):
+        """srun still running with the workers short of the count is the shape of a
+        queued job step: connecting to our own scheduler succeeded, so nothing else
+        would report it, and the fit would run on fewer machines than reserved. The
+        message points at srun's own log(s) and at the likely cause."""
         log = tmp_path / 'workers.log'
         log.write_text('srun: Job step creation temporarily disabled, retrying')
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
         with pytest.raises(printing.PybnfError) as exc:
             cluster.Cluster.wait_for_srun_workers(
-                _ClientStub(workers=()), _FakeDaskProc(), str(log), timeout=1.)
+                _ClientStub(workers=()), [_FakeDaskProc()], expected=2,
+                worker_logs=[str(log)], timeout=1.)
         assert 'srun: Job step creation' in str(exc.value)   # srun's own words, in the log
         assert 'workers.log' in exc.value.message            # ... and where to read more
         assert 'job step' in exc.value.message.lower()
@@ -1659,6 +1784,17 @@ class TestPollForWorkers:
             _ClientStub(workers=('tcp://n1:1',)), _FakeDaskProc(),
             expected=3, timeout=1., poll=0.25)
         assert (outcome, n, rc) == ('timeout', 1, None)
+
+    def test_exited_when_any_of_several_processes_is_gone(self, monkeypatch):
+        """The srun launcher passes a list of processes, one per machine size. If any one of
+        them exits the placement failed, so the loop reports 'exited' with that process's
+        code even though the others are still running."""
+        monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
+        alive, dead = _FakeDaskProc(), _FakeDaskProc(returncode=2)
+        outcome, n, rc = cluster.Cluster._poll_for_workers(
+            _ClientStub(workers=()), [alive, dead],
+            expected=4, timeout=5., poll=0.25)
+        assert (outcome, rc) == ('exited', 2)
 
 
 class TestWaitForSSHWorkers:
@@ -1721,9 +1857,10 @@ class TestSetupSrunCluster:
         monkeypatch.setattr(cluster, 'Popen', spy)
         monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
         monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+        monkeypatch.delenv('SLURM_JOB_CPUS_PER_NODE', raising=False)   # same size everywhere
 
-        scheduler_proc, srun_proc = cluster.Cluster.setup_srun_cluster(
-            str(sched_file), str(tmp_path), 2, parallel_count=None)
+        scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2'], parallel_count=None)
 
         (sched_cmd, sched_kwargs), (srun_cmd, srun_kwargs) = spy.calls
         assert sched_cmd == [*DASK, 'scheduler', '--scheduler-file', str(sched_file)]
@@ -1736,7 +1873,107 @@ class TestSetupSrunCluster:
             assert hasattr(kwargs['stdout'], 'write')
         assert (tmp_path / 'dask_scheduler.log').exists()
         assert (tmp_path / 'dask_workers.log').exists()
-        assert (scheduler_proc, srun_proc) == (spy.procs[0], spy.procs[1])
+        # One srun step (same size everywhere), and the worker total is what the readiness
+        # wait needs: four workers on each of two machines.
+        assert (scheduler_proc, worker_procs) == (spy.procs[0], [spy.procs[1]])
+        assert expected == 8
+        assert worker_logs == [str(tmp_path / 'dask_workers.log')]
+
+    def test_machines_of_different_sizes_each_get_their_own_srun_step(self, monkeypatch, tmp_path):
+        """#617: a mixed-size allocation cannot be placed by one srun step, because
+        --cpus-per-task is a single number for the whole step and under cgroup binding a
+        task that under-requests is confined to what it asked for. So each distinct size
+        gets its own step: two 40-processor machines in one step at 40 workers each, the
+        96-processor machine in a second step at 96. The steps run on disjoint machines,
+        which SLURM allows concurrently, and each writes its own log so their output does
+        not interleave."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')
+
+        scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=None)
+
+        (sched_cmd, _), (first_cmd, _), (second_cmd, _) = spy.calls
+        assert sched_cmd == [*DASK, 'scheduler', '--scheduler-file', str(sched_file)]
+        # First step: the two same-size machines, 40 workers each.
+        assert first_cmd[first_cmd.index('--nodelist') + 1] == 'n1,n2'
+        assert first_cmd[first_cmd.index('--cpus-per-task') + 1] == '40'
+        assert first_cmd[first_cmd.index('--nworkers') + 1] == '40'
+        # Second step: the larger machine on its own, 96 workers.
+        assert second_cmd[second_cmd.index('--nodelist') + 1] == 'n3'
+        assert second_cmd[second_cmd.index('--cpus-per-task') + 1] == '96'
+        assert second_cmd[second_cmd.index('--nworkers') + 1] == '96'
+        assert worker_procs == [spy.procs[1], spy.procs[2]]
+        assert expected == 40 * 2 + 96                       # every worker across both steps
+        assert worker_logs == [str(tmp_path / 'dask_workers.log'),
+                               str(tmp_path / 'dask_workers_2.log')]
+        assert (tmp_path / 'dask_workers.log').exists()
+        assert (tmp_path / 'dask_workers_2.log').exists()
+
+    def test_the_per_machine_arrangement_is_logged(self, monkeypatch, tmp_path, caplog):
+        """#617 asks for the arrangement to be recorded, so a user can see which machines
+        got how many workers. One line per distinct size, naming the machines and their
+        count."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')
+
+        with caplog.at_level('INFO'):
+            cluster.Cluster.setup_srun_cluster(
+                str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=None)
+
+        text = '\n'.join(r.message for r in caplog.records)
+        assert 'n1' in text and 'n2' in text and '40' in text
+        assert 'n3' in text and '96' in text
+
+    def test_an_explicit_parallel_count_is_still_one_step_and_an_even_split(self, monkeypatch, tmp_path):
+        """A user who sets parallel_count is asking for a specific number of workers, split
+        evenly across the machines the way the SSH launcher has always done. That path is
+        left alone by #617: one srun step, the count taken from parallel_count rather than
+        from what each machine was granted, even on a mixed allocation."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')   # ignored: the user chose
+
+        scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=12)
+
+        (_, _), (srun_cmd, _) = spy.calls                    # scheduler + exactly one srun
+        assert worker_procs == [spy.procs[1]]
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '4'   # 12 across three machines
+        assert expected == 12
+        assert worker_logs == [str(tmp_path / 'dask_workers.log')]
+
+    def test_an_unusable_cpus_per_node_falls_back_to_one_uniform_step(self, monkeypatch, tmp_path, caplog):
+        """If SLURM did not publish a per-machine list PyBNF can line up with the node names,
+        it cannot size each machine, so it does the safe thing the launcher did before #617:
+        one step, the same count everywhere, with a warning that per-machine sizing was not
+        available."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '4')
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', 'garbage')     # will not parse
+
+        with caplog.at_level('WARNING'):
+            scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
+                str(sched_file), str(tmp_path), ['n1', 'n2'], parallel_count=None)
+
+        (_, _), (srun_cmd, _) = spy.calls                    # scheduler + exactly one srun
+        assert worker_procs == [spy.procs[1]]
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '4'
+        assert expected == 8
+        assert worker_logs == [str(tmp_path / 'dask_workers.log')]
+        assert any('every machine the same' in r.message.lower() and 'SLURM_JOB_CPUS_PER_NODE' in r.message
+                   for r in caplog.records)
 
     def test_the_workers_are_started_only_after_the_scheduler_is_ready(self, monkeypatch, tmp_path):
         """Ordering is load-bearing: a worker started before the scheduler file
@@ -1751,7 +1988,7 @@ class TestSetupSrunCluster:
 
         monkeypatch.setattr(cluster, 'Popen', spy)
         monkeypatch.setattr(cluster.time, 'sleep', fake_sleep)
-        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), 1)
+        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), ['n1'])
 
         assert launched_at == [1, 1, 1]      # only the scheduler was running while waiting
         assert len(spy.calls) == 2
@@ -1769,7 +2006,7 @@ class TestSetupSrunCluster:
                             lambda cmd, **k: seen.append(sched_file.exists()) or spy(cmd, **k))
         monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
 
-        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), 1)
+        cluster.Cluster.setup_srun_cluster(str(sched_file), str(tmp_path), ['n1'])
 
         assert seen[0] is False                             # gone before the scheduler started
         assert json.loads(sched_file.read_text())['address'] == 'tcp://live:8786'
@@ -1784,7 +2021,7 @@ class TestSetupSrunCluster:
 
         with pytest.raises(printing.PybnfError, match='scheduler exited'):
             cluster.Cluster.setup_srun_cluster(
-                str(tmp_path / 'dask_scheduler.json'), str(tmp_path), 2)
+                str(tmp_path / 'dask_scheduler.json'), str(tmp_path), ['n1', 'n2'])
 
         assert len(spy.calls) == 1                          # srun was never launched
         assert spy.procs[0].terminated is True
@@ -1795,7 +2032,7 @@ class TestSetupSrunCluster:
         it can be a configuration error naming the path."""
         with pytest.raises(printing.PybnfError, match='scheduler file .* does not exist'):
             cluster.Cluster.setup_srun_cluster(
-                str(tmp_path / 'no_such_dir' / 's.json'), str(tmp_path), 1)
+                str(tmp_path / 'no_such_dir' / 's.json'), str(tmp_path), ['n1'])
 
     def test_a_missing_log_directory_is_refused_up_front(self, tmp_path):
         """Likewise for the directory the logs go in: opening that file is the first
@@ -1803,7 +2040,7 @@ class TestSetupSrunCluster:
         "an unknown error ... please report this bug"."""
         with pytest.raises(printing.PybnfError, match='logs .* does not exist'):
             cluster.Cluster.setup_srun_cluster(
-                str(tmp_path / 's.json'), str(tmp_path / 'no_such_dir'), 1)
+                str(tmp_path / 's.json'), str(tmp_path / 'no_such_dir'), ['n1'])
 
 
 class TestInitSrunDispatch:
@@ -1823,15 +2060,15 @@ class TestInitSrunDispatch:
         assert len(rec.srun_setup_calls) == 1
         assert c.local is False
 
-    def test_brings_up_srun_with_the_node_count_and_connects_by_file(self, monkeypatch):
-        """The srun bring-up gets the scheduler-file path, the output directory,
-        the *number* of nodes (all srun needs -- it places the workers itself) and
-        parallel_count; the client then connects through that file."""
+    def test_brings_up_srun_with_the_node_names_and_connects_by_file(self, monkeypatch):
+        """The srun bring-up gets the scheduler-file path, the output directory, the
+        *names* of the machines (needed to size each one, #617) and parallel_count;
+        the client then connects through that file."""
         rec = _patch_init(monkeypatch, read_returns=('n1', 'n1 n2 n3'))
         c = _build(self._cfg_srun(output_dir='out', parallel_count=12))
 
         expected_file = os.path.abspath(os.path.join('out', 'dask_scheduler.json'))
-        assert rec.srun_setup_calls == [(expected_file, 'out', 3, 12)]
+        assert rec.srun_setup_calls == [(expected_file, 'out', ['n1', 'n2', 'n3'], 12)]
         assert rec.client_calls == [((), {'scheduler_file': expected_file})]
         assert c._own_scheduler_file == expected_file
 
@@ -1871,10 +2108,10 @@ class TestInitSrunDispatch:
         c = _build(self._cfg_srun(output_dir='out'))
 
         assert len(rec.srun_wait_calls) == 1
-        client, srun_proc, worker_log = rec.srun_wait_calls[0]
+        client, worker_procs, expected, worker_logs = rec.srun_wait_calls[0]
         assert client is rec.last_client
-        assert srun_proc is c._dask_proc
-        assert worker_log == os.path.join('out', 'dask_workers.log')
+        assert worker_procs is c._srun_worker_procs
+        assert worker_logs == [os.path.join('out', 'dask_workers.log')]
 
     def test_a_failed_worker_wait_stops_what_it_started(self, monkeypatch):
         """A constructor that raises never becomes a Cluster, so no one else can
@@ -1886,9 +2123,10 @@ class TestInitSrunDispatch:
         faked_setup = cluster.Cluster.setup_srun_cluster   # the recorder _patch_init installed
 
         def spy_setup(*args):
-            procs = faked_setup(*args)
-            started.extend(procs)
-            return procs
+            scheduler_proc, worker_procs, expected, logs = faked_setup(*args)
+            started.append(scheduler_proc)
+            started.extend(worker_procs)
+            return scheduler_proc, worker_procs, expected, logs
 
         monkeypatch.setattr(cluster.Cluster, 'setup_srun_cluster', staticmethod(spy_setup))
         with pytest.raises(printing.PybnfError, match='no workers'):

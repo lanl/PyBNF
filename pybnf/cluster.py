@@ -178,6 +178,40 @@ def uses_srun(cluster_type):
     return SRUN_CLUSTER_TYPE_RE.fullmatch(cluster_type.strip()) is not None
 
 
+# One compressed CPU-count group as SLURM writes it in $SLURM_JOB_CPUS_PER_NODE: a number,
+# optionally followed by "(xN)" meaning N nodes in a row were granted that many CPUs. So
+# "40(x2),96" is three nodes granted 40, 40 and 96. The whole variable, once expanded, lines
+# up one-to-one with the node list `scontrol show hostname` returns, which is how the srun
+# launcher learns how many workers each machine should run (#617).
+CPUS_PER_NODE_GROUP_RE = re.compile(r'\s*(\d+)(?:\(x(\d+)\))?\s*')
+
+
+def expand_cpus_per_node(spec):
+    """
+    Expand a ``$SLURM_JOB_CPUS_PER_NODE`` string into one CPU count per node (#617).
+
+    SLURM records the per-node counts in a run-length form, e.g. ``40(x2),96`` for three
+    nodes granted 40, 40 and 96 CPUs. This turns that into ``[40, 40, 96]``, in the same
+    order as the node list, so each machine's granted count can be matched to its name.
+
+    :param spec: The value of ``$SLURM_JOB_CPUS_PER_NODE``, or None
+    :type spec: str or None
+    :return: one CPU count per node, or None if the text is empty or does not parse
+    :rtype: list or None
+    """
+    if not spec or not spec.strip():
+        return None
+    counts = []
+    for group in spec.strip().split(','):
+        match = CPUS_PER_NODE_GROUP_RE.fullmatch(group)
+        if not match:
+            return None
+        count = int(match.group(1))
+        repeats = int(match.group(2)) if match.group(2) else 1
+        counts.extend([count] * repeats)
+    return counts
+
+
 class Cluster:
     """
     Class handling the setup and teardown of the dask Client used to submit simulation jobs
@@ -208,7 +242,13 @@ class Cluster:
         # either attaches to an existing scheduler or lets dask ssh start one (#614).
         self._scheduler_proc = None
         self._own_scheduler_file = None
-        self._srun_worker_log = None
+        # srun launcher readiness and teardown (#614, #617). The workers are one or more srun
+        # processes -- more than one only when the allocation holds machines of different
+        # sizes, which take one job step each -- so this is a list. The expected count is the
+        # total number of workers over all of them, and the logs are what each step wrote.
+        self._srun_worker_procs = []
+        self._srun_expected_workers = None
+        self._srun_worker_logs = []
         # SSH launcher readiness (#398). When PyBNF starts the cluster with dask ssh, these
         # hold what the readiness wait needs: the file dask ssh's output was captured to (so a
         # failed login can be quoted), how many workers it should bring up, and the directory
@@ -225,9 +265,10 @@ class Cluster:
         # Find the name of the scheduler node, and a list of all available nodes (node_string), depending on what
         # cluster options are set
         if uses_srun(config.config['cluster_type']):
-            # srun launcher (#614): no node names are needed to *reach* the nodes -- SLURM
-            # places the workers itself -- but the node count is, because it is what the
-            # per-node worker arithmetic divides by.
+            # srun launcher (#614): SLURM places the workers itself, so the node names are not
+            # needed to *reach* the nodes -- but they are needed to size each machine, because
+            # the default worker count on a machine is one per CPU that machine was granted,
+            # and machines in one allocation can differ in size (#617).
             scheduler_node = None
             node_string = None
             if config.config['scheduler_node'] or config.config['worker_nodes']:
@@ -238,10 +279,10 @@ class Cluster:
             scheduler_file = self.srun_scheduler_file(config)
             self._own_scheduler_file = scheduler_file
             out_dir = config.config['output_dir']
-            self._srun_worker_log = os.path.join(out_dir, SRUN_WORKER_LOG)
             dummy, srun_nodes = self.read_node_names(config)
-            self._scheduler_proc, self._dask_proc = self.setup_srun_cluster(
-                scheduler_file, out_dir, len(srun_nodes.split()), config.config['parallel_count'])
+            (self._scheduler_proc, self._srun_worker_procs, self._srun_expected_workers,
+             self._srun_worker_logs) = self.setup_srun_cluster(
+                scheduler_file, out_dir, srun_nodes.split(), config.config['parallel_count'])
         elif config.config['scheduler_file']:
             # Scheduler node will be read in from scheduler file stored on shared file system
             node_string = None
@@ -275,7 +316,8 @@ class Cluster:
             try:
                 self.client = Client(scheduler_file=scheduler_file)
                 self.local = False
-                self.wait_for_srun_workers(self.client, self._dask_proc, self._srun_worker_log)
+                self.wait_for_srun_workers(self.client, self._srun_worker_procs,
+                                           self._srun_expected_workers, self._srun_worker_logs)
             except Exception:
                 self.stop_own_processes()
                 raise
@@ -678,6 +720,41 @@ class Cluster:
         return cpu_count(), "this machine's whole processor count (multiprocessing.cpu_count)"
 
     @staticmethod
+    def per_node_cpus(node_names):
+        """
+        How many CPUs the job was granted on each machine, one number per node (#617).
+
+        The srun launcher's default is one worker per granted CPU, and machines in one
+        allocation can differ in size, so this returns a count for each machine rather than
+        the single number :meth:`cpus_per_node` gives. It reads ``$SLURM_JOB_CPUS_PER_NODE``,
+        which lists the per-node counts in the same order as ``node_names``. If that variable
+        is missing, does not parse, or does not have one entry per node, per-machine sizing is
+        not available, so this falls back to the single :meth:`cpus_per_node` count for every
+        machine -- the behaviour before this change, where every machine was sized the same --
+        and says so, since a user on a mixed cluster is expecting each machine to be sized on
+        its own.
+
+        :param node_names: The machines in the allocation, in the order SLURM lists them
+        :type node_names: list
+        :return: a CPU count for each machine, and a phrase naming where the counts came from
+        :rtype: tuple
+        """
+        spec = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+        counts = expand_cpus_per_node(spec)
+        if counts is not None and len(counts) == len(node_names):
+            return counts, 'what SLURM granted each machine ($SLURM_JOB_CPUS_PER_NODE)'
+        granted, source = Cluster.cpus_per_node()
+        if not spec.strip():
+            reason = '$SLURM_JOB_CPUS_PER_NODE is not set'
+        elif counts is None:
+            reason = 'could not read $SLURM_JOB_CPUS_PER_NODE (%r)' % spec
+        else:
+            reason = ('$SLURM_JOB_CPUS_PER_NODE lists %i machine(s) but the allocation has %i'
+                      % (len(counts), len(node_names)))
+        logger.warning('Sizing every machine the same because %s; using %s.' % (reason, source))
+        return [granted] * len(node_names), source
+
+    @staticmethod
     def dask_scheduler_command(scheduler_file):
         """
         Build the ``dask scheduler`` invocation that starts the scheduler on this node.
@@ -745,24 +822,61 @@ class Cluster:
                 '--nthreads', '1']
 
     @staticmethod
-    def setup_srun_cluster(scheduler_file, out_dir, node_count, parallel_count=None):
+    def srun_worker_command_for_group(scheduler_file, nodes, cpus):
+        """
+        Build the srun invocation for one group of machines that were all granted the same
+        number of CPUs, starting one worker per granted CPU on each (#617).
+
+        This is what the default path uses when the allocation holds machines of different
+        sizes. A single srun step cannot start different numbers of workers on different
+        machines -- ``--cpus-per-task`` is one value for the whole step, and under task/cgroup
+        binding a task that under-asked for CPUs is confined to them -- so each distinct size
+        is its own step, named by ``--nodelist``. The homogeneous case does not come here; it
+        stays the single :meth:`srun_worker_command`.
+
+        :param scheduler_file: Path of the scheduler file the workers should read
+        :type scheduler_file: str
+        :param nodes: The machines in this group, all granted the same CPU count
+        :type nodes: list
+        :param cpus: CPUs granted on each machine in the group, and so workers to start there
+        :type cpus: int
+        :return: the srun argument list for this group
+        :rtype: list
+        """
+        return ['srun',
+                # Name the exact machines this step runs on, so the steps for the different
+                # sizes land on disjoint machines and can run at the same time.
+                '--nodelist', ','.join(nodes),
+                '--nodes', str(len(nodes)), '--ntasks', str(len(nodes)),
+                '--ntasks-per-node', '1', '--cpus-per-task', str(cpus),
+                '--label',
+                *DASK_CLI, 'worker',
+                '--scheduler-file', scheduler_file,
+                '--nworkers', str(cpus),
+                '--nthreads', '1']
+
+    @staticmethod
+    def setup_srun_cluster(scheduler_file, out_dir, node_names, parallel_count=None):
         """
         Start a dask scheduler here and a set of dask workers with srun, with no SSH login.
 
         The scheduler runs as an ordinary subprocess of this process, on this node, and is
-        told to write ``scheduler_file``; the workers are one srun task per node, each
-        reading that file. Nothing authenticates anywhere: SLURM already granted the
-        allocation, which is the whole point of the launcher (#614).
+        told to write ``scheduler_file``; the workers are started with srun, each reading that
+        file. Nothing authenticates anywhere: SLURM already granted the allocation, which is
+        the whole point of the launcher (#614). With no ``parallel_count`` set, each machine
+        runs one worker per CPU it was granted, and an allocation of different-sized machines
+        is brought up as one srun step per distinct size (#617).
 
         :param scheduler_file: Path the scheduler should write its connection information to
         :type scheduler_file: str
         :param out_dir: Directory for the scheduler and worker logs
         :type out_dir: str
-        :param node_count: Number of nodes in the allocation
-        :type node_count: int
+        :param node_names: The machines in the allocation, in the order SLURM lists them
+        :type node_names: list
         :param parallel_count: Total number of worker processes over all nodes, or None
         :type parallel_count: int or None
-        :return: the scheduler process and the srun process
+        :return: the scheduler process, the list of srun worker processes, the total number of
+            workers to wait for, and the log file each srun step is writing
         :rtype: tuple
         """
         # Both of these would otherwise fail inside dask, or as a bare OSError from opening
@@ -794,11 +908,70 @@ class Cluster:
             raise
         logger.info('The dask scheduler is listening at %s' % address)
 
-        worker_log = os.path.join(out_dir, SRUN_WORKER_LOG)
-        srun_cmd = Cluster.srun_worker_command(scheduler_file, node_count, parallel_count)
-        logger.info('Starting dask workers with srun, logging to %s' % worker_log)
-        srun_proc = Cluster.popen_logged(srun_cmd, worker_log)
-        return scheduler_proc, srun_proc
+        commands, worker_logs, expected_total = Cluster.srun_worker_layout(
+            scheduler_file, out_dir, node_names, parallel_count)
+        worker_procs = []
+        for srun_cmd, worker_log in zip(commands, worker_logs):
+            logger.info('Starting dask workers with srun, logging to %s' % worker_log)
+            worker_procs.append(Cluster.popen_logged(srun_cmd, worker_log))
+        return scheduler_proc, worker_procs, expected_total, worker_logs
+
+    @staticmethod
+    def srun_worker_layout(scheduler_file, out_dir, node_names, parallel_count):
+        """
+        Work out the srun command(s) that start the workers, the log each writes, and how many
+        workers to expect in total (#617).
+
+        There is one command in every case except the one this issue is about: a default
+        (auto-sized) run on machines of different sizes, which becomes one command per distinct
+        size so each machine can be given a worker per CPU it holds. Everything else -- an
+        explicit ``parallel_count``, and a default run where every machine is the same size --
+        stays the single :meth:`srun_worker_command` it was before, so the common case is
+        unchanged.
+
+        :param scheduler_file: Path of the scheduler file the workers should read
+        :type scheduler_file: str
+        :param out_dir: Directory the worker logs are written in
+        :type out_dir: str
+        :param node_names: The machines in the allocation, in the order SLURM lists them
+        :type node_names: list
+        :param parallel_count: Total number of worker processes over all nodes, or None
+        :type parallel_count: int or None
+        :return: the srun command list(s), the matching log path(s), and the total worker count
+        :rtype: tuple
+        """
+        node_count = len(node_names)
+        main_log = os.path.join(out_dir, SRUN_WORKER_LOG)
+        if parallel_count is not None:
+            # The explicit override is left exactly as it was: one srun, an even split over all
+            # nodes. Making it per-machine is deliberately out of scope (#617).
+            cmd = Cluster.srun_worker_command(scheduler_file, node_count, parallel_count)
+            per_node = int(cmd[cmd.index('--nworkers') + 1])
+            return [cmd], [main_log], per_node * node_count
+        counts, source = Cluster.per_node_cpus(node_names)
+        if len(set(counts)) <= 1:
+            # Every machine the same size (the norm): the current single command, unchanged.
+            cmd = Cluster.srun_worker_command(scheduler_file, node_count, None)
+            per_node = int(cmd[cmd.index('--nworkers') + 1])
+            return [cmd], [main_log], per_node * node_count
+        # Machines of different sizes: one srun step per distinct size, each machine in the
+        # step given one worker per CPU it was granted. Group by size, keeping first-seen order.
+        groups = {}
+        for name, cpus in zip(node_names, counts):
+            groups.setdefault(cpus, []).append(name)
+        logger.info('Machines of different sizes in this allocation; sizing each by %s. '
+                    'Starting one srun step per size:' % source)
+        commands, logs, expected_total = [], [], 0
+        for index, (cpus, nodes) in enumerate(groups.items()):
+            commands.append(Cluster.srun_worker_command_for_group(scheduler_file, nodes, cpus))
+            # The first step keeps the usual log name; the rest are numbered, so the concurrent
+            # steps do not truncate and interleave one another's output.
+            logs.append(main_log if index == 0
+                        else os.path.join(out_dir, 'dask_workers_%i.log' % (index + 1)))
+            expected_total += cpus * len(nodes)
+            logger.info('  %i worker(s) on %i machine(s) (%s)'
+                        % (cpus, len(nodes), ', '.join(nodes)))
+        return commands, logs, expected_total
 
     @staticmethod
     def popen_logged(cmd, log_path):
@@ -892,7 +1065,7 @@ class Cluster:
                          'See %s for details.' % (scheduler_file, timeout, scheduler_log))
 
     @staticmethod
-    def _poll_for_workers(client, worker_proc, expected, timeout, poll):
+    def _poll_for_workers(client, worker_procs, expected, timeout, poll):
         """
         Poll the scheduler until enough workers have registered, watching the process (#398).
 
@@ -911,7 +1084,10 @@ class Cluster:
         for staying open was that the SSH login could not be tested on the cluster available).
 
         :param client: The connected dask Client
-        :param worker_proc: The process that is bringing the workers up (srun, or dask ssh)
+        :param worker_procs: The process bringing the workers up (dask ssh), or the list of
+            them (the srun launcher runs more than one when machines differ in size, #617).
+            Any one of them exiting is reported as ``'exited'``, since it means a group of
+            workers failed to start.
         :param expected: Number of registered workers that counts as ready
         :type expected: int
         :param timeout: Seconds to wait before giving up
@@ -922,11 +1098,13 @@ class Cluster:
             of workers that had registered, and the process return code (only set on ``'exited'``)
         :rtype: tuple
         """
+        procs = worker_procs if isinstance(worker_procs, (list, tuple)) else [worker_procs]
         n_workers = 0
         for _ in range(max(1, int(timeout / poll))):
-            returncode = worker_proc.poll()
-            if returncode is not None:
-                return 'exited', n_workers, returncode
+            for worker_proc in procs:
+                returncode = worker_proc.poll()
+                if returncode is not None:
+                    return 'exited', n_workers, returncode
             try:
                 n_workers = len(client.scheduler_info()['workers'])
             except Exception:
@@ -937,44 +1115,59 @@ class Cluster:
         return 'timeout', n_workers, None
 
     @staticmethod
-    def wait_for_srun_workers(client, srun_proc, worker_log,
+    def wait_for_srun_workers(client, worker_procs, expected, worker_logs,
                               timeout=SRUN_WORKER_TIMEOUT, poll=READINESS_POLL_INTERVAL):
         """
-        Wait until at least one srun-launched worker has registered with the scheduler.
+        Wait until all of the srun-launched workers have registered with the scheduler.
 
         The waiting itself is :meth:`_poll_for_workers`, the loop both launchers share; this
-        adds what is specific to srun -- that one worker is enough to call the cluster up, and
-        what to say, quoting srun's own log, when srun dies or no worker ever arrives.
+        adds what is specific to srun -- the count to wait for, and what to say, quoting srun's
+        own log(s), when an srun step dies or the workers never all arrive.
+
+        The full ``expected`` count is required rather than just one worker (#200, #617). On a
+        default run over machines of different sizes there is one srun step per size, and a
+        step that never places its workers -- a queued job step, a request larger than that
+        part of the allocation -- would otherwise be masked by another step that did place its
+        own. Connecting to our own scheduler always succeeds, so nothing else would report it,
+        and the fit would quietly run on fewer machines than were reserved.
 
         :param client: The connected dask Client
-        :param srun_proc: The running srun process
-        :param worker_log: Path of the srun output log, quoted if the workers never arrive
-        :type worker_log: str
+        :param worker_procs: The running srun process(es), one per machine size
+        :type worker_procs: list
+        :param expected: Total number of workers that should register across all the steps
+        :type expected: int
+        :param worker_logs: The srun output log(s), quoted if the workers never all arrive
+        :type worker_logs: list
         :param timeout: Seconds to wait before giving up
         :type timeout: float
         :param poll: Seconds between checks
         :type poll: float
         :return: the number of workers that had registered
         :rtype: int
-        :raises PybnfError: if srun exits, or no worker registers in time
+        :raises PybnfError: if an srun step exits, or the workers do not all register in time
         """
         outcome, n_workers, returncode = Cluster._poll_for_workers(
-            client, srun_proc, expected=1, timeout=timeout, poll=poll)
+            client, worker_procs, expected=expected, timeout=timeout, poll=poll)
         if outcome == 'ready':
-            logger.info('%i dask worker process(es) registered with the scheduler' % n_workers)
+            logger.info('%i of %i dask worker process(es) registered with the scheduler'
+                        % (n_workers, expected))
             return n_workers
+        details = '\n'.join(t for t in (Cluster.log_tail(log) for log in worker_logs) if t)
+        where = ', '.join(worker_logs)
         if outcome == 'exited':
-            details = Cluster.log_tail(worker_log)
-            logger.error('srun exited with code %s before any worker started. Log:\n%s'
+            logger.error('An srun step exited with code %s before all workers started. Log:\n%s'
                          % (returncode, details))
-            raise PybnfError('srun exited with code %s before any dask worker started. %s'
+            raise PybnfError('srun exited with code %s before all the dask workers started. %s'
                              % (returncode, ('Details:\n%s' % details) if details
-                                else 'See %s for details.' % worker_log))
-        details = Cluster.log_tail(worker_log)
-        logger.error('No dask worker registered within %s s. Log:\n%s' % (timeout, details))
-        raise PybnfError('No dask worker started by srun registered with the scheduler within '
-                         '%s s.%s' % (timeout, ('\nLog:\n%s' % details) if details else ''),
-                         hint=['Read %s: srun reports there what it is waiting for.' % worker_log,
+                                else 'See %s for details.' % where))
+        logger.error('Only %i of %i dask worker(s) registered within %s s. Log:\n%s'
+                     % (n_workers, expected, timeout, details))
+        raise PybnfError('Only %i of the %i expected dask worker process(es) started by srun '
+                         'registered with the scheduler within %s s.%s'
+                         % (n_workers, expected, timeout,
+                            ('\nLog:\n%s' % details) if details else ''),
+                         hint=['Read the srun log(s) (%s): srun reports there what it is waiting '
+                               'for.' % where,
                                'A message about job step creation means another step already holds '
                                'the allocation; run PyBNF as the only job step.'])
 
@@ -1072,6 +1265,12 @@ class Cluster:
         if self._dask_proc:
             self.stop_process(self._dask_proc, 'worker launcher subprocess')
             self._dask_proc = None
+        # The srun launcher's workers, one process per machine size (#617). Stopped before the
+        # scheduler, for the same reason the SSH worker launcher is: terminating them signals
+        # workers that would otherwise be left talking to a scheduler that is already gone.
+        for srun_proc in getattr(self, '_srun_worker_procs', None) or []:
+            self.stop_process(srun_proc, 'srun worker launcher subprocess')
+        self._srun_worker_procs = []
         if self._scheduler_proc:
             self.stop_process(self._scheduler_proc, 'dask scheduler subprocess')
             self._scheduler_proc = None
