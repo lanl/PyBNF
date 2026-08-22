@@ -1,23 +1,44 @@
 #!/bin/bash
 
-# set the number of nodes
+#=============================================================================
+# RESOURCE CONFIGURATION - Edit these values for your cluster
+#=============================================================================
+# Number of nodes to use
 #SBATCH --nodes=2
 
+# Minimum CPUs per node
 #SBATCH --mincpus=36
 
-# set max wallclock time for the entire fitting job
+# Maximum wallclock time for the job
 #SBATCH --time=1:00:00
 
-# set name of job
-#SBATCH --job-name=tests
+# Job name
+#SBATCH --job-name=pybnf-tests
 
 #SBATCH --exclusive
 
+#=============================================================================
+# PYTHON ENVIRONMENT - Edit this line to activate your Python environment
+#=============================================================================
+# Uncomment and edit one of these lines, or add your own:
+# source /path/to/your/virtualenv/bin/activate
+# conda activate your-env-name
+# module load python/3.11
+#
+# Example (edit the path):
+# source $HOME/path/to/pybnf-env/bin/activate
 
-# Enable custom Python 3.7.1
-# Your cluster might require something different here, or might not require anything. 
-source $HOME/rattlesnake/diamondback/bin/activate
+# REQUIRED: Activate your Python environment here
+# This environment must have PyBNF and its dependencies installed
+source /path/to/your/pybnf-env/bin/activate  # EDIT THIS LINE
+
+#=============================================================================
+# SYSTEM LIMITS (optional)
+#=============================================================================
 ulimit -u 500000
 
-# Run the test script
+#=============================================================================
+# RUN THE TEST SUITE
+#=============================================================================
+# Uses PyBNF's automatic SSH-based cluster setup
 python3 run_all.py ssh

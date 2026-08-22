@@ -40,3 +40,45 @@ The `bngsim` dependency is available from the package index and is resolved by
 
 The project uses a populated `uv.lock`, so normal `uv` dependency resolution and
 synchronization should remain enabled.
+
+## Testing multi-machine functionality
+
+PyBNF includes a full test suite in `tests/full_tests/` that validates
+multi-machine cluster execution. If you're making changes to cluster
+communication, distributed execution, or Dask integration, you should run these
+tests.
+
+### Quick local test
+
+Run all tests on a single machine (no cluster required):
+
+```sh
+cd tests/full_tests
+python3 run_all.py
+```
+
+This takes about 30 minutes and writes results to `test_summary.txt`.
+
+### Cluster testing
+
+If you have access to a SLURM cluster, you can test multi-machine execution:
+
+```sh
+cd tests/full_tests
+# Edit the Python environment activation line in the script
+sbatch cluster.sh          # SSH-based automatic setup
+# or
+sbatch cluster_manual.sh   # Manual Dask cluster setup
+```
+
+See `tests/full_tests/README.md` for detailed instructions on:
+- Configuring the scripts for your cluster
+- Adjusting resource allocation
+- Interpreting test results
+- Troubleshooting cluster issues
+
+**When to run cluster tests:**
+- Changes to `pybnf/cluster.py`
+- Changes to SSH or Dask worker management
+- Changes to distributed algorithm execution
+- Before releases (strongly recommended)
