@@ -48,6 +48,11 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
 
     """
 
+    # This fit runs a whole round of combinations, waits for all of it to finish, then
+    # builds the next round, so some idle workers toward the end of each round are
+    # expected (#621).
+    waits_for_full_generation = True
+
     def __init__(self, config):  # variables, popsize, maxiters, saveevery):
 
         super().__init__(config)

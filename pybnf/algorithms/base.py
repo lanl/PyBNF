@@ -105,6 +105,15 @@ class Algorithm(ABC):
     # flag pattern as _is_simplex, so run() never references a leaf subclass.
     requires_master_scoring = False
 
+    # Overridable flag, set True by the generational optimizers (de, cmaes, ss).
+    # These propose a whole generation of parameter sets, wait for every simulation
+    # in it to finish, then propose the next generation. Toward the end of each
+    # generation only a few simulations are still running, so some workers sit idle by
+    # design. _report_parallelism() says so, to keep that expected idle time from being
+    # mistaken for a fit that is using fewer processors than it should (#621). The same
+    # base-class flag pattern as _is_simplex, so run() never names a leaf subclass.
+    waits_for_full_generation = False
+
     #: The fit's total wall-clock budget (``wall_time_fit``, #529/ADR-0093), or None for
     #: an unbounded fit. Set by ``pybnf.main()`` on the algorithm it is about to run --
     #: and passed on to a refiner / reused across bootstrap replicates -- so one deadline
@@ -1286,11 +1295,76 @@ class Algorithm(ABC):
             # call is exactly the historical one.
             pool_kwargs = {'timeout': self.budget.remaining()} if self.budget is not None else {}
             pool = core.as_completed(futures, with_results=True, raise_errors=False, **pool_kwargs)
+            self._report_parallelism(client, len(futures))
             self.completed_simulations = self._drain_job_pool(client, pool, pending, backup_every, debug)
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
         self._finalize_run()
+
+    def _report_parallelism(self, client, jobs_in_flight):
+        """Log how many jobs the fit starts with against how many workers connected, and
+        warn when the two differ by a large margin (#621).
+
+        How many simulations a fit runs at once follows its settings, mainly
+        population_size, not how many processors were reserved. When many more workers
+        connect than there are jobs to run, the extra workers sit idle for the whole run
+        and nothing else would say so, so a user can reserve several machines and quietly
+        use a fraction of them. The opposite, many more jobs than workers, means work
+        queues up and the larger population buys no extra speed. Either way both numbers go
+        in the log so a finished run can be looked at afterwards.
+
+        Only cluster runs are reported. A local run's worker count is exactly what the user
+        asked for through parallel_count, so there is nothing to compare it against. The
+        worker count comes from dask; anything that goes wrong reading it is logged and
+        never stops a fit.
+        """
+        # A local run drives a LocalCluster that the Client owns, so client.cluster is set.
+        # A cluster run connects to a scheduler by file or address and has no such object.
+        if getattr(client, 'cluster', None) is not None:
+            return
+        try:
+            n_workers = len(client.scheduler_info().get('workers', {}))
+        except Exception:
+            logger.exception('Could not read the number of connected workers from dask, '
+                             'so the parallelism report is skipped')
+            return
+        if n_workers <= 0:
+            return
+
+        logger.info('Parallelism: the fit starts with %d job(s) running and %d worker(s) '
+                    'connected.' % (jobs_in_flight, n_workers))
+
+        # A generational fit drains each generation to almost nothing before starting the
+        # next, so some idle time is expected with one and should not be read as a fault.
+        note = ''
+        if self.waits_for_full_generation:
+            note = (' This fit runs one generation at a time and waits for all of it to '
+                    'finish before starting the next, so some idle time toward the end of '
+                    'each generation is expected.')
+
+        # A factor of two in either direction is the "large margin" that draws a warning.
+        if n_workers >= 2 * jobs_in_flight:
+            msg = ('The fit starts with only %d job(s) running but %d worker(s) connected, '
+                   'so about %d worker(s) will sit idle. How many jobs run at once is set '
+                   'by the fitting settings, mainly population_size, not by how many '
+                   'processors were reserved. Consider raising population_size or reserving '
+                   'fewer processors.%s'
+                   % (jobs_in_flight, n_workers, n_workers - jobs_in_flight, note))
+            logger.warning(msg)
+            print1('Warning: ' + msg)
+        elif jobs_in_flight >= 2 * n_workers:
+            msg = ('The fit starts with %d job(s) running but only %d worker(s) connected, '
+                   'so jobs will queue and the extra jobs buy no extra speed. How many jobs '
+                   'run at once is set by the fitting settings, mainly population_size. '
+                   'Consider lowering population_size or reserving more processors.%s'
+                   % (jobs_in_flight, n_workers, note))
+            logger.warning(msg)
+            print1('Warning: ' + msg)
+        elif note:
+            # The counts are close, but a generational fit still idles toward the end of
+            # each generation, so put that on the record for this run.
+            logger.info(note.strip())
 
     def _finalize_run(self):
         """The end-of-fit path: stop reason, final parameter sets, best-fit artifacts,

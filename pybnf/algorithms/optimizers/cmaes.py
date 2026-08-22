@@ -138,6 +138,11 @@ class CMAESConfig(PyBNFConfigModel):
 class CMAESAlgorithm(StartPointOptimizer):
     """CMA-ES as a picklable, generation-synchronized reactor state machine."""
 
+    # This fit samples a whole generation, waits for all of it to finish, then updates the
+    # search distribution and samples the next, so some idle workers toward the end of each
+    # generation are expected (#621).
+    waits_for_full_generation = True
+
     #: Refiner start-point key (see StartPointOptimizer / pybnf._refine_best_fit).
     START_POINT_KEY = 'cmaes_start_point'
 
