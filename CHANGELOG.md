@@ -23,7 +23,8 @@ All notable changes to PyBNF are documented below. This project adheres to
   machines, it falls back to sizing every machine the same, with a warning saying so. This applies
   only to the `srun` launcher. The SSH launcher (`-t slurm`) still uses one count for all machines,
   because `dask ssh` takes only one. Setting `parallel_count` still splits that total evenly across
-  the machines on either launcher.
+  same-size machines on either launcher; on machines of different sizes the `srun` launcher now
+  splits it in proportion to machine size (#643, see below).
 - **A multi-machine fit can start its workers without logging in anywhere, so clusters that
   use host-based or Kerberos SSH can run one at all (#614, ADR-0122).** PyBNF had exactly one
   way to run across several machines: `dask-ssh`, which logs in to every node with **paramiko**
@@ -216,6 +217,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **Setting `parallel_count` on a cluster whose machines are not all the same size no longer stops
+  the `srun` launcher from starting any worker (#643, ADR-0126).** `parallel_count` gives a total
+  number of workers over all machines. The `srun` launcher (`-t slurm-srun`) split that total
+  evenly and asked SLURM for the per-machine share on every machine in one job step. On a mixed
+  allocation the even share can be more than a smaller machine was granted, so SLURM refused the
+  step with `srun: error: Unable to create step for job NNNNN: More processors requested than
+  permitted`, and no worker started. For example, on a 96-CPU and a 40-CPU machine with
+  `parallel_count = 136` the even share is 68 per machine, and 68 is more than the 40-CPU machine
+  holds. The total is now split in proportion to each machine's granted CPUs, one job step per
+  distinct size, the same way the automatic (unset `parallel_count`) sizing already works, so each
+  step asks only for what its machines hold and none is refused. On the 96-CPU and 40-CPU example
+  that is 96 workers on the larger machine and 40 on the smaller. An allocation whose machines are
+  all the same size is unchanged: `parallel_count` is still split evenly in one step. The SSH
+  launcher (`-t slurm`) is unchanged, because `dask ssh` takes one worker count for all machines.
 - **A multi-machine fit started from the shell `salloc` opens no longer asks SLURM for more
   processors than it granted (#642, ADR-0125).** On many clusters `salloc` returns a shell on the
   **login node** while the allocation is held on a compute node, and that shell is exactly where

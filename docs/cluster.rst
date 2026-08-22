@@ -132,7 +132,7 @@ The **srun** launcher's per-machine counts come from ``$SLURM_JOB_CPUS_PER_NODE`
 
 Which number was used, and which of these it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
 
-Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares, on either launcher.
+Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes; the log then names ``parallel_count`` as the source. When the nodes are all the same size the total is divided evenly among them, on either launcher. When they differ in size, the SSH launcher still divides it evenly, but the ``slurm-srun`` launcher divides it in proportion to each machine's granted CPUs, so no machine is asked for more CPUs than it holds (a step that asked for more would be refused by SLURM).
 
 
 .. _sizing:
