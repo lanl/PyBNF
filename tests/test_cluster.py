@@ -1368,14 +1368,17 @@ class TestSrunSchedulerFile:
 class TestCpusPerNode:
     """The one place either launcher decides how many workers a node gets (#616).
 
-    The three sources are given three different numbers throughout, so each test
+    The four sources are given four different numbers throughout, so each test
     pins *which* one was consulted rather than merely a plausible count.
     """
 
-    def _sources(self, monkeypatch, granted=None, affinity=6, cpu=64):
+    def _sources(self, monkeypatch, granted=None, allocation=None, affinity=6, cpu=64):
         monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
+        monkeypatch.delenv('SLURM_JOB_CPUS_PER_NODE', raising=False)
         if granted is not None:
             monkeypatch.setenv('SLURM_CPUS_ON_NODE', str(granted))
+        if allocation is not None:
+            monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', str(allocation))
         monkeypatch.setattr(cluster, 'DASK_CPU_COUNT', affinity)
         monkeypatch.setattr(cluster, 'cpu_count', lambda: cpu)
 
@@ -1414,6 +1417,46 @@ class TestCpusPerNode:
         returned 128 here, oversubscribing the job 32-fold."""
         self._sources(monkeypatch, granted=4, affinity=4, cpu=128)
         assert cluster.Cluster.cpus_per_node()[0] == 4
+
+    def test_the_jobs_own_per_node_list_is_read_when_the_step_variable_is_empty(self, monkeypatch):
+        """#642: SLURM sets $SLURM_CPUS_ON_NODE only inside a step running on an
+        allocated node, so it is empty in the shell ``salloc`` opens on a login node --
+        while $SLURM_JOB_CPUS_PER_NODE, which answers the same question for the job as
+        a whole, is set correctly there. Reading it keeps the count describing the
+        allocation (20) instead of falling through to the machine-level numbers, which
+        describe a login node that is not in the allocation at all (128)."""
+        self._sources(monkeypatch, granted=None, allocation='20', affinity=128, cpu=96)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 20
+        assert 'SLURM_JOB_CPUS_PER_NODE' in source
+
+    def test_a_mixed_allocation_reduces_to_its_smallest_machine(self, monkeypatch):
+        """One number has to serve every machine here: it sizes a pool started on all of
+        them, and an srun step asks SLURM for it on all of them. Asking for fewer CPUs
+        than a machine holds costs speed, while asking for more than the smallest machine
+        holds is refused outright, so the safe direction is the smallest grant. (Sizing
+        each machine on its own is per_node_cpus, which the default srun path uses.)"""
+        self._sources(monkeypatch, granted=None, allocation='40(x2),96', affinity=128, cpu=96)
+        assert cluster.Cluster.cpus_per_node()[0] == 40
+
+    def test_the_per_step_count_still_wins_when_both_are_set(self, monkeypatch):
+        """Inside the allocation both are set, and the per-step count is the one that
+        describes *this* node. The job-level list is a fallback for a launching process
+        that is not on an allocated node, and does not change what a launch from inside
+        the allocation reads."""
+        self._sources(monkeypatch, granted=12, allocation='40(x2),96', affinity=6, cpu=64)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 12
+        assert 'SLURM_CPUS_ON_NODE' in source
+
+    @pytest.mark.parametrize('value', ['', 'nonsense', '0'])
+    def test_an_unusable_per_node_list_falls_through_to_the_local_numbers(self, monkeypatch, value):
+        """A list this code cannot read, or one that says no CPUs at all, is treated as
+        absent rather than guessed at -- the local numbers are still better than nothing."""
+        self._sources(monkeypatch, granted=None, allocation=value, affinity=6, cpu=64)
+        count, source = cluster.Cluster.cpus_per_node()
+        assert count == 6
+        assert 'affinity' in source
 
 
 class TestExpandCpusPerNode:
@@ -1474,6 +1517,18 @@ class TestPerNodeCpus:
         counts, _ = cluster.Cluster.per_node_cpus(['n1', 'n2'])
         assert counts == [8, 8]
 
+    def test_the_fallback_off_an_allocated_node_still_reads_the_allocation(self, monkeypatch):
+        """The two fixes compose. A list that cannot be lined up with the machines is not
+        used to size them individually, but its values still describe machines in *this*
+        job, so the single count they fall back to is the smallest of them -- not the size
+        of the login node the launcher happens to be running on (#642)."""
+        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)      # not on an allocated node
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '20,40')       # two, but three nodes
+        monkeypatch.setattr(cluster, 'DASK_CPU_COUNT', 128)
+        counts, source = cluster.Cluster.per_node_cpus(['n1', 'n2', 'n3'])
+        assert counts == [20, 20, 20]
+        assert 'SLURM_JOB_CPUS_PER_NODE' in source
+
     def test_the_fallback_is_logged_so_a_mixed_cluster_user_is_told(self, monkeypatch, caplog):
         """A user on a mixed cluster is expecting each machine to be sized on its own,
         so falling back to one size for all is worth a warning that says why."""
@@ -1518,6 +1573,7 @@ class TestSrunWorkerCommand:
 
     def _patch(self, monkeypatch, granted=8):
         monkeypatch.setenv('SLURM_CPUS_ON_NODE', str(granted))
+        monkeypatch.delenv('SLURM_JOB_CPUS_PER_NODE', raising=False)
 
     def test_default_is_one_worker_per_granted_cpu(self, monkeypatch):
         """parallel_count unset ⇒ one single-threaded worker per CPU the job holds
@@ -1582,6 +1638,31 @@ class TestSrunWorkerCommand:
         self._patch(monkeypatch)
         cmd = cluster.Cluster.srun_worker_command('/tmp/a b$(whoami).json', 1)
         assert cmd[cmd.index('--scheduler-file') + 1] == '/tmp/a b$(whoami).json'
+
+    def test_a_caller_supplied_count_is_used_instead_of_the_environment(self, monkeypatch, caplog):
+        """#642: a caller that already knows what the allocation granted passes it in, and
+        that number is what sizes the pool and what SLURM is asked for -- the environment
+        is not consulted at all. srun_worker_layout is that caller: it reads the
+        allocation's own per-node list, which is right wherever this process is running,
+        before it decides which command to build. The phrase naming where the count came
+        from is the caller's too, since the log is how an unexpected count is traced."""
+        self._patch(monkeypatch, granted=128)          # must not be consulted
+        with caplog.at_level('INFO'):
+            cmd = cluster.Cluster.srun_worker_command(
+                '/s.json', 2, None, granted=20,
+                source='what SLURM granted each machine ($SLURM_JOB_CPUS_PER_NODE)')
+        assert cmd[cmd.index('--nworkers') + 1] == '20'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '20'
+        assert any('SLURM_JOB_CPUS_PER_NODE' in r.message for r in caplog.records)
+
+    def test_a_caller_supplied_count_still_caps_an_oversubscribed_request(self, monkeypatch):
+        """The cap is the same rule as before, measured against the caller's count: the
+        workers a user explicitly asked for all start, while the CPU request stays inside
+        what the job holds so SLURM does not refuse the step."""
+        self._patch(monkeypatch, granted=128)          # must not be consulted
+        cmd = cluster.Cluster.srun_worker_command('/s.json', 1, parallel_count=64, granted=20)
+        assert cmd[cmd.index('--nworkers') + 1] == '64'
+        assert cmd[cmd.index('--cpus-per-task') + 1] == '20'
 
 
 class _SchedulerSpy:
@@ -1950,6 +2031,78 @@ class TestSetupSrunCluster:
         assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '4'   # 12 across three machines
         assert expected == 12
         assert worker_logs == [str(tmp_path / 'dask_workers.log')]
+
+    def _login_node(self, monkeypatch, allocation, cores=128):
+        """The environment of the shell ``salloc`` opens on a login node (#642): SLURM
+        publishes the job's per-node CPU list, but not the per-step count, which it sets
+        only inside a step running on an allocated node. Both machine-level numbers
+        describe the login node, which is large and is not in the allocation."""
+        monkeypatch.delenv('SLURM_CPUS_ON_NODE', raising=False)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', allocation)
+        monkeypatch.setattr(cluster, 'DASK_CPU_COUNT', cores)
+        monkeypatch.setattr(cluster, 'cpu_count', lambda: cores)
+
+    def test_a_launch_from_the_login_node_asks_for_what_the_job_holds(self, monkeypatch, tmp_path):
+        """#642, the reported failure: on many clusters the shell ``salloc`` opens runs on
+        the login node while the allocation is held on a compute node. The launcher used to
+        fall through to the login node's own processor count and ask SLURM for that many
+        CPUs per task, which SLURM refuses outright -- "Unable to create step ...: More
+        processors requested than permitted" -- so no worker ever started. The oracle is the
+        argv: 20 workers and 20 CPUs, from the allocation, not 128 from the login node."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        self._login_node(monkeypatch, '20', cores=128)
+
+        _, worker_procs, expected, _ = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1'], parallel_count=None)
+
+        (_, _), (srun_cmd, _) = spy.calls                    # scheduler + exactly one srun
+        assert worker_procs == [spy.procs[1]]
+        assert srun_cmd[srun_cmd.index('--cpus-per-task') + 1] == '20'
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '20'
+        assert expected == 20
+
+    def test_an_explicit_parallel_count_is_capped_by_the_job_not_by_the_login_node(self, monkeypatch, tmp_path):
+        """The CPU request is capped so that a deliberately oversubscribed parallel_count
+        still runs: every worker the user asked for starts, while the request stays inside
+        what the job holds, because SLURM refuses a larger one. From the login node that cap
+        was measured against the login node's processors and so did nothing -- 64 workers
+        asked for 64 CPUs of a 20-CPU allocation and the step was refused."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        self._login_node(monkeypatch, '20', cores=128)
+
+        _, _, expected, _ = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1'], parallel_count=64)
+
+        (_, _), (srun_cmd, _) = spy.calls
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '64'     # what the user asked for
+        assert srun_cmd[srun_cmd.index('--cpus-per-task') + 1] == '20'
+        assert expected == 64
+
+    def test_the_count_the_layout_read_is_the_count_the_command_uses(self, monkeypatch, tmp_path):
+        """The per-machine list PyBNF already read is handed to the command rather than the
+        environment being read a second time. So a $SLURM_CPUS_ON_NODE that does not describe
+        this job -- exported by hand as the #642 workaround, or left over from an earlier
+        allocation -- no longer sizes the run: the list SLURM published for this job does."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_CPUS_ON_NODE', '128')              # stale, not this job
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '20(x2)')      # this job, two machines
+
+        _, _, expected, _ = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2'], parallel_count=None)
+
+        (_, _), (srun_cmd, _) = spy.calls
+        assert srun_cmd[srun_cmd.index('--cpus-per-task') + 1] == '20'
+        assert srun_cmd[srun_cmd.index('--nworkers') + 1] == '20'
+        assert expected == 40
 
     def test_an_unusable_cpus_per_node_falls_back_to_one_uniform_step(self, monkeypatch, tmp_path, caplog):
         """If SLURM did not publish a per-machine list PyBNF can line up with the node names,

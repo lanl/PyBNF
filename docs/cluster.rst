@@ -93,7 +93,7 @@ Pass ``-t slurm-srun`` instead (or set ``cluster_type = slurm-srun``) to start t
 2. runs ``srun`` to start one Dask worker process group on each node of the allocation, each reading that file; and
 3. connects through that same file, waiting until at least one worker has registered before the fit starts.
 
-Run PyBNF from the shell that holds the allocation: the one ``salloc`` opened, or your ``sbatch`` script. A separate login into one of the allocated nodes does not inherit the allocation, and ``srun`` would then queue a new job rather than start the workers; PyBNF refuses to start in that case instead of appearing to hang. For the same reason, PyBNF should be the only job step running in the allocation, since a concurrent second ``srun`` can leave the workers waiting for resources.
+Run PyBNF from the shell that holds the allocation: the one ``salloc`` opened, or your ``sbatch`` script. That shell does not have to be *on* one of the allocated machines -- on many clusters ``salloc`` leaves you on the login node while the allocation is held elsewhere, which is fine; what matters is that the shell holds the allocation. A separate login into one of the allocated nodes does not inherit the allocation, and ``srun`` would then queue a new job rather than start the workers; PyBNF refuses to start in that case instead of appearing to hang. For the same reason, PyBNF should be the only job step running in the allocation, since a concurrent second ``srun`` can leave the workers waiting for resources.
 
 An example batch script -- ``examples/tcr/tcr_batch.sh`` with a single word changed::
 
@@ -123,13 +123,14 @@ The two launchers differ in what happens when the machines in one allocation are
 * The **srun** launcher (``-t slurm-srun``) sizes each machine on its own, one worker per CPU that machine was granted. When the machines differ in size it starts one ``srun`` job step per distinct size, so a run on two 40-processor machines and one 96-processor machine starts 40 workers on each of the first two and 96 on the third. The per-machine arrangement is written to the log at the start of the run.
 * The **SSH** launcher (``-t slurm``) uses one worker count for every machine, because ``dask ssh`` takes only a single count for all hosts. The count comes from the node PyBNF is running on, so on a mixed allocation it is right for that machine and may be too high or too low for the others.
 
-The count for a machine comes from the first of these that is available:
+The **srun** launcher's per-machine counts come from ``$SLURM_JOB_CPUS_PER_NODE``, the per-node list SLURM publishes for the job. Where that list cannot be lined up with the machines -- and always for the **SSH** launcher, which has only one count to give -- the count comes from the first of these that is available:
 
 * ``$SLURM_CPUS_ON_NODE``, which is what SLURM granted the job on a node;
+* the smallest entry in ``$SLURM_JOB_CPUS_PER_NODE``. SLURM sets the variable above only inside a job step running on an allocated node, so it is empty when PyBNF is launched from somewhere else -- on many clusters ``salloc`` opens its shell on the login node while the allocation is held on a compute node. This one is set correctly there, and the two numbers below are not: they describe the login node, which is not in the allocation and is usually much larger than what the job holds. The smallest entry is used because one number has to serve every machine, and asking SLURM for more CPUs than the smallest machine holds is refused outright;
 * the CPU count dask derives for this process, which is the machine's processors narrowed by CPU affinity and by any cgroup CPU quota -- the same number a single-machine PyBNF run sizes itself by; or
 * the machine's whole processor count, which is correct only when nothing is limiting the job.
 
-Which number was used, and which of the three it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
+Which number was used, and which of these it came from, is written to the log at the start of the run, so an unexpected worker count can be traced to the number PyBNF believed.
 
 Setting ``parallel_count`` overrides all of this with a total number of worker processes over all nodes, divided evenly among them; the log then names ``parallel_count`` as the source. Nodes of different sizes still get equal shares, on either launcher.
 
