@@ -689,20 +689,32 @@ class Cluster:
         for time rather than a fit that runs faster. The two numbers agree only when whole
         nodes were allocated, which is why the defect stayed hidden.
 
-        Three sources are consulted, best first:
+        Four sources are consulted, best first:
 
         * ``$SLURM_CPUS_ON_NODE`` -- what the allocation granted on a node. Preferred
-          because it is the only one that describes the *allocation* rather than the process
-          doing the asking, so it is still the right number for a worker the SSH launcher
-          starts on some other machine. (When nodes differ in size it describes this node;
-          per-node counts are issue #617.)
+          because it describes the *allocation* rather than the process doing the asking,
+          so it is still the right number for a worker the SSH launcher starts on some
+          other machine. (When nodes differ in size it describes this node; per-node counts
+          are issue #617.)
+        * ``$SLURM_JOB_CPUS_PER_NODE`` -- the same question answered for the job as a whole,
+          as a per-node list, reduced here to its smallest entry. SLURM sets the variable
+          above only inside a step running on an allocated node, so it is *empty* when the
+          launching process is not on one: ``salloc`` opens its shell on the login node on
+          many clusters, and the launcher then runs there while the allocation is held
+          elsewhere (#642). This variable is set correctly in that shell, and the two
+          machine-level numbers below are not -- they describe a login node that is not in
+          the allocation at all, and is typically far larger than what the job holds. The
+          *smallest* entry is taken because this single number both sizes a pool started on
+          every machine and is what an srun step asks for on every machine in it: asking for
+          less than a machine holds costs speed, while asking for more than the smallest
+          machine holds is refused outright.
         * ``dask.system.CPU_COUNT`` -- what the operating system will let this process run
           on: the machine's processors narrowed by CPU affinity and by any cgroup CPU quota.
           This is the number a local run already sizes itself by, and it is the right one
           whenever the job is confined on the machine PyBNF is running on but no scheduler
           published a count.
         * ``multiprocessing.cpu_count()`` -- the whole machine, correct only when nothing is
-          limiting the job at all, and reached only if neither number above is usable.
+          limiting the job at all, and reached only if no number above is usable.
 
         The srun launcher does not merely count workers with this: it also asks SLURM for
         that many CPUs per task, and a request larger than the allocation is refused
@@ -714,6 +726,10 @@ class Cluster:
         granted = os.environ.get('SLURM_CPUS_ON_NODE', '').strip()
         if granted.isdigit() and int(granted) > 0:
             return int(granted), 'what SLURM granted the job ($SLURM_CPUS_ON_NODE)'
+        allocation = expand_cpus_per_node(os.environ.get('SLURM_JOB_CPUS_PER_NODE', ''))
+        if allocation and min(allocation) > 0:
+            return min(allocation), ('the smallest machine in the allocation '
+                                     '($SLURM_JOB_CPUS_PER_NODE)')
         if DASK_CPU_COUNT > 0:
             return DASK_CPU_COUNT, ("this process's CPU affinity and cgroup limits "
                                     '(dask.system.CPU_COUNT)')
@@ -771,9 +787,18 @@ class Cluster:
         return [*DASK_CLI, 'scheduler', '--scheduler-file', scheduler_file]
 
     @staticmethod
-    def srun_worker_command(scheduler_file, node_count, parallel_count=None):
+    def srun_worker_command(scheduler_file, node_count, parallel_count=None,
+                            granted=None, source=None):
         """
         Build the srun invocation that starts one ``dask worker`` process group per node.
+
+        ``granted`` is how many CPUs the job holds on a node, which both sizes the default
+        worker pool and is what this step asks SLURM for. The caller passes it when it
+        already knows -- :meth:`srun_worker_layout` reads the allocation's own per-node list
+        before it decides which command to build, and that list is right even when the
+        launching process is not on an allocated node, which is where re-deriving the number
+        here went wrong (#642). It is derived from :meth:`cpus_per_node` only when no caller
+        supplied it.
 
         :param scheduler_file: Path of the scheduler file the workers should read
         :type scheduler_file: str
@@ -782,10 +807,17 @@ class Cluster:
         :param parallel_count: Total number of worker processes over all nodes, or None for
             one per granted CPU
         :type parallel_count: int or None
+        :param granted: CPUs the job holds on a node, or None to work it out here
+        :type granted: int or None
+        :param source: Phrase naming where ``granted`` came from, for the log
+        :type source: str or None
         :return: the srun argument list
         :rtype: list
         """
-        granted, source = Cluster.cpus_per_node()
+        if granted is None:
+            granted, source = Cluster.cpus_per_node()
+        elif source is None:
+            source = 'the allocation'
         if parallel_count is None:
             n_per_node = granted
         else:
@@ -944,14 +976,22 @@ class Cluster:
         main_log = os.path.join(out_dir, SRUN_WORKER_LOG)
         if parallel_count is not None:
             # The explicit override is left exactly as it was: one srun, an even split over all
-            # nodes. Making it per-machine is deliberately out of scope (#617).
+            # nodes, its CPU request capped by the single count cpus_per_node decides. Capping
+            # it per-machine instead is ADR-0124's deferred question, not this one's; what #642
+            # changed is that the single count now describes the allocation rather than the
+            # machine PyBNF happens to be launching from.
             cmd = Cluster.srun_worker_command(scheduler_file, node_count, parallel_count)
             per_node = int(cmd[cmd.index('--nworkers') + 1])
             return [cmd], [main_log], per_node * node_count
         counts, source = Cluster.per_node_cpus(node_names)
         if len(set(counts)) <= 1:
             # Every machine the same size (the norm): the current single command, unchanged.
-            cmd = Cluster.srun_worker_command(scheduler_file, node_count, None)
+            # The count is handed on rather than worked out again, because the number in hand
+            # came from the allocation's own per-node list and so is right wherever this
+            # process is running, while re-deriving it asks a variable SLURM leaves empty off
+            # an allocated node and falls through to the size of the login node (#642).
+            cmd = Cluster.srun_worker_command(scheduler_file, node_count, None,
+                                              granted=counts[0], source=source)
             per_node = int(cmd[cmd.index('--nworkers') + 1])
             return [cmd], [main_log], per_node * node_count
         # Machines of different sizes: one srun step per distinct size, each machine in the

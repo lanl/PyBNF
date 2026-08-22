@@ -114,7 +114,7 @@ its single-step, even-split behavior, and only the default (auto-sized) path bec
   a total evenly and requests `--cpus-per-task` for the per-node share, a share larger than a
   machine smaller than the one PyBNF runs on can be refused by SLURM on that machine. This predates
   #617 and is out of its scope. It is recorded here rather than fixed; if it needs fixing it needs
-  its own design, and a tracking issue, rather than being folded into this change.
+  its own design, and a tracking issue, rather than being folded into this change. That issue is #643.
 
 ## Alternatives considered
 

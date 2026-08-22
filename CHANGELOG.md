@@ -216,6 +216,25 @@ All notable changes to PyBNF are documented below. This project adheres to
   says what it has not bisected.
 
 ### Fixed
+- **A multi-machine fit started from the shell `salloc` opens no longer asks SLURM for more
+  processors than it granted (#642, ADR-0125).** On many clusters `salloc` returns a shell on the
+  **login node** while the allocation is held on a compute node, and that shell is exactly where
+  PyBNF is meant to run: it holds the allocation. Started there, the `srun` launcher
+  (`-t slurm-srun`) stopped at once with `srun: error: Unable to create step for job NNNNN: More
+  processors requested than permitted`, and no worker ever started. PyBNF was sizing the run by
+  `$SLURM_CPUS_ON_NODE`, which SLURM sets only inside a job step running on an allocated node, so
+  on the login node it is absent — and the two remaining numbers describe the machine asking, which
+  there is the login node, not in the allocation and usually several times larger. A job granted 20
+  CPUs was therefore sized as though it held 128, and 128 is a request SLURM refuses. The count now
+  falls back to `$SLURM_JOB_CPUS_PER_NODE`, the per-node list SLURM publishes for the **job**, which
+  is set correctly in that shell (its smallest entry, since one number has to be acceptable on every
+  machine in the step). Inside the allocation nothing changes: `$SLURM_CPUS_ON_NODE` is still
+  preferred where SLURM sets it, and the same `srun` command is built. The default path also hands
+  the per-machine counts it already read straight to the command rather than having it read the
+  environment a second time, so a stale `$SLURM_CPUS_ON_NODE` — including one exported by hand as
+  the workaround for this bug — no longer sizes a later run. The SSH launcher (`-t slurm`) reads the
+  same count, so it too stops starting a login node's worth of worker processes on each machine when
+  it is launched from the login node.
 - **When the workers cannot be started, the message says what went wrong and what to try
   instead (#618).** A multi-machine run whose workers failed to start stopped with
   `Failed to start the dask-ssh cluster (dask-ssh exited with code 1)` and, on the cluster this
