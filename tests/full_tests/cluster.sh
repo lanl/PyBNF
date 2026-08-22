@@ -30,7 +30,7 @@
 
 # REQUIRED: Activate your Python environment here
 # This environment must have PyBNF and its dependencies installed
-source $HOME/rattlesnake/diamondback/bin/activate  # EDIT THIS LINE
+source /path/to/your/pybnf-env/bin/activate  # EDIT THIS LINE
 
 #=============================================================================
 # SYSTEM LIMITS (optional)

@@ -39,7 +39,7 @@ THREADS_PER_WORKER=1
 
 # REQUIRED: Activate your Python environment here
 # This environment must have PyBNF and its dependencies installed
-source $P/python_envs/env1/bin/activate  # EDIT THIS LINE
+source /path/to/your/pybnf-env/bin/activate  # EDIT THIS LINE
 
 #=============================================================================
 # DASK CLUSTER SETUP

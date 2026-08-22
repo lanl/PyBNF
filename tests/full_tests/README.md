@@ -10,7 +10,7 @@ The suite includes 7 test problems (T1-T7) that exercise different PyBNF feature
 - **T3-de-egg**: Differential evolution with bootstrap
 - **T4-pso-nf**: Particle swarm optimization
 - **T5-pt-trivial**: Parallel tempering on trivial problem
-- **T6-check**: Configuration checking
+- **T6-check**: Model checking (`fit_type = check`)
 - **T7-dream-trivial**: DREAM algorithm on trivial problem
 
 ## Running the Tests
@@ -77,7 +77,9 @@ These values can be modified at the top of each batch script.
 
 After running the test suite, check:
 
-- **`test_summary.txt`**: Summary of all test results
+- **Summary file**: `run_all.py` writes `test_summary.txt` for a local run,
+  `test_summary_ssh.txt` for the `ssh` mode, and `test_summary_sf.txt` for the
+  `sf` mode.
 - **`T*/fit/Results/`**: Detailed results for each test case
 
 ### Reference Output
@@ -104,9 +106,9 @@ Example outputs are provided for comparison:
 ### Environment Issues
 
 If you see `ModuleNotFoundError` or import errors:
-- Verify your Python environment has PyBNF installed: `pip list | grep pybnf`
-- Check that all dependencies are installed: `pip install -r requirements.txt`
-- Ensure you're activating the correct environment in the batch script
+- Check that the active environment has PyBNF installed. Run `uv pip list | grep pybnf`, or `pip list | grep pybnf` if you installed PyBNF with pip.
+- Install the dependencies with `uv sync`. This project is managed with uv and a populated `uv.lock` file, and it has no `requirements.txt`. See `CONTRIBUTING.md` for more.
+- Make sure the batch script activates the correct environment.
 
 ### Cluster Issues
 
@@ -119,9 +121,9 @@ If workers fail to connect:
 ### Dask Command Not Found
 
 If you see `dask: command not found`:
-- Verify `distributed` package is installed: `pip list | grep distributed`
-- Check that your environment is properly activated
-- Ensure `distributed >= 2021.0.0` (the modern CLI was introduced in 2021)
+- Check that the distributed package is installed. Run `uv pip list | grep distributed`.
+- Make sure the environment is activated.
+- This project needs the distributed package at version 2024.1.0 or newer, as set in `pyproject.toml`. The cluster commands are `dask scheduler` and `dask worker`, which are subcommands of the `dask` program. The older standalone programs named `dask-scheduler` and `dask-worker` stopped installing in distributed version 2026.6.0, as noted in `CHANGELOG.md`.
 
 ## Contributing
 
