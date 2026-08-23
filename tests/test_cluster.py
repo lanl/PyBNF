@@ -2012,16 +2012,92 @@ class TestSetupSrunCluster:
         assert 'n1' in text and 'n2' in text and '40' in text
         assert 'n3' in text and '96' in text
 
-    def test_an_explicit_parallel_count_is_still_one_step_and_an_even_split(self, monkeypatch, tmp_path):
-        """A user who sets parallel_count is asking for a specific number of workers, split
-        evenly across the machines the way the SSH launcher has always done. That path is
-        left alone by #617: one srun step, the count taken from parallel_count rather than
-        from what each machine was granted, even on a mixed allocation."""
+    def test_an_explicit_parallel_count_on_a_mixed_allocation_is_split_by_machine_size(self, monkeypatch, tmp_path):
+        """#643: on machines of different sizes, parallel_count is split in proportion to what
+        each machine holds, one srun step per size, rather than split evenly in one step. The
+        even split would ask the smaller machines for the larger machines' share, which SLURM
+        refuses. Here 12 workers over 40,40,96 (176 CPUs) is ceil(40*12/176)=3 on each of the
+        two 40-CPU machines and ceil(96*12/176)=7 on the 96-CPU one, each step asking only for
+        what its machines hold."""
         sched_file = tmp_path / 'dask_scheduler.json'
         spy = _SchedulerSpy(str(sched_file), write_after=1)
         monkeypatch.setattr(cluster, 'Popen', spy)
         monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
-        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')   # ignored: the user chose
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')
+
+        scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=12)
+
+        (_, _), (first_cmd, _), (second_cmd, _) = spy.calls  # scheduler + one step per size
+        assert first_cmd[first_cmd.index('--nodelist') + 1] == 'n1,n2'
+        assert first_cmd[first_cmd.index('--nworkers') + 1] == '3'
+        assert first_cmd[first_cmd.index('--cpus-per-task') + 1] == '3'
+        assert second_cmd[second_cmd.index('--nodelist') + 1] == 'n3'
+        assert second_cmd[second_cmd.index('--nworkers') + 1] == '7'
+        assert second_cmd[second_cmd.index('--cpus-per-task') + 1] == '7'
+        assert worker_procs == [spy.procs[1], spy.procs[2]]
+        assert expected == 3 * 2 + 7                         # every worker across both steps
+        assert worker_logs == [str(tmp_path / 'dask_workers.log'),
+                               str(tmp_path / 'dask_workers_2.log')]
+
+    def test_the_reported_parallel_count_failure_no_longer_asks_a_machine_for_too_much(self, monkeypatch, tmp_path):
+        """The exact failure #643 reports: 96-CPU and 40-CPU machines with parallel_count=136.
+        The old even split was 68 per machine, and a single step asked SLURM for 68 CPUs on the
+        40-CPU machine, which it cannot supply -- "More processors requested than permitted".
+        136 is exactly what the allocation holds (96+40), so the proportional split is one
+        worker per CPU: 96 on the 96-CPU machine and 40 on the 40-CPU one, each step asking only
+        for its machine's own size, so no step is refused."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '96,40')
+
+        _, _, expected, _ = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['big', 'small'], parallel_count=136)
+
+        (_, _), (first_cmd, _), (second_cmd, _) = spy.calls
+        assert first_cmd[first_cmd.index('--nodelist') + 1] == 'big'
+        assert first_cmd[first_cmd.index('--nworkers') + 1] == '96'
+        assert first_cmd[first_cmd.index('--cpus-per-task') + 1] == '96'   # == 96, accepted
+        assert second_cmd[second_cmd.index('--nodelist') + 1] == 'small'
+        assert second_cmd[second_cmd.index('--nworkers') + 1] == '40'
+        assert second_cmd[second_cmd.index('--cpus-per-task') + 1] == '40'  # == 40, accepted
+        assert expected == 96 + 40
+
+    def test_an_oversubscribed_parallel_count_on_a_mixed_allocation_stays_bound(self, monkeypatch, tmp_path):
+        """A parallel_count above the total the allocation holds still starts every worker the
+        user asked for, split by machine size, while each step's CPU request stays capped at
+        what its machines hold so SLURM accepts it. 352 workers over 40,40,96 (176 CPUs) is
+        twice the CPUs, so ceil(40*352/176)=80 workers on each 40-CPU machine and
+        ceil(96*352/176)=192 on the 96-CPU one, but the requests are 40 and 96 -- the machines'
+        own sizes -- not 80 and 192."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '40(x2),96')
+
+        _, _, expected, _ = cluster.Cluster.setup_srun_cluster(
+            str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=352)
+
+        (_, _), (first_cmd, _), (second_cmd, _) = spy.calls
+        assert first_cmd[first_cmd.index('--nworkers') + 1] == '80'
+        assert first_cmd[first_cmd.index('--cpus-per-task') + 1] == '40'   # capped at the machine
+        assert second_cmd[second_cmd.index('--nworkers') + 1] == '192'
+        assert second_cmd[second_cmd.index('--cpus-per-task') + 1] == '96'  # capped at the machine
+        assert expected == 80 * 2 + 192
+
+    def test_an_explicit_parallel_count_on_same_size_machines_is_still_one_even_step(self, monkeypatch, tmp_path):
+        """When every machine is the same size, parallel_count keeps its single-step even split
+        (#643 changes only the mixed case). 12 workers over three same-size machines is
+        ceil(12/3)=4 per machine in one step, exactly as before, so the common case a user runs
+        is untouched by the per-size split."""
+        sched_file = tmp_path / 'dask_scheduler.json'
+        spy = _SchedulerSpy(str(sched_file), write_after=1)
+        monkeypatch.setattr(cluster, 'Popen', spy)
+        monkeypatch.setattr(cluster.time, 'sleep', spy.sleep)
+        monkeypatch.setenv('SLURM_JOB_CPUS_PER_NODE', '18(x3)')
 
         scheduler_proc, worker_procs, expected, worker_logs = cluster.Cluster.setup_srun_cluster(
             str(sched_file), str(tmp_path), ['n1', 'n2', 'n3'], parallel_count=12)

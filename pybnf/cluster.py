@@ -821,9 +821,11 @@ class Cluster:
         if parallel_count is None:
             n_per_node = granted
         else:
-            # Same arithmetic as the SSH launcher: parallel_count is a total over all nodes.
-            # Per-node counts on nodes of different sizes are issue #617, which needs a
-            # per-node command either launcher can express -- ``dask ssh`` cannot.
+            # Same arithmetic as the SSH launcher: parallel_count is a total over all nodes,
+            # split evenly. This single-step command is used only when the machines are all
+            # one size; a mixed allocation is split per size by srun_worker_layout instead
+            # (#617 for the automatic count, #643 for parallel_count), because one step's
+            # --cpus-per-task cannot ask each machine for a different number.
             n_per_node = max(1, int(np.ceil(parallel_count / node_count)))
         # One task per node, each of which forks n_per_node single-threaded workers. The
         # task has to be given CPUs for all of them: with task/cgroup binding, a task that
@@ -854,37 +856,49 @@ class Cluster:
                 '--nthreads', '1']
 
     @staticmethod
-    def srun_worker_command_for_group(scheduler_file, nodes, cpus):
+    def srun_worker_command_for_group(scheduler_file, nodes, cpus, n_workers=None):
         """
         Build the srun invocation for one group of machines that were all granted the same
-        number of CPUs, starting one worker per granted CPU on each (#617).
+        number of CPUs (#617).
 
-        This is what the default path uses when the allocation holds machines of different
-        sizes. A single srun step cannot start different numbers of workers on different
-        machines -- ``--cpus-per-task`` is one value for the whole step, and under task/cgroup
-        binding a task that under-asked for CPUs is confined to them -- so each distinct size
-        is its own step, named by ``--nodelist``. The homogeneous case does not come here; it
-        stays the single :meth:`srun_worker_command`.
+        This is what PyBNF uses when the allocation holds machines of different sizes. A single
+        srun step cannot start different numbers of workers on different machines --
+        ``--cpus-per-task`` is one value for the whole step, and under task/cgroup binding a
+        task that under-asked for CPUs is confined to them -- so each distinct size is its own
+        step, named by ``--nodelist``. The homogeneous case does not come here; it stays the
+        single :meth:`srun_worker_command`.
+
+        ``n_workers`` is how many workers to start on each machine in the group. The default
+        (auto sizing) is one per granted CPU, so a caller that leaves it ``None`` gets that.
+        An explicit ``parallel_count`` split in proportion to machine size passes the group's
+        share instead (#643); the CPU request is then capped at what the machine holds, for the
+        same task/cgroup reason :meth:`srun_worker_command` caps its own, so an oversubscribed
+        count still starts every worker rather than being refused by SLURM.
 
         :param scheduler_file: Path of the scheduler file the workers should read
         :type scheduler_file: str
         :param nodes: The machines in this group, all granted the same CPU count
         :type nodes: list
-        :param cpus: CPUs granted on each machine in the group, and so workers to start there
+        :param cpus: CPUs granted on each machine in the group
         :type cpus: int
+        :param n_workers: Workers to start on each machine, or None for one per granted CPU
+        :type n_workers: int or None
         :return: the srun argument list for this group
         :rtype: list
         """
+        if n_workers is None:
+            n_workers = cpus
+        cpus_per_task = max(1, min(n_workers, cpus))
         return ['srun',
                 # Name the exact machines this step runs on, so the steps for the different
                 # sizes land on disjoint machines and can run at the same time.
                 '--nodelist', ','.join(nodes),
                 '--nodes', str(len(nodes)), '--ntasks', str(len(nodes)),
-                '--ntasks-per-node', '1', '--cpus-per-task', str(cpus),
+                '--ntasks-per-node', '1', '--cpus-per-task', str(cpus_per_task),
                 '--label',
                 *DASK_CLI, 'worker',
                 '--scheduler-file', scheduler_file,
-                '--nworkers', str(cpus),
+                '--nworkers', str(n_workers),
                 '--nthreads', '1']
 
     @staticmethod
@@ -952,14 +966,17 @@ class Cluster:
     def srun_worker_layout(scheduler_file, out_dir, node_names, parallel_count):
         """
         Work out the srun command(s) that start the workers, the log each writes, and how many
-        workers to expect in total (#617).
+        workers to expect in total (#617, #643).
 
-        There is one command in every case except the one this issue is about: a default
-        (auto-sized) run on machines of different sizes, which becomes one command per distinct
-        size so each machine can be given a worker per CPU it holds. Everything else -- an
-        explicit ``parallel_count``, and a default run where every machine is the same size --
-        stays the single :meth:`srun_worker_command` it was before, so the common case is
-        unchanged.
+        A homogeneous allocation is one srun step, whether the count comes from
+        ``parallel_count`` or from what each machine was granted, so the common case is
+        unchanged. An allocation of different-sized machines becomes one step per distinct size,
+        because a single step's ``--cpus-per-task`` cannot ask each machine for a different
+        number without asking the smaller ones for more than they hold. On that mixed path the
+        auto (unset ``parallel_count``) run gives each machine one worker per CPU it was granted,
+        and an explicit ``parallel_count`` is split across the machines in proportion to their
+        size (#643): the even split a single step would use asks the smaller machines for the
+        larger machines' share, which SLURM refuses.
 
         :param scheduler_file: Path of the scheduler file the workers should read
         :type scheduler_file: str
@@ -974,43 +991,51 @@ class Cluster:
         """
         node_count = len(node_names)
         main_log = os.path.join(out_dir, SRUN_WORKER_LOG)
-        if parallel_count is not None:
-            # The explicit override is left exactly as it was: one srun, an even split over all
-            # nodes, its CPU request capped by the single count cpus_per_node decides. Capping
-            # it per-machine instead is ADR-0124's deferred question, not this one's; what #642
-            # changed is that the single count now describes the allocation rather than the
-            # machine PyBNF happens to be launching from.
-            cmd = Cluster.srun_worker_command(scheduler_file, node_count, parallel_count)
-            per_node = int(cmd[cmd.index('--nworkers') + 1])
-            return [cmd], [main_log], per_node * node_count
+        # Read the allocation's own per-node list first: both paths need it to tell a
+        # homogeneous allocation from a mixed one, and the count in hand is right wherever this
+        # process is running, while re-deriving it asks a variable SLURM leaves empty off an
+        # allocated node and falls through to the size of the login node (#642).
         counts, source = Cluster.per_node_cpus(node_names)
         if len(set(counts)) <= 1:
-            # Every machine the same size (the norm): the current single command, unchanged.
-            # The count is handed on rather than worked out again, because the number in hand
-            # came from the allocation's own per-node list and so is right wherever this
-            # process is running, while re-deriving it asks a variable SLURM leaves empty off
-            # an allocated node and falls through to the size of the login node (#642).
-            cmd = Cluster.srun_worker_command(scheduler_file, node_count, None,
+            # Every machine the same size (the norm): one srun step. An even split when
+            # parallel_count is set, one worker per granted CPU otherwise -- both unchanged.
+            cmd = Cluster.srun_worker_command(scheduler_file, node_count, parallel_count,
                                               granted=counts[0], source=source)
             per_node = int(cmd[cmd.index('--nworkers') + 1])
             return [cmd], [main_log], per_node * node_count
-        # Machines of different sizes: one srun step per distinct size, each machine in the
-        # step given one worker per CPU it was granted. Group by size, keeping first-seen order.
+        # Machines of different sizes: one srun step per distinct size. Group by size, keeping
+        # first-seen order.
+        total_cpus = sum(counts)
         groups = {}
         for name, cpus in zip(node_names, counts):
             groups.setdefault(cpus, []).append(name)
-        logger.info('Machines of different sizes in this allocation; sizing each by %s. '
-                    'Starting one srun step per size:' % source)
+        if parallel_count is None:
+            logger.info('Machines of different sizes in this allocation; sizing each by %s. '
+                        'Starting one srun step per size:' % source)
+        else:
+            logger.info('Machines of different sizes in this allocation (sized by %s); splitting '
+                        'the requested %i worker(s) in proportion to machine size. Starting one '
+                        'srun step per size:' % (source, parallel_count))
         commands, logs, expected_total = [], [], 0
         for index, (cpus, nodes) in enumerate(groups.items()):
-            commands.append(Cluster.srun_worker_command_for_group(scheduler_file, nodes, cpus))
+            if parallel_count is None:
+                # Auto (#617): one worker per CPU the machine was granted.
+                n_per_machine = cpus
+            else:
+                # This size group holds cpus/total_cpus of the allocation's processors, so it
+                # gets that share of the requested total. ceil, and a floor of one, match the
+                # single-step even split (ceil(parallel_count/node_count)), which this is the
+                # per-size generalization of: on a homogeneous allocation the two agree exactly.
+                n_per_machine = max(1, int(np.ceil(cpus * parallel_count / total_cpus)))
+            commands.append(Cluster.srun_worker_command_for_group(
+                scheduler_file, nodes, cpus, n_per_machine))
             # The first step keeps the usual log name; the rest are numbered, so the concurrent
             # steps do not truncate and interleave one another's output.
             logs.append(main_log if index == 0
                         else os.path.join(out_dir, 'dask_workers_%i.log' % (index + 1)))
-            expected_total += cpus * len(nodes)
-            logger.info('  %i worker(s) on %i machine(s) (%s)'
-                        % (cpus, len(nodes), ', '.join(nodes)))
+            expected_total += n_per_machine * len(nodes)
+            logger.info('  %i worker(s) on %i machine(s) of %i CPU(s) (%s)'
+                        % (n_per_machine, len(nodes), cpus, ', '.join(nodes)))
         return commands, logs, expected_total
 
     @staticmethod

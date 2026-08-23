@@ -87,6 +87,10 @@ launcher's own readiness check is unchanged.
 
 ### `parallel_count` is left as an even split
 
+**Superseded by issue #643 / ADR-0126:** the override is now split in proportion to machine size on
+a mixed allocation, one `srun` step per size, so it no longer asks a smaller machine for the larger
+machines' share. The rest of this section records why #617 left it alone at the time.
+
 Setting `parallel_count` overrides the automatic sizing with a total number of workers split evenly
 across the machines, exactly as the SSH launcher has always done. This change does not make that
 override per-machine. A user who names a total is asking for that many workers, and dividing an
@@ -114,7 +118,8 @@ its single-step, even-split behavior, and only the default (auto-sized) path bec
   a total evenly and requests `--cpus-per-task` for the per-node share, a share larger than a
   machine smaller than the one PyBNF runs on can be refused by SLURM on that machine. This predates
   #617 and is out of its scope. It is recorded here rather than fixed; if it needs fixing it needs
-  its own design, and a tracking issue, rather than being folded into this change. That issue is #643.
+  its own design, and a tracking issue, rather than being folded into this change. That issue is
+  #643, now fixed: the override is split in proportion to machine size, one step per size (ADR-0126).
 
 ## Alternatives considered
 
