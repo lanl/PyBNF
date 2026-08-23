@@ -13,11 +13,13 @@ These tests pin the two halves of ADR-0121's answer:
 
 * **the verdict comes off the codegen artifact**, not off the log line. The log line is
   emitted while *generating* codegen source, which a warm structural cache skips
-  entirely (lanl/bngsim#174), so it is present on the first build of a model and absent
-  on every later one -- while the model is on the fallback all the same.
-  ``test_a_declined_model_is_reported_identically_cold_and_warm`` is that measurement,
-  against the real backend: same model, two probes, one verdict, reason only the first
-  time.
+  entirely (lanl/bngsim#174), so on a build from before the reason survived the cache it
+  is present on the first build of a model and absent on every later one -- while the
+  model is on the fallback all the same. A newer bngsim replays the reason on a cache
+  hit, so the reason may or may not come back on a warm cache, but the verdict is exact
+  either way. ``test_a_declined_model_is_reported_identically_cold_and_warm`` is that
+  measurement, against the real backend: same model, two probes, one verdict, and a
+  reason that is either the cold one replayed word for word or nothing at all.
 * **the reason is prose only.** It is captured and reported when heard, and nothing --
   no policy, no refusal -- may key off its absence.
 """
@@ -472,11 +474,18 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     """ADR-0121's measurement, and the reason the verdict is not the log line.
 
     Two probes of the same model. The first generates codegen source and hears bngsim
-    decline; the second resolves the artifact straight out of the (now warm) cache,
-    generates nothing, and hears nothing at all -- while running on exactly the same
-    difference-quotient fallback. A design that took its verdict from the log line
-    would report this model as fine on the second run of the fit, which is the run a
-    user makes after the first came back empty.
+    decline. The second resolves the artifact straight out of the (now warm) cache and
+    generates no source -- while running on exactly the same difference-quotient
+    fallback. A design that took its verdict from the log line would report this model
+    as fine on the second run of the fit, which is the run a user makes after the first
+    came back empty.
+
+    The verdict is the half ADR-0121 pins, and it must not depend on the cache. The
+    reason is prose, and the pin ``bngsim>=0.12.2,<1`` admits builds on both sides of a
+    recent upstream change: a build from before it generates no source on a warm cache
+    and so replays no reason, while a build that carries the note beside the cached
+    artifact replays the reason a cold build gave, in the same words. Both are fine
+    here, and a replayed reason is strictly more useful than silence.
     """
     cold = _sbml_model(tmp_path, _DECLINED_LAW, 'declined').analytic_sens_rhs_status()
     assert cold.analytic is False
@@ -493,7 +502,8 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
     warm = _sbml_model(tmp_path, _DECLINED_LAW, 'declined2').analytic_sens_rhs_status()
     assert warm.analytic is False, 'the verdict must not depend on the codegen cache'
-    assert warm.reasons == [], 'a warm cache generates no source, so it says nothing'
+    assert warm.reasons in ([], cold.reasons), (
+        'a warm cache either says nothing or replays the cold reason word for word')
 
 
 # --- the config surface ------------------------------------------------------- #
