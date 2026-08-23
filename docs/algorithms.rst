@@ -131,18 +131,27 @@ Convergence
 """""""""""
 
 A run finishes either at ``max_iterations`` or when the population has converged to
-roughly the same objective value. Convergence is measured as an **absolute range** of the
-objective over the population: the run stops once the spread between the best and worst
-*finite* member falls to ``de_tolfun`` or below. Failed simulations (scored as infinity)
-are ignored, so one dead candidate can neither trigger nor block the stop. The range is in
-the units of your objective function, which is what makes it well-defined on a likelihood
-objective — a negative log-likelihood is unbounded below, so a *ratio* of objectives
-(the pre-#561 test) reads an all-negative population as converged and stops after
-generation 0. ``de_tolfun`` is unset by default and then follows ``stop_tolerance``, so an
-existing config keeps the threshold magnitude it had; set ``de_tolfun`` to control the
-objective range independently of that key. In an island run, convergence is assessed only
-once every island has completed at least one iteration, so a single finished island cannot
-stop the whole search before the others have run.
+roughly the same objective value. Convergence is measured over the *finite* members only,
+so a failed simulation (scored as infinity) can neither trigger nor block the stop.
+
+How the threshold is read depends on where it comes from. By default ``de_tolfun`` is
+unset and the run uses ``stop_tolerance``, which is a **dimensionless ratio**: on a
+positive objective the run stops once the spread between the best and worst member falls
+to that fraction of the best member. Reading it that way is what keeps one value
+meaningful across fits whose objectives differ by many orders of magnitude. On an
+objective that is not positive a ratio means nothing, and reading one there is what made
+an all-negative likelihood population look converged and stop the run after generation 0
+before #561, so the same number is read there as an **absolute range** of the objective.
+
+Setting ``de_tolfun`` states the threshold as an absolute range in your objective's own
+units, on every objective. Use it when you know that scale and want to name the spread you
+will accept. Do not set it to a value borrowed from ``stop_tolerance``: the two carry
+different units, and a ratio's magnitude read as a range is far looser than intended on any
+fit whose objective is below 1 (see #648).
+
+In an island run, convergence is assessed only once every island has completed at least one
+iteration, so a single finished island cannot stop the whole search before the others have
+run.
 
 Applications
 ^^^^^^^^^^^^

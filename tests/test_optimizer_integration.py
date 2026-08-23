@@ -1393,6 +1393,67 @@ def test_de_tolfun_is_a_knob_of_its_own(tmp_path):
     assert fallback.de_tolfun == 0.002
 
 
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_an_unset_threshold_scales_with_a_positive_objective(tmp_path, fit_type):
+    """The #648 defect at its decision point (ADR-0127).
+
+    ``stop_tolerance`` has always been a dimensionless ratio. ADR-0115 kept its magnitude
+    but read it as an absolute range, on the argument that "an absolute range at the same
+    magnitude is a stricter, well-defined stop". That is true only above an objective of
+    1. This population sits at the 2e-05 a well-scaled sum-of-squares fit reaches, where
+    the same number is tens of thousands of times looser, so the run stops while its
+    parameters are still 40 percent apart.
+    """
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=0.002)
+    _set_fitnesses(alg, fit_type, [2.0e-05, 2.4e-05, 2.8e-05, 2.2e-05])   # spread 8e-06
+    # Read as an absolute range the legacy magnitude fires at once -- the defect.
+    assert (np.max(alg.fitnesses) - np.min(alg.fitnesses)) <= alg.de_tolfun
+    # Read as the ratio it has always been, it does not: 8e-06 is 40% of the best member.
+    assert alg._population_converged() is False
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_an_explicit_de_tolfun_stays_an_absolute_range(tmp_path, fit_type):
+    """An explicit ``de_tolfun`` is a range its author chose in their own objective's
+    units, so it is honoured as written whatever the scale. Only the *unset* fallback
+    carries ``stop_tolerance``'s ratio meaning (ADR-0127)."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=0.002, de_tolfun=1.0e-3)
+    _set_fitnesses(alg, fit_type, [2.0e-05, 2.4e-05, 2.8e-05, 2.2e-05])   # spread 8e-06
+    assert alg.de_tolfun_is_explicit is True
+    assert alg._population_converged() is True
+    # ...and the same population is NOT converged once the explicit range is tightened
+    # below the spread, so the branch is reading the number rather than ignoring it.
+    tight = _de_family_alg(tmp_path, fit_type, stop_tolerance=0.002, de_tolfun=1.0e-9)
+    _set_fitnesses(tight, fit_type, [2.0e-05, 2.4e-05, 2.8e-05, 2.2e-05])
+    assert tight._population_converged() is False
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_the_unset_threshold_gives_one_verdict_at_every_objective_scale(tmp_path, fit_type):
+    """The property the ratio form has and an absolute range cannot: the same *relative*
+    spread is judged the same way at objectives six decades apart. An absolute range
+    would call the first pair converged at both scales and the second pair converged at
+    the small scale, which is exactly how #648 loses a fit."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=0.01)
+    for scale in (1.0e-05, 1.0e+01):
+        _set_fitnesses(alg, fit_type, [scale, scale * 1.001])   # 0.1% spread, inside 1%
+        assert alg._population_converged() is True, scale
+        _set_fitnesses(alg, fit_type, [scale, scale * 1.10])    # 10% spread, outside 1%
+        assert alg._population_converged() is False, scale
+
+
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_a_population_straddling_zero_uses_the_absolute_range(tmp_path, fit_type):
+    """A ratio is meaningless once the best member is not positive, so the fallback reads
+    its number as a range there. This is the boundary between the two readings, and it is
+    also what keeps #561's likelihood fits on the branch ADR-0115 built for them."""
+    alg = _de_family_alg(tmp_path, fit_type, stop_tolerance=1.0)
+    _set_fitnesses(alg, fit_type, [-0.4, 0.5])          # spread 0.9, inside the 1.0 range
+    assert alg._population_converged() is True
+    _set_fitnesses(alg, fit_type, [-0.4, 1.5])          # spread 1.9, outside it
+    assert alg._population_converged() is False
+
+
 def test_ade_convergence_survives_an_all_zero_population(tmp_path):
     """ade never had de's ``!= 0`` guard, so an all-zero population computed
     max/min = 0/0 = nan (a RuntimeWarning; nan < threshold is False, so it silently
