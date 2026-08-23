@@ -113,10 +113,17 @@ runs:
         # capability that needs a companion PyPI package (antimony>=3.1.1, pure
         # python wheel), and it is what unskips the bngsim_antimony-marked
         # tests, so install the extra rather than bare bngsim. Keep the pin in
-        # sync with pyproject.toml.
+        # sync with pyproject.toml -- and note that asking is no longer the only
+        # thing holding it there. This pin was set to 0.11.35 on 2026-07-24, when
+        # that was also pyproject's floor. pyproject then moved to 0.12.0 and to
+        # 0.12.2, on 2026-08-02 and 2026-08-04, and this line did not follow, so
+        # for three weeks CI tested against a bngsim older than PyBNF declared it
+        # needed and nothing said so. tests/test_packaging_metadata.py::
+        # test_ci_action_installs_every_dependency_pyproject_declares now reads
+        # both files and fails when they disagree.
         BNGSIM_SPEC=()
         if [ "$BNGSIM" = 'true' ]; then
-          BNGSIM_SPEC=('bngsim[antimony]>=0.11.35,<1')
+          BNGSIM_SPEC=('bngsim[antimony]>=0.15.0,<1')
         fi
         # The optional pybnf[jax] extra (jax + jaxlib + blackjax) -- the ADR-0059
         # HMC reference sampler and the jax-gated gradient-assembly tests. Heavy
@@ -145,6 +152,8 @@ runs:
         # heavy jax stack is instead gated behind the `jax` input above. Keep ALL
         # of these version bounds in sync with pyproject.toml's [tests] extra --
         # anything declared there but missing here silently reverts to a skip.
+        # tests/test_packaging_metadata.py checks that, for every requirement in
+        # this file and in pyproject.toml, both name the same version range.
         uv pip install \
           "${BNGSIM_SPEC[@]}" \
           "${JAX_SPEC[@]}" \

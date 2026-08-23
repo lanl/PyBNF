@@ -1,5 +1,6 @@
 import fnmatch
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -7,18 +8,180 @@ import tomllib
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CI_ACTION = REPO_ROOT / '.github' / 'actions' / 'setup-pybnf' / 'action.yml'
+
+
 def test_project_metadata_declares_python_floor_and_bngsim_dependency():
-    pyproject_path = Path(__file__).resolve().parents[1] / 'pyproject.toml'
+    pyproject_path = REPO_ROOT / 'pyproject.toml'
     metadata = tomllib.loads(pyproject_path.read_text())
     project = metadata['project']
 
     assert project['requires-python'] == '>=3.11'
-    # bngsim >= 0.12.0: parameter_scan/bifurcate carry the equilibration's dx/dθ into the scan
-    # (lanl/bngsim#81) and resolve an on_point hook's own ∂x(0)/∂θ (lanl/bngsim#111), which make
-    # a scored PRE-EQUILIBRATED dose-response scan differentiable (#532). (0.11.35 added the
-    # steady-state SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the
-    # native carried-state parameter_scan/bifurcate + named saved states of lanl/bngsim#11 for #474.)
-    assert 'bngsim>=0.12.2,<1' in project['dependencies']
+    # bngsim >= 0.15.0 is bought by a CONTRACT, not by a feature PyBNF wants. lanl/bngsim#431
+    # publishes `event_sensitivities` as a real capabilities() feature key. Until it existed
+    # PyBNF read `effective_ic_sensitivity` as a WITNESS for the same thing (ADR-0119), which
+    # was sound only because lanl/bngsim#155 happened to land a few commits after the event
+    # fixes -- a fact about commit ordering that stops being evidence the moment the two are
+    # decoupled, silently. Guessing wrong here is not symmetric: a build without those fixes
+    # does not refuse, it returns a finite gradient with a term missing, so the fit converges
+    # and reports a plausible number. 0.15.0 is the first release where PyBNF asks the real
+    # question. It also carries the codegen-cache decline reason PyBNF reads (#647), and, on
+    # the refusal side, a RuleMonkey re-vendor that declines a TotalRate rule where RuleMonkey
+    # and NFsim genuinely disagree rather than picking a reading.
+    # (0.12.2/0.12.0 bought the carried-state parameter_scan/bifurcate sensitivities of
+    # lanl/bngsim#81 and #111 for #532; 0.11.35 the steady-state
+    # SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the native
+    # carried-state parameter_scan + named saved states of lanl/bngsim#11 for #474.)
+    assert 'bngsim>=0.15.0,<1' in project['dependencies']
+
+
+def _canonical_name(name):
+    """PEP 503 normalization, so `pytest-xdist` and `pytest_xdist` are one name."""
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+_REQUIREMENT = re.compile(
+    r'^([A-Za-z][A-Za-z0-9._-]*)'   # distribution name
+    r'(?:\[[^\]]*\])?'             # extras, which the two files are allowed to differ on
+    r'\s*(.*)$'                     # the version specifier, or nothing at all
+)
+
+
+def _split_requirement(text):
+    """``'bngsim[antimony]>=0.15.0,<1'`` -> ``('bngsim', '>=0.15.0,<1')``.
+
+    Extras are dropped on purpose: the CI action installs ``bngsim[antimony]`` where
+    pyproject's runtime list declares bare ``bngsim``, and that difference is deliberate
+    (the extra is what unskips the bngsim_antimony-marked tests). The version range is
+    the part that has to agree. Returns None for a string that is not a requirement.
+    """
+    match = _REQUIREMENT.match(text.strip())
+    if match is None:
+        return None
+    name, specifier = match.groups()
+    return _canonical_name(name), specifier.replace(' ', '')
+
+
+def _requirements_quoted_in(text):
+    """Every single-quoted requirement in a YAML file, keyed by distribution name.
+
+    The CI action is a shell script embedded in YAML, so its requirements are ordinary
+    single-quoted shell words -- in the `uv pip install` argument list, in the BNGSIM_SPEC
+    and JAX_SPEC arrays, and in the `petab-spec` input's default. Quotes are matched
+    within a single line and comment lines are dropped, because the surrounding YAML prose
+    is full of apostrophes ("pyproject.toml's", "the action's") that otherwise pair up with
+    each other and swallow the real strings.
+    """
+    found = {}
+    for line in text.splitlines():
+        if line.lstrip().startswith('#'):
+            continue
+        for quoted in re.findall(r"'([^'\n]*)'", line):
+            parsed = _split_requirement(quoted)
+            if parsed is not None:
+                found.setdefault(parsed[0], parsed[1])
+    return found
+
+
+def test_ci_action_installs_every_dependency_pyproject_declares():
+    """The CI action and pyproject.toml must name the same version range for every package.
+
+    The action does not install PyBNF's dependencies by resolving pyproject.toml. It
+    installs a hand-written list that mirrors it, because a `bngsim: false` leg has to be
+    able to leave bngsim out and a re-resolve would pull it back in. Two hand-maintained
+    copies of one list drift, and this one did: the action pinned `bngsim>=0.11.35` while
+    pyproject declared `bngsim>=0.12.2`. The two were set to the same number on 2026-07-24;
+    pyproject moved twice over the following fortnight and the action never followed, so for
+    three weeks continuous integration tested against a bngsim older than the project said
+    it required. Nothing caught it. Both files carried a comment asking a human to keep them
+    in sync, which is what a comment can do.
+
+    The failure is quiet in both directions. Too low a floor means CI passes on a build the
+    published wheel will not accept. A package declared in pyproject's [tests] extra but
+    absent from the action does not fail a job either -- the suite that needs it
+    `importorskip`s and reports as skipped.
+    """
+    metadata = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())
+    declared = {}
+    for requirement in (
+        metadata['project']['dependencies']
+        + metadata['project']['optional-dependencies']['tests']
+    ):
+        name, specifier = _split_requirement(requirement)
+        declared[name] = specifier
+
+    installed = _requirements_quoted_in(CI_ACTION.read_text())
+
+    missing = sorted(name for name in declared if name not in installed)
+    assert not missing, (
+        'pyproject.toml declares these but %s never installs them, so the tests that '
+        'need them skip in CI instead of failing: %s' % (CI_ACTION.name, ', '.join(missing))
+    )
+
+    drifted = {
+        name: (declared[name], installed[name])
+        for name in declared
+        if declared[name] != installed[name]
+    }
+    assert not drifted, (
+        'the CI action and pyproject.toml disagree about a version range '
+        '(name: pyproject wants, action installs): %s' % drifted
+    )
+
+
+def test_the_version_is_the_same_everywhere_it_is_written_down():
+    """One release version, written by hand into four files, must agree in all of them.
+
+    pyproject.toml does not carry the number: it declares `dynamic = ["version"]` and reads
+    `pybnf.__version__`, which makes `pybnf/__init__.py` the source of truth and the built
+    wheel correct by construction. The other three are separate copies that a release has to
+    remember to bump, and nothing has been checking them. A stale `CITATION.cff` tells anyone
+    citing PyBNF the wrong version, and a stale `docs/conf.py` labels the published
+    documentation with the previous release.
+
+    The changelog is checked in the same breath because it is the same ritual and the same
+    mistake. `[Unreleased]` is promoted to a dated heading at release time, so the newest
+    versioned heading is the released version at every commit -- both before a release, when
+    the promotion has not happened and neither has the bump, and after it, when both have.
+    Bumping one without the other is what this catches.
+    """
+    init_text = (REPO_ROOT / 'pybnf' / '__init__.py').read_text()
+    match = re.search(r'^__version__ = [\'"]([^\'"]+)[\'"]', init_text, re.MULTILINE)
+    assert match is not None, 'pybnf/__init__.py does not define __version__'
+    version = match.group(1)
+
+    # The mechanism that makes __init__.py authoritative. If this ever changes, the rest of
+    # this test is checking copies against something that is no longer the original.
+    metadata = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())
+    assert 'version' in metadata['project']['dynamic']
+    assert metadata['tool']['setuptools']['dynamic']['version'] == {
+        'attr': 'pybnf.__version__'
+    }
+
+    citation = (REPO_ROOT / 'CITATION.cff').read_text()
+    assert re.search(r'^version: %s$' % re.escape(version), citation, re.MULTILINE), (
+        "CITATION.cff does not say version %s -- anyone citing PyBNF gets the wrong "
+        'release' % version
+    )
+
+    conf = (REPO_ROOT / 'docs' / 'conf.py').read_text()
+    assert re.search(r"^version = '%s'$" % re.escape(version), conf, re.MULTILINE), (
+        "docs/conf.py's `version` is not %s" % version
+    )
+    # `release` carries a leading v; `version` does not. Both are bumped by hand.
+    assert re.search(r"^release = 'v%s'$" % re.escape(version), conf, re.MULTILINE), (
+        "docs/conf.py's `release` is not v%s" % version
+    )
+
+    changelog = (REPO_ROOT / 'CHANGELOG.md').read_text()
+    headings = re.findall(r'^## \[v?([^\]]+)\]', changelog, re.MULTILINE)
+    released = [h for h in headings if h != 'Unreleased']
+    assert released, 'CHANGELOG.md has no released version heading'
+    assert released[0] == version, (
+        "CHANGELOG.md's newest released heading is %s but __version__ is %s -- one of the "
+        'two was bumped without the other' % (released[0], version)
+    )
 
 
 def test_every_pybnf_subpackage_is_shipped():
