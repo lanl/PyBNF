@@ -199,11 +199,17 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
 # So the flag resolves through three routes, first match wins, and each is
 # reported by :func:`event_sens_probe` so a refusal can say how it decided:
 #
-# 1. ``features['event_sensitivities']`` -- a dedicated key. bngsim publishes no
-#    such key today; naming it here costs nothing and means the flag starts
-#    reading the real answer, in BOTH directions, on the first build that grows
-#    one. That is #558's ask 1, and it is why this route is checked first even
-#    though it never fires yet.
+# 1. ``features['event_sensitivities']`` -- a dedicated key, and since lanl/bngsim#431
+#    a real one. It was named here before it existed, on the reasoning that doing so
+#    cost nothing and would start the flag reading the real answer, in BOTH directions,
+#    on the first build that grew one. bngsim 0.15.0 is that build, and the floor is now
+#    0.15.0, so this route fires for every install resolved from PyPI. It publishes the
+#    key on every build, so a ``False`` here is an answer rather than a silence.
+#
+#    Routes 2 and 3 are not dead. A floor binds what a resolver installs, not what a
+#    build claims, and a bngsim built from source between the version bump and the fixes
+#    declares a number it does not carry -- which is the whole of why ADR-0119 stopped
+#    reading version strings. Those routes are what such a build falls through to.
 #
 # 2. ``features['effective_ic_sensitivity']`` -- a WITNESS. This key is not the
 #    capability; it reports ``Model.effective_ic_sensitivity``, the dx(0)/dtheta

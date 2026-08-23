@@ -481,11 +481,12 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     came back empty.
 
     The verdict is the half ADR-0121 pins, and it must not depend on the cache. The
-    reason is prose, and the pin ``bngsim>=0.12.2,<1`` admits builds on both sides of a
-    recent upstream change: a build from before it generates no source on a warm cache
-    and so replays no reason, while a build that carries the note beside the cached
-    artifact replays the reason a cold build gave, in the same words. Both are fine
-    here, and a replayed reason is strictly more useful than silence.
+    reason is prose, and it used to be allowed to go missing: the pin ``bngsim>=0.12.2,<1``
+    admitted builds on both sides of the upstream change that writes the reason into a note
+    beside the cached artifact, so a warm cache could legitimately say nothing. The floor is
+    now ``bngsim>=0.15.0,<1``, which is the release that carries the note, so silence is no
+    longer one of the answers and the warm reason is asserted word for word against the cold
+    one.
     """
     cold = _sbml_model(tmp_path, _DECLINED_LAW, 'declined').analytic_sens_rhs_status()
     assert cold.analytic is False
@@ -502,8 +503,9 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
     warm = _sbml_model(tmp_path, _DECLINED_LAW, 'declined2').analytic_sens_rhs_status()
     assert warm.analytic is False, 'the verdict must not depend on the codegen cache'
-    assert warm.reasons in ([], cold.reasons), (
-        'a warm cache either says nothing or replays the cold reason word for word')
+    assert warm.reasons == cold.reasons, (
+        'the floor guarantees the note beside the cached artifact, so a warm cache must '
+        'replay the cold reason word for word rather than fall silent')
 
 
 # --- the config surface ------------------------------------------------------- #

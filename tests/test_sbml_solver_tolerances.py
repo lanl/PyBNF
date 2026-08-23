@@ -925,8 +925,12 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
     simply less catastrophic than it was.
 
     So each threshold now sits a decade under the *worse* of the two measurements -- the
-    rule the two-scale test above states -- and both hold across the declared
-    ``bngsim>=0.12.2,<1`` range rather than on the one release that drew them.
+    rule the two-scale test above states -- rather than on the one release that drew them.
+    The declared range is now ``bngsim>=0.15.0,<1``, which puts both of those measurements
+    below the floor. That leaves the guard conservative rather than stale: raising the floor
+    removed the worse end of the pair, and a threshold set a decade under the worse end is
+    still under the better one. It has not been re-derived on 0.15.0, and it does not need
+    to be until a release moves the numbers back up.
     """
     model = _piecewise_model(tmp_path, atol=_BNGSIM_DEFAULT_ATOL)
     model.enable_output_sensitivities(params=['k0', 'k1', 'k2'])
