@@ -6,6 +6,20 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **A cluster fit now says how many of the reserved processors it is actually using (#621).**
+  How many simulations a fit runs at once follows from its settings, mainly `population_size`,
+  and not from how many processors were reserved. When the two do not match, the extra
+  processors can sit idle for the whole run and nothing said so, so a user could reserve
+  several machines and quietly use a fraction of one. After the first set of jobs is
+  submitted, PyBNF now compares the number of jobs running with the number of workers that
+  connected, writes both numbers to the log so a finished run can be checked afterwards, and
+  warns when the two differ by a large margin in either direction. The warning names both
+  numbers and points at `population_size`.
+  Differential evolution, CMA-ES and scatter search finish a whole generation before starting
+  the next, so some idle time near the end of each generation is expected with them. Those
+  three say so in the message, to save a user looking for a fault that is not there. Only
+  cluster runs are reported, because a local run's worker count is exactly the number that was
+  asked for. Reading the worker count never stops a fit if it fails.
 - **On a cluster whose machines are not all the same size, each machine now runs a worker per
   CPU it was granted rather than one count for all of them (#617, ADR-0124).** When PyBNF started
   workers across several machines it sent the same worker count to every one. On a cluster whose
@@ -215,6 +229,179 @@ All notable changes to PyBNF are documented below. This project adheres to
   free in the other direction either: error-test failures rise as steps fall, and `Laske` lost one
   box point of twenty at one seed (both arms lose one at a second seed). ADR-0114 has every arm and
   says what it has not bisected.
+- **Measurement-time uncertainty, phase 2: a marginalized-time likelihood can now be fit by
+  `job_type = lbfgs` and `job_type = gntr` (#588, ADR-0113).** Phase 1, below, refuses every
+  gradient job type, because the gradient of the marginal `-log z_k` did not exist yet. Phase 2
+  supplies it and lifts the refusal for the two job types that can consume it. Nothing is added
+  to the model file and the differential equations are not augmented.
+  The published method augments the model with one extra state per observation, because the
+  solver it uses returns sensitivities of model states only. PyBNF does not need that. Its
+  forward-sensitivity engine already stores `∂y(τ)/∂θ` at every node of the same trajectory
+  phase 1 integrates over, so `∂z_k/∂θ` is a second quadrature over a trajectory PyBNF already
+  holds, reusing each noise family's existing derivative and the time prior's own `∂p/∂σ_t`.
+  The trapezoid rule is a linear functional that does not depend on the parameters, so what
+  comes out is the exact derivative of the number phase 1 reports rather than an approximation
+  of it. A finite-difference check agrees to about 1e-9 in every column.
+  `-log z_k` is the log of an integral rather than a sum of squares, so it takes the scalar
+  gradient path. `lbfgs` consumes the scalar gradient and `gntr` builds its Gauss-Newton Fisher
+  matrix from the per-observation scores. Three job types stay refused, each with its own
+  reason: `trf` needs an exact residual vector and the log of an integral is not one, `hmc`
+  runs on the analytical model rather than the simulator, and `ms` runs through the shooting
+  layer. Integration error controlled by the solver, which is the other thing augmenting the
+  equations would buy, is a separate question, and phase 2 keeps phase 1's fixed grid.
+  Measured end to end on tutorial lesson 49 through the real simulation backend, `lbfgs` and
+  `gntr` both recover `k = 1.02` against a truth of 1.0, with every multi-start reaching the
+  same optimum. The lesson carries that arm as `marginal_gradient.conf`.
+- **Measurement-time uncertainty via posterior marginalization, phase 1 (#587, ADR-0112).** A
+  new `time_error` clause on the `noise_model` line treats the latent sampling time as a random
+  variable and *integrates it out* of the likelihood, instead of assuming each datum was collected
+  at exactly its reported time — an assumption that biases estimates and makes posteriors
+  overconfident when sampling times actually drift (handling delays, imperfect synchronization,
+  reporting error). Written whole-fit as `noise_model = <family>, <scale> = <source>, time_error =
+  truncated_normal, sigma_t = fit st__FREE` (or `uniform`; `sigma_t = fix_at <w>`), it replaces the
+  per-point likelihood with a `MarginalizedTimeObjective` whose per-observation contribution is
+  `−log ∫ p(ȳ_k | y(τ)) p(τ | t_k) dτ` — the `n_t`-dimensional marginal factorizes into
+  one-dimensional integrals (the method of Vanhoefer, Nakonecnij, Binder & Hasenauer, bioRxiv
+  2026.05.09.724053; the temporal analogue of Raimúndez et al. 2023 nuisance marginalization). The
+  search stays `n_θ` (+ one `σ_t`), not `n_θ + n_t`. Phase 1 evaluates each integral by log-space
+  quadrature over the stored trajectory, reusing every noise family's normalized `log_density`
+  (ADR-0056) as the integrand and the gradient-free optimizers/samplers (`de`/`pso`/`ss`/`mh`/
+  `dream`/…) unchanged — nothing is added to the model file. Edition-2 only. The `σ_t → 0` limit
+  is the standard likelihood (a `fix_at 0` clause short-circuits to it). LOO/WAIC and
+  `information_criteria.txt` work out of the box: the marginal per-observation `log z_k` **is** a
+  normalized per-observation log-likelihood, so the objective reports it through the same
+  `evaluate_pointwise` hook the per-point families use (`Σ_k log z_k = −score`), and an estimated
+  `σ_t` is already counted in `k`. A marginalized time course is simulated on a **dense uniform
+  grid** over the support (`t_end:` required, `t_start:`/`n_steps:` optional on the experiment
+  line — decoupled from the sparse reported times, which only centre each timing prior), and
+  `sigma_t = fit …` estimates the timing scale jointly (recognized as a declared nuisance).
+  Worked end to end in **tutorial lesson 49** (`examples/tutorial/49_measurement_time_uncertainty/`):
+  ignoring the timing spread biases the decay rate to `k ≈ 1.36` (truth 1), marginalizing recovers
+  `k ≈ 1.06`, and estimating `σ_t` recovers `k` while re-discovering a non-zero timing error.
+  Deferred and refused at
+  build with a reason: a per-observable time prior, a prediction-dependent `σ`, the count family,
+  and, in phase 1, every gradient `job_type`. Phase 2 above lifts that refusal for `lbfgs` and
+  `gntr` in this same release, and does it by chaining the stored forward sensitivities rather
+  than by the augmented equations phase 1 expected to need. `trf`, `hmc` and `ms` stay refused.
+  `noise_profiling`, which *maximizes* a scale out, is refused as ill-defined alongside
+  marginalization, which *integrates* the time out.
+- **Multiple shooting, `job_type = ms` (#563, ADR-0110).** The consumer of the
+  constrained-transcription layer below, and the thing #563 was actually asking for. Each scored
+  experiment's time course is cut at knots; segment *j* is integrated from its own start state —
+  segment 0's is the model's own initial conditions, and each interior knot carries an auxiliary
+  state that is searched, bounded and differentiated but is **never** a reported fit result — and
+  continuity `Phi_j(z_j, theta) - z_{j+1} = 0` is enforced by an augmented Lagrangian whose
+  subproblem is solved by `gntr`'s own Gauss-Newton trust-region step machine. Every reported
+  score comes from discarding the auxiliary states, re-simulating theta with ordinary single
+  shooting, and scoring *that*, so a run that leaves continuity unconverged scores as what it
+  actually is — and every certified iterate lands in the ordinary trajectory at that score, so
+  `sorted_params`, the best-fit simulations, the information criteria and the inference-data
+  sidecar are produced by the same code every other `job_type` uses.
+  Why it is worth the machinery: on `Borghans_BiophysChem1997` a correctly-shaped oscillator whose
+  period is wrong by more than about 3 % scores *worse than fitting no dynamics at all*, so under
+  single shooting the flat line is the ceiling on essentially the whole box and fifteen
+  independent global searches terminate at it. Over one short segment a period error cannot
+  accumulate: the information moves out of a residual term that saturates and into continuity
+  defects, which carry a direction.
+  The prototype's structural finding is what keeps the implementation small — a segment-start
+  state is an `IC` route with chain-rule factor 1, so the existing gradient/Fisher assembly builds
+  its column with no new residual math, and each segment is presented to it as an ordinary
+  *experiment*. The continuity block is the only new assembly surface. Knots are named by their
+  exact fraction of the horizon, so a coarser rung recognises a finer one's knots and the `4-2-1`
+  ladder *continues* rather than reseeds.
+  New keys `ms_segments`, `ms_coarsening`, `ms_penalty`, `ms_penalty_growth`, `ms_max_penalty`,
+  `ms_feasibility_tol`, `ms_optimality_tol`, `ms_inner_iterations`, `ms_aux_decades`,
+  `ms_max_iterations`, defaulted from ADR-0109's measurements rather than from taste. Requires the
+  bngsim backend — a knot carries the model's *state*, so both a generated network (`.net`) and
+  an SBML/Antimony model are supported, through two backends that differ only in what a
+  simulation returns: on the SBML path the columns an experiment scores and the columns a
+  continuity row differences are the same columns, and on the `.net` path they are not, so that
+  backend asks for the observable and species selector families together and one integration
+  still serves both (#577). A network-free (NFsim) model enumerates no state and is refused. It
+  also refuses, by name, a fit whose scored quantity is a
+  function of a whole series — an analytic per-series scale, a data normalization, a
+  cumulative-to-incident difference — since cutting the series would change it. An analytically
+  profiled noise scale (ADR-0108) is deliberately fine: it is profiled over pooled residuals, so
+  the segments pool the same ones, and the constraint terms never enter the likelihood.
+  What is *not* claimed: that multiple shooting improves the typical fit (48 paired starts:
+  24–24, medians tied at every radius, at 2–7x the simulations), or that it solves Borghans from
+  an uninformed start (0/24). The measured case is the tail and the robustness. Segment
+  simulations run serially on the master in this cut; parallelising them, and the acceptance
+  benchmark, are the follow-on work.
+- **A constrained-transcription layer, `pybnf.transcription` (#563, ADR-0109).** Infrastructure for
+  restating a fit as a larger, better-conditioned problem with internal auxiliary variables and
+  equality constraints that tie them back together — the reusable half of multiple shooting, which
+  will be its first consumer. Four pieces: an **augmented variable layout** that carries the fit's
+  reported free parameters and the transcription's internal blocks in one vector while keeping
+  them rigorously apart (an auxiliary state is searched, bounded, and differentiated; it is never
+  a reported fit result); an **equality residual/Jacobian interface** whose Jacobian is
+  block-sparse with a condensing seam left open, and whose defects are scaled so one penalty means
+  one thing across states of different magnitude; the augmented Lagrangian offered in all three
+  forms PyBNF's optimizers consume (scalar for `lbfgs`, an *exact* stacked least-squares residual
+  for `trf`, Gauss-Newton for `gntr`); and an **optimizer-agnostic augmented-Lagrangian outer
+  loop** with a transcription homotopy and best-iterate certification through the ordinary
+  single-shoot path.
+  No behaviour change to any existing fit: nothing imports it yet, it defines no configuration key
+  and no `job_type`, and it makes no simulator call — which is what lets the whole layer be
+  verified offline (93 tests, ~1.4 s) against an equality-constrained quadratic whose multiplier is
+  known analytically and a closed-form linear-ODE shooting problem measured against an
+  independently computed single-shoot optimum.
+  Three measurements from the #563 prototype are baked into the defaults rather than left as
+  tuning advice, each contradicting the plan that preceded it: the penalty schedule starts **tight**
+  (`rho0 = 10`, `gamma = 5` beat `0.1`/`3` on quality *and* halved the cost), the segment ladder is
+  the **mechanism** rather than a later refinement and starts in the middle (`4-2-1`, not
+  `8-4-2-1` — many short segments certified worse than their own start under partial
+  observability), and a run reports its **best certified** iterate rather than its last (on one
+  start the final stage held `-147.0` while an earlier iterate certified at `-196.3`).
+- **`noise_profiling = 1`: profile an estimated noise scale out of the search analytically (#562,
+  ADR-0108).** ADR-0066 already profiles a declared column's optimal multiplicative **scale** out
+  of the fit; this is the other half of the same classical trick. Every noise parameter declared
+  `= fit <parameter>` is removed from the search and replaced, at each evaluation, by its
+  closed-form maximum-likelihood value over the scored points that share it — the weighted residual
+  RMS `sqrt(sum w r**2 / sum w)` for the Gaussian families (`normal` / `lognormal` / `lnnormal`),
+  the weighted mean absolute residual `sum w |r| / sum w` for `laplace`. Opt-in; `0` (the default)
+  is an exact no-op.
+  Why it matters beyond the dimension count: at a random point in the box the sampled scale is
+  nowhere near its optimum, so the `log sigma` term dominates and a global sampler ranks candidates
+  mostly by *how wrong their sigma happens to be* rather than by how well their dynamics fit. On
+  `Borghans_BiophysChem1997` every optimizer that can run it converges to the same attractor, and
+  that attractor is exactly the **no-dynamics solution** (a flat line at the best constant with
+  sigma at the residual RMS, `-51.204092` analytically and `-51.204092` reported). Across the
+  Grein et al. 2026 subset-I corpus a plain free-parameter sigma accounts for **32 parameters in 13
+  of 23 slugs** — 4 % to 33 % of the search. A profiled scale also has no box to run into, so a fit
+  can no longer optimize its sigma into an upper bound and absorb model misfit as "measurement
+  noise" (`Schwen_PONE2015`'s `IR_obs_std`).
+  The switch is all-or-nothing within a fit and is refused *before the run starts*, naming the
+  reason, for anything without a closed form: a `formula` / `prediction_formula` / per-measurement
+  sigma, a `student_t` `df`, the `neg_bin` dispersion, a `location = mean` prediction on a log
+  scale, one free parameter serving as the scale of two different families, or a fit with nothing
+  to profile. A **fixed** scale (a data column, `fix_at`, `relative`) is not searched, so it is
+  simply left alone. Refused for the Bayesian samplers too: profiling *maximizes* the nuisance out
+  where a posterior *integrates* it out, so the draws would not be posterior draws.
+  Profiled parameters stay declared (the same `.conf` runs with and without the key; their bounds
+  and prior become inert) and stay **estimated**, so they keep counting in `k` in
+  `information_criteria.txt` — otherwise every AIC/BIC would shift between the two runs. Their
+  fitted values are written to the new **`Results/profiled_noise.txt`** and echoed on the console,
+  since a value the fit solves for rather than proposes is not a coordinate of the best parameter
+  set and appears in no `sorted_params_*.txt` row.
+  Gradient support comes free by the envelope theorem — `job_type = lbfgs` and `gntr` consume the
+  exact scalar gradient with the sigma columns dropped, and no new forward sensitivity is needed.
+  `job_type = trf` refuses a profiled fit (as it already refused a searched free scale): under
+  profiling the least-squares residual norm is identically constant, so a trust-region residual
+  model carries no information about the parameters.
+- **`Results/method_chain.json`: which methods a run actually executed (#564, ADR-0107).** Written
+  by every run — budget or no budget — it carries the chain the conf requested
+  (`requested_methods`), the chain that ran (`executed_methods`), and one entry per phase (the fit,
+  the refine, each bootstrap replicate) with its status (`completed` / `wall_time_expired` /
+  `skipped`), its stop reason, its elapsed seconds, its completed simulations, and the best
+  objective it reached. `requested_methods` longer than `executed_methods` is the machine-readable
+  form of a downgrade, so a scoring harness can assert on the method it measured in one line
+  instead of parsing stdout. A `bootstrap` phase records `replicates_requested` /
+  `replicates_completed`, because `bootstrap = 30` in a conf is worth nothing if the budget stopped
+  the run at 11. The file is rewritten after every phase (so a run whose refine raises still leaves
+  the record of the fit that happened), is strictly valid JSON (a non-finite objective is recorded
+  as `null`, never `Infinity`), and — like `stop_reason.txt` and `information_criteria.txt` — a
+  failure to write it is logged and swallowed rather than taking a finished run down.
 
 ### Fixed
 - **Setting `parallel_count` on a cluster whose machines are not all the same size no longer stops
@@ -282,6 +469,22 @@ All notable changes to PyBNF are documented below. This project adheres to
   (#614), which starts the workers inside the allocation SLURM already granted, and a
   `scheduler_file` naming a cluster that is already up. `docs/cluster.rst` and
   `docs/troubleshooting.rst` now say the same.
+- **The SSH cluster launcher waits for its workers to register instead of sleeping for ten
+  seconds (#398).** `cluster_type = slurm` slept ten seconds after starting `dask ssh`, on the
+  assumption that the workers were up by then, and ten more after asking the cluster to stop,
+  on the assumption that it had stopped by then. Both assumptions were wrong in both
+  directions. Measured on a real SLURM cluster the workers took 26 to 59 seconds to register,
+  so the fit began before its cluster was ready, and on a fast cluster ten seconds is longer
+  than needed and every run paid it twice.
+  Startup now polls the scheduler until every expected worker has registered, up to a time
+  limit, and watches the `dask ssh` process on every pass, so a failed login is reported the
+  moment `dask ssh` exits, quoting what it said, rather than after a fixed wait. Requiring the
+  full worker count also turns a quietly undersized cluster into a clear error, which is what
+  #200 asked for. Teardown asks each process it started to stop, waits until it has actually
+  exited, and kills one that will not stop within a bounded time, so teardown returns as soon
+  as the processes are really gone. On a real two-node run that took about one second rather
+  than ten. The two limits are named constants in `pybnf/cluster.py`, `SSH_WORKER_TIMEOUT` and
+  `TEARDOWN_TIMEOUT`, matching how the `srun` launcher sets its own.
 - **The cluster tests now notice when an outside program is renamed (#619).** The tests for
   starting a cluster checked that PyBNF built a particular command, against a copy of that
   command written into the test file. Nothing checked that the command could be run. When
@@ -433,6 +636,34 @@ All notable changes to PyBNF are documented below. This project adheres to
   after the crossing. bngsim ≥ 0.14.0 refuses such a run rather than return a gradient it has
   flagged as wrong; on 0.13.0, which PyBNF's floor still admits, the same model only warns and
   returns it, and PyBNF now says so at verbosity 0 whenever bngsim's reason reaches it.
+- **A comment is never part of a filename, so a file list stops at the `#` (#599, ADR-0120).**
+  The three shared file tokens in `parse.py` were unanchored and lazy. Both properties are
+  deliberate and both are kept. Unanchored is what lets a path begin with anything a filesystem
+  allows, and lazy is what makes a comma list stop at the first extension rather than swallowing
+  the line. The defect was that nothing stopped either property from operating across a comment,
+  so a stray trailing comma followed by a comment that happened to mention a file declared that
+  comment as a second file:
+
+      model: a.xml, # note about b.xml            ->  models   = {'a.xml', '# note about b.xml'}
+      model = a.xml : d.exp, # note about e.exp   ->  exp_data = {'d.exp', '# note about e.exp'}
+
+  Measuring the reach found three more declarations with the identical defect that the issue had
+  not named, `mutant`, the edition-2 `experiment:` record's `data:` field, and the `data =` key,
+  which is the argument for fixing the shared token rather than each declaration.
+  The bogus entry always died somewhere rather than being fitted, but which error the user got
+  depended on which extension their comment happened to contain, and none of them pointed at the
+  comma. A bogus `.bngl` reported a missing model file, a bogus `.xml` reported a parse error in
+  SBML the user never wrote, a bogus `.ant` demanded an optional dependency they never asked
+  for, and a bogus `.exp` sent them into their BNGL to add a `suffix=>` action for a measurement
+  that was a sentence in English.
+- **A malformed `data` line now says what the key takes instead of denying that the key exists
+  (#609).** The per-key format-hint chain had no branch for `data`, so any malformed
+  `data = ...` line fell through to the generic fallback and was told
+  `data is not a valid configuration key`, which is untrue. `data` is a real key: a comma list
+  of `.exp` files bound to a bring-your-own callable objective (ADR-0050), valid alongside
+  `objective = callable`. The old message sent the reader hunting for a typo in the key name
+  rather than in the file list, which is the one place the error actually was. It now reports
+  its real format, in the style of the neighbouring branches. Found while fixing #599.
 - **The discrete-event gradient gate reads a bngsim capability instead of a version floor, so a
   from-source build that merely *declares* a new enough version no longer passes it (#558,
   ADR-0119).** `BNGSIM_HAS_EVENT_SENS` gates forward sensitivities that survive a discrete
@@ -644,156 +875,6 @@ All notable changes to PyBNF are documented below. This project adheres to
 - **A refine's wall-time stop reason is appended to `Results/stop_reason.txt`, not written over the
   fit's (#564).** Both phases share one Results directory; a run where the search hit the deadline
   *and* the polish did has two facts to report, not one that replaces the other.
-
-### Added
-- **Measurement-time uncertainty via posterior marginalization, phase 1 (#587, ADR-0112).** A
-  new `time_error` clause on the `noise_model` line treats the latent sampling time as a random
-  variable and *integrates it out* of the likelihood, instead of assuming each datum was collected
-  at exactly its reported time — an assumption that biases estimates and makes posteriors
-  overconfident when sampling times actually drift (handling delays, imperfect synchronization,
-  reporting error). Written whole-fit as `noise_model = <family>, <scale> = <source>, time_error =
-  truncated_normal, sigma_t = fit st__FREE` (or `uniform`; `sigma_t = fix_at <w>`), it replaces the
-  per-point likelihood with a `MarginalizedTimeObjective` whose per-observation contribution is
-  `−log ∫ p(ȳ_k | y(τ)) p(τ | t_k) dτ` — the `n_t`-dimensional marginal factorizes into
-  one-dimensional integrals (the method of Vanhoefer, Nakonecnij, Binder & Hasenauer, bioRxiv
-  2026.05.09.724053; the temporal analogue of Raimúndez et al. 2023 nuisance marginalization). The
-  search stays `n_θ` (+ one `σ_t`), not `n_θ + n_t`. Phase 1 evaluates each integral by log-space
-  quadrature over the stored trajectory, reusing every noise family's normalized `log_density`
-  (ADR-0056) as the integrand and the gradient-free optimizers/samplers (`de`/`pso`/`ss`/`mh`/
-  `dream`/…) unchanged — nothing is added to the model file. Edition-2 only. The `σ_t → 0` limit
-  is the standard likelihood (a `fix_at 0` clause short-circuits to it). LOO/WAIC and
-  `information_criteria.txt` work out of the box: the marginal per-observation `log z_k` **is** a
-  normalized per-observation log-likelihood, so the objective reports it through the same
-  `evaluate_pointwise` hook the per-point families use (`Σ_k log z_k = −score`), and an estimated
-  `σ_t` is already counted in `k`. A marginalized time course is simulated on a **dense uniform
-  grid** over the support (`t_end:` required, `t_start:`/`n_steps:` optional on the experiment
-  line — decoupled from the sparse reported times, which only centre each timing prior), and
-  `sigma_t = fit …` estimates the timing scale jointly (recognized as a declared nuisance).
-  Worked end to end in **tutorial lesson 49** (`examples/tutorial/49_measurement_time_uncertainty/`):
-  ignoring the timing spread biases the decay rate to `k ≈ 1.36` (truth 1), marginalizing recovers
-  `k ≈ 1.06`, and estimating `σ_t` recovers `k` while re-discovering a non-zero timing error.
-  Deferred and refused at
-  build with a reason: a per-observable time prior, a prediction-dependent `σ`, the count family,
-  and every gradient `job_type` (`trf`/`lbfgs`/`gntr`/`hmc`/`ms` — phase 2's augmented-ODE
-  sensitivities are what those need); `noise_profiling` (which *maximizes* a scale out) is refused
-  as ill-defined alongside marginalization (which *integrates* the time out).
-- **Multiple shooting, `job_type = ms` (#563, ADR-0110).** The consumer of the
-  constrained-transcription layer below, and the thing #563 was actually asking for. Each scored
-  experiment's time course is cut at knots; segment *j* is integrated from its own start state —
-  segment 0's is the model's own initial conditions, and each interior knot carries an auxiliary
-  state that is searched, bounded and differentiated but is **never** a reported fit result — and
-  continuity `Phi_j(z_j, theta) - z_{j+1} = 0` is enforced by an augmented Lagrangian whose
-  subproblem is solved by `gntr`'s own Gauss-Newton trust-region step machine. Every reported
-  score comes from discarding the auxiliary states, re-simulating theta with ordinary single
-  shooting, and scoring *that*, so a run that leaves continuity unconverged scores as what it
-  actually is — and every certified iterate lands in the ordinary trajectory at that score, so
-  `sorted_params`, the best-fit simulations, the information criteria and the inference-data
-  sidecar are produced by the same code every other `job_type` uses.
-  Why it is worth the machinery: on `Borghans_BiophysChem1997` a correctly-shaped oscillator whose
-  period is wrong by more than about 3 % scores *worse than fitting no dynamics at all*, so under
-  single shooting the flat line is the ceiling on essentially the whole box and fifteen
-  independent global searches terminate at it. Over one short segment a period error cannot
-  accumulate: the information moves out of a residual term that saturates and into continuity
-  defects, which carry a direction.
-  The prototype's structural finding is what keeps the implementation small — a segment-start
-  state is an `IC` route with chain-rule factor 1, so the existing gradient/Fisher assembly builds
-  its column with no new residual math, and each segment is presented to it as an ordinary
-  *experiment*. The continuity block is the only new assembly surface. Knots are named by their
-  exact fraction of the horizon, so a coarser rung recognises a finer one's knots and the `4-2-1`
-  ladder *continues* rather than reseeds.
-  New keys `ms_segments`, `ms_coarsening`, `ms_penalty`, `ms_penalty_growth`, `ms_max_penalty`,
-  `ms_feasibility_tol`, `ms_optimality_tol`, `ms_inner_iterations`, `ms_aux_decades`,
-  `ms_max_iterations`, defaulted from ADR-0109's measurements rather than from taste. Requires the
-  bngsim backend — a knot carries the model's *state*, so both a generated network (`.net`) and
-  an SBML/Antimony model are supported, through two backends that differ only in what a
-  simulation returns: on the SBML path the columns an experiment scores and the columns a
-  continuity row differences are the same columns, and on the `.net` path they are not, so that
-  backend asks for the observable and species selector families together and one integration
-  still serves both (#577). A network-free (NFsim) model enumerates no state and is refused. It
-  also refuses, by name, a fit whose scored quantity is a
-  function of a whole series — an analytic per-series scale, a data normalization, a
-  cumulative-to-incident difference — since cutting the series would change it. An analytically
-  profiled noise scale (ADR-0108) is deliberately fine: it is profiled over pooled residuals, so
-  the segments pool the same ones, and the constraint terms never enter the likelihood.
-  What is *not* claimed: that multiple shooting improves the typical fit (48 paired starts:
-  24–24, medians tied at every radius, at 2–7x the simulations), or that it solves Borghans from
-  an uninformed start (0/24). The measured case is the tail and the robustness. Segment
-  simulations run serially on the master in this cut; parallelising them, and the acceptance
-  benchmark, are the follow-on work.
-- **A constrained-transcription layer, `pybnf.transcription` (#563, ADR-0109).** Infrastructure for
-  restating a fit as a larger, better-conditioned problem with internal auxiliary variables and
-  equality constraints that tie them back together — the reusable half of multiple shooting, which
-  will be its first consumer. Four pieces: an **augmented variable layout** that carries the fit's
-  reported free parameters and the transcription's internal blocks in one vector while keeping
-  them rigorously apart (an auxiliary state is searched, bounded, and differentiated; it is never
-  a reported fit result); an **equality residual/Jacobian interface** whose Jacobian is
-  block-sparse with a condensing seam left open, and whose defects are scaled so one penalty means
-  one thing across states of different magnitude; the augmented Lagrangian offered in all three
-  forms PyBNF's optimizers consume (scalar for `lbfgs`, an *exact* stacked least-squares residual
-  for `trf`, Gauss-Newton for `gntr`); and an **optimizer-agnostic augmented-Lagrangian outer
-  loop** with a transcription homotopy and best-iterate certification through the ordinary
-  single-shoot path.
-  No behaviour change to any existing fit: nothing imports it yet, it defines no configuration key
-  and no `job_type`, and it makes no simulator call — which is what lets the whole layer be
-  verified offline (93 tests, ~1.4 s) against an equality-constrained quadratic whose multiplier is
-  known analytically and a closed-form linear-ODE shooting problem measured against an
-  independently computed single-shoot optimum.
-  Three measurements from the #563 prototype are baked into the defaults rather than left as
-  tuning advice, each contradicting the plan that preceded it: the penalty schedule starts **tight**
-  (`rho0 = 10`, `gamma = 5` beat `0.1`/`3` on quality *and* halved the cost), the segment ladder is
-  the **mechanism** rather than a later refinement and starts in the middle (`4-2-1`, not
-  `8-4-2-1` — many short segments certified worse than their own start under partial
-  observability), and a run reports its **best certified** iterate rather than its last (on one
-  start the final stage held `-147.0` while an earlier iterate certified at `-196.3`).
-- **`noise_profiling = 1`: profile an estimated noise scale out of the search analytically (#562,
-  ADR-0108).** ADR-0066 already profiles a declared column's optimal multiplicative **scale** out
-  of the fit; this is the other half of the same classical trick. Every noise parameter declared
-  `= fit <parameter>` is removed from the search and replaced, at each evaluation, by its
-  closed-form maximum-likelihood value over the scored points that share it — the weighted residual
-  RMS `sqrt(sum w r**2 / sum w)` for the Gaussian families (`normal` / `lognormal` / `lnnormal`),
-  the weighted mean absolute residual `sum w |r| / sum w` for `laplace`. Opt-in; `0` (the default)
-  is an exact no-op.
-  Why it matters beyond the dimension count: at a random point in the box the sampled scale is
-  nowhere near its optimum, so the `log sigma` term dominates and a global sampler ranks candidates
-  mostly by *how wrong their sigma happens to be* rather than by how well their dynamics fit. On
-  `Borghans_BiophysChem1997` every optimizer that can run it converges to the same attractor, and
-  that attractor is exactly the **no-dynamics solution** (a flat line at the best constant with
-  sigma at the residual RMS, `-51.204092` analytically and `-51.204092` reported). Across the
-  Grein et al. 2026 subset-I corpus a plain free-parameter sigma accounts for **32 parameters in 13
-  of 23 slugs** — 4 % to 33 % of the search. A profiled scale also has no box to run into, so a fit
-  can no longer optimize its sigma into an upper bound and absorb model misfit as "measurement
-  noise" (`Schwen_PONE2015`'s `IR_obs_std`).
-  The switch is all-or-nothing within a fit and is refused *before the run starts*, naming the
-  reason, for anything without a closed form: a `formula` / `prediction_formula` / per-measurement
-  sigma, a `student_t` `df`, the `neg_bin` dispersion, a `location = mean` prediction on a log
-  scale, one free parameter serving as the scale of two different families, or a fit with nothing
-  to profile. A **fixed** scale (a data column, `fix_at`, `relative`) is not searched, so it is
-  simply left alone. Refused for the Bayesian samplers too: profiling *maximizes* the nuisance out
-  where a posterior *integrates* it out, so the draws would not be posterior draws.
-  Profiled parameters stay declared (the same `.conf` runs with and without the key; their bounds
-  and prior become inert) and stay **estimated**, so they keep counting in `k` in
-  `information_criteria.txt` — otherwise every AIC/BIC would shift between the two runs. Their
-  fitted values are written to the new **`Results/profiled_noise.txt`** and echoed on the console,
-  since a value the fit solves for rather than proposes is not a coordinate of the best parameter
-  set and appears in no `sorted_params_*.txt` row.
-  Gradient support comes free by the envelope theorem — `job_type = lbfgs` and `gntr` consume the
-  exact scalar gradient with the sigma columns dropped, and no new forward sensitivity is needed.
-  `job_type = trf` refuses a profiled fit (as it already refused a searched free scale): under
-  profiling the least-squares residual norm is identically constant, so a trust-region residual
-  model carries no information about the parameters.
-- **`Results/method_chain.json`: which methods a run actually executed (#564, ADR-0107).** Written
-  by every run — budget or no budget — it carries the chain the conf requested
-  (`requested_methods`), the chain that ran (`executed_methods`), and one entry per phase (the fit,
-  the refine, each bootstrap replicate) with its status (`completed` / `wall_time_expired` /
-  `skipped`), its stop reason, its elapsed seconds, its completed simulations, and the best
-  objective it reached. `requested_methods` longer than `executed_methods` is the machine-readable
-  form of a downgrade, so a scoring harness can assert on the method it measured in one line
-  instead of parsing stdout. A `bootstrap` phase records `replicates_requested` /
-  `replicates_completed`, because `bootstrap = 30` in a conf is worth nothing if the budget stopped
-  the run at 11. The file is rewritten after every phase (so a run whose refine raises still leaves
-  the record of the fit that happened), is strictly valid JSON (a non-finite objective is recorded
-  as `null`, never `Infinity`), and — like `stop_reason.txt` and `information_criteria.txt` — a
-  failure to write it is logged and swallowed rather than taking a finished run down.
 
 ## [v1.7.0] - 2026-08-12
 
