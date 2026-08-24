@@ -1934,7 +1934,9 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
     * ``mutation_factor = 0.7``
 
 **stop_tolerance**
-  Stop the run when the current population has converged to roughly the same objective function value, measured as an **absolute range** of the objective across the finite members of the population: the run ends once :math:`max\_objective - min\_objective \le e`, where *e* is the value of this key. Failed simulations (which score infinity) are ignored, so one dead candidate can neither trigger nor block the stop. This is a range in the units of your objective function; on a likelihood objective (a negative log-likelihood, which is unbounded below) set it to the smallest population spread you still consider unconverged. Prior to #561 this was a *ratio* test (:math:`max/min < 1 + e`), which stopped the run at generation 0 on any objective that can go negative; see ``de_tolfun`` to set the range independently of this key's magnitude.
+  Stop the run when the current population has converged to roughly the same objective function value. This key is a **dimensionless ratio**: where the objective is positive, the run ends once the spread between the best and worst finite member falls to :math:`e \times min\_objective` or below, which is the :math:`max/min \le 1 + e` this family has always used. The threshold therefore scales with the objective the population has reached, so the same value means the same thing on a fit whose objective lands at 1e-05 and one whose objective lands at 1000.
+
+  Where the objective is **not** positive a ratio means nothing, and reading one there is what stopped a likelihood fit at generation 0 before #561. On such an objective this key's value is read instead as an absolute range, :math:`max\_objective - min\_objective \le e`. Failed simulations (which score infinity) are ignored either way, so one dead candidate can neither trigger nor block the stop. To state the threshold as an absolute range on every objective, set ``de_tolfun`` instead.
 
   Default: 0.002
 
@@ -1944,7 +1946,9 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
 
 
 **de_tolfun**
-  The convergence tolerance the run actually uses: the absolute objective range (see ``stop_tolerance``) below which the population counts as converged. It is a range in the units of your objective function, whereas ``stop_tolerance`` was historically a dimensionless ratio; the two are separated so a fit can set a meaningful objective-range stop without reinterpreting the legacy key. Unset, it follows ``stop_tolerance``, so an existing config keeps the threshold magnitude it had.
+  The convergence tolerance the run actually uses: the absolute objective range (see ``stop_tolerance``) below which the population counts as converged. It is a range in the units of your objective function, whereas ``stop_tolerance`` is a dimensionless ratio. The two are separated so a fit can set a meaningful objective-range stop without reinterpreting the legacy key. Set it when you know your objective's scale and want the run to stop at a spread you can name.
+
+  Unset, the run falls back to ``stop_tolerance`` and reads it the way that key has always been read. Where the objective is positive that is a ratio, so the threshold scales with the objective the population has reached. Where the objective is not positive a ratio means nothing, so the same number is read as an absolute range. Setting this key opts out of that and makes the threshold an absolute range everywhere.
 
   Default: unset (follows ``stop_tolerance``)
 

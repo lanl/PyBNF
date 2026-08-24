@@ -126,9 +126,17 @@ population pass — are unaffected.
   because a restart's arithmetic (range vs window vs tolerance) was otherwise
   unrecoverable from the log; a DE convergence stop has no such hidden arithmetic.
 * **The default magnitude.** `de_tolfun` unset is `stop_tolerance` (default `0.002`).
-  A fit that wants the old *relative* semantics has no equivalent — but that semantics was
+  A fit that wants the old *relative* semantics has no equivalent -- but that semantics was
   only ever meaningful for a positive objective, where an absolute range at the same
   magnitude is a stricter, well-defined stop.
+
+  > **Corrected by ADR-0127 (issue #648).** The last clause is wrong. An absolute range at
+  > the same magnitude is stricter only above an objective of 1, and below it is looser
+  > without limit: at the 2e-05 a well-scaled sum-of-squares fit reaches, a 0.002 range is
+  > fifty thousand times looser than the 0.002 ratio it replaced. An unset `de_tolfun` now
+  > keeps `stop_tolerance`'s ratio meaning where the objective is positive, and reads it as
+  > a range only where a ratio has none. An explicit `de_tolfun` is unchanged, and so is
+  > everything else this ADR decided.
 
 ## Consequences
 

@@ -778,6 +778,30 @@ All notable changes to PyBNF are documented below. This project adheres to
   control off rather than erroring. `sbml_atol` never had the hole, because
   `parse_atol_setting` has always demanded finiteness. Found while adding the per-model
   `rtol:` field of #586, which would otherwise have inherited the same check.
+- **A differential evolution fit whose objective is small no longer stops before its
+  parameters have separated (#648, ADR-0127).** The convergence fix below replaced a
+  dimensionless ratio with an absolute objective range, and let an unset `de_tolfun` keep
+  using `stop_tolerance`'s number so existing configurations kept the threshold magnitude
+  they had. ADR-0115 justified that by arguing an absolute range at the same magnitude is a
+  stricter stop. It is stricter only above an objective of 1. Below that it is looser, and
+  without limit. At the 2e-05 a well scaled sum of squares fit reaches, a range of 0.002
+  stops the run at a spread fifty thousand times wider than the ratio of 0.002 it replaced,
+  so the population satisfies it almost as soon as it is scored.
+  What that costs is a wrong answer that looks right. Tutorial lesson 25 fits three
+  pharmacokinetic rates from one observed curve, and stopped early reporting `k_transit` as
+  11.18 against a true 12.76 and `k_abs` as 11.50 against a true 9.11, at an objective of
+  2.19e-05 and with the third rate correct to three digits. The two affected rates trade
+  against each other, so the early stop fits the data well and nothing in the output looks
+  wrong.
+  Whether `de_tolfun` was set now decides what the threshold means. An explicit `de_tolfun`
+  is an absolute range in the objective's own units and is honoured as written, at any sign
+  and any scale, exactly as it was. An unset one falls back to `stop_tolerance`, which keeps
+  the meaning that key has always had: a dimensionless ratio where the objective is
+  positive, applied as `max - min <= tol * min` so an all-zero population never divides, and
+  an absolute range only where the objective is not positive and a ratio would mean nothing.
+  So a positive-objective fit converges as it did in 1.7.0, a likelihood fit keeps the fix
+  below, and one value of `stop_tolerance` means the same thing on fits whose objectives are
+  decades apart. Ignoring failed simulations, and the island guard, are unchanged.
 - **`job_type = de` and `job_type = ade` no longer stop after generation 0 on a negative
   objective (#561, ADR-0115).** The Differential Evolution family tested convergence with a
   *ratio* of objectives — `max(fit) / min(fit) < 1 + stop_tolerance` — which reads as

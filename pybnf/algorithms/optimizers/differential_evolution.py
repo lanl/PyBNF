@@ -93,8 +93,16 @@ class DifferentialEvolutionBase(Algorithm):
         # The convergence tolerance the run actually uses (#561, ADR-0115): an
         # absolute range in objective units. Unset ``de_tolfun`` falls back to
         # ``stop_tolerance`` -- the single knob the test used before -- so an existing
-        # config keeps its threshold magnitude, now read as a range rather than a ratio.
+        # config keeps its threshold magnitude.
+        #
+        # Whether it was set MATTERS, not just what it is (#648, ADR-0127). An explicit
+        # ``de_tolfun`` is a range the author chose in their own objective's units and is
+        # always honoured as one. An unset one is the legacy ``stop_tolerance``, which
+        # was a dimensionless RATIO, and reading a ratio's magnitude as a range is what
+        # #648 is: on an objective of 2e-05 the ratio stops at a spread of 4e-08 while
+        # the range stops at 0.002, roughly fifty thousand times looser.
         configured_tolfun = config.config['de_tolfun']
+        self.de_tolfun_is_explicit = configured_tolfun is not None
         self.de_tolfun = (self.stop_tolerance if configured_tolfun is None
                           else float(configured_tolfun))
 
@@ -149,31 +157,64 @@ class DifferentialEvolutionBase(Algorithm):
         return PSet(new_pset_vars)
 
     def _population_converged(self):
-        """The DE-family convergence test (#561, ADR-0115), shared by ``de`` and ``ade``.
+        """The DE-family convergence test (#561, ADR-0115; #648, ADR-0127), shared by
+        ``de`` and ``ade``.
 
-        The population is converged when the spread of its objective values --
-        measured as an **absolute range** ``max - min`` over the **finite** fitnesses
-        only -- has collapsed to within ``de_tolfun``.
+        The population is converged when the spread of its objective values, ``max - min``
+        over the **finite** fitnesses only, has collapsed to within the threshold. What
+        that threshold *means* depends on where it came from, because the two sources
+        carry different units (#648, ADR-0127):
 
-        This replaces the original **ratio** test ``max/min < 1 + stop_tolerance``,
-        which is a convergence statement only when the objective is positive and
-        bounded below by 0 (a chi-square, an SSE). On a likelihood objective -- a
-        negative log-likelihood, unbounded below -- an all-negative population lands
-        the ratio in ``(0, 1]`` and it fires at generation 0 regardless of the spread;
-        and any single ``inf``-scored failed simulation, paired with a negative
-        fitness, makes the ratio ``-inf`` and defeats *every* threshold. Both failure
-        modes are the negative sign, not a real convergence -- so the family was
-        unrunnable on any estimated-sigma likelihood fit.
+        * An **explicit** ``de_tolfun`` is a range in objective units, chosen by someone
+          who can see their own objective's scale. It is used exactly as written, on any
+          sign of objective.
+        * An **unset** ``de_tolfun`` falls back to ``stop_tolerance``, which has always
+          been a **dimensionless ratio**. Where the objective is positive it is still read
+          as one, as a spread relative to the best member: ``max - min <= tol * min``,
+          which is the ``max / min <= 1 + tol`` this family used before #561, written
+          without the division. Where the objective is not positive a ratio means nothing,
+          so the same number is read as an absolute range, which is what #561 needs.
 
-        The range form is sign-agnostic. Ignoring the non-finite entries is what makes
-        a failed simulation unable to either satisfy or defeat the test; it also
-        subsumes the original ``!= 0`` guard against dividing by an all-zero
-        population, which ``ade`` never had. An empty finite set (every member still
-        ``inf``, e.g. before the first result) is never "converged".
+        ADR-0115 justified reading the legacy magnitude as a range by arguing that "an
+        absolute range at the same magnitude is a stricter, well-defined stop". That holds
+        only for an objective above 1. Below it the range is *looser*, without limit: at
+        the 2e-05 a well-scaled sum-of-squares fit reaches, a 0.002 range is fifty thousand
+        times looser than the 0.002 ratio it replaced, so the population satisfies it long
+        before the parameters have separated. The fit stops early and reports an excellent
+        objective at the wrong point (#648).
+
+        What #561 actually found is that the ratio is a convergence statement only when
+        the objective is positive and bounded below by 0 (a chi-square, an SSE). On a
+        likelihood objective -- a negative log-likelihood, unbounded below -- an
+        all-negative population lands the ratio in ``(0, 1]`` and it fires at generation 0
+        regardless of the spread; and any single ``inf``-scored failed simulation, paired
+        with a negative fitness, makes the ratio ``-inf`` and defeats *every* threshold.
+        Both failure modes are the negative sign, not a real convergence, so the family
+        was unrunnable on any estimated-sigma likelihood fit.
+
+        ADR-0115 answered that by dropping the ratio everywhere. ADR-0127 narrows the
+        answer to where the defect is: the ratio is kept where it is well defined, and the
+        range is used where it is not. Neither reading is dropped, and no fit that worked
+        under either one changes.
+
+        Ignoring the non-finite entries is what makes a failed simulation unable to either
+        satisfy or defeat the test, on both branches. Scaling by ``low`` rather than
+        dividing by it subsumes the original ``!= 0`` guard against an all-zero population,
+        which ``ade`` never had -- an all-zero population takes the range branch anyway,
+        since ``low`` is not positive. An empty finite set (every member still ``inf``,
+        e.g. before the first result) is never "converged".
         """
         finite = np.asarray(self.fitnesses, dtype=float)
         finite = finite[np.isfinite(finite)]
-        return bool(finite.size and (finite.max() - finite.min()) <= self.de_tolfun)
+        if not finite.size:
+            return False
+        low = finite.min()
+        spread = finite.max() - low
+        if self.de_tolfun_is_explicit or low <= 0.0:
+            return bool(spread <= self.de_tolfun)
+        # A positive objective under the legacy ratio: scale the threshold by the best
+        # member rather than dividing by it, so an all-zero population cannot divide.
+        return bool(spread <= self.stop_tolerance * low)
 
     def start_run(self):
         return NotImplementedError("start_run() not implemented in DifferentialEvolutionBase class")
