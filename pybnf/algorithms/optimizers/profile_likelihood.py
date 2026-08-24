@@ -641,6 +641,11 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
     fit_type = 'profile_likelihood'
     _method_label = 'profile-likelihood polish'
 
+    #: No single setting sets how many jobs this fit runs at once, so the parallelism
+    #: report names none and advises only about processors (#655). See
+    #: :meth:`expected_parallelism`.
+    parallelism_setting = None
+
     def __init__(self, config, refine=False):
         super().__init__(config, refine=refine)
         self.confidence = config.config['profile_likelihood_confidence']
@@ -695,6 +700,25 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         self._profiles = {}          # param name -> per-point profile record (see _begin_profiling)
         self._track_queue = []       # remaining (param_idx, direction) tracks not yet launched
         self._active_tracks = {}     # in-flight PSet name -> (param_idx, _ProfileTrack)
+
+    def expected_parallelism(self):
+        """Profiling runs one job per directional track, two tracks per profiled
+        parameter, up to whatever cap :meth:`_effective_parallel` applies. That is the
+        concurrency this fit spends nearly all of its time at, so it is what the
+        parallelism report should describe (#655).
+
+        The run loop's first batch is one job: the preflight evaluation of the box center,
+        which picks the inner optimizer. The two short phases that follow (the multi-start
+        polish to the optimum, then profiling) each run more than that. Reporting the
+        preflight would say a large allocation is almost entirely idle, which is true for
+        one evaluation and wrong for the rest of the fit.
+
+        No single setting sets this number: it follows how many parameters are profiled
+        (``profile_likelihood_params``, all of them by default), and
+        ``profile_likelihood_max_parallel`` can only lower it. Hence
+        :attr:`parallelism_setting` is None for this fit.
+        """
+        return self._effective_parallel()
 
     def _start_banner(self):
         return ("Running profile-likelihood analysis at the %g confidence level "

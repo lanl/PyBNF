@@ -114,6 +114,14 @@ class Algorithm(ABC):
     # base-class flag pattern as _is_simplex, so run() never names a leaf subclass.
     waits_for_full_generation = False
 
+    # Overridable: the name of the setting the parallelism report points at when it
+    # advises the user (#655). Most fits size their concurrency from population_size, so
+    # that is the default. A fit that follows a different setting names it instead (the
+    # local multi-start optimizers name their own n_starts key), and a fit where no
+    # single setting controls it sets this to None, which leaves the advice talking only
+    # about how many processors to reserve.
+    parallelism_setting = 'population_size'
+
     #: The fit's total wall-clock budget (``wall_time_fit``, #529/ADR-0093), or None for
     #: an unbounded fit. Set by ``pybnf.main()`` on the algorithm it is about to run --
     #: and passed on to a refiner / reused across bootstrap replicates -- so one deadline
@@ -1295,24 +1303,53 @@ class Algorithm(ABC):
             # call is exactly the historical one.
             pool_kwargs = {'timeout': self.budget.remaining()} if self.budget is not None else {}
             pool = core.as_completed(futures, with_results=True, raise_errors=False, **pool_kwargs)
-            self._report_parallelism(client, len(futures))
+            self._report_parallelism(client, len(futures), len(psets))
             self.completed_simulations = self._drain_job_pool(client, pool, pending, backup_every, debug)
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
         self._finalize_run()
 
-    def _report_parallelism(self, client, jobs_in_flight):
-        """Log how many jobs the fit starts with against how many workers connected, and
+    def expected_parallelism(self):
+        """How many parameter sets this fit has out for evaluation at once once it is under
+        way, or None when that is however many the run loop submits in its first batch
+        (#655).
+
+        The run loop knows only the size of the first batch of jobs it submits. For most
+        fits that is also how many run at once for the rest of the fit, so the default
+        here is None and :meth:`_report_parallelism` uses the first batch. A fit whose
+        first batch is a one-time initialization round of a different size overrides this
+        and returns the number it settles at, so the parallelism report describes the fit
+        rather than its opening move. Scatter search is the case that prompted this: it
+        starts with ``init_size`` parameter sets and then runs
+        ``population_size * (population_size - 1)`` simulations per iteration forever
+        after.
+
+        Count parameter sets, not jobs. One parameter set is several jobs under
+        ``smoothing`` or ``parallelize_models``, and :meth:`_report_parallelism` applies
+        that multiplier itself.
+        """
+        return None
+
+    def _report_parallelism(self, client, jobs_in_flight, psets_in_flight=None):
+        """Log how many jobs the fit runs at once against how many workers connected, and
         warn when the two differ by a large margin (#621).
 
-        How many simulations a fit runs at once follows its settings, mainly
+        How many simulations a fit runs at once follows its settings, usually
         population_size, not how many processors were reserved. When many more workers
         connect than there are jobs to run, the extra workers sit idle for the whole run
         and nothing else would say so, so a user can reserve several machines and quietly
         use a fraction of them. The opposite, many more jobs than workers, means work
         queues up and the larger population buys no extra speed. Either way both numbers go
         in the log so a finished run can be looked at afterwards.
+
+        The number reported is the one the fit sustains, from :meth:`expected_parallelism`,
+        which is not always the size of the first batch of jobs the run loop submits
+        (#655). When the two differ, the first batch is a one-time initialization round, so
+        it is reported as such and the warnings are decided on the sustained number.
+        ``psets_in_flight`` is how many parameter sets that first batch of jobs came from,
+        which is how a parameter-set count is converted into a job count; None means one
+        job per parameter set.
 
         Only cluster runs are reported. A local run's worker count is exactly what the user
         asked for through parallel_count, so there is nothing to compare it against. The
@@ -1332,38 +1369,64 @@ class Algorithm(ABC):
         if n_workers <= 0:
             return
 
-        logger.info('Parallelism: the fit starts with %d job(s) running and %d worker(s) '
-                    'connected.' % (jobs_in_flight, n_workers))
+        n_jobs = self.expected_parallelism()
+        if n_jobs is None or n_jobs <= 0:
+            n_jobs = jobs_in_flight
+        elif psets_in_flight:
+            # expected_parallelism() counts parameter sets, but one parameter set is more
+            # than one job when smoothing runs replicates of it or parallelize_models
+            # splits it across models. The first batch shows how many jobs a parameter set
+            # becomes, and that ratio holds for the rest of the fit.
+            n_jobs = int(round(n_jobs * jobs_in_flight / psets_in_flight))
 
+        logger.info('Parallelism: the fit runs %d job(s) at a time and %d worker(s) are '
+                    'connected.' % (n_jobs, n_workers))
+
+        notes = []
+        # A first batch of a different size is a one-time initialization round. Say so, so
+        # that a user watching the start of the fit is not surprised by it and does not
+        # read it as how busy the fit will be.
+        if jobs_in_flight != n_jobs:
+            notes.append('This fit begins with a one-time round of %d job(s) before it '
+                         'settles at %d.' % (jobs_in_flight, n_jobs))
         # A generational fit drains each generation to almost nothing before starting the
         # next, so some idle time is expected with one and should not be read as a fault.
-        note = ''
         if self.waits_for_full_generation:
-            note = (' This fit runs one generation at a time and waits for all of it to '
-                    'finish before starting the next, so some idle time toward the end of '
-                    'each generation is expected.')
+            notes.append('This fit runs one generation at a time and waits for all of it '
+                         'to finish before starting the next, so some idle time toward '
+                         'the end of each generation is expected.')
+        note = (' ' + ' '.join(notes)) if notes else ''
+
+        # Name the setting that sizes the concurrency, when one setting does. A fit where
+        # none does (profile likelihood, whose concurrency follows how many parameters it
+        # profiles) leaves the advice to talk about processors only.
+        setting = self.parallelism_setting
+        by_setting = ('the fitting settings, mainly %s,' % setting) if setting \
+            else 'the fitting settings,'
+        raise_setting = ('raising %s or ' % setting) if setting else ''
+        lower_setting = ('lowering %s or ' % setting) if setting else ''
 
         # A factor of two in either direction is the "large margin" that draws a warning.
-        if n_workers >= 2 * jobs_in_flight:
-            msg = ('The fit starts with only %d job(s) running but %d worker(s) connected, '
+        if n_workers >= 2 * n_jobs:
+            msg = ('The fit runs only %d job(s) at a time but %d worker(s) are connected, '
                    'so about %d worker(s) will sit idle. How many jobs run at once is set '
-                   'by the fitting settings, mainly population_size, not by how many '
-                   'processors were reserved. Consider raising population_size or reserving '
-                   'fewer processors.%s'
-                   % (jobs_in_flight, n_workers, n_workers - jobs_in_flight, note))
+                   'by %s not by how many processors were reserved. '
+                   'Consider %sreserving fewer processors.%s'
+                   % (n_jobs, n_workers, n_workers - n_jobs, by_setting,
+                      raise_setting, note))
             logger.warning(msg)
             print1('Warning: ' + msg)
-        elif jobs_in_flight >= 2 * n_workers:
-            msg = ('The fit starts with %d job(s) running but only %d worker(s) connected, '
-                   'so jobs will queue and the extra jobs buy no extra speed. How many jobs '
-                   'run at once is set by the fitting settings, mainly population_size. '
-                   'Consider lowering population_size or reserving more processors.%s'
-                   % (jobs_in_flight, n_workers, note))
+        elif n_jobs >= 2 * n_workers:
+            msg = ('The fit runs %d job(s) at a time but only %d worker(s) are connected, '
+                   'so jobs will queue and the extra jobs buy no extra speed. How many '
+                   'jobs run at once is set by %s not by how many processors were '
+                   'reserved. Consider %sreserving more processors.%s'
+                   % (n_jobs, n_workers, by_setting, lower_setting, note))
             logger.warning(msg)
             print1('Warning: ' + msg)
         elif note:
-            # The counts are close, but a generational fit still idles toward the end of
-            # each generation, so put that on the record for this run.
+            # The counts are close, but there is still something worth putting on the
+            # record for this run.
             logger.info(note.strip())
 
     def _finalize_run(self):

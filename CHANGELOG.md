@@ -5,6 +5,33 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **The startup parallelism report now describes how busy a fit will actually be, rather
+  than how busy its first round is (#655).** The report added in v1.8.0 measured "how many
+  jobs the fit runs at once" from the first batch of jobs submitted. For scatter search
+  that first batch is the initialization round, which is `init_size` parameter sets
+  (default ten per free parameter) and has nothing to do with the population. Every round
+  after it runs `population_size` x (`population_size` - 1) simulations. A fit with seven
+  free parameters and `population_size = 20` on 384 processors was told 314 processors
+  would sit idle and that it should lower `population_size`, while it was in fact about to
+  run 380 simulations at a time. Following that advice would have reduced the number of
+  processors the fit could use.
+  An algorithm can now state how many parameter sets it keeps out for evaluation once it
+  is under way, and the report uses that number. Scatter search reports its population
+  pairs, which is the same number it already prints as "simulations per iteration".
+  Profile likelihood reports its directional tracks, since its first batch is a single
+  preflight evaluation. When the first round differs from the steady state, the report
+  says so instead of warning about it. The count is scaled by `smoothing` and
+  `parallelize_models`, which turn one parameter set into several jobs.
+  The advice also names the setting each fit actually reads. Powell and simplex are told
+  about `n_starts` rather than `population_size`, which they do not use, and profile
+  likelihood, whose concurrency follows how many parameters it profiles, is advised only
+  about how many processors to reserve.
+  `init_size` is now documented in the cluster guide, with a note that raising it fills a
+  large allocation during scatter search's initialization round. The table of how many
+  simulations each fit type runs at once listed profile likelihood as `pl`, which is not a
+  valid `job_type`. It now reads `profile_likelihood`.
+
 ## [v1.8.1] - 2026-08-23
 
 ### Fixed

@@ -2020,7 +2020,7 @@ The following options are only available with ``job_type = de``, and serve to ma
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **init_size**
-  Number of parameter sets to test to generate the initial population. 
+  Number of parameter sets to test to generate the initial population. This first round is the only one of that size: every round after it runs ``population_size`` * (``population_size`` - 1) simulations. On a cluster the default is often far smaller than that, leaving most of the allocation idle until the initial round finishes, so raising it is worthwhile there. It is never allowed below ``population_size``. See :ref:`Running on a cluster <cluster>`. 
   
   Default: 10 * number of parameters
   

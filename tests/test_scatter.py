@@ -106,6 +106,7 @@ class TestScatter:
 # The combination's only randomness is add_rand's uniform draw; freezing it to
 # the midpoint reduces a candidate to the closed form  pi - alpha*beta*d.
 # --------------------------------------------------------------------------- #
+import logging
 import numpy as np
 import numpy.testing as npt
 import re as _re
@@ -149,6 +150,32 @@ class TestScatterSearchConstruction:
         default is floored up to 40."""
         ss = algorithms.ScatterSearch(_ss_config(tmp_path, population_size=40))
         assert ss.init_size == 40
+
+    def test_expected_parallelism_is_the_steady_state_not_the_first_round(self, tmp_path):
+        """Oracle (#655): scatter search runs population_size * (population_size - 1)
+        simulations per iteration, so that is what it reports as its parallelism, even
+        though the first batch it submits is the init_size initialization round."""
+        ss = algorithms.ScatterSearch(_ss_config(tmp_path, population_size=5, init_size=40))
+        assert len(ss.start_run()) == 40           # the one-time initialization round
+        assert ss.expected_parallelism() == 5 * 4  # what every iteration after it runs
+
+    def test_parallelism_report_uses_the_steady_state(self, tmp_path, caplog):
+        """Oracle (#655): with more workers than the initialization round but a good match
+        for the steady state, the report says so and does not warn the user to lower
+        population_size."""
+        ss = algorithms.ScatterSearch(_ss_config(tmp_path, population_size=20, init_size=70))
+
+        class _ClusterClient:
+            cluster = None
+
+            def scheduler_info(self):
+                return {'workers': {'tcp://w%d' % i: {} for i in range(384)}}
+
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            ss._report_parallelism(_ClusterClient(), 70)
+        assert 'runs 380 job(s) at a time and 384 worker(s) are connected' in caplog.text
+        assert 'one-time round of 70 job(s) before it settles at 380' in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_explicit_reserve_size_used(self, tmp_path):
         """Oracle (reserve_size config): an explicit reserve_size overrides the

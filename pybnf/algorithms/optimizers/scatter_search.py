@@ -92,6 +92,20 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
         self.reserve = []
 
+    def expected_parallelism(self):
+        """Scatter search runs up to ``population_size * (population_size - 1)``
+        simulations at a time, one for every ordered pair in the reference set, and keeps
+        doing that for the rest of the fit (#655).
+
+        The first batch of jobs the run loop submits is a different number: it is the
+        ``init_size`` random parameter sets the initialization round scores, which by
+        default is ten per free parameter and has nothing to do with the population. On a
+        cluster large enough to matter the two are far apart, so the parallelism report
+        has to be told which one describes the fit. This is the same number
+        ``_search_start_run`` already prints as "simulations per iteration".
+        """
+        return self.popsize * (self.popsize - 1)
+
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
         self._reset_search_state()

@@ -161,21 +161,30 @@ How many simulations each algorithm runs at once
    * - ``de``, ``ade``, ``pso``, ``cmaes``, ``dream``, ``p_dream``, ``mh``, ``am``, ``sa``, ``pt``
      - ``population_size``. For ``pt`` that is the replicas at all temperatures together; for the Markov chain samplers it is the number of independent chains.
    * - ``ss``
-     - ``population_size`` x (``population_size`` - 1), since every parent-helper pair is a simulation. A reference set of 9 fills 72 processors.
+     - ``population_size`` x (``population_size`` - 1), since every parent-helper pair is a simulation. A reference set of 9 fills 72 processors. The first round is different; see `The scatter search initialization round`_.
    * - ``sim``
      - min(``population_size``, N - 1) per start, never fewer than 1, where N is the number of free parameters; times ``n_starts`` concurrent starts.
    * - ``powell``
      - One per start, so ``n_starts``: each line search is serial by construction.
    * - ``trf``, ``lbfgs``, ``gntr``
      - ``population_size``, which the gradient optimizers use as their number of concurrent starts.
-   * - ``pl``
-     - Two directional walks per profiled parameter (one per direction), capped by ``profile_likelihood_max_parallel`` -- ``0``, the default, runs all of them at once.
+   * - ``profile_likelihood``
+     - Two directional walks per profiled parameter (one per direction), capped by ``profile_likelihood_max_parallel`` -- ``0``, the default, runs all of them at once. The fit opens with a single evaluation and then a short multi-start polish, both much smaller than this.
    * - ``hmc``
      - None. Its chains are an in-process numeric loop rather than dask jobs (and it runs only on analytical models), so extra nodes do not help.
 
 Multiply any of these by ``smoothing`` and by ``parallelize_models``, if you set them: every replicate and every model partition is a separate job. ``n_starts`` adds nothing for the metaheuristics (``de``, ``ade``, ``ss``, ``pso``), whose starts run one after another rather than at the same time.
 
 The processors an algorithm cannot use are worth reserving only for the memory attached to them. Each worker is a separate process holding its own copy of the models, so a memory-hungry model may need ``parallel_count`` set below the CPU count rather than a bigger population.
+
+The scatter search initialization round
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Scatter search begins by scoring a set of random parameter sets and picking the reference set out of it. That first round runs ``init_size`` simulations, which defaults to ten per free parameter and is unrelated to ``population_size``. Every round after it runs ``population_size`` x (``population_size`` - 1) simulations, and that is the number to size an allocation by.
+
+The default ``init_size`` is often much smaller than the steady state. Seven free parameters and ``population_size = 20`` gives 70 simulations in the first round and 380 in every round after, so a 384-processor allocation is mostly idle until the first round finishes. Raise ``init_size`` to fill the allocation during it. Nothing is lost by doing so: a larger initial set means a wider search for the starting reference set. ``init_size`` is never allowed below ``population_size``.
+
+At the start of a cluster fit PyBNF logs how many simulations the fit will run at once against how many workers connected, and warns when the two are far apart. That report uses the steady-state number, so for scatter search it describes the rounds after the first one.
 
 A worked example
 ^^^^^^^^^^^^^^^^
