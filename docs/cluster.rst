@@ -178,7 +178,7 @@ Multiply any of these by ``smoothing`` and by ``parallelize_models``, if you set
 The processors an algorithm cannot use are worth reserving only for the memory attached to them. Each worker is a separate process holding its own copy of the models, so a memory-hungry model may need ``parallel_count`` set below the CPU count rather than a bigger population.
 
 The scatter search initialization round
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Scatter search begins by scoring a set of random parameter sets and picking the reference set out of it. That first round runs ``init_size`` simulations, which defaults to ten per free parameter and is unrelated to ``population_size``. Every round after it runs ``population_size`` x (``population_size`` - 1) simulations, and that is the number to size an allocation by.
 
