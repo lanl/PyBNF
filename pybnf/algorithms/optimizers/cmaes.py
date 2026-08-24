@@ -165,8 +165,15 @@ class CMAESAlgorithm(StartPointOptimizer):
         # back to stop_tol -- the single knob TolFun used before -- so an existing
         # config keeps the threshold magnitude it had, without the |f| scaling.
         configured_tolfun = config.config['cmaes_tolfun']
+        self.tolfun_is_explicit = configured_tolfun is not None
         self.tolfun = (self.stop_tol if configured_tolfun is None
                        else float(configured_tolfun))
+        # ...but falling back to a step length was still borrowing a number across a unit
+        # boundary the line above says cannot be crossed (#653). An UNSET cmaes_tolfun is
+        # now calibrated from the objective scale the run measures for itself, in
+        # _calibrate_tolfun, and stop_tol is only the last resort when that measurement is
+        # unavailable. None until the first generation has been scored.
+        self._objective_scale = None
         self.max_generations = config.config['max_iterations']
 
         # Restart schedule (#498, ADR-0070). cmaes_restarts == 0 (the default) is a
@@ -333,6 +340,7 @@ class CMAESAlgorithm(StartPointOptimizer):
     def _update_distribution(self):
         order = sorted(range(self.lam), key=lambda i: self.gen_score[i])
         self._run_best_history.append(float(self.gen_score[order[0]]))  # TolFun window (#506)
+        self._calibrate_tolfun()   # first scored generation only (#653)
         x_sorted = np.array([self.gen_x[i] for i in order[:self.mu]])  # (mu, n)
 
         m_old = self.mean
@@ -469,6 +477,65 @@ class CMAESAlgorithm(StartPointOptimizer):
             return ('covariance ill-conditioned (condition number %.3g > %g)'
                     % (cond, self._COND_COV_MAX))
         return None
+
+    _TOLFUN_SCALE_FRACTION = 1e-11
+
+    def _calibrate_tolfun(self):
+        """Set the TolFun threshold from the objective scale this problem actually has
+        (#653), once, from the first scored generation of the fit.
+
+        TolFun is a range in objective units. ``cmaes_stop_tol`` is a step length in
+        sampling space. ADR-0106 says in as many words that the two "have no common scale
+        and cannot share one well-set value", and then had an unset ``cmaes_tolfun`` fall
+        back to it anyway, for want of anything better to default to. The consequence is
+        the mirror image of #648: there a ratio's magnitude read as a range was far too
+        LOOSE and stopped fits early, here a sampling-space step of 1e-11 read as an
+        objective range is far too STRICT, so on an objective of any ordinary magnitude
+        TolFun never fires and the restart battery loses the trigger its own docstring
+        calls "the trigger the reproduction problems need".
+
+        The anchor is the **objective spread across the first generation's population**.
+        That is a real measurement of how much this objective varies over the search box,
+        it is in the units TolFun needs, and it is taken before the run has converged
+        anything, so it is fixed for the fit. Three properties matter:
+
+        * It does **not** scale with ``|f|``, which is what ADR-0106 forbade and why the
+          obvious "fraction of the current objective" is wrong: on a likelihood ``|f|``
+          grows as the fit improves, so such a threshold rises fastest where firing it
+          costs most.
+        * It is **not** the window TolFun tests. Calibrating from the window under test is
+          circular -- ``frange <= fraction * frange`` is never true for a small fraction --
+          and would silently disable the trigger.
+        * It is calibrated **once, on the first run**, and every IPOP/BIPOP restart reuses
+          it. A later restart starts nearer the optimum and would measure a smaller spread,
+          so recalibrating per restart would hold exactly the late, large-population
+          restarts to the strictest bar, which is the shape of failure ADR-0106 fixed.
+
+        The fraction is ``1e-11``, chosen so that a problem whose initial population spans
+        one objective unit gets precisely the threshold this key has always defaulted to.
+        The default is therefore unchanged on a problem scaled the way the reference CMA-ES
+        assumes, and adapts away from it in proportion to how far the real objective sits
+        from that assumption.
+
+        A population that cannot supply a spread -- fewer than two finite scores, or every
+        score identical -- leaves ``stop_tol`` in place rather than inventing a number, and
+        an explicit ``cmaes_tolfun`` is never touched.
+        """
+        if self.tolfun_is_explicit or self._objective_scale is not None:
+            return
+        finite = [float(s) for s in self.gen_score
+                  if s is not None and np.isfinite(s)]
+        if len(finite) < 2:
+            return
+        spread = max(finite) - min(finite)
+        if not np.isfinite(spread) or spread <= 0.0:
+            return
+        self._objective_scale = spread
+        self.tolfun = self._TOLFUN_SCALE_FRACTION * spread
+        logger.info(
+            'CMA-ES TolFun tolerance set to %g, from an initial objective spread of %g '
+            '(cmaes_tolfun was not set; set it to state the stagnation range directly).'
+            % (self.tolfun, spread))
 
     def _tolfun_window(self):
         """The TolFun stagnation window in generations: Hansen's

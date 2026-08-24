@@ -582,6 +582,92 @@ def test_cmaes_tolfun_still_fires_on_a_genuinely_flat_history(tmp_path):
     assert reason is not None and 'stagnated' in reason and 'tolerance' in reason
 
 
+def _score_first_generation(alg, scores):
+    """Hand ``alg`` a first scored generation, then run the calibration hook that
+    ``_update_distribution`` calls, without simulating anything."""
+    alg.gen_score = list(scores)
+    alg._calibrate_tolfun()
+
+
+def test_an_unset_tolfun_is_calibrated_from_the_problems_own_objective_spread(tmp_path):
+    """The #653 defect at its decision point.
+
+    An unset ``cmaes_tolfun`` fell back to ``cmaes_stop_tol``, a step length in sampling
+    space, whose 1e-11 default read as an objective range is far too strict for any
+    objective of ordinary magnitude. TolFun then never fires and the restart battery
+    loses the trigger it exists for. It is now calibrated from the objective spread the
+    first generation actually measures.
+    """
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+    assert alg.tolfun == alg.stop_tol            # before any generation is scored
+    _score_first_generation(alg, [1.0e6, 1.4e6, 2.0e6, 1.1e6, 1.9e6, 1.2e6, 1.5e6, 1.3e6])
+    # Spread 1e6, so the stagnation range is 1e-11 * 1e6 = 1e-5 rather than 1e-11.
+    assert alg._objective_scale == pytest.approx(1.0e6)
+    assert alg.tolfun == pytest.approx(1.0e-5)
+    # And that is the difference between firing and not. A run flat to within 1e-6 on a
+    # problem of this scale HAS stagnated; the old threshold could not say so.
+    _tolfun_state(alg, np.linspace(1.0e6, 1.0e6 + 1.0e-6, alg._tolfun_window()))
+    reason = alg._battery_stop_reason()
+    assert reason is not None and 'stagnated' in reason
+    alg.tolfun = alg.stop_tol                    # what the fallback would have given
+    assert alg._battery_stop_reason() is None    # ...and it stays silent on the same run
+
+
+def test_a_unit_spread_problem_keeps_the_threshold_this_key_always_had(tmp_path):
+    """The calibration is anchored, not invented. The fraction is chosen so that a
+    problem whose initial population spans one objective unit gets exactly the 1e-11 this
+    key has always defaulted to, which is the scale the reference CMA-ES assumes. The
+    default only moves for a problem that is not on that scale."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+    _score_first_generation(alg, [0.0, 0.25, 0.5, 0.75, 1.0, 0.4, 0.6, 0.8])
+    assert alg._objective_scale == pytest.approx(1.0)
+    assert alg.tolfun == pytest.approx(1e-11)
+
+
+def test_the_calibrated_threshold_tracks_the_objective_scale(tmp_path):
+    """Two problems six decades apart get thresholds six decades apart, which is the
+    whole point: one default that means the same thing on both."""
+    got = {}
+    for scale in (1.0e-3, 1.0e3):
+        alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+        _score_first_generation(alg, [0.0, scale * 0.5, scale, scale * 0.25])
+        got[scale] = alg.tolfun
+    assert got[1.0e3] / got[1.0e-3] == pytest.approx(1.0e6)
+
+
+def test_an_explicit_tolfun_is_never_calibrated(tmp_path):
+    """An explicit ``cmaes_tolfun`` is a range its author chose in their own objective's
+    units. Scoring a generation must not move it."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11, cmaes_tolfun=1e-3)
+    _score_first_generation(alg, [1.0e6, 2.0e6, 1.5e6, 1.2e6])
+    assert alg.tolfun == 1e-3 and alg._objective_scale is None
+
+
+def test_a_population_with_no_spread_keeps_the_old_fallback(tmp_path):
+    """The calibration measures or it declines. A generation that cannot supply a spread
+    -- every score identical, or fewer than two finite ones -- leaves ``stop_tol`` in
+    place rather than inventing a number or setting a threshold of zero."""
+    for scores in ([5.0, 5.0, 5.0, 5.0],                     # no spread
+                   [np.inf, np.inf, 7.0, np.inf],            # one finite score
+                   [np.inf, np.inf, np.inf, np.inf]):        # none
+        alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+        _score_first_generation(alg, scores)
+        assert alg._objective_scale is None
+        assert alg.tolfun == alg.stop_tol
+
+
+def test_a_restart_does_not_recalibrate_the_threshold(tmp_path):
+    """Calibrated once, on the first run, and reused by every restart. A later restart
+    starts nearer the optimum and would measure a smaller spread, so recalibrating would
+    hold exactly the late, large-population restarts to the strictest bar -- the shape of
+    failure ADR-0106 fixed."""
+    alg = _battery_alg(tmp_path, cmaes_restarts=3, cmaes_stop_tol=1e-11)
+    _score_first_generation(alg, [0.0, 1.0e6])
+    first = alg.tolfun
+    _score_first_generation(alg, [0.0, 1.0e-6])   # a much tighter later restart
+    assert alg.tolfun == first
+
+
 def test_cmaes_tolfun_is_a_knob_of_its_own(tmp_path):
     """cmaes_stop_tol is a step length in sampling space u; TolFun's is a range in
     objective units. Sharing one key forced a fit that wanted a meaningful stagnation

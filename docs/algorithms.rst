@@ -792,7 +792,9 @@ tolerance, the smallest range of the best objective across the last
 counts as progress. Because it measures the objective and ``cmaes_stop_tol`` measures a
 step in parameter space, the two have no common scale — set ``cmaes_tolfun`` to the
 objective improvement per window you consider alive, and leave ``cmaes_stop_tol`` at the
-convergence step you actually mean. Unset, ``cmaes_tolfun`` follows ``cmaes_stop_tol``.
+convergence step you actually mean. Unset, ``cmaes_tolfun`` is derived from the objective spread PyBNF measures across the
+first generation's population, so one default means the same thing on problems whose
+objectives differ by many decades, and the run logs the value it chose (#653).
 
 
 .. _alg-gradient:
