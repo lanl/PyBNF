@@ -66,7 +66,23 @@ class FakeFuture:
 
 
 class FakeClient:
-    """Runs every submitted callable inline and returns a finished future."""
+    """Runs every submitted callable inline and returns a finished future.
+
+    ``cluster`` is set because this double stands in for a LOCAL run, and a real local
+    ``Client`` owns the ``LocalCluster`` it drives. ``_report_parallelism`` reads exactly
+    that attribute to tell a local run from a cluster one (#621), so a double without it
+    claims to be a cluster run and then fails the ``scheduler_info()`` call that claim
+    leads to.
+
+    Nothing breaks: the failure is caught and the fit is unaffected. What it costs is
+    attention. ``logger.exception`` records a full traceback, and pytest shows a captured
+    log only for a test that FAILS, so the traceback appears in exactly the situation
+    where someone is reading the log to find out why something broke, attached to a fit
+    that broke for an unrelated reason. It came up while diagnosing #648 and had to be
+    ruled out first. The attribute only has to be non-None; nothing reads through it.
+    """
+
+    cluster = 'local'
 
     def scatter(self, objs, broadcast=False):
         return [FakeFuture(o) for o in objs]
