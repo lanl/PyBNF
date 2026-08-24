@@ -17,6 +17,7 @@ below checks against. All parameters are on a LINEAR scale, so sampling space ``
 ``theta`` and the u-space Jacobian is ``A`` itself.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -693,6 +694,37 @@ def test_parallel_orchestration_runs_tracks_concurrently(tmp_path):
     # The deliverable artifacts landed in Results/.
     assert (tmp_path / 'profile_likelihood_summary.txt').is_file()
     assert (tmp_path / 'profile_p0.txt').is_file() and (tmp_path / 'profile_p1.txt').is_file()
+
+
+def test_parallelism_report_describes_profiling_not_the_preflight(tmp_path):
+    """The run loop's first batch for this fit is the single preflight evaluation, but the
+    fit then spends nearly all its time running one job per directional track. The
+    parallelism report is given the track count, and since no one setting controls it the
+    advice names no setting and talks only about processors (#655)."""
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names, str(tmp_path))
+    assert alg.expected_parallelism() == 4       # 2 parameters x 2 directions
+    assert alg.parallelism_setting is None
+
+    class _ClusterClient:
+        cluster = None
+
+        def scheduler_info(self):
+            return {'workers': {'tcp://w%d' % i: {} for i in range(40)}}
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    log = logging.getLogger('pybnf.algorithms')
+    log.addHandler(handler)
+    try:
+        alg._report_parallelism(_ClusterClient(), 1)   # 1 = the preflight batch
+    finally:
+        log.removeHandler(handler)
+    text = '\n'.join(r.getMessage() for r in records)
+    assert 'runs only 4 job(s) at a time but 40 worker(s)' in text
+    assert 'population_size' not in text
+    assert 'Consider reserving fewer processors' in text
 
 
 def test_max_parallel_cap_serializes_without_truncating_coverage(tmp_path):

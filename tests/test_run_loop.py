@@ -373,14 +373,18 @@ def _scored(name, score):
 
 
 class TestReportParallelism:
-    """``_report_parallelism`` compares how many jobs a fit starts with against how many
+    """``_report_parallelism`` compares how many jobs a fit runs at once against how many
     workers connected, logs both numbers on a cluster run, and warns when they differ by a
-    large margin (#621). Driven directly with the fake client, which models a local run by
+    large margin (#621). The number of jobs is what the fit sustains -- ``expected_parallelism``
+    when the algorithm defines one, otherwise the size of the first batch the run loop
+    submitted (#655). Driven directly with the fake client, which models a local run by
     default and a cluster run when given a worker count."""
 
-    def _algo(self, tmp_path, generational=False):
+    def _algo(self, tmp_path, generational=False, sustained=None, setting='population_size'):
         algo = _make_algorithm(tmp_path, [[_pset('a', 1.0)]])
         algo.waits_for_full_generation = generational
+        algo.expected_parallelism = lambda: sustained
+        algo.parallelism_setting = setting
         return algo
 
     def test_local_run_is_not_reported(self, tmp_path, caplog):
@@ -396,7 +400,7 @@ class TestReportParallelism:
         algo = self._algo(tmp_path)
         with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
             algo._report_parallelism(_FakeClient(n_workers=4), 4)
-        assert 'starts with 4 job(s) running and 4 worker(s) connected' in caplog.text
+        assert 'runs 4 job(s) at a time and 4 worker(s) are connected' in caplog.text
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_idle_workers_warn_and_name_population_size(self, tmp_path, caplog, capsys):
@@ -441,6 +445,58 @@ class TestReportParallelism:
             algo._report_parallelism(_FakeClient(n_workers=0), 4)
         assert 'Parallelism' not in caplog.text
 
+    def test_sustained_count_replaces_the_first_batch(self, tmp_path, caplog):
+        """A fit whose first batch is a one-time initialization round is judged on the
+        number it settles at, not on that first batch (#655). Here 20 jobs against 24
+        workers is a good match, even though the fit opened with 3 jobs."""
+        algo = self._algo(tmp_path, sustained=20)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=24), 3)
+        assert 'runs 20 job(s) at a time and 24 worker(s) are connected' in caplog.text
+        assert 'one-time round of 3 job(s) before it settles at 20' in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_sustained_count_is_used_in_the_warning(self, tmp_path, caplog):
+        """When the sustained number really is too small for the allocation, the warning
+        quotes it rather than the first batch."""
+        algo = self._algo(tmp_path, sustained=6)
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=40), 100)
+        assert 'runs only 6 job(s) at a time but 40 worker(s)' in caplog.text
+        assert 'about 34 worker(s) will sit idle' in caplog.text
+        assert 'one-time round of 100 job(s) before it settles at 6' in caplog.text
+
+    def test_sustained_count_scales_by_jobs_per_pset(self, tmp_path, caplog):
+        """expected_parallelism counts parameter sets, and one parameter set is several
+        jobs under smoothing or parallelize_models. The first batch shows the ratio (here
+        12 jobs from 4 parameter sets, so 3 jobs each), so a sustained 10 parameter sets is
+        30 jobs (#655)."""
+        algo = self._algo(tmp_path, sustained=10)
+        with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=32), 12, 4)
+        assert 'runs 30 job(s) at a time and 32 worker(s) are connected' in caplog.text
+        assert 'one-time round of 12 job(s) before it settles at 30' in caplog.text
+
+    def test_named_setting_is_the_one_advised(self, tmp_path, caplog):
+        """A fit whose concurrency follows a setting other than population_size names that
+        setting instead (#655)."""
+        algo = self._algo(tmp_path, setting='n_starts')
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=8), 2)
+        assert 'mainly n_starts' in caplog.text
+        assert 'Consider raising n_starts or reserving fewer processors' in caplog.text
+        assert 'population_size' not in caplog.text
+
+    def test_no_named_setting_advises_only_about_processors(self, tmp_path, caplog):
+        """A fit where no single setting sets the concurrency (profile likelihood) names
+        none, and the advice talks only about how many processors to reserve (#655)."""
+        algo = self._algo(tmp_path, setting=None)
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._report_parallelism(_FakeClient(n_workers=8), 2)
+        assert 'set by the fitting settings, not by how many processors' in caplog.text
+        assert 'Consider reserving fewer processors' in caplog.text
+        assert 'population_size' not in caplog.text
+
     def test_unreadable_worker_count_is_not_fatal(self, tmp_path, caplog):
         """If reading the worker count from dask fails, the fit is not stopped; the failure
         is logged and the report is skipped."""
@@ -456,6 +512,25 @@ class TestReportParallelism:
         assert 'parallelism report is skipped' in caplog.text
 
 
+def test_local_and_gradient_multistarts_name_their_own_start_setting():
+    """The local multi-start optimizers run one job per start, so the parallelism report
+    advises about the key each of them reads its start count from rather than the base
+    class's population_size (#655). Powell and simplex read n_starts; the gradient
+    optimizers predate that key and read population_size."""
+    from pybnf.algorithms.optimizers.powell import PowellAlgorithm
+    from pybnf.algorithms.optimizers.simplex import SimplexAlgorithm
+    from pybnf.algorithms.optimizers.trf import TRFAlgorithm
+    from pybnf.algorithms.optimizers.profile_likelihood import ProfileLikelihoodAlgorithm
+
+    # Constructed without __init__: parallelism_setting reads only class attributes, and
+    # a real construction would build models.
+    assert object.__new__(PowellAlgorithm).parallelism_setting == 'n_starts'
+    assert object.__new__(SimplexAlgorithm).parallelism_setting == 'n_starts'
+    assert object.__new__(TRFAlgorithm).parallelism_setting == 'population_size'
+    # Profile likelihood inherits from the gradient path but has no single setting.
+    assert object.__new__(ProfileLikelihoodAlgorithm).parallelism_setting is None
+
+
 def test_cluster_run_reports_parallelism_end_to_end(tmp_path, monkeypatch, caplog):
     """run() calls the parallelism report after submitting the initial jobs: a cluster
     client with more workers than the one initial job draws the idle-workers warning."""
@@ -464,7 +539,7 @@ def test_cluster_run_reports_parallelism_end_to_end(tmp_path, monkeypatch, caplo
     algo = _make_algorithm(tmp_path, gens)
     with caplog.at_level(logging.INFO, logger='pybnf.algorithms'):
         algo.run(_FakeClient(n_workers=6))
-    assert 'starts with 1 job(s) running and 6 worker(s) connected' in caplog.text
+    assert 'runs 1 job(s) at a time and 6 worker(s) are connected' in caplog.text
     assert 'will sit idle' in caplog.text
 
 

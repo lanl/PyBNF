@@ -112,6 +112,15 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
     #: local path, ``'stopping'`` for the gradient path) -- cosmetic, preserved verbatim.
     _stop_verb = 'finished'
 
+    @property
+    def parallelism_setting(self):
+        """How many jobs one of these fits runs at once is its number of starts, since each
+        start holds one evaluation in flight, so the parallelism report names the key the
+        start count is read from rather than the base class's population_size (#655). That
+        is ``n_starts`` on the local path and ``population_size`` on the gradient path,
+        which predates the newer key."""
+        return self._n_starts_key
+
     def __init__(self, config, refine=False):
         # A subclass gate that must run *before* the (expensive) network generation in
         # Algorithm.__init__ -- the gradient path refuses a legacy-edition config here, so
