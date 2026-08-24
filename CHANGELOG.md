@@ -5,6 +5,8 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+## [v1.8.1] - 2026-08-23
+
 ### Fixed
 - **The CMA-ES stagnation restart now fires, because its tolerance is calibrated from the
   objective rather than inherited from a step length (#653, ADR-0128).** ADR-0106 gave
