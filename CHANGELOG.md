@@ -5,6 +5,31 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **The CMA-ES stagnation restart now fires, because its tolerance is calibrated from the
+  objective rather than inherited from a step length (#653, ADR-0128).** ADR-0106 gave
+  `cmaes_tolfun` its own key precisely because it is a range in objective units while
+  `cmaes_stop_tol` is a step length in sampling space, and then had an unset `cmaes_tolfun`
+  fall back to it anyway. `cmaes_stop_tol` defaults to 1e-11, so the stagnation range was
+  1e-11 in objective units, which on an objective of any ordinary magnitude never fires.
+  This is #648 in the mirror. There a ratio read as a range was far too loose and stopped
+  fits early at a wrong answer. Here a step length read as a range is far too strict, and
+  what it costs is the restart trigger the battery exists for: without it a run polishes a
+  local basin and never yields to a restart, which is the failure the battery was built to
+  prevent. The documentation had already told readers the default was "rarely what you
+  want", which described the defect rather than fixing it.
+  An unset `cmaes_tolfun` is now 1e-11 times the objective spread measured across the first
+  generation's population. That spread is a real measure of how much the objective varies
+  over the search box, it is in the units the tolerance needs, and it is taken before
+  anything has converged, so it does not drift with the objective the way a fraction of the
+  current value would. It is calibrated once and every restart reuses it, so a late restart
+  is not held to a stricter bar than an early one. The fraction is chosen so a problem whose
+  initial population spans one objective unit gets exactly the 1e-11 this key always
+  defaulted to, leaving a reference-scaled problem unchanged. The run logs the value it
+  picked. A population that cannot supply a spread keeps the old fallback rather than
+  inventing a number, and an explicit `cmaes_tolfun` is never touched.
+  Only affects `cmaes_restarts > 0`, which is not the default.
+
 ## [v1.8.0] - 2026-08-23
 
 ### Added

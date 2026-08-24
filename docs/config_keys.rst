@@ -1856,7 +1856,7 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_t
     * ``cmaes_sigma0 = 0.5``
 
 **cmaes_stop_tol**
-  Stop when the largest principal standard deviation of the search distribution falls below this value. This is a step length in the parameter sampling space, and in restart mode (``cmaes_restarts > 0``) it is also the threshold below which every individual coordinate step counts as collapsed. The stagnation threshold on the *objective* is ``cmaes_tolfun``.
+  Stop when the largest principal standard deviation of the search distribution falls below this value. This is a step length in the parameter sampling space, and in restart mode (``cmaes_restarts > 0``) it is also the threshold below which every individual coordinate step counts as collapsed. The stagnation threshold on the *objective* is ``cmaes_tolfun``, which is a different quantity in different units and is no longer defaulted from this key (#653).
 
   Default: 1e-11
 
@@ -1865,7 +1865,9 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_t
     * ``cmaes_stop_tol = 1e-8``
 
 **cmaes_tolfun**
-  Stagnation tolerance on the objective, used only in restart mode (``cmaes_restarts > 0``): a run is declared finished — and yields to the next restart — when the range of its best objective over the last ``10 + ceil(30 × (number of parameters) / population_size)`` generations falls to this value or below. It is an absolute range in the units of your objective function, unlike ``cmaes_stop_tol``, which is a step length in the parameter sampling space; set it to the smallest objective improvement per window that you still consider progress. Unset, it follows ``cmaes_stop_tol``, which is rarely what you want if you rely on stagnation restarts: a value loose enough to detect a stalled run is far looser than a converged search distribution.
+  Stagnation tolerance on the objective, used only in restart mode (``cmaes_restarts > 0``): a run is declared finished — and yields to the next restart — when the range of its best objective over the last ``10 + ceil(30 × (number of parameters) / population_size)`` generations falls to this value or below. It is an absolute range in the units of your objective function, unlike ``cmaes_stop_tol``, which is a step length in the parameter sampling space. Set it to the smallest objective improvement per window that you still consider progress.
+
+  Unset, it is derived from your problem's own objective scale: PyBNF measures the spread of the objective across the first generation's population and takes 1e-11 of it. That fraction is chosen so a problem whose initial population spans one objective unit gets exactly 1e-11, the value this key defaulted to historically, and a problem on any other scale gets a threshold in proportion. The run logs the number it chose. Previously an unset value followed ``cmaes_stop_tol``, which is a step length rather than an objective range, and at its 1e-11 default was far too strict for an objective of ordinary magnitude, so the stagnation restart never fired (#653).
 
   Default: unset (follows ``cmaes_stop_tol``)
 
