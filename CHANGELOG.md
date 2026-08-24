@@ -5,6 +5,8 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+## [v1.8.0] - 2026-08-23
+
 ### Added
 - **A cluster fit now says how many of the reserved processors it is actually using (#621).**
   How many simulations a fit runs at once follows from its settings, mainly `population_size`,
