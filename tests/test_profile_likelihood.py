@@ -29,17 +29,16 @@ from pybnf.algorithms.optimizers.profile_likelihood import (
     ProfileLikelihoodAlgorithm,
     _FLAT_DCHI2,
     _ProfileTrack,
-    _chi2_quantile_1dof,
     _classify,
     _coverage_notes,
     _extract_ci,
-    _norm_ppf,
     _render_profile_plots,
     _resolve_profile_idxs,
 )
 from pybnf.config import Configuration
 from pybnf.gradient import GradientResult
 from pybnf.parse import ploop
+from pybnf.quantiles import chi2_quantile_1dof as _chi2_quantile_1dof, normal_quantile as _norm_ppf
 
 from . import recovery_harness as H
 # The Becker EpoR fast-2p fixtures live beside the gradient smoke tests; the profile-likelihood
@@ -602,6 +601,8 @@ class _OfflineProfileAlg(ProfileLikelihoodAlgorithm):
         self._track_queue = []
         self._active_tracks = {}
         self.profile_summary = None
+        self.design_result = None
+        self.design_report = False     # the #574 design report is off unless asked for
         self.phase = 'profile'
 
     def __setstate__(self, state):

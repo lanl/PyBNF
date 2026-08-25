@@ -478,6 +478,45 @@ def _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessia
         hessian += weight * noise_block
 
 
+def iter_fisher_points(objective, experiments, free_params):
+    """Yield each scored point's **own** expected-Fisher block, instead of their sum (#574).
+
+    :func:`assemble_fisher_hessian` adds every point's rank-1 terms into one matrix. Optimal
+    experimental design needs the terms kept apart: a design is a *subset* of measurements, so
+    scoring one means adding up the blocks of the points it contains and leaving the rest out.
+    Because the Fisher information is a plain sum over points, that is all a design score is.
+
+    Each item is ``(experiment_index, exp_row, col_name, block)``, where ``block`` is the
+    ``(n_param, n_param)`` matrix that point contributes -- the same location + noise terms
+    :func:`_accumulate_fisher_point` adds, already weight-folded and already in sampling space
+    (the ``d theta/d u`` factors applied on both axes, ADR-0029), so the blocks add straight onto
+    a Hessian :func:`assemble_fisher_hessian` returned. Summing every yielded block reproduces
+    that Hessian.
+
+    ``experiments`` and ``free_params`` are exactly what the other assemblers take. The point
+    walk is the shared :func:`_iter_scored_points` scaffold, so the points, the row matching, the
+    NaN skip and the transform chain rule are identical to the ones the fit scores."""
+    names = [p.name for p in free_params]
+    index = {name: j for j, name in enumerate(names)}
+    n_param = len(free_params)
+
+    # Seed the estimated-noise / profiled-scale reads from this point exactly as
+    # assemble_fisher_hessian does, so a free sigma resolves the same way here.
+    existing = getattr(objective, '_pset_values', None) or {}
+    objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_noise(objective, experiments)
+
+    factors = _sampling_scale_factors(free_params)
+    sampling = np.outer(factors, factors)
+    for exp_index, (sim_data, exp_data, routing, *rest) in enumerate(experiments):
+        data_key = rest[0] if rest else None
+        for point in _iter_scored_points(objective, sim_data, exp_data, routing, index,
+                                         n_param, "Fisher information", data_key):
+            block = np.zeros((n_param, n_param))
+            _accumulate_fisher_point(objective, sim_data, exp_data, index, point, block)
+            yield exp_index, point[1], point[2], block * sampling
+
+
 def assemble_fisher_hessian(objective, experiments, free_params):
     """Assemble the expected-Fisher / Gauss-Newton **Hessian** ``H`` (n_param x n_param),
     summed across experiments. This standalone API produces the same curvature the combined

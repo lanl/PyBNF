@@ -52,6 +52,7 @@ _ALGORITHMS = {
     'gntr': algorithms.GNTRAlgorithm,   # general-objective Fisher/Gauss-Newton trust region (#481)
     'profile_likelihood': algorithms.ProfileLikelihoodAlgorithm,   # PL identifiability (#446/#466)
     'ms': algorithms.MultipleShootingAlgorithm,   # multiple shooting (#563/ADR-0110)
+    'design': algorithms.ExperimentalDesignAlgorithm,   # experimental design (#574)
 }
 
 

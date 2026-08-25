@@ -91,7 +91,7 @@ identifiability summary table, and -- when matplotlib (the optional ``pybnf[plot
 is importable -- the profile plots (``Delta chi2`` panels with the threshold + CI lines,
 the reference notebook's Cell 9); a missing matplotlib skips only the plots, never the run.
 scipy stays out of the production loop: the chi-square threshold comes from a
-dependency-free probit approximation (:func:`_chi2_quantile_1dof`).
+dependency-free probit approximation (:func:`~pybnf.quantiles.chi2_quantile_1dof`).
 """
 
 import logging
@@ -101,13 +101,15 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from .design import DesignReportMixin
 from .gradient_base import DONE, GradientOptimizer
 from .lbfgs import _LBFGSRunner
 from .trf import _TRFRunner
-from ...config_schema import PyBNFConfigModel
+from ...design import DesignFields
 from ...gradient import GradientResult
 from ...printing import PybnfError, print1, print2
 from ...pset import PSet
+from ...quantiles import chi2_quantile_1dof
 from ...registry import register_fit_type
 
 logger = logging.getLogger('pybnf.algorithms')
@@ -147,57 +149,6 @@ def _build_inner_runner(kind, u0, lower, upper, max_iterations, *, grad_tol, ste
 # --------------------------------------------------------------------------- #
 # chi-square (1 dof) quantile via a probit approximation (scipy-free, ADR-0007)
 # --------------------------------------------------------------------------- #
-def _norm_ppf(p):
-    """Standard-normal inverse CDF (probit) via Acklam's rational approximation, refined
-    by one Halley step against :func:`math.erf`.
-
-    Dependency-free so the production loop never imports scipy (ADR-0007); accurate to
-    full double precision after the refinement, far more than the chi-square threshold
-    needs. ``0 < p < 1``."""
-    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
-         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
-    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
-         6.680131188771972e+01, -1.328068155288572e+01)
-    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
-    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
-         3.754408661907416e+00)
-    plow, phigh = 0.02425, 1.0 - 0.02425
-    if p < plow:
-        q = math.sqrt(-2.0 * math.log(p))
-        x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
-    elif p <= phigh:
-        q = p - 0.5
-        r = q * q
-        x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
-            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
-    else:
-        q = math.sqrt(-2.0 * math.log(1.0 - p))
-        x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
-    # One Halley refinement using the exact erf-based CDF.
-    e = 0.5 * math.erfc(-x / math.sqrt(2.0)) - p
-    u = e * math.sqrt(2.0 * math.pi) * math.exp(x * x / 2.0)
-    x = x - u / (1.0 + x * u / 2.0)
-    return x
-
-
-def _chi2_quantile_1dof(confidence):
-    """The chi-square (1 dof) quantile at probability ``confidence`` -- the profile
-    ``Delta chi2`` threshold (Raue et al. 2009).
-
-    A single profiled parameter has 1 degree of freedom, and ``chi2_1 = Z**2`` with
-    ``Z ~ N(0, 1)``, so ``P(chi2_1 <= x) = 2*Phi(sqrt(x)) - 1`` and the quantile is
-    ``Phi^{-1}((1 + confidence) / 2)**2`` (e.g. ``0.95 -> 3.8415``)."""
-    if not (0.0 < confidence < 1.0):
-        raise PybnfError(
-            "profile_likelihood_confidence must be strictly between 0 and 1, got %r."
-            % confidence)
-    z = _norm_ppf(0.5 * (1.0 + confidence))
-    return z * z
-
-
 # --------------------------------------------------------------------------- #
 # CI extraction + identifiability classification
 # --------------------------------------------------------------------------- #
@@ -579,7 +530,7 @@ class _ProfileTrack:
 # --------------------------------------------------------------------------- #
 # Config + algorithm
 # --------------------------------------------------------------------------- #
-class ProfileLikelihoodConfig(PyBNFConfigModel):
+class ProfileLikelihoodConfig(DesignFields):
     """Profile-likelihood config fields, co-located with the method (ADR-0006).
 
     ``profile_likelihood_params`` selects which free parameters to profile (a list of ids;
@@ -599,7 +550,16 @@ class ProfileLikelihoodConfig(PyBNFConfigModel):
     fit the cap queue and run as slots free, they are never dropped). Like the other gradient
     methods' cycle budgets, ``profile_likelihood_max_iterations`` (the polish budget) is
     runtime-guarded -- it defaults to the global ``max_iterations`` when unset -- so it is a
-    valid key but not a schema field."""
+    valid key but not a schema field.
+
+    ``profile_likelihood_design`` turns on the experimental-design report (#574): after the
+    profiles are written, the run recommends the measurements that would most improve the
+    parameters it just found hard to determine. It inherits the shared ``design_*`` keys from
+    :class:`~pybnf.design.config.DesignFields`, except that the predicted intervals are quoted at
+    ``profile_likelihood_confidence`` so both halves of the run's output agree. Off by default, so
+    a run that does not ask for it is unchanged."""
+
+    profile_likelihood_design: int = 0
 
     profile_likelihood_params: Any = None
     profile_likelihood_confidence: float = 0.95
@@ -618,7 +578,7 @@ class ProfileLikelihoodConfig(PyBNFConfigModel):
 
 @register_fit_type('profile_likelihood', family='optimizer',
                    display_name='Profile Likelihood', schema=ProfileLikelihoodConfig)
-class ProfileLikelihoodAlgorithm(GradientOptimizer):
+class ProfileLikelihoodAlgorithm(DesignReportMixin, GradientOptimizer):
     """Standalone profile-likelihood driver (``job_type = profile_likelihood``, #446/#466).
 
     A two-phase job over the :class:`GradientOptimizer` gradient path: an optional
@@ -649,7 +609,7 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
     def __init__(self, config, refine=False):
         super().__init__(config, refine=refine)
         self.confidence = config.config['profile_likelihood_confidence']
-        self.threshold = _chi2_quantile_1dof(self.confidence)
+        self.threshold = chi2_quantile_1dof(self.confidence, 'profile_likelihood_confidence')
         self.pl_step = config.config['profile_likelihood_step']
         self.pl_min_step = config.config['profile_likelihood_min_step']
         self.pl_max_step = config.config['profile_likelihood_max_step']
@@ -660,6 +620,15 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         self.reopt_max_iterations = config.config['profile_likelihood_reopt_max_iterations']
         self.grad_tol = config.config['profile_likelihood_grad_tol']
         self.step_tol = config.config['profile_likelihood_step_tol']
+        # Experimental design (#574), off unless asked for: the measurements to make next, aimed
+        # by default at whatever this run finds practically non-identifiable. The predicted
+        # intervals are quoted at the profile's own confidence level, so the two halves of the
+        # run's output are the same statement about the same threshold.
+        self.design_report = bool(config.config.get('profile_likelihood_design'))
+        self.design_points = config.config['design_points']
+        self.design_criterion = config.config['design_criterion']
+        self.design_targets = list(config.config.get('design_target') or [])
+        self.design_observables = list(config.config.get('design_observables') or [])
         if 'profile_likelihood_max_iterations' in config.config:
             self.max_iterations = config.config['profile_likelihood_max_iterations']
         else:
@@ -693,6 +662,7 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         self.polished = None         # True once the polish phase runs, False on explicit theta*
         self._runner_kind = None     # 'trf' | 'lbfgs' inner optimizer (set at preflight/center)
         self.profile_summary = None  # the per-parameter CI + classification list, set at finalize
+        self.design_result = None    # the experimental design, set at the end when asked for
         self._cost_ref = None
         self._u_star = None
         self._profile_idxs = _resolve_profile_idxs(
@@ -809,6 +779,8 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 self.phase = 'profile'
                 return self._begin_profiling(self._u_from_pset(self.trajectory.best_fit()))
             return response
+        if self.phase == 'design':
+            return self._design_got(res)
         return self._profile_got(res)
 
     def _select_runner_kind(self, res):
@@ -1056,6 +1028,53 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         self._write_profile_summary(summary)
         self._write_profile_plots(summary)
         self._print_summary(summary)
+        if self.design_report:
+            return self._begin_design()
+        return 'STOP'
+
+    # --- experimental design (#574) ---------------------------------------- #
+    def _begin_design(self):
+        """Re-evaluate ``theta*`` once, so the design has the forward sensitivities there.
+
+        The profiling walk left the scheduler holding results from grid points, not from the
+        optimum, and the polish's own result is long gone. One more evaluation of a point the run
+        has already visited is a negligible cost beside the profiles, and it makes the design's
+        information matrix unambiguously the one at ``theta*``."""
+        self.phase = 'design'
+        print1('Working out which measurements would most improve these parameters.')
+        _name, pset = self._pl_dispatch(self._u_star)
+        return [pset]
+
+    def _flagged_parameters(self):
+        """The parameters this run found *practically* non-identifiable -- what the design aims
+        at when the user has not said otherwise.
+
+        A practically non-identifiable parameter is precisely the one more data can fix, so it is
+        the one to design for. A *structurally* non-identifiable parameter is left out: no
+        measurement of these observables determines it, which is a statement about the model
+        rather than about the data, and aiming a design at it would only produce the refusal
+        :func:`~pybnf.design.require_identifiable` already gives. An empty list means nothing was
+        flagged, and the design aims at every parameter instead."""
+        return [s['name'] for s in (self.profile_summary or [])
+                if s['classification'] == 'practically non-identifiable']
+
+    def _design_got(self, res):
+        """Build and write the design from the re-evaluated optimum, then end the run.
+
+        A design that cannot be built is reported and the run still ends normally: the profiles,
+        the curves and the plots are already written, the analysis they carry is complete, and a
+        target no experiment could ever determine is itself a finding."""
+        targets = self.design_targets
+        if not targets and self.design_criterion == 'a':
+            targets = self._flagged_parameters()
+        try:
+            self.design_result = self.design_at(
+                res, points=self.design_points, criterion=self.design_criterion,
+                targets=targets, observables=self.design_observables)
+        except PybnfError as e:
+            print1('No experimental design was written. %s' % e.message)
+            return 'STOP'
+        self.write_design(self.design_result, self._u_star, self.threshold, self.confidence)
         return 'STOP'
 
     def _write_profile_curves(self, summary):

@@ -12,6 +12,7 @@ PyBNF Module References
    config
    constraint
    data
+   design
    diagnostics
    gradient
    inference_data

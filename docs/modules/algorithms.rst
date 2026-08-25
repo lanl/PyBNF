@@ -69,6 +69,9 @@ Gradient-based optimizers
 .. automodule:: pybnf.algorithms.optimizers.profile_likelihood
    :members:
 
+.. automodule:: pybnf.algorithms.optimizers.design
+   :members:
+
 Bayesian samplers
 =================
 

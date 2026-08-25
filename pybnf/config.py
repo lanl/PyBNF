@@ -52,6 +52,14 @@ _MEASUREMENT_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 # at. Naming the budget for one of these is refused, not silently ignored (#529).
 _NO_WALL_TIME_FIT = frozenset({'hmc'})
 
+# The run types that search nothing, so asking the user for a population size and an iteration
+# budget would be asking for numbers that mean nothing: the model check, and the experimental
+# design (#574), which evaluates one supplied best fit and then does arithmetic on the
+# information matrix it produced. The model check reads neither key; the design run passes through
+# the shared Algorithm setup, which does, so it fills in the values that are true of it (one
+# point, evaluated once) itself.
+_NO_SEARCH_RUNS = frozenset({'check', 'design'})
+
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
 
@@ -251,7 +259,7 @@ class Configuration:
         _modern_hint = isinstance(_ed, int) and not isinstance(_ed, bool) and _ed >= 2
         if not self._user_objfunc and not _modern_hint:
             print1('Warning: objfunc was not specified. Defaulting to chi_sq.')
-        if not self._req_user_params() <= d.keys() and d['fit_type'] != 'check':
+        if not self._req_user_params() <= d.keys() and d['fit_type'] not in _NO_SEARCH_RUNS:
             unspecified_keys = []
             for k in self._req_user_params():
                 if k not in d.keys():
@@ -1652,7 +1660,8 @@ class Configuration:
                     # max-time bound here, not a readout time.
                     action = self._steady_state_action(name, method, fields)
                 elif action_type == 'time_course':
-                    action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+                    action = TimeCourse({'suffix': name, 'method': method},
+                                        explicit_points=self._with_design_grid(points))
                     self._attach_nf_options(action, fields, method)
                 else:
                     # parameter_scan / dose-response (ADR-0046): the data's independent-variable
@@ -2059,6 +2068,30 @@ class Configuration:
         """Whether a ``time_error`` clause (ADR-0112, #587) is present -- so a data-driven time
         course must be simulated on a dense grid over the support, not at the reported times."""
         return any(isinstance(k, tuple) and k[0] == 'time_error' for k in self.config)
+
+    def _with_design_grid(self, points):
+        """An experiment's measured times, plus the extra times an experimental design may
+        recommend measuring at (``design_grid`` / ``design_t_end``, #574).
+
+        A design can only recommend a time the model is already simulated at, because that is
+        where the forward sensitivities it scores candidates with exist. For a time course PyBNF
+        derives the simulated grid from the data, so without this a design could only ever
+        recommend measuring the same times over again. ``design_grid`` lays down that many extra
+        simulated times, spread evenly from the first measurement to ``design_t_end`` (which
+        defaults to the last measurement, and is set beyond it when the design should be allowed
+        to look past the data in hand).
+
+        The measured times are always kept, so the data still lands on exact grid points and
+        nothing about the scoring changes; the extra rows are simulated and then ignored by
+        everything except the design. Both keys are off by default, so every other run simulates
+        exactly the grid it always did.
+        """
+        count = int(self.config.get('design_grid') or 0)
+        if count <= 0 or not points:
+            return points
+        t_end = float(self.config.get('design_t_end') or 0) or max(points)
+        return sorted({float(p) for p in points}
+                      | {float(t) for t in np.linspace(min(points), t_end, count)})
 
     def _time_error_timecourse(self, name, method, fields):
         """A uniform dense grid over ``[t_start, t_end]`` for a marginalized (``time_error``)

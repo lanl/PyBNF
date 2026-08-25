@@ -61,6 +61,7 @@ _DISPATCH = [
     ('p_dream', 'PDreamAlgorithm'),
     ('hmc', 'HMCSampler'),
     ('check', 'ModelCheck'),
+    ('design', 'ExperimentalDesignAlgorithm'),
 ]
 
 
@@ -97,6 +98,10 @@ def test_families_partition_the_codes():
     assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes', 'trf', 'lbfgs', 'gntr', 'ms', 'profile_likelihood'}
     assert {c for c, f in fam.items() if f == 'sampler'} == {'mh', 'pt', 'am', 'dream', 'p_dream', 'hmc'}
     assert {c for c, f in fam.items() if f == 'checker'} == {'check'}
+    # Experimental design (#574) fits nothing, so it is neither an optimizer nor a sampler. Its
+    # own family also keeps it out of what a PEtab job_type = all import emits, which is the one
+    # thing the family field is read for.
+    assert {c for c, f in fam.items() if f == 'analysis'} == {'design'}
 
 
 def test_refiners_are_the_start_point_optimizers():

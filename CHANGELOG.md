@@ -5,6 +5,37 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **PyBNF now says what to measure next (`job_type = design`, #574, ADR-0129).** A
+  profile-likelihood run ends by telling you a parameter is practically non-identifiable,
+  which is a diagnosis with no prescription. The new design run answers the question that
+  follows it. It reads the expected Fisher information PyBNF already assembles for the
+  `gntr` optimizer, notices that the information is a plain sum over the measured points,
+  and scores a planned measurement by the one term it would add. So every noise model,
+  scale and transform the fit already supports comes along, and nothing is re-simulated:
+  the sensitivities at every simulated time were computed when the best fit was scored.
+  A recommendation is one observable, in one experiment, at one time. The observable has to
+  be one that experiment already measures, so its precision is known rather than invented.
+  `design_criterion` chooses what makes one design better than another: the average
+  variance of the parameters (`a`, the default, aimed at the parameters named by
+  `design_target`), the volume of the joint confidence region (`d`), or the
+  worst-determined direction (`e`). Naming a single target is the classical c-criterion,
+  which is what a profile-likelihood verdict about one parameter asks for. The same
+  measurement can be recommended twice, meaning measure it twice.
+  For a time course PyBNF simulates the times the data was measured at, so by default a
+  design could only recommend repeating an existing measurement. `design_grid` adds extra
+  simulated times to choose from and `design_t_end` moves the far end of that window past
+  the last measurement. The measured times are always kept, so the scoring of the data is
+  unchanged.
+  The report in `Results/experimental_design.txt` has two halves: the measurements to make,
+  and each parameter's confidence interval now and after, at the same threshold a
+  profile-likelihood run quotes. If measuring every candidate at once still leaves a target
+  parameter undetermined, the run says so instead of recommending measurements that cannot
+  help.
+  Set `profile_likelihood_design = 1` and an identifiability run ends by writing the same
+  report, around the optimum it just found and aimed at the parameters it just flagged. Off
+  by default. Both surfaces are documented under gradient-based fitting.
+
 ### Fixed
 - **The startup parallelism report now describes how busy a fit will actually be, rather
   than how busy its first round is (#655).** The report added in v1.8.0 measured "how many
