@@ -19,7 +19,10 @@ step.
 The capability gate and the per-layer math (fixed and estimated noise scale,
 log/lognormal scale, per-observable transforms and normalization, the Laplace
 and Student-t families with mean centering, and constraint-penalty gradients)
-are documented for users in :ref:`gradient_fitting`.
+are documented for users in :ref:`gradient_fitting`. The assembly also builds the
+expected Fisher information the ``gntr`` optimizer steps with, and yields the same
+information one scored point at a time, which is what :py:mod:`pybnf.design` scores a
+candidate measurement with.
 
 Errors
 ======

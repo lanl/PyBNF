@@ -74,6 +74,13 @@ from .optimizers.multiple_shooting import (
 from .optimizers.profile_likelihood import (
     ProfileLikelihoodAlgorithm as ProfileLikelihoodAlgorithm,
 )
+# Optimal experimental design (#574): what to measure next, read off the same expected Fisher
+# information gntr already assembles. A GradientOptimizer for its gates, routings and
+# sensitivities, but it runs no search -- it evaluates the supplied best fit once and scores
+# candidate measurements against it. Importing the leaf runs its @register_fit_type.
+from .optimizers.design import (
+    ExperimentalDesignAlgorithm as ExperimentalDesignAlgorithm,
+)
 from .samplers.dream import DreamAlgorithm as DreamAlgorithm
 from .samplers.pdream import PDreamAlgorithm as PDreamAlgorithm
 from .samplers.basic_mcmc import BasicBayesMCMCAlgorithm as BasicBayesMCMCAlgorithm

@@ -54,6 +54,13 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # cross-parameter parallel-track cap (#467).
                'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
                'profile_likelihood_reopt_max_iterations', 'profile_likelihood_max_parallel',
+               # Whether a profile-likelihood run ends by recommending the measurements to
+               # make next (job_type = design's report, #574): 0 = off.
+               'profile_likelihood_design',
+               # optimal experimental design (job_type = design, #574): how many
+               # measurements to recommend, and how many extra times to simulate for it to
+               # choose from (0 = only the times already measured).
+               'design_points', 'design_grid',
                # gradient optimizers (job_type = trf / lbfgs / gntr, #386/#481): the
                # int-valued tunables -- L-BFGS-B's curvature-history depth and the three
                # cycle budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
@@ -123,6 +130,10 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'profile_likelihood_min_step', 'profile_likelihood_max_step',
                  'profile_likelihood_dchi2_target', 'profile_likelihood_grad_tol',
                  'profile_likelihood_step_tol',
+                 # optimal experimental design (job_type = design, #574): the confidence
+                 # level the report's predicted intervals are quoted at, and how far past the
+                 # last measurement a recommendation may reach.
+                 'design_confidence', 'design_t_end',
                  # CVODE tolerances for the bngsim SBML/Antimony backend (#546). Unset
                  # leaves rtol at the backend default and DERIVES atol from the model's
                  # own state scale; stating either pins it.
@@ -159,11 +170,18 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'qualitative_loss',
               # What a gradient fit does when bngsim declines a model's analytic
               # sensitivity RHS (#606, ADR-0121): warn | error | ignore.
-              'sensitivity_fallback']
+              'sensitivity_fallback',
+              # optimal experimental design (#574): what makes one design better than
+              # another -- a (average parameter variance) | d (confidence region volume) |
+              # e (worst-determined direction).
+              'design_criterion']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
                # profile likelihood (#446/#466): the subset of free parameters to profile
                # (a list of parameter ids; absent -> profile every free parameter).
                'profile_likelihood_params',
+               # optimal experimental design (#574): the free parameters a design is aimed
+               # at, and the observables it may recommend measuring (absent -> all of them).
+               'design_target', 'design_observables',
                # qualitative scale as a fittable parameter: the two-token
                # value `fit <param>` ties every qualitative constraint's scale to a free parameter.
                'qualitative_scale']

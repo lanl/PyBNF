@@ -424,6 +424,114 @@ subset to profile; default all), ``profile_likelihood_step`` / ``profile_likelih
 concurrent directional walks; ``0`` = all of them).
 
 
+.. _experimental_design:
+
+
+Experimental design (what to measure next)
+-------------------------------------------
+
+A profile-likelihood run tells you that a parameter is *practically non-identifiable*. The next
+question is always "then what experiment should I run?", and ``job_type = design`` answers it.
+
+The answer comes from the same object the ``gntr`` optimizer already builds: the expected Fisher
+information at the best fit. That matrix is a **sum over the measured points** — one small
+contribution per measurement — so the information a *planned* measurement would add is just that
+measurement's own contribution, and the information of a whole planned experiment is the sum of the
+ones in it. Its inverse is the covariance the fit would have, which is why a design can be quoted
+in the units you already read off a profile-likelihood run: the confidence interval each parameter
+would end up with.
+
+**What a design may recommend.** One observable, in one experiment, at one time. The observable has
+to be one that experiment already measures, so its noise model is the one your fit is already
+using rather than an invented precision for an assay nobody has run. The time has to be one the
+model is already simulated at, because that is where the forward sensitivities exist — which also
+means enumerating and scoring the whole candidate space costs no simulation at all. The same
+measurement may be recommended more than once; that means measure it that many times, and it is the
+right answer when the precision of one measurement, rather than the shape of the trajectory, is
+what limits you.
+
+.. important::
+
+   For a time course PyBNF simulates the times your data was measured at, so **by default a design
+   can only recommend repeating a measurement you have already made**. ``design_grid = N`` adds
+   ``N`` extra simulated times for it to choose from, and ``design_t_end`` moves the far end of
+   that window past your last measurement. Set both when you want to be told to measure at a time
+   you never have. Your measured times are always kept in the grid, so the scoring of your data is
+   unchanged; the extra rows are simulated and then ignored by everything except the design.
+
+**Choosing between designs.** ``design_criterion`` says what makes one design better than another:
+
+* ``a`` (the default) — the summed variance of the parameters, or of the ones named by
+  ``design_target``. Naming a single parameter is the classical **c-criterion**, and it is the one
+  that answers a profile-likelihood verdict: "``k_deg`` came back practically non-identifiable"
+  becomes "measure whatever pins down ``k_deg``".
+* ``d`` — the volume of the joint confidence region, through the log determinant of the
+  information. The all-round choice when no one parameter is the problem.
+* ``e`` — the worst-determined direction, through the smallest eigenvalue.
+
+``design_target`` applies only to ``a``. The other two are properties of the whole information
+matrix, so naming targets for them is refused rather than quietly ignored.
+
+The measurements are chosen one at a time, each time adding whichever candidate improves the
+criterion most. That is the standard treatment of a subset-selection problem and it is not
+guaranteed to find the single best set of ``design_points`` measurements, but it always terminates
+and the report shows the criterion after each pick, so a design that has stopped paying off is
+visible rather than implied.
+
+**Running it.** ``job_type = design`` does not fit. Give it the fitted values as an
+``initial_value:`` on every parameter, exactly as a profile-likelihood run takes its optimum; it
+simulates that one point and writes the report::
+
+    edition = 2
+    model: model.bngl
+    experiment: myexp, data: mydata.exp
+    output_dir = output/design
+
+    bngl_backend = bngsim
+    job_type = design
+    objective = chi_sq
+
+    design_points = 5                  # how many measurements to recommend
+    design_criterion = a
+    design_target = k_deg              # the parameter the design is aimed at
+    design_grid = 50                   # 50 extra candidate times to choose from
+    design_t_end = 120                 # ... out to t = 120, past the last measurement
+
+    parameter: k_deg, lower: 1e-4, upper: 1e2, initial_value: 0.017
+    parameter: k_syn, lower: 1e-4, upper: 1e2, initial_value: 3.1
+
+A configuration that supplies no fitted values is refused: a design computed at an unfitted point
+is a recommendation about a model nobody has fitted.
+
+**Getting it from a profile-likelihood run instead.** Set ``profile_likelihood_design = 1`` and the
+identifiability run ends by writing the same report, around the optimum it just found and aimed at
+the parameters it just flagged as practically non-identifiable. It reads the same ``design_*`` keys,
+except that the predicted intervals are quoted at ``profile_likelihood_confidence`` so both halves
+of the output are the same statement. Off by default, so a run that does not ask for it is
+unchanged.
+
+**Reading the report.** ``Results/experimental_design.txt`` has two halves. The first is the
+recommendation: the measurements to make, in the order they were chosen, with a replicate count
+and the criterion after each pick. The second is what they are expected to buy: every parameter's
+confidence interval as it stands now and as it would be once the recommended measurements are in
+hand, with the ratio of the two widths. Those predicted intervals are
+:math:`\theta^\* \pm \sqrt{\Delta\chi^2\,(F^{-1})_{kk}}` in the parameter's own fitted scale
+— the quadratic approximation to the profile, which is exact for a linear model and local for
+anything else, as is the design itself.
+
+**When no design can help.** If measuring every candidate at once still leaves a target parameter
+undetermined, the run says so instead of recommending measurements. That is structural
+non-identifiability: the model and the data it can produce do not distinguish that parameter at
+all, and the fix is a different observable, a fixed parameter, or a reparameterization — not more
+data. A profile-likelihood run reports which parameters are in that position.
+
+**What this cut does not do.** The design is computed at the best fit, so it is only as good as
+that fit; averaging the criterion over an ensemble of plausible parameter values (posterior draws,
+or the points a profile-likelihood run already computed) is a separate step and is not implemented.
+Neither is proposing a new experimental *condition*, which would mean proposing a model
+modification. The design is recorded in ADR-0129.
+
+
 What it computes
 ----------------
 

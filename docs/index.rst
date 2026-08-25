@@ -38,9 +38,11 @@ posterior distribution of the free parameters to quantify uncertainty — Adapti
 MCMC (``am``, the recommended sampler), DREAM(ZS), Preconditioned DREAM, parallel
 tempering, and a Hamiltonian Monte Carlo / NUTS reference sampler.
 
-**Analysis methods** round out the suite: **model checking** (``check``) and
-**profile-likelihood** analysis for identifiability, plus uncertainty
-quantification by **bootstrapping**.
+**Analysis methods** round out the suite: **model checking** (``check``),
+**profile-likelihood** analysis for identifiability, **optimal experimental
+design** (``design``), which recommends the measurements that would most improve
+the parameters a fit could not pin down, plus uncertainty quantification by
+**bootstrapping**.
 
 Objectives and noise
 --------------------

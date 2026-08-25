@@ -277,7 +277,8 @@ Required Keys
   *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``, and the
   gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), the
   :ref:`profile-likelihood <gradient_fitting>` identifiability analysis
-  (``profile_likelihood``), and the model *checker*
+  (``profile_likelihood``), the :ref:`experimental design <experimental_design>` that
+  says what to measure next (``design``), and the model *checker*
   (``check``), not just fitting. The value names the specific
   procedure; the key names the kind of job. Requires :ref:`edition <edition>` ``>= 2``,
   and like the modern objective surface there is **no implicit default** -- the run

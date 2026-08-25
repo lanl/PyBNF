@@ -18,7 +18,9 @@ bngsim's forward output-sensitivity tensor. This package hosts the PyBNF-side ma
   (``job_type = gntr``, #481) it additionally assembles the expected-Fisher / Gauss-Newton
   **Hessian** in the same point walk as the scalar gradient
   (``assemble_gradient_and_fisher_hessian`` + the constraint sibling
-  ``assemble_constraint_hessian``); ``assemble_fisher_hessian`` remains the standalone API.
+  ``assemble_constraint_hessian``); ``assemble_fisher_hessian`` remains the standalone API, and
+  ``iter_fisher_points`` yields the same information one scored point at a time, which is what
+  optimal experimental design (:mod:`pybnf.design`, #574) scores a candidate measurement with.
 
 The capability gate and the per-layer math are documented in ``docs/gradient_fitting.rst``.
 """
@@ -48,6 +50,7 @@ from .assembly import (
     assemble_fisher_hessian,
     assemble_gradient_and_fisher_hessian,
     assemble_gaussian_gradient,
+    iter_fisher_points,
 )
 from .marginal_time import assemble_marginal_time_gradient
 
@@ -75,4 +78,5 @@ __all__ = [
     'assemble_constraint_gradient',
     'assemble_fisher_hessian',
     'assemble_constraint_hessian',
+    'iter_fisher_points',
 ]
