@@ -30,12 +30,10 @@ The short version:
 
 ## Where the measurements and the tools live
 
-In `wshlavacek/BNGL-Models`, branch `572-linear-profiling-race`, which also carries the two tools
-ADR-0123 described. **ADR-0123 recorded those as having landed in the corpus and they had not** --
-they were committed to `tools/572-linear-observable-profiling` and never merged, so the ADR has been
-pointing at files that are not on `main`. This is the branch that merges them, together with the
-fixture, the additions below, and the failure modes each one hides, written up in
-`Grein-2026-benchmark-subset-I/tools/README.md`.
+In `wshlavacek/BNGL-Models`. The two tools ADR-0123 describes, and the fixture, landed there as
+that repository's PR #47; the additions below are PR #48. Every failure mode these tools hide is
+written up in `Grein-2026-benchmark-subset-I/tools/README.md`, which is the file to read before
+believing any number taken with them.
 
 What was already there: `linear_scope.py` (which free parameters enter an observable linearly, and
 in what space), `linear_profile.py` (simulate a box point once, then minimize **PyBNF's own

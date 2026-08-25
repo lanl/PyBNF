@@ -1,14 +1,14 @@
 # A linear observable parameter is profilable only in the space its own noise family scores, so the log-family half is refused on the math and the linear-Gaussian half stays open on a measurement the corpus cannot make (issue #572)
 
-**Status: Superseded in part by ADR-0129 (2026-08-25).** The two measurements this ADR named as
-#572's gate have been taken, and they close it: see ADR-0129 for the decision, the numbers, and the
+**Status: Superseded in part by ADR-0130 (2026-08-25).** The two measurements this ADR named as
+#572's gate have been taken, and they close it: see ADR-0130 for the decision, the numbers, and the
 scope. **What still stands:** finding 1's log-versus-linear split, finding 2's double-binding
-refusal and its two instances, and finding 5's census. **What ADR-0129 corrects:** finding 1's table
+refusal and its two instances, and finding 5's census. **What ADR-0130 corrects:** finding 1's table
 sorts families by the space their residual lives in, which is the wrong axis -- `laplace` scores a
 linear residual but sums absolute values, so least squares is not its conditional optimum and it has
 to be refused for the coupled form; and finding 3's reading of `Laske`'s `Int_nuc_off` ("profiles to
 approximately 57.13 at essentially every box draw"), which is 9 of the 15 draws that integrate, with
-five going to effectively zero -- the compression it reports does reproduce. **What ADR-0129
+five going to effectively zero -- the compression it reports does reproduce. **What ADR-0130
 answers:** finding 4's redundancy question, and the "what would decide it" measurements at the end.
 
 *(Originally -- Narrowed, not decided, 2026-08-21.)* ADR-0066/0099 profile a declared column's
@@ -255,9 +255,8 @@ If (1) shows the coupled pair behaves like `Int_nuc_off` did and (2) shows a ben
   gate.
 * Two reusable tools land in the corpus with their gotchas written down:
   `Grein-2026-benchmark-subset-I/tools/linear_scope.py` and `.../linear_profile.py`.
-  **They were committed and not merged**, to `wshlavacek/BNGL-Models` branch
-  `tools/572-linear-observable-profiling`, so this ADR has been pointing at files that are not on
-  `main`. ADR-0129's branch merges them.
+  They landed as that repository's PR #47, four days after this ADR was written; ADR-0130 adds a
+  third tool and two more confs beside them.
 
 ## Prior art
 
