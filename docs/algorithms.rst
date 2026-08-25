@@ -661,16 +661,25 @@ It is also possible to run the Simplex algorithm on its own, using a custom star
 
 Refinement (choosing a local optimizer)
 ---------------------------------------
-PyBNF offers three derivative-free, black-box local optimizers for the post-fit
-polish step (``refine = 1``): `Simplex`_ (Nelder–Mead), `Powell`_, and `CMA-ES`_.
-Set ``refine_method`` to ``sim`` (the default, backward-compatible), ``powell``,
-or ``cmaes`` to choose; only the chosen optimizer's config keys are read. Each
-also runs standalone as its own ``job_type`` (``sim`` / ``powell`` / ``cmaes``),
-started from a single point given with the ``var`` / ``logvar`` keys. CMA-ES
+PyBNF offers two groups of local optimizers for the post-fit polish step
+(``refine = 1``). Set ``refine_method`` to choose one; only the chosen optimizer's
+config keys are read. Each also runs standalone as its own ``job_type``.
+
+**Derivative-free**, usable with any model: `Simplex`_ (``sim``, the default,
+backward-compatible), `Powell`_ (``powell``), and `CMA-ES`_ (``cmaes``). Started
+standalone from a single point given with the ``var`` / ``logvar`` keys. CMA-ES
 additionally runs standalone as a *global* optimizer over a bounded ``uniform_var``
 / ``loguniform_var`` box (see `CMA-ES`_).
 
-All three need only objective values (no gradients), which suits PyBNF's
+**Gradient-based**, for models that supply sensitivities: ``gntr``
+(Fisher/Gauss-Newton trust region), ``lbfgs`` (L-BFGS-B), ``trf`` (trust-region
+least-squares), and ``ms`` (multiple shooting). Searching globally and then polishing
+with one of these is usually the quickest way to converge an ODE model, since each
+step uses the exact derivative of the objective instead of inferring curvature from
+objective values alone. Which models and objectives are supported, and what happens
+when one is not, is covered under :ref:`Gradient-based optimization <alg-gradient>`.
+
+The derivative-free three need only objective values, which suits PyBNF's
 black-box, often-noisy simulator objectives. As rough guidance:
 
 * **Simplex** — the long-standing default; a robust, low-overhead amoeba search.
@@ -680,6 +689,10 @@ black-box, often-noisy simulator objectives. As rough guidance:
   the most robust of the three on ill-conditioned or rotated (correlated)
   objectives, at the cost of more evaluations per step. Being population-based, it
   also parallelizes across the whole generation.
+* **A gradient method** (``gntr``, ``lbfgs``, ``trf``, ``ms``) — the fastest polish
+  when the model supplies sensitivities, since it converges on curvature computed
+  from derivatives rather than estimated from objective values. Not available for
+  models or objectives outside the gradient path.
 
 
 .. _alg-powell:

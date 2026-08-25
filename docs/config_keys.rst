@@ -850,8 +850,9 @@ no ``prior:`` and no ``lower:``/``upper:`` is a start point exactly as ``var`` i
 and refused in the same places.
 
 When refining a result (``refine = 1``), the optimizer is chosen by ``refine_method`` (``sim``
-(default), ``powell``, or ``cmaes``); it reads that optimizer's own settings (e.g. ``simplex_step``
-for Simplex), so you do not need to add ``var`` / ``logvar`` lines.
+(default), ``powell``, ``cmaes``, or one of the gradient optimizers ``gntr`` / ``lbfgs`` / ``trf``
+/ ``ms``); it reads that optimizer's own settings (e.g. ``simplex_step`` for Simplex), so you do
+not need to add ``var`` / ``logvar`` lines.
 
 **var**
   The starting point for a free parameter.  It is defined by a 3-tuple, corresponding to the variable's name, its initial
@@ -1387,13 +1388,18 @@ Algorithm Options
     * ``refine = 1``
 
 **refine_method**
-  Which local optimizer to use for refinement when ``refine = 1``: ``sim`` (Nelder–Mead Simplex), ``powell`` (Powell's conjugate-direction method), or ``cmaes`` (CMA-ES). See :ref:`refinement <refinement>`. Has no effect unless ``refine = 1``.
+  Which local optimizer to use for refinement when ``refine = 1``. Has no effect unless ``refine = 1``. See :ref:`refinement <refinement>`.
+
+  Derivative-free, usable with any model: ``sim`` (Nelder–Mead Simplex), ``powell`` (Powell's conjugate-direction method), or ``cmaes`` (CMA-ES).
+
+  Gradient-based, for models that supply sensitivities: ``gntr`` (Fisher/Gauss-Newton trust region), ``lbfgs`` (L-BFGS-B), ``trf`` (trust-region least-squares), or ``ms`` (multiple shooting). Searching globally and then polishing with one of these is usually the quickest way to converge an ODE model. See :ref:`Gradient-based optimization <alg-gradient>` for the models and objectives these support.
 
   Default: sim
 
   Example:
 
     * ``refine_method = powell``
+    * ``refine_method = gntr``
 
 **sbml_integrator**
   Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://libroadrunner.readthedocs.io/en/latest/>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. 
