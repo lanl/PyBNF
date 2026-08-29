@@ -29,6 +29,7 @@ from pathlib import Path
 from petab.v1.models.model import Model
 
 from ._bngl import parse_model
+from ._bngl_expr import BnglExpressionError, evaluate_parameters
 
 #: BNGL model type, as used in a PEtab v2 yaml file as ``language``.
 MODEL_TYPE_BNGL = 'bngl'
@@ -44,6 +45,7 @@ class BnglModel(Model):
         self._entities = entities
         self._model_id = model_id
         self._path = Path(path) if path is not None else None
+        self._resolved_parameters = None
 
     @staticmethod
     def from_file(filepath_or_buffer, model_id=None, base_path=None):
@@ -68,28 +70,35 @@ class BnglModel(Model):
     def get_parameter_ids(self):
         return list(self._entities.parameters)
 
+    def _parameter_values(self):
+        """Every parameter resolved to a number, computed once and cached.
+
+        A parameters block is arithmetic over other parameters, so this needs
+        no BNG2.pl and no network generation; see :mod:`pybnf.petab._bngl_expr`.
+        """
+        if self._resolved_parameters is None:
+            self._resolved_parameters = evaluate_parameters(
+                dict(self._entities.parameters)
+            )
+        return self._resolved_parameters
+
     def get_parameter_value(self, id_):
+        if id_ not in self._entities.parameters:
+            raise ValueError(f"Parameter {id_} does not exist.")
         try:
-            rhs = self._entities.parameters[id_]
-        except KeyError as e:
-            raise ValueError(f"Parameter {id_} does not exist.") from e
-        try:
-            return float(rhs)
-        except ValueError as e:
-            raise NotImplementedError(
-                f"Parameter '{id_}' has an expression value '{rhs}'. Evaluating a "
-                f"BNGL parameter expression needs BNG2.pl/network generation, which "
-                f"is out of scope for the validation-grade BnglModel (ADR-0026)."
+            return self._parameter_values()[id_]
+        except BnglExpressionError as e:
+            raise ValueError(
+                f"Parameter '{id_}' has an expression value "
+                f"'{self._entities.parameters[id_]}' that could not be evaluated: {e}"
             ) from e
 
     def get_free_parameter_ids_with_values(self):
-        out = []
-        for name, rhs in self._entities.parameters.items():
-            try:
-                out.append((name, float(rhs)))
-            except ValueError:
-                continue  # an expression-valued parameter has no validation-grade value
-        return out
+        # Expression-valued parameters used to be skipped here, which lost them
+        # from the PEtab problem with nothing said. They are resolved now; a
+        # block that still cannot be evaluated raises rather than going quiet.
+        values = self._parameter_values()
+        return [(name, values[name]) for name in self._entities.parameters]
 
     def get_valid_parameters_for_parameter_table(self):
         return list(self._entities.parameters)
