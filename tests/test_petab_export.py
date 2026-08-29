@@ -2142,10 +2142,11 @@ class TestBnglModel:
         assert not model.is_state_variable('x')        # nor is an observable
 
     def test_expression_valued_parameter_is_evaluated(self):
-        # Superseded #666: an expression RHS used to raise NotImplementedError,
+        # Superseded by #666: an expression RHS used to raise NotImplementedError,
         # and get_free_parameter_ids_with_values dropped the parameter without
         # saying so. A parameters block is arithmetic over other parameters, so
-        # it is resolved here without BNG2.pl; see pybnf.petab._bngl_expr.
+        # it is resolved here without BNG2.pl; see pybnf.petab._bngl_expr, whose
+        # semantics are pinned against a real BNG2.pl in test_petab_bngl_expr.py.
         pytest.importorskip('petab')
         from pybnf.petab._bngl import parse_model
         from pybnf.petab.bngl_model import BnglModel

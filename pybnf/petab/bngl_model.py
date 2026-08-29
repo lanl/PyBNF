@@ -24,12 +24,13 @@ it is not. This module imports ``petab`` and is therefore **not** imported by
 import os
 import shutil
 import subprocess
+import warnings
 from pathlib import Path
 
 from petab.v1.models.model import Model
 
 from ._bngl import parse_model
-from ._bngl_expr import BnglExpressionError, evaluate_parameters
+from ._bngl_expr import evaluate_parameters_partial
 
 #: BNGL model type, as used in a PEtab v2 yaml file as ``language``.
 MODEL_TYPE_BNGL = 'bngl'
@@ -71,13 +72,18 @@ class BnglModel(Model):
         return list(self._entities.parameters)
 
     def _parameter_values(self):
-        """Every parameter resolved to a number, computed once and cached.
+        """``(values, errors)`` for the parameters block, computed once and cached.
 
         A parameters block is arithmetic over other parameters, so this needs
         no BNG2.pl and no network generation; see :mod:`pybnf.petab._bngl_expr`.
+        Resolution is *partial*: one unusable definition costs that parameter
+        and whatever depends on it, not the whole block. A real model can carry
+        a construct we do not evaluate (an NFsim ``TFUN``, say), and taking the
+        other 16 parameters down with it would be a worse failure than the one
+        #666 set out to fix.
         """
         if self._resolved_parameters is None:
-            self._resolved_parameters = evaluate_parameters(
+            self._resolved_parameters = evaluate_parameters_partial(
                 dict(self._entities.parameters)
             )
         return self._resolved_parameters
@@ -85,20 +91,31 @@ class BnglModel(Model):
     def get_parameter_value(self, id_):
         if id_ not in self._entities.parameters:
             raise ValueError(f"Parameter {id_} does not exist.")
-        try:
-            return self._parameter_values()[id_]
-        except BnglExpressionError as e:
-            raise ValueError(
-                f"Parameter '{id_}' has an expression value "
-                f"'{self._entities.parameters[id_]}' that could not be evaluated: {e}"
-            ) from e
+        values, errors = self._parameter_values()
+        if id_ in values:
+            return values[id_]
+        raise ValueError(
+            f"Parameter '{id_}' has an expression value "
+            f"'{self._entities.parameters[id_]}' that could not be evaluated: "
+            f"{errors[id_]}"
+        )
 
     def get_free_parameter_ids_with_values(self):
         # Expression-valued parameters used to be skipped here, which lost them
-        # from the PEtab problem with nothing said. They are resolved now; a
-        # block that still cannot be evaluated raises rather than going quiet.
-        values = self._parameter_values()
-        return [(name, values[name]) for name in self._entities.parameters]
+        # from the PEtab problem with nothing said (#666). They are resolved
+        # now, and anything still unusable is named in a warning rather than
+        # disappearing -- but it no longer takes the rest of the block with it.
+        values, errors = self._parameter_values()
+        if errors:
+            detail = '; '.join(f'{name} ({errors[name]})' for name in sorted(errors))
+            warnings.warn(
+                f"Model {self._model_id!r}: {len(errors)} of "
+                f"{len(self._entities.parameters)} parameters could not be evaluated "
+                f"and are omitted from the PEtab problem: {detail}",
+                stacklevel=2,
+            )
+        return [(name, values[name])
+                for name in self._entities.parameters if name in values]
 
     def get_valid_parameters_for_parameter_table(self):
         return list(self._entities.parameters)
