@@ -65,6 +65,13 @@ in BNGL:
 | `get_parameter_ids()` | `parameters` names | `v1, v2, v3` | — |
 | `get_parameter_value(id)` | numeric RHS → `float`; **expression RHS → `NotImplementedError`**; unknown id → `ValueError` | `v1=5` | — |
 | `get_free_parameter_ids_with_values()` | `parameters` with numeric RHS | `(v1,5),(v2,5),(v3,5)` | — |
+
+> **Superseded by issue #666 (PR #673):** both rows now *evaluate* an expression RHS.
+> A parameters block is arithmetic over other parameters, so resolving it needs no
+> network generation — see `pybnf.petab._bngl_expr`. `get_parameter_value` returns the
+> number (or a `ValueError` naming why it could not be computed), and
+> `get_free_parameter_ids_with_values()` returns every parameter it can resolve,
+> warning about the rest instead of dropping them in silence.
 | `has_entity_with_id(id)` | **params ∪ observables ∪ global functions ∪ molecule types ∪ compartments ∪ seed species** | `True` for `v1`/`x`/`y`/`counter`; `False` for `obs_x` | `CheckObservablesDoNotShadowModelEntities`, `CheckValidParameterInConditionOrParameterTable` |
 | `get_valid_parameters_for_parameter_table()` | `parameters` names | `v1, v2, v3` | `CheckAllParametersPresentInParameterTable` (`allowed`) |
 | `get_valid_ids_for_condition_table()` | parameters ∪ compartments | `v1, v2, v3` | `CheckValidConditionTargets`, `CheckValidParameterInConditionOrParameterTable` |
@@ -144,6 +151,8 @@ Grammar points the enrichment must honor (verified against the EBNF + BNG2.pl):
   bare-number RHS, raises `NotImplementedError` for an **expression RHS** (`k_on 2*base_rate` —
   evaluating an expression tree is the simulation-grade work scoped out), and `ValueError` for
   an unknown id (the ABC's documented exception).
+  **Superseded by issue #666 (PR #673):** the expression RHS is evaluated now; of this
+  sentence only the unknown-id `ValueError` survives.
 - **Observables** are `("Molecules"|"Species"|"Counter") WS Name WS Pattern` — name is the
   *second* token, guarded by a leading observable keyword.
 - **Global functions** are `Name "(" [args] ")" (WS|"=") MathExpression` — `y()=…`, `f(x)=…`.
@@ -213,7 +222,8 @@ environments and de-risked on the acceptance artifact:
   `obs_x`/unknowns; `symbol_allowed_in_observable_formula` True for `x`,`y`,`v1` and False for
   `obs_x`/`func_y`/compartments/unknowns; `is_state_variable` True for the seed species, False
   for `v1`; `get_parameter_value` returns the nominal, raises `ValueError` on unknown and
-  `NotImplementedError` on an expression-valued parameter.
+  `NotImplementedError` on an expression-valued parameter
+  (**superseded by issue #666 (PR #673):** the expression is evaluated instead).
 - **Unit-test `register_bngl()`** idempotency (two calls; `sbml`/`pysb` still route to the
   originals) and that the `_bngl.parse_model` refactor leaves the exporter's 22 tests green.
 - **Make the oracle run in CI**: add `petab` to the `setup-pybnf` composite action so
@@ -235,6 +245,12 @@ functions, seed species, optional compartments; the demo (`parabola.bngl`) and i
 - **Expression-valued parameter *values*** (`k_on 2*base_rate`): the id is enumerated (it is a
   model entity), but `get_parameter_value` raises `NotImplementedError` rather than evaluating an
   expression tree. Confined, not silent.
+  **Superseded by issue #666 (PR #673).** The confinement was the wrong call, and it was not
+  really confined: `get_free_parameter_ids_with_values()` *dropped* the parameter in silence,
+  and 20.8% of parameter declarations across our model corpora (1934 of 9323) are
+  expression-valued. A parameters block needs no network generation to resolve, so this is
+  now in scope; the BNGL semantics are pinned against a real BNG2.pl in
+  `tests/test_petab_bngl_expr.py`.
 - **The full generated-species list** (network gen). `is_state_variable` answers at the
   seed-species grain validation needs; it does not enumerate the reaction network. For the demo
   (no conditions) it is never consequential. Revisited when the conditions/experiments export

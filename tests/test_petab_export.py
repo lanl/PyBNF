@@ -2141,7 +2141,12 @@ class TestBnglModel:
         assert not model.is_state_variable('v1')       # a parameter is not a species
         assert not model.is_state_variable('x')        # nor is an observable
 
-    def test_expression_valued_parameter_is_not_evaluated(self):
+    def test_expression_valued_parameter_is_evaluated(self):
+        # Superseded by #666: an expression RHS used to raise NotImplementedError,
+        # and get_free_parameter_ids_with_values dropped the parameter without
+        # saying so. A parameters block is arithmetic over other parameters, so
+        # it is resolved here without BNG2.pl; see pybnf.petab._bngl_expr, whose
+        # semantics are pinned against a real BNG2.pl in test_petab_bngl_expr.py.
         pytest.importorskip('petab')
         from pybnf.petab._bngl import parse_model
         from pybnf.petab.bngl_model import BnglModel
@@ -2149,8 +2154,10 @@ class TestBnglModel:
             "begin parameters\n base 2\n k_on 2*base\nend parameters\n")
         model = BnglModel(ent, model_id='m')
         assert model.get_parameter_value('base') == 2.0   # numeric RHS -> float
-        with pytest.raises(NotImplementedError):           # expression RHS -> confined
-            model.get_parameter_value('k_on')
+        assert model.get_parameter_value('k_on') == 4.0   # expression RHS -> resolved
+        assert dict(model.get_free_parameter_ids_with_values()) == {
+            'base': 2.0, 'k_on': 4.0,
+        }
 
     # -- is_valid: both contract paths pinned (#437) --------------------------
     # The contract (ADR-0026): shell to `BNG2.pl --check` when a BNG2.pl is
