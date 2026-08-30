@@ -84,7 +84,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).
-               'n_starts']
+               'n_starts',
+               # The end-of-fit stage that confirms which parameter set a stochastic fit
+               # really found (#659): how many of the top parameter sets to run again, and
+               # how many times to run each of them.
+               'best_fit_candidates', 'best_fit_replicates']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance',

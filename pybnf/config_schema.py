@@ -201,6 +201,22 @@ class GlobalConfig(PyBNFConfigModel):
     refine_method: str = 'sim'
     bng_command: str = Field(default_factory=_default_bng_command)
     smoothing: int = 1
+    # The end-of-fit stage that decides which parameter set a stochastic fit really found
+    # (#659). A stochastic model gives a different objective value every time it is run, and
+    # a fit picks its answer by taking the best value it ever saw, so the winner is often
+    # just the parameter set that got a lucky simulation: the reported objective is too
+    # good and the reported parameters are not the best ones found. So at the end of the
+    # fit the top `best_fit_candidates` parameter sets are each run `best_fit_replicates`
+    # more times, and the one with the best average objective value is reported.
+    #
+    # Both are ignored unless at least one model is stochastic. None == the key was not
+    # named, which resolves at the read site (Algorithm._best_fit_confirmation_settings)
+    # to 10 and 10 under edition >= 2 and to off under the legacy edition, whose contract
+    # is that an unchanged conf keeps behaving exactly as it always has. Setting
+    # best_fit_replicates to 0 turns the stage off; the cost is candidates x replicates
+    # simulations (x smoothing, when smoothing is also on) after the search has ended.
+    best_fit_candidates: Optional[int] = None
+    best_fit_replicates: Optional[int] = None
     backup_every: int = 1
     # Also checkpoint the best fit's information criteria (#560): every backup that finds a
     # new best fit re-simulates it once and writes Results/information_criteria_backup.txt,

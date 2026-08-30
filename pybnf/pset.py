@@ -2810,6 +2810,12 @@ class Trajectory:
     Tracks the various PSet instances and the corresponding objective function values
     """
 
+    #: The entry ``pin_best`` named as this trajectory's answer, as the same
+    #: ``(-obj, name, PSet)`` tuple the heap holds, or None. Declared on the class so an
+    #: Algorithm unpickled from a backup written by an older PyBNF reads as unpinned
+    #: rather than raising.
+    _pinned = None
+
     def __init__(self, max_output):
         # self._trajectory is a heap-based priority queue
         # Contains tuples (-score, name, PSet) - allows us to efficiently toss the worst PSet when we get a new one
@@ -2817,6 +2823,7 @@ class Trajectory:
         # As long as you follow the rule of no duplicate names, this is safe and won't compare PSets.
         self._trajectory = []
         self.max_output = max_output
+        self._pinned = None
 
     def _valid_pset(self, pset):
         """
@@ -2848,6 +2855,13 @@ class Trajectory:
         else:
             # Add the current pset, and throw away the worst one
             heapq.heappushpop(self._trajectory, (-obj, name, pset))
+
+        # A pinned best names one entry as this trajectory's answer, decided from what had
+        # been scored at the time. A new evaluation can beat it, so the pin does not
+        # outlive the addition. This is what keeps a refine phase, which shares the fit's
+        # trajectory, from reporting the pre-refine point (#659).
+        if self._pinned is not None:
+            self._pinned = None
 
         if append_file:
             with open(append_file, 'a') as af:
@@ -2919,12 +2933,67 @@ class Trajectory:
     def __len__(self):
         """The number of parameter sets recorded so far.
 
-        ``best_fit`` / ``best_fit_name`` / ``best_score`` all take the ``max`` of the
+        ``best_fit`` / ``best_fit_name`` / ``best_score`` fall back to the ``max`` of the
         underlying heap, so they are only defined on a non-empty Trajectory; this is how
         a caller asks whether there is a best fit at all -- e.g. a run that stopped
         before its first result came back (#529).
         """
         return len(self._trajectory)
+
+    def top_fits(self, n, distinct=True):
+        """The n best entries, best objective value first.
+
+        Returns a list of ``(objective, name, PSet)`` triples, shorter than n when the
+        trajectory holds fewer entries than that. With ``distinct`` (the default) a set of
+        parameter values appears once however many times it was scored, so asking for ten
+        candidates gets ten different parameter sets rather than ten records of the same
+        one -- which is what a search that re-evaluates its population would otherwise
+        give.
+
+        Used by the end-of-fit stage that runs the top candidates again to decide which of
+        them is really best (#659). Note that the objective value here is whatever the
+        search recorded, which for a stochastic model came from a single simulation.
+        """
+        if n <= 0:
+            return []
+        chosen = []
+        seen = []
+        for entry in sorted(self._trajectory, reverse=True):
+            pset = entry[2]
+            if distinct:
+                if any(pset == other for other in seen):
+                    continue
+                seen.append(pset)
+            chosen.append((-entry[0], entry[1], pset))
+            if len(chosen) == n:
+                break
+        return chosen
+
+    def pin_best(self, pset, obj, name):
+        """Name one parameter set as this trajectory's best fit, whatever the recorded
+        objective values say.
+
+        The end-of-fit confirmation stage (#659) decides the answer of a stochastic fit by
+        running the top candidates again and averaging, so its winner is usually not the
+        entry holding the lowest recorded value. That entry got there on a single lucky
+        simulation. Pinning here rather than at each of the many places that ask for the
+        best fit means the whole run -- the saved simulations, the best-fit model file, the
+        information criteria, the refine start point, the bootstrap replicate -- reports
+        the same parameter set.
+
+        The pin is dropped as soon as anything else is added, since a new evaluation can
+        beat it.
+        """
+        self._pinned = (-obj, name, pset)
+
+    def clear_pinned_best(self):
+        """Forget a pinned best fit, so the recorded objective values decide again."""
+        self._pinned = None
+
+    def pinned_best(self):
+        """The pinned entry as a ``(-obj, name, PSet)`` tuple, or None when none is
+        pinned."""
+        return getattr(self, '_pinned', None)
 
     def best_fit(self):
         """
@@ -2932,7 +3001,7 @@ class Trajectory:
 
         :return: PSet
         """
-        return max(self._trajectory)[2]
+        return (self.pinned_best() or max(self._trajectory))[2]
 
     def best_fit_name(self):
         """
@@ -2941,14 +3010,14 @@ class Trajectory:
 
         :return: str
         """
-        return max(self._trajectory)[1]
+        return (self.pinned_best() or max(self._trajectory))[1]
 
     def best_score(self):
         """
         Returns the best objective value in this trajectory
         :return: float
         """
-        return -max(self._trajectory)[0]
+        return -(self.pinned_best() or max(self._trajectory))[0]
 
 
 class OutOfBoundsException(Exception):

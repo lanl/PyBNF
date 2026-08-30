@@ -95,6 +95,12 @@ _EXCLUDE = frozenset({
     # benchmark here is a sampler/metaheuristic that never activates the gradient path, so
     # its value is inert for this oracle.
     'sensitivity_fallback',
+    # Post-freeze best-fit confirmation keys (#659): how many of the top parameter sets to
+    # run again at the end of a stochastic fit, and how many times each. Both default to
+    # None, which under the legacy edition these pre-migration confs run as means the stage
+    # is off, and every benchmark here carries an analytical .target model that is not
+    # stochastic anyway.
+    'best_fit_candidates', 'best_fit_replicates',
 })
 
 

@@ -1606,9 +1606,33 @@ Algorithm Options
     * ``sensitivity_fallback = error``
     * ``sensitivity_fallback = ignore``
 
+**best_fit_candidates**
+  How many of the top parameter sets to run again at the end of a fit that uses a stochastic model, so PyBNF can tell which of them is really best. A stochastic model gives a different objective value every time it is run, and a fit picks its answer by taking the best value it ever saw, so the winner is often just the parameter set that got a lucky simulation. See :ref:`the explanation <best_fit_confirmation>`.
+
+  Ignored when no model is stochastic. Ignored when ``best_fit_replicates`` is less than 2, since there would be nothing to average.
+
+  Default: 10 under ``edition = 2`` and above, and 0 (off) under the legacy edition
+
+  Example:
+
+    * ``best_fit_candidates = 20``
+
+**best_fit_replicates**
+  How many times to run each of those candidate parameter sets. Their average objective values decide which one the run reports as its best fit, and ``Results/best_fit_confirmation.txt`` records the averages and their uncertainties. Set to 0 to turn the whole stage off.
+
+  The cost is ``best_fit_candidates`` times ``best_fit_replicates`` simulations after the search has ended, all submitted at once, and times ``smoothing`` again when that is also set. Ignored when no model is stochastic.
+
+  Default: 10 under ``edition = 2`` and above, and 0 (off) under the legacy edition
+
+  Example:
+
+    * ``best_fit_replicates = 20``
+
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
   ``parallelize_models`` to run model partitions independently within each replicate.
+
+  ``smoothing`` averages the simulated curves of every evaluation the fit makes, which multiplies the cost of the whole fit. It is not a substitute for ``best_fit_replicates``, which runs only the top parameter sets again at the end so the reported answer is not the luckiest of many noisy values. See :ref:`the explanation <best_fit_confirmation>`.
 
   Each replicate gets a distinct deterministic seed under the default
   :ref:`stochastic_seed` policy (``auto``), so smoothing replicates yield

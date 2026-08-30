@@ -183,6 +183,77 @@ for the rest. A refine writes ``Results/multistart_summary_refine.txt``; a fit w
 start writes nothing, since there would be nothing to compare it against.
 
 
+.. _best_fit_confirmation:
+
+My stochastic fit reports an objective value I cannot reproduce
+---------------------------------------------------------------
+When a model is stochastic, such as one simulated with the stochastic simulation algorithm
+or with NFsim, running it twice with the same parameter values gives two different answers.
+The objective value PyBNF computes for a parameter set is therefore a noisy measurement of
+it rather than a fixed number.
+
+A fit picks its answer by taking the best objective value it ever saw, and each of those
+values came from a single simulation. A long fit scores tens of thousands of parameter
+sets, so the winner of that comparison is very often the parameter set that happened to get
+a lucky simulation rather than the parameter set that is genuinely best. Two things then
+come out wrong. The reported objective value is the best of many noisy draws, so it is
+optimistic, sometimes by several times the spread among the good parameter sets. And the
+reported parameter values are not the best ones found, because a slightly worse parameter
+set with a lucky draw beats a better one with an average draw.
+
+So a fit that uses at least one stochastic model ends with one more stage. The top
+``best_fit_candidates`` parameter sets are each run ``best_fit_replicates`` more times, they
+are ranked by their average objective value, and the winner of that ranking is what the run
+reports as its best fit. All of those simulations are submitted at once, which uses
+processors that would otherwise sit idle at the end of a run. The stage writes
+``Results/best_fit_confirmation.txt``::
+
+    candidates	3
+    replicates_requested	4
+    winner	iter2p0h4
+    winner_mean_objective	72838.74908
+    winner_standard_error	5521.750431
+    winner_search_objective	54877.73818
+    optimism	17961.0109
+    # rank	name	mean_objective	standard_error	std_deviation	runs	failed	search_objective
+    1	iter2p0h4	72838.74908	5521.750431	11043.50086	4	0	54877.73818
+    2	init4	87262.13928	3134.119241	6268.238482	4	0	99030.06578
+    3	iter2p5h3	100953.6321	3221.85557	6443.71114	4	0	101437.2518
+
+``mean_objective`` is the number to quote. Compare it against ``search_objective`` in the
+same row to see how much of the search's answer was luck; the ``optimism`` line does that
+subtraction for the winner. ``standard_error`` says how well this stage told the candidates
+apart, so two rows whose averages differ by less than their standard errors have not really
+been separated and need more replicates. A ``search_rank`` line appears when the winner is
+not the parameter set the search itself would have reported.
+
+The stage runs under ``edition = 2`` and above, where it defaults to ten candidates at ten
+replicates each. Under the legacy edition it is off, because an unchanged configuration file
+has to keep behaving as it always has; a legacy fit with a stochastic model prints a warning
+saying so, and turns the stage on by setting the two keys itself. Setting
+``best_fit_replicates = 0`` turns it off anywhere. Nothing happens for a fit with no
+stochastic model, and no fitting method searches any differently either way.
+
+A run whose ``wall_time_fit`` budget is already spent skips the stage and says so, since a
+budget is a promise about the whole run and this costs more simulations. It is also skipped,
+with a warning at startup, when ``stochastic_seed`` is one of the ``_honorbngl`` modes and
+every stochastic model in the fit carries an explicit ``seed`` argument, because then every
+replicate would reproduce the same trajectory and there would be nothing to average.
+
+This covers the answer the fit reports, and not the search that produced it. The same noise
+also affects the search while it is running, where a lucky value recorded for a population
+member can never be displaced except by a luckier one. That is a larger piece of work, and
+the table above is a way to measure how much it matters for your model before deciding
+whether to worry about it.
+
+``smoothing`` is a different setting for a related problem. It runs every evaluation of the
+whole fit several times and averages the simulated curves, which multiplies the cost of the
+entire fit, and it still leaves the final choice being made among the best of many noisy
+values. The two work together: with ``smoothing`` on, each of the replicate runs here is a
+whole smoothed evaluation, so the cost of this stage is candidates times replicates times
+``smoothing`` simulations.
+
+
 Unexpected behavior when generating SBML files in COPASI
 --------------------------------------------------------
 While COPASI is a useful tool for generating SBML files, it is important to note that some settings in COPASI do not get converted into SBML. This can lead to unexpected model behavior in PyBNF. 

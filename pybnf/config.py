@@ -314,6 +314,9 @@ class Configuration:
         # `stochastic` flag (#471). Legacy models set the flag at parse time, so the check is
         # order-independent for them.
         self._check_smoothing_misuse()
+        # Same deferral, same reason: the end-of-fit stage that confirms the best fit of a
+        # stochastic fit keys off the models' `stochastic` flags (#659).
+        self._check_best_fit_confirmation()
         # New-era observable: column-header overrides (ADR-0028, Chunk 4). Runs after every
         # experimental Data exists (so it can rename columns across all of them) and before
         # the objective is built (so the objective's by-name column match + per-observable
@@ -1071,6 +1074,58 @@ class Configuration:
                 'so PyBNF overrides the BNGL seed per replicate.'
                 % (self.config['smoothing'], self.config['stochastic_seed'])
             )
+
+    def _check_best_fit_confirmation(self):
+        """Validate the two best-fit confirmation keys, and tell a fit that needs the stage
+        but is not getting it (#659).
+
+        Called from ``__init__`` right after ``_check_smoothing_misuse`` and for the same
+        reason: an edition-2 model's ``stochastic`` flag is only set once the experiment
+        lines have been turned into actions (#471), so a check placed any earlier reads
+        every stochastic fit as deterministic.
+
+        Two things get said here. A legacy conf (no ``edition`` line) does not run the
+        stage, because the legacy edition's contract is that an unchanged conf keeps
+        behaving exactly as it always has, so a legacy fit with a stochastic model is told
+        that the objective value it is about to report will be too good and what to set to
+        fix that. And a fit that has asked for the stage but has pinned its stochastic
+        models to one seed is told that its replicates will all come out the same.
+        """
+        candidates = self.config.get('best_fit_candidates')
+        replicates = self.config.get('best_fit_replicates')
+        for key, value in (('best_fit_candidates', candidates), ('best_fit_replicates', replicates)):
+            if value is not None and value < 0:
+                raise PybnfError('%s must be zero or a positive whole number, not %s'
+                                 % (key, value))
+
+        md = self.models
+        stochastic = [m for m in md.values() if getattr(m, 'stochastic', False)]
+        if not stochastic:
+            return
+
+        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
+        on = (10 if modern else 0) if replicates is None else replicates
+        n_candidates = (10 if modern else 0) if candidates is None else candidates
+        if on < 2 or n_candidates < 1:
+            if not modern and replicates is None:
+                print1(
+                    'Warning: at least one of your models is stochastic, so running it twice with '
+                    'the same parameter values gives two different objective values. This fit will '
+                    'report the single best value it ever saw, which is optimistic, and the '
+                    'parameter set that saw it, which is often just the one that got a lucky '
+                    'simulation rather than the best one found. Set best_fit_replicates = 10 (and '
+                    'best_fit_candidates = 10) to have PyBNF run the top parameter sets again at '
+                    'the end of the fit and report the one that is really best.')
+            return
+
+        if self.config['stochastic_seed'].endswith('_honorbngl') and \
+                all(isinstance(m, BNGLModel) and m.seeded for m in stochastic):
+            print1(
+                'Warning: you asked for best_fit_replicates=%i, but stochastic_seed=%s honors the '
+                'explicit "seed" argument in your simulation commands, so every replicate would '
+                'reproduce the same trajectory. PyBNF will skip confirming the best fit. Switch to '
+                'stochastic_seed=auto (default) or stochastic_seed=random to enable it.'
+                % (on, self.config['stochastic_seed']))
 
     def _add_inline_analytical_target(self, md):
         """Synthesize the AnalyticalModel for an inline named objective (ADR-0059 item 6).
