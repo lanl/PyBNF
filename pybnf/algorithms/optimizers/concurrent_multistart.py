@@ -33,6 +33,8 @@ What the base owns
   count -- all plain list/dict/int, so the optimizer pickles for backup/resume (ADR-0007).
 * **The run loop** (:meth:`start_run` / :meth:`got_result` / :meth:`_route`): seeding,
   routing, per-iteration reporting, and the ``STOP``-on-last-start coordination.
+* **The end-of-run per-start table** (:meth:`multistart_records`, #658): what every start
+  reached, so a reader can tell a fit whose starts agreed from one whose starts did not.
 * **Resume plumbing** (:meth:`add_iterations`) and the ``__init__`` / :meth:`reset`
   skeleton.
 
@@ -76,6 +78,7 @@ for its own convergence test.
 import logging
 
 from .local_base import StartPointOptimizer
+from ..multistart_report import StartRecord
 from ...printing import print1, print2
 
 logger = logging.getLogger('pybnf.algorithms')
@@ -227,6 +230,7 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
         self.pending = {}        # dispatched pset name -> owning runner index (routing map)
         self.probe_counter = 0   # global submission counter -> unique pset names
         self.active = 0          # starts not yet terminated
+        self.start_evals = {}    # runner index -> completed evaluations charged to it (#658)
 
     def add_iterations(self, n):
         """Extend every start's per-start iteration budget by ``n`` (the ``-r`` resume path).
@@ -250,6 +254,7 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
         self.active = len(self.runners)
         self.probe_counter = 0
         self.pending = {}
+        self.start_evals = {}
         out = []
         for idx, runner in enumerate(self.runners):
             out.extend(self._seed(idx, runner))
@@ -261,6 +266,10 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
         starts keep going), or ``'STOP'`` only when the last live start finishes."""
         idx = self.pending.pop(res.name)
         runner = self.runners[idx]
+        # Charge the completed simulation to its start, for the end-of-run summary (#658).
+        # Counted here rather than at submission so a job abandoned when the fit stopped is
+        # not billed to a start that never saw its result.
+        self.start_evals[idx] = self.start_evals.get(idx, 0) + 1
         prev_iter = runner.iteration
         out = self._advance(idx, runner, res)
         if runner.iteration > prev_iter:
@@ -273,6 +282,26 @@ class ConcurrentMultiStartOptimizer(StartPointOptimizer):
                 return 'STOP'
             return []
         return out
+
+    def multistart_records(self):
+        """One row per start for ``Results/multistart_summary.txt`` (#658).
+
+        Everything the table needs is already on the per-start runners: the objective each
+        one reached (``fval``), the steps it took (``iteration``), and why it stopped
+        (``stop_reason``). Read at the end of the run rather than collected as each start
+        finishes, so a start that was still going when the fit stopped -- a wall-time
+        budget is the usual reason -- appears in the table too, with whatever it had
+        reached and no stop reason. Leaving it out would make the table look like a
+        complete set of starts when it was not.
+
+        Empty before :meth:`start_run` builds the runners.
+        """
+        return [StartRecord(start=i + 1,
+                            objective=runner.fval,
+                            iterations=runner.iteration,
+                            evaluations=self.start_evals.get(i, 0),
+                            stop_reason=runner.stop_reason)
+                for i, runner in enumerate(self.runners)]
 
     def _route(self, idx, pset):
         """Record ``pset`` (already uniquely named by the leaf) as owned by start ``idx`` and

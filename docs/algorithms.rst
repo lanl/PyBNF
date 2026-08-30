@@ -171,6 +171,12 @@ asynchronous variant ``ade``, ``ss``, and ``pso``). ``n_starts = 1`` (the defaul
 single run. For ``cmaes`` the equivalent knob is its own ``cmaes_restarts`` (IPOP/BIPOP
 restart).
 
+A fit with more than one start writes ``Results/multistart_summary.txt``, one row per start
+sorted by objective value from best to worst, and prints a short version of it at the end of
+the run. That is how you tell a search whose starts all agreed from one whose starts all
+landed somewhere different, which is the difference between an answer worth believing and
+the least bad of several poor ones. See :ref:`the per-start summary <multistart_summary>`.
+
 .. _alg-ss:
 
 Scatter Search

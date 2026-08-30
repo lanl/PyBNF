@@ -650,6 +650,10 @@ Required Keys
 **n_starts**
   Number of independent multi-start runs for the metaheuristic optimizers (``de``, ``ade``, ``ss``, ``pso``). A single run collapses its population into one basin, so on a multimodal objective it returns only a local minimum. With ``n_starts > 1``, that many independent searches are run one after another -- each a fresh random / Latin-hypercube population, each up to ``max_iterations`` iterations or until it converges -- and the best fit over all of them is kept. ``1`` (the default) is a single run, identical to the historical behavior. (``cmaes`` has its own multimodal restart, ``cmaes_restarts``; the gradient optimizers use ``population_size`` as their start count.)
 
+  ``n_starts`` also selects the number of starts for the concurrent local optimizers ``powell`` and ``sim``, which run their starts at the same time rather than one after another.
+
+  A fit with more than one start writes ``Results/multistart_summary.txt``, one row per start sorted by objective value from best to worst, and prints a short version of it at the end of the run. See :ref:`the per-start summary <multistart_summary>`.
+
   Example:
 
     * ``n_starts = 10``

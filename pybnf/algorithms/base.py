@@ -8,6 +8,7 @@ names locally; the never-patched data classes are imported by name.
 
 
 from . import core
+from . import multistart_report
 from .core import (
     FailedSimulation,
     JobGroup,
@@ -1444,6 +1445,10 @@ class Algorithm(ABC):
         :attr:`trajectory` and :attr:`stop_reason` and nothing about how they were filled.
         """
         self._announce_stop_reason()
+        # How every start of a multi-start fit did, next to why the fit stopped -- both are
+        # statements about the run rather than about its best parameter set, and a fit whose
+        # starts all failed still has this to report even though it has no best fit below.
+        self._emit_multistart_summary()
 
         # Write the final parameter sets, then copy the best simulations into the results
         # folder. A run that stopped before any result came back (an expired budget, an
@@ -2004,6 +2009,56 @@ class Algorithm(ABC):
                    '(k=%d, n=%d, lnL=%.6g)'
                    % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
         return True
+
+    def multistart_records(self):
+        """One :class:`~pybnf.algorithms.multistart_report.StartRecord` per start of this
+        fit, in any order -- :meth:`_emit_multistart_summary` sorts them (#658).
+
+        Empty here, which is right for the great majority of fit types: they run one
+        search and have nothing to compare it against. The three families that run several
+        starts override this, each reading the numbers off wherever it happens to keep
+        them (see :mod:`pybnf.algorithms.multistart_report`).
+        """
+        return ()
+
+    def _emit_multistart_summary(self):
+        """Write ``Results/multistart_summary.txt`` and print a short version of it (#658).
+
+        A fit that runs several searches from different starting points reports the best
+        of them. On its own that number says nothing about whether the search can be
+        trusted, because a run whose starts all agreed and a run whose starts all
+        disagreed print the same thing. This is the table that separates them: one row per
+        start, best objective value first.
+
+        Nothing is written for a fit with fewer than two starts, which includes every fit
+        type that does not run a multi-start at all and every refine (a refine polishes
+        the one point it was handed). A refine that does run several starts writes to the
+        ``_refine`` name, as the other artifacts of a second phase do, rather than
+        overwriting the searching fit's own table.
+
+        Every failure is logged and swallowed. The fit has finished by this point, and a
+        report must never be the reason a finished run dies.
+        """
+        try:
+            records = list(self.multistart_records() or ())
+        except Exception:
+            logger.exception('Failed to collect the per-start results for the multi-start summary')
+            return
+        if len(records) < 2:
+            return
+        name = 'multistart_summary_refine.txt' if self.refine else 'multistart_summary.txt'
+        path = str(Path(self.res_dir) / name)
+        lines = multistart_report.summary_lines(
+            records, job_type=self.config.config.get('fit_type'))
+        try:
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception:
+            logger.exception('Failed to write %s' % name)
+            return
+        logger.info('Wrote the multi-start summary %s' % path)
+        for line in multistart_report.console_lines(records, path):
+            print1(line)
 
     def _emit_profiled_noise(self):
         """Write ``Results/profiled_noise.txt`` for a fit that profiles a noise scale out of

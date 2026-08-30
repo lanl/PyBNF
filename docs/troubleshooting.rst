@@ -140,6 +140,49 @@ it leaves the original run's record intact, since a resume has no start of its o
    stopped at the next polling boundary.
 
 
+.. _multistart_summary:
+
+Should I believe my fit, or run it again with more starts?
+----------------------------------------------------------
+A fit that runs several searches from different starting points reports the best of them, and
+that one number cannot be checked on its own. Two very different runs look identical in it:
+one where every start reached about the same objective value, and one where every start landed
+somewhere different and the reported answer is only the least bad of them.
+
+So a fit with more than one start writes ``Results/multistart_summary.txt``, one row per start
+sorted by objective value from best to worst::
+
+    starts	20
+    best_objective	143.2085
+    worst_objective	891.4471
+    median_objective	143.2166
+    starts_near_best	17
+    # rank	start	objective	iterations	evaluations	reason
+    1	7	143.2085	38	402	gradient is flat (‖v·Jᵀr‖∞ ≤ 1e-08)
+    2	2	143.2091	41	437	gradient is flat (‖v·Jᵀr‖∞ ≤ 1e-08)
+    ...
+    20	13	891.4471	60	631	reached max_iterations (60)
+
+Read the objective column downward. A long flat run of starts at the same low value means the
+search found a consistent answer and more starts would very likely not change it. A staircase
+with no flat section at the top means it did not, so run more starts, or take another look at
+the model and at the parameter bounds. ``starts_near_best`` counts the flat run for you, and
+a short version of all of this is printed at the end of the run.
+
+Two rows deserve a second look wherever they appear. ``inf`` in the objective column is a start
+that produced no usable fit at all, usually because its start point failed to simulate; if every
+row says that, the parameter box is somewhere the model cannot be integrated. A reason of
+"did not finish before the fit ended" or "did not start before the fit ended" means the run
+stopped before that start was done with, which is what ``wall_time_fit`` expiring looks like
+here.
+
+This applies to ``trf``, ``lbfgs``, ``gntr``, ``powell``, ``sim``, ``ms``, the polishing phase
+of ``profile_likelihood``, and the metaheuristics ``de``, ``ade``, ``ss`` and ``pso``. The
+number of starts comes from ``population_size`` for the gradient methods and from ``n_starts``
+for the rest. A refine writes ``Results/multistart_summary_refine.txt``; a fit with a single
+start writes nothing, since there would be nothing to compare it against.
+
+
 Unexpected behavior when generating SBML files in COPASI
 --------------------------------------------------------
 While COPASI is a useful tool for generating SBML files, it is important to note that some settings in COPASI do not get converted into SBML. This can lead to unexpected model behavior in PyBNF. 
