@@ -56,16 +56,33 @@ whereas a generation-synchronized method (``de`` / ``ss``) has none. So the mixi
 set empties. For a synchronized method the set is already empty, so the next start
 begins immediately.
 
-All added state is plain ``int`` / ``set`` (the start index, the in-flight names, the
-draining flag), so the optimizer pickles for backup/resume exactly as before (ADR-0007).
+All added state is plain ``int`` / ``set`` / ``list`` (the start index, the in-flight
+names, the draining flag, the per-start tallies), so the optimizer pickles for
+backup/resume exactly as before (ADR-0007).
+
+Reporting the starts (#658)
+---------------------------
+Keeping the global best is not the whole job: a user also needs to know whether the
+starts agreed, since a run whose starts all reached the same value and a run whose starts
+all landed somewhere different otherwise print the same single number. The mixin is the
+only place that knows where one start ends and the next begins, so it tallies each start's
+best objective value and evaluation count as the results come back and hands them to
+``Results/multistart_summary.txt`` through :meth:`~MultiStartOptimizer.multistart_records`
+(see :mod:`pybnf.algorithms.multistart_report`).
 """
 
+from ..multistart_report import NOT_STARTED, StartRecord
 from ...config_schema import PyBNFConfigModel
 from ...printing import print2
 
 import logging
 
 logger = logging.getLogger('pybnf.algorithms')
+
+#: Why a start of a metaheuristic ended, for the end-of-run per-start table (#658). These
+#: methods return a bare stop signal without saying which of their two stopping conditions
+#: fired, so the row states both rather than guessing at one.
+_SEARCH_ENDED = 'the search ended on its own (converged or reached max_iterations)'
 
 
 class MultiStartConfig(PyBNFConfigModel):
@@ -100,6 +117,7 @@ class MultiStartOptimizer:
         self._start_index = 0
         self._inflight = set()
         self._draining = False
+        self._start_stats = []
         self.n_starts = self._resolve_n_starts()
 
     def _resolve_n_starts(self):
@@ -116,6 +134,7 @@ class MultiStartOptimizer:
         self._start_index = 0
         self._inflight = set()
         self._draining = False
+        self._start_stats = []
         if self.n_starts > 1:
             print2('Multi-start: up to %i independent starts, keeping the global best'
                    % self.n_starts)
@@ -126,6 +145,7 @@ class MultiStartOptimizer:
         # on emission, and add_to_trajectory already recorded it); untrack it before any
         # stripping.
         self._inflight.discard(res.pset.name)
+        self._record_for_summary(res)
         if self._draining:
             # A straggler from the just-finished start: its score is already in the
             # trajectory (recorded before got_result), and the inner search has been
@@ -136,6 +156,7 @@ class MultiStartOptimizer:
         self._strip_prefix(res)
         response = self._search_got_result(res)
         if response == 'STOP':
+            self._current_start_stats()['stop_reason'] = _SEARCH_ENDED
             if self._start_index + 1 < self.n_starts:
                 logger.info('Multi-start: start %d/%d finished; %d job(s) to drain '
                             'before the next start', self._start_index + 1, self.n_starts,
@@ -159,6 +180,62 @@ class MultiStartOptimizer:
         self._start_index = 0
         self._inflight = set()
         self._draining = False
+        self._start_stats = []
+
+    # --- the end-of-run per-start table (#658) ------------------------------- #
+    def _current_start_stats(self):
+        """The running record of how the start now in progress is doing, created on
+        first use. A plain list of dicts, so it rides the backup pickle like the rest of
+        the mixin's state."""
+        while len(self._start_stats) <= self._start_index:
+            self._start_stats.append({'objective': None, 'evaluations': 0,
+                                      'stop_reason': None})
+        return self._start_stats[self._start_index]
+
+    def _record_for_summary(self, res):
+        """Charge one completed evaluation to the start it belongs to, and keep the best
+        objective value that start has reached (#658).
+
+        A metaheuristic keeps no single "final objective" of its own -- its answer is the
+        best member it ever produced -- so the mixin takes the best objective value seen
+        while that start was running. Every result passes through here, including the
+        stragglers of a start that has already finished, which belong to that start and
+        not to the next one.
+        """
+        stats = self._current_start_stats()
+        stats['evaluations'] += 1
+        try:
+            # Defensive: this runs on every completed result, in the run loop, purely to
+            # fill in a report. A result that somehow carries no usable objective costs
+            # the fit a row of a table, not the fit.
+            score = float(getattr(res, 'score', None))
+        except (TypeError, ValueError):
+            return
+        if stats['objective'] is None or score < stats['objective']:
+            stats['objective'] = score
+
+    def multistart_records(self):
+        """One row per start for ``Results/multistart_summary.txt`` (#658).
+
+        These starts run one after another, so a fit that stops early (a wall-time budget,
+        say) may never reach some of them. Those are listed too, as starts that never ran,
+        because a table that quietly showed six rows for a twenty-start fit would read as
+        a twenty-start fit that agreed with itself.
+
+        The iteration count is left out. Each of these methods counts its own progress
+        differently -- generations per island, unproductive iterations, and so on -- and
+        there is no shared number to put in the column.
+        """
+        rows = []
+        for i in range(max(self.n_starts, len(self._start_stats))):
+            if i < len(self._start_stats):
+                stats = self._start_stats[i]
+                rows.append(StartRecord(start=i + 1, objective=stats['objective'],
+                                        iterations=None, evaluations=stats['evaluations'],
+                                        stop_reason=stats['stop_reason']))
+            else:
+                rows.append(StartRecord(start=i + 1, stop_reason=NOT_STARTED))
+        return rows
 
     # --- name-space boundary ------------------------------------------------ #
     def _prefix(self):

@@ -124,6 +124,20 @@ to a standalone box-start fit: when the optimizer runs as a **refiner** (an expl
 injected) it always runs a single start, since the job there is to polish the one best fit, not to
 re-scatter. ``max_iterations`` is the per-start iteration budget.
 
+**How the individual starts did.** The reported best fit is one number, and on its own it does not
+say whether the search can be trusted: twenty starts that all reached about the same objective value
+and twenty starts that all landed somewhere different look identical in it. So the run writes
+``Results/multistart_summary.txt``, one row per start sorted by final objective value from best to
+worst, and prints a short version at the end::
+
+    Multi-start summary: 20 starts. Best objective 143.21, median 143.22, worst 891.4.
+      17 of the 20 came within 0.1% of the best. The more starts that reach the same low value,
+      the more likely the fit has found the best answer available.
+      Per-start table, best first: output/Results/multistart_summary.txt
+
+See :ref:`Should I believe my fit, or run it again with more starts? <multistart_summary>` for how
+to read the table.
+
 **A bad start is survivable.** Stiff corners of a parameter box can defeat the solver, and a fit is
 expected to walk into them: a point may fail to integrate at all, or integrate while its forward
 sensitivities diverge, leaving a finite objective with a non-finite gradient. Neither ends the fit.

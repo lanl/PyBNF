@@ -62,6 +62,7 @@ from typing import ClassVar, Literal
 from pydantic import Field
 
 from .gradient_base import GradientOptimizer
+from ..multistart_report import NOT_STARTED, StartRecord
 from ...config_schema import PyBNFConfigModel
 from ...printing import PybnfError, print0, print1, print2
 from ...registry import register_fit_type
@@ -253,6 +254,18 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             feasibility_tol=config.config['ms_feasibility_tol'])
         self.homotopies = []
 
+    def reset(self, bootstrap=None):
+        """Clear the per-start ladder results along with the rest of the run's state.
+
+        A bootstrap replicate reuses the algorithm object, and everything that reports on
+        the ladder reads this list: the reported best start (:meth:`_best_homotopy`, behind
+        ``continuity_defects.txt`` and the best stage trace) and the per-start summary. Left
+        uncleared, a replicate could report a start belonging to the replicate before it,
+        fitted to different resampled data.
+        """
+        super().reset(bootstrap)
+        self.homotopies = []
+
     def _start_banner(self):
         return ('Running multiple shooting: coarsening ladder from %i segment(s) placed by '
                 '%s, up to %i outer iteration(s) per rung, from %i start point(s)'
@@ -360,6 +373,30 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                 print0('Warning: some of this run\'s scores did not go through the '
                        'ordinary single-shoot path and are not comparable with an '
                        'ordinary fit\'s.')
+
+    def multistart_records(self):
+        """One row per start for ``Results/multistart_summary.txt`` (#658).
+
+        This fit type drives its own search rather than the per-start step machines the
+        base's summary reads, so the numbers come from the homotopy result each start
+        produced: its best certified objective, the outer iterations it took over the whole
+        ladder, and why the ladder stopped. A start the run never reached -- the loop
+        breaks when the wall-time budget goes -- is listed as one that never ran, so the
+        table does not read as a complete set of starts when it is not.
+        """
+        rows = []
+        for i in range(max(len(self.start_psets), len(self.homotopies))):
+            if i >= len(self.homotopies):
+                rows.append(StartRecord(start=i + 1, stop_reason=NOT_STARTED))
+                continue
+            result = self.homotopies[i]
+            rows.append(StartRecord(
+                start=i + 1,
+                objective=result.best_score,
+                iterations=sum(len(stage.outer.iterates) for stage in result.stages),
+                evaluations=result.n_evaluations,
+                stop_reason=result.stop_reason))
+        return rows
 
     def _record_iterate(self, record):
         """Enter one certified outer iterate in the ordinary trajectory.

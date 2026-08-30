@@ -469,6 +469,18 @@ def test_ms_is_a_registered_refiner_that_starts_from_the_injected_point(tmp_path
     assert alg.start_psets[0]['S'] == pytest.approx(222.0)
 
 
+def test_a_reset_clears_the_previous_runs_ladder_results(tmp_path):
+    """A bootstrap replicate reuses the algorithm object, and everything that reports on
+    the ladder reads the list of per-start results: the best start behind
+    ``continuity_defects.txt`` and the best stage trace, and now the per-start summary
+    (#658). Left uncleared, a replicate could report a start belonging to the replicate
+    before it, fitted to different resampled data."""
+    alg = H.build(_ms_config(tmp_path), 'ms')
+    alg.homotopies = ['a result from the previous replicate']
+    alg.reset(None)
+    assert alg.homotopies == []
+
+
 def test_a_cmaes_fit_may_name_ms_as_its_refiner(tmp_path):
     """The config half of the same arm: ``refine_method = ms`` passes validation on a fit
     that is not itself ``ms``, and ``MSConfig``'s keys come along as a coherent group rather

@@ -6,6 +6,26 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **A multi-start fit now reports how every one of its starts did (#658).** Several fit
+  types run more than one search, each from a different starting point, and report the
+  best result. That one number cannot be checked. Twenty starts that all reached about the
+  same objective value mean the fit has very likely found the best answer available, and
+  running more starts would not help. Twenty starts that all landed somewhere different
+  mean the reported answer is only the least bad of twenty poor ones, so more starts are
+  needed or the model and the parameter bounds need another look. Both cases used to print
+  one number and nothing else.
+  A fit with more than one start now writes `Results/multistart_summary.txt`: one row per
+  start, sorted by final objective value from best to worst, with the objective that start
+  reached, the steps it took, the simulations it cost, and why it stopped. A short version,
+  including how many starts came within a tenth of a percent of the best, is printed at the
+  end of the run. Reading the objective column downward is the check the parameter fitting
+  literature calls a waterfall plot.
+  This covers `trf`, `lbfgs`, `gntr`, `powell`, `sim`, `ms`, the polishing phase of
+  `profile_likelihood`, and the metaheuristics `de`, `ade`, `ss` and `pso`. A start that
+  was still running when the fit ended, and a start the fit never reached, are both listed
+  and labelled, so a run stopped early by `wall_time_fit` cannot be misread as a complete
+  set of starts that agreed with each other. Nothing is written for a fit with a single
+  start. No fitting method searches any differently.
 - **PyBNF now says what to measure next (`job_type = design`, #574, ADR-0129).** A
   profile-likelihood run ends by telling you a parameter is practically non-identifiable,
   which is a diagnosis with no prescription. The new design run answers the question that
@@ -37,6 +57,13 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A bootstrap replicate of a multiple-shooting fit no longer reports a start belonging to
+  the replicate before it.** A bootstrap run reuses the algorithm object across replicates,
+  and `job_type = ms` kept adding each start's ladder result to a list that was never
+  cleared. Everything that reports on the ladder reads that list, so the second replicate
+  could pick a start from the first, fitted to different resampled data, as the one behind
+  `Results/continuity_defects.txt` and the best stage trace. Found while adding the
+  per-start summary above, which reads the same list.
 - **The startup parallelism report now describes how busy a fit will actually be, rather
   than how busy its first round is (#655).** The report added in v1.8.0 measured "how many
   jobs the fit runs at once" from the first batch of jobs submitted. For scatter search
