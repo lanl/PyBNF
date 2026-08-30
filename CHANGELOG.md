@@ -6,6 +6,35 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **A stochastic fit now confirms its best fit by running the top parameter sets again
+  (#659).** When a model is stochastic, running it twice with the same parameter values
+  gives two different answers, so the objective value PyBNF computes is a noisy measurement
+  rather than a fixed number. A fit picked its answer by taking the best value it ever saw,
+  and each of those values came from a single simulation. A long fit scores tens of
+  thousands of parameter sets, so the winner of that comparison was very often the
+  parameter set that happened to get a lucky simulation. Two things came out wrong and
+  nothing said so: the reported objective value was the best of many noisy draws and so was
+  optimistic by a wide margin, and the reported parameter values were not the best ones
+  found, because a slightly worse parameter set with a lucky draw beats a better one with
+  an average draw.
+  A fit that uses at least one stochastic model now ends by running its top
+  `best_fit_candidates` parameter sets `best_fit_replicates` more times each, ranking them
+  by their average objective value, and reporting that winner as the best fit. Ten and ten
+  by default, so a hundred simulations against a run that may have done a hundred thousand,
+  all submitted at once on processors that would otherwise sit idle at the end of a run.
+  `Results/best_fit_confirmation.txt` gives each candidate's average, its standard error,
+  and the single value the search had recorded for it, so you can see how much of the
+  search's answer was luck. Everything the run writes afterwards, including the saved
+  simulations, the best-fit model file, the information criteria, a refine's starting
+  point, and a bootstrap replicate's recorded answer, describes the confirmed parameter
+  set.
+  The stage is on under `edition = 2` and above. Under the legacy edition it is off, since
+  an unchanged configuration file has to keep behaving as it always has, and a legacy fit
+  with a stochastic model is told at startup what it is missing and which two keys turn it
+  on. Nothing happens for a fit with no stochastic model. No fitting method searches any
+  differently. This covers the answer the fit reports and not the search that produced it,
+  which is a larger piece of work; the new table is a way to measure how much that matters
+  for a given model.
 - **A multi-start fit now reports how every one of its starts did (#658).** Several fit
   types run more than one search, each from a different starting point, and report the
   best result. That one number cannot be checked. Twenty starts that all reached about the

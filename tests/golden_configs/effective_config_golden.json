@@ -21,6 +21,14 @@
     ]
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -449,6 +457,14 @@
     [
      "target.exp"
     ]
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -913,6 +929,14 @@
     ]
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -1359,6 +1383,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -1901,6 +1933,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -2477,6 +2517,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -3043,6 +3091,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -3471,6 +3527,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -3935,6 +3999,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -4385,6 +4457,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -4732,6 +4812,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -5134,6 +5222,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -5417,6 +5513,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -5716,6 +5820,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -6062,6 +6174,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -6411,6 +6531,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -6768,6 +6896,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -7149,6 +7285,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -7536,6 +7680,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -7907,6 +8059,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -8301,6 +8461,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -8656,6 +8824,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -9015,6 +9191,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -9370,6 +9554,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -9729,6 +9921,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -10061,6 +10261,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -10419,6 +10627,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "bngl_backend",
     "auto"
    ],
@@ -10762,6 +10978,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "beta",
@@ -11158,6 +11382,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      0.5,
@@ -11542,6 +11774,14 @@
     1
    ],
    [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
+   ],
+   [
     "beta",
     [
      1.0
@@ -11879,6 +12119,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -12225,6 +12473,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",
@@ -12574,6 +12830,14 @@
    [
     "backup_information_criteria",
     1
+   ],
+   [
+    "best_fit_candidates",
+    null
+   ],
+   [
+    "best_fit_replicates",
+    null
    ],
    [
     "bngl_backend",

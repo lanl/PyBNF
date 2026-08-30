@@ -8,6 +8,7 @@ names locally; the never-patched data classes are imported by name.
 
 
 from . import core
+from . import best_fit_confirmation
 from . import multistart_report
 from .core import (
     FailedSimulation,
@@ -824,9 +825,18 @@ class Algorithm(ABC):
         :return: List of PSet(s) to be run next or 'STOP' string.
         """
 
-    def add_to_trajectory(self, res):
-        """
-        Adds the information from a Result to the Trajectory instance
+    def score_result(self, res):
+        """Make sure this Result carries an objective value, and return it.
+
+        Does nothing when the workers already scored it (the default path, where an
+        ObjectiveCalculator was scattered). Otherwise normalizes, post-processes, and
+        scores it here on the master, which is the path a smoothing / model-parallel /
+        gradient fit takes. Anything that goes wrong penalizes this one evaluation with an
+        infinite objective rather than crashing the run (lanl/PyBNF#388).
+
+        Split out of :meth:`add_to_trajectory` so the end-of-fit confirmation stage
+        (#659), which scores results it deliberately does not put in the trajectory, goes
+        through exactly the same path the fit did.
         """
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
@@ -853,6 +863,13 @@ class Algorithm(ABC):
                 logger.warning(f'Simulation corresponding to Result {res.name} contained NaNs or Infs')
                 logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
                 print1(f'Simulation data in Result {res.name} has NaN or Inf values.  Discarding this parameter set')
+        return res.score
+
+    def add_to_trajectory(self, res):
+        """
+        Adds the information from a Result to the Trajectory instance
+        """
+        self.score_result(res)
         logger.debug(f'Adding Result {res.name} to Trajectory with score {res.score:.4f}')
         self.trajectory.add(res.pset, res.score, res.name)
 
@@ -960,14 +977,24 @@ class Algorithm(ABC):
             return self.model_list, None
         return self.model_list[model_slice[0]:model_slice[1]], None
 
-    def make_job(self, params):
+    def make_job(self, params, replicate_offset=0):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
         Algorithm object
         If smoothing or model-level parallelism is turned on, makes grouped subjobs.
 
+        ``replicate_offset`` shifts every job's replicate index by a fixed amount. Under
+        the default ``stochastic_seed`` policy a stochastic simulation's seed is derived
+        from the parameter values and the replicate index and nothing else, so running the
+        same parameter set again with the same index reproduces the same trajectory
+        exactly. The end-of-fit confirmation stage (#659) needs fresh trajectories for a
+        parameter set the fit has already run, so it asks for an offset past every index
+        the fit itself used. Zero, the default, is the ordinary path and is unchanged.
+
         :param params:
         :type params: PSet
+        :param replicate_offset: Amount to add to every job's replicate index
+        :type replicate_offset: int
         :return: list of Jobs
         """
         if params.name:
@@ -994,7 +1021,7 @@ class Algorithm(ABC):
                                        params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                        self.calc_future, self.config.config['normalization'], dict(),
                                        bool(self.config.config['delete_old_files']),
-                                       replicate_index=rep,
+                                       replicate_index=replicate_offset + rep,
                                        stochastic_seed_policy=self.config.config['stochastic_seed'],
                                        model_slice=mslice))
                 replica_subjob_ids.append((replica_id, newnames))
@@ -1016,7 +1043,7 @@ class Algorithm(ABC):
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                                    self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files']),
-                                   replicate_index=i,
+                                   replicate_index=replicate_offset + i,
                                    stochastic_seed_policy=self.config.config['stochastic_seed'],
                                    model_slice=mslice))
             new_group = JobGroup(job_id, newnames)
@@ -1040,6 +1067,7 @@ class Algorithm(ABC):
                                    params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                    self.calc_future, self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files']),
+                                   replicate_index=replicate_offset,
                                    stochastic_seed_policy=self.config.config['stochastic_seed'],
                                    model_slice=mslice))
             new_group = MultimodelJobGroup(job_id, newnames)
@@ -1053,6 +1081,7 @@ class Algorithm(ABC):
                     self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                     self.config.config['normalization'], self.config.postprocessing,
                     bool(self.config.config['delete_old_files']),
+                    replicate_index=replicate_offset,
                     stochastic_seed_policy=self.config.config['stochastic_seed'],
                     model_slice=mslice)]
 
@@ -1309,7 +1338,7 @@ class Algorithm(ABC):
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
-        self._finalize_run()
+        self._finalize_run(client)
 
     def expected_parallelism(self):
         """How many parameter sets this fit has out for evaluation at once once it is under
@@ -1430,9 +1459,14 @@ class Algorithm(ABC):
             # record for this run.
             logger.info(note.strip())
 
-    def _finalize_run(self):
+    def _finalize_run(self, client=None):
         """The end-of-fit path: stop reason, final parameter sets, best-fit artifacts,
         teardown.
+
+        ``client`` is the dask client the run was driven with, which the best-fit
+        confirmation stage (#659) needs because it submits simulations of its own. It is
+        optional so a caller that has no client -- some tests -- still gets every other
+        artifact; that stage is the only thing skipped without one.
 
         Reached the same way however the search ended -- the algorithm's own stop
         criterion, an exhausted job pool, or the wall-time budget -- because a budgeted run
@@ -1459,6 +1493,12 @@ class Algorithm(ABC):
             logger.warning('No parameter set completed, so there is no best fit to report')
             print1('No simulation completed, so there is no best fit to report.')
         else:
+            # Decide which of the top parameter sets is really the best before anything
+            # reads the best fit below. For a stochastic model the search ranked its
+            # candidates on one noisy simulation each, so the entry holding the lowest
+            # value is often just the one that got lucky (#659). A no-op for every
+            # deterministic fit.
+            self._confirm_best_fit(client)
             self.output_results('final')
             best_name = self.trajectory.best_fit_name()
             best_pset = self.trajectory.best_fit()
@@ -1587,6 +1627,222 @@ class Algorithm(ABC):
                 f.write(self.stop_reason + '\n')
         except Exception:
             logger.exception('Failed to write stop_reason.txt')
+
+    def _best_fit_confirmation_settings(self):
+        """How many candidate parameter sets to run again at the end of a stochastic fit,
+        and how many times to run each, as a ``(candidates, replicates)`` pair (#659).
+
+        Ten and ten under a modern edition, which the issue's arithmetic says removes about
+        ninety percent of the optimism in the reported objective value. Off under the
+        legacy edition, whose whole contract is that a conf that does not name an edition
+        keeps behaving exactly as it always has (ADR-0031); a legacy fit that wants the
+        stage names the two keys itself, and one whose models are stochastic is told so at
+        config load. An explicit value wins under either edition.
+        """
+        modern = edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
+        default = 10 if modern else 0
+        candidates = self.config.config.get('best_fit_candidates')
+        replicates = self.config.config.get('best_fit_replicates')
+        return (default if candidates is None else int(candidates),
+                default if replicates is None else int(replicates))
+
+    def _replicates_would_differ(self):
+        """Whether running a parameter set again would actually give a different answer.
+
+        True when some model is stochastic, with one exception: under an ``_honorbngl``
+        seed policy an explicit ``seed=>N`` in a BNGL action is honored verbatim, so every
+        run of that model reproduces one trajectory. When that pins every stochastic model
+        in the fit there is nothing for replicates to average over, and running them would
+        only spend simulations. This is the same trap ``smoothing`` guards against in
+        ``Configuration._check_smoothing_misuse``.
+        """
+        models = list(self.config.models.values())
+        stochastic = [m for m in models if getattr(m, 'stochastic', False)]
+        if not stochastic:
+            return False
+        policy = str(self.config.config.get('stochastic_seed') or 'auto')
+        if policy.endswith('_honorbngl') and all(getattr(m, 'seeded', False) for m in stochastic):
+            return False
+        return True
+
+    def _confirm_best_fit(self, client):
+        """Decide which of the top parameter sets a stochastic fit really found, by running
+        each of them again several times and ranking them by average objective value (#659).
+
+        A stochastic model gives a different objective value every time it is run, so every
+        value the search recorded is a noisy measurement of that parameter set rather than
+        a fixed number. The search picks its answer by taking the best value it ever saw,
+        over tens of thousands of parameter sets, so the winner of that comparison is very
+        often the parameter set that happened to get a lucky simulation. Two things then
+        come out wrong: the reported objective value is the best of many noisy draws and so
+        is optimistic by a wide margin, and the reported parameter values are not the best
+        ones found.
+
+        This runs the top ``best_fit_candidates`` parameter sets ``best_fit_replicates``
+        more times each, ranks them by their average, records the winner as the run's best
+        fit (:meth:`pybnf.pset.Trajectory.pin_best`, so every later artifact agrees on it),
+        and writes ``Results/best_fit_confirmation.txt``. All of the simulations go out at
+        once, which uses processors that would otherwise sit idle at the end of a run.
+
+        A no-op unless at least one model is stochastic, and a no-op without a dask client
+        to submit the work to. Deliberately scoped to the final answer: the same noise also
+        biases the search while it runs, which is a much larger piece of work.
+
+        Every failure is logged and swallowed. The fit has finished by this point, and this
+        stage must never be the reason a finished run dies.
+        """
+        try:
+            n_candidates, n_replicates = self._best_fit_confirmation_settings()
+            if n_candidates < 1 or n_replicates < 2:
+                return
+            if not self._replicates_would_differ():
+                return
+            if client is None:
+                logger.info('No dask client available, so the best fit of this stochastic '
+                            'fit was not confirmed by running its top parameter sets again')
+                return
+            if self._budget_spent():
+                # A wall-time budget is a promise about the whole run, and this stage costs
+                # candidates x replicates more simulations. A run that is already out of
+                # time spends nothing further, since overrunning it risks the run being
+                # killed before it has written anything at all.
+                msg = ('The wall-time budget is spent, so the best fit was not confirmed by '
+                       'running the top parameter sets again. This fit used a stochastic '
+                       'model, so the objective value it reports is the best of many noisy '
+                       'single simulations and is optimistic. Raise wall_time_fit to leave '
+                       'room for the check.')
+                logger.info(msg)
+                print1('Warning: ' + msg)
+                return
+            candidates = self.trajectory.top_fits(n_candidates)
+            if not candidates:
+                return
+            print1('Confirming the best fit: this fit used a stochastic model, so the top '
+                   '%d parameter set(s) are each being run %d more times to see which of '
+                   'them is really best.' % (len(candidates), n_replicates))
+            scored = self._run_confirmation_replicates(client, candidates, n_replicates)
+        except Exception:
+            logger.exception('Failed to confirm the best fit by running the top parameter '
+                             'sets again; reporting the best fit the search picked')
+            print1('Could not confirm the best fit by running the top parameter sets again, '
+                   'so the best fit the search picked is reported as is. See log for details.')
+            return
+        try:
+            self._emit_best_fit_confirmation(scored, n_replicates)
+        except Exception:
+            logger.exception('Failed to write the best-fit confirmation report')
+
+    def _run_confirmation_replicates(self, client, candidates, n_replicates):
+        """Run each candidate ``n_replicates`` more times and collect its objective values.
+
+        Returns one :class:`~pybnf.algorithms.best_fit_confirmation.Candidate` per input
+        candidate, in the order the search ranked them. Every simulation is submitted
+        before any result is collected.
+
+        Each replicate is a whole evaluation as this fit defines one, built by
+        :meth:`make_job` and scored by :meth:`score_result`, so its objective value is the
+        same quantity the search recorded and the two are directly comparable. Under
+        ``smoothing`` that means one replicate is itself an average of ``smoothing``
+        simulations.
+
+        The replicate indices start past every index the fit itself used, because under the
+        default seed policy a stochastic simulation's seed comes from the parameter values
+        and the replicate index, so reusing an index would reproduce a trajectory the fit
+        has already seen instead of drawing a new one.
+        """
+        smoothing = max(1, int(self.config.config.get('smoothing') or 1))
+        grouped = smoothing > 1 or self.config.config.get('parallelize_models', 1) > 1
+
+        jobs = []
+        owner = dict()  # job name of a finished evaluation -> index of the candidate it belongs to
+        for i, (_, _, chosen_pset) in enumerate(candidates):
+            for r in range(n_replicates):
+                # A copy so the run gets its own name (which is the name of the folder it
+                # writes to) without renaming the parameter set the trajectory holds.
+                replicate_pset = copy.copy(chosen_pset)
+                replicate_pset.name = 'bestfit_check%d_run%d' % (i + 1, r + 1)
+                owner[replicate_pset.name] = i
+                jobs += self.make_job(replicate_pset, replicate_offset=(r + 1) * smoothing)
+
+        logger.info('Confirming the best fit: submitting %d job(s) for %d candidate '
+                    'parameter set(s) at %d replicate(s) each'
+                    % (len(jobs), len(candidates), n_replicates))
+
+        pending = dict()
+        futures = []
+        for job in jobs:
+            f = client.submit(core.run_job, job, False, self.failed_logs_dir,
+                              models=getattr(self, 'models_future', None),
+                              calc=getattr(self, 'calc_future', None))
+            futures.append(f)
+            pending[f] = (job.params, job.job_id)
+
+        scores = [[] for _ in candidates]
+        failures = [0 for _ in candidates]
+        pool = core.as_completed(futures, with_results=True, raise_errors=False)
+        for f, raw in pool:
+            res = result_from_completed(f, raw, pending[f][0], pending[f][1])
+            del pending[f]
+            if not isinstance(res, core.Result):
+                # A cancelled future, which the run loop treats as fatal. Here the fit is
+                # already over, so it costs this replicate and nothing more.
+                logger.warning('A best-fit confirmation job was cancelled')
+                continue
+            if grouped:
+                res = self._fold_group_result(res)
+                if res is None:
+                    continue
+            index = owner.get(res.name)
+            if index is None:
+                logger.warning('Ignoring unexpected best-fit confirmation result %s' % res.name)
+                continue
+            if isinstance(res, FailedSimulation):
+                failures[index] += 1
+                continue
+            score = self.score_result(res)
+            if score is None or not np.isfinite(score):
+                failures[index] += 1
+            else:
+                scores[index].append(float(score))
+
+        return [best_fit_confirmation.Candidate(name=name, pset=candidate_pset,
+                                                search_objective=float(obj),
+                                                scores=tuple(scores[i]), failures=failures[i])
+                for i, (obj, name, candidate_pset) in enumerate(candidates)]
+
+    def _emit_best_fit_confirmation(self, candidates, n_replicates):
+        """Record the winner as this run's best fit and write
+        ``Results/best_fit_confirmation.txt`` (#659).
+
+        The winner is pinned on the trajectory rather than handed to the caller, so
+        everything downstream of here -- the saved simulations, the best-fit model file,
+        the information criteria, a refine's start point, a bootstrap replicate's recorded
+        answer -- reports the same parameter set without any of them having to know this
+        stage exists.
+
+        A refine writes to the ``_refine`` name, as the other artifacts of a second phase
+        do, rather than writing over the searching fit's own table.
+        """
+        best = best_fit_confirmation.winner(candidates)
+        if best is None:
+            logger.warning('No candidate parameter set produced a usable objective value '
+                           'when it was run again, so the best fit the search picked stands')
+        else:
+            self.trajectory.pin_best(best.pset,
+                                     best_fit_confirmation.mean_objective(best), best.name)
+            logger.info('Best-fit confirmation: %s wins with an average objective of %.10g '
+                        'over %d run(s); the search had recorded %.10g for it'
+                        % (best.name, best_fit_confirmation.mean_objective(best),
+                           len(best.scores), best.search_objective))
+
+        name = 'best_fit_confirmation_refine.txt' if self.refine else 'best_fit_confirmation.txt'
+        path = str(Path(self.res_dir) / name)
+        lines = best_fit_confirmation.summary_lines(candidates, n_replicates)
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        logger.info('Wrote the best-fit confirmation table %s' % path)
+        for line in best_fit_confirmation.console_lines(candidates, n_replicates, path):
+            print1(line)
 
     def _copy_best_fit_sims(self, best_pset, best_name):
         """Copy the best-fit parameter set's simulation outputs into Results/.
