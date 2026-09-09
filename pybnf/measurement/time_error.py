@@ -53,7 +53,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from ..printing import PybnfError
-from ..objective import SummationObjective
+from ..objective import LikelihoodObjective, SummationObjective
 
 #: ``np.trapz`` was renamed ``np.trapezoid`` in numpy 2.0; support both (the gradient quadrature).
 _trapz = np.trapezoid if hasattr(np, 'trapezoid') else np.trapz
@@ -585,6 +585,14 @@ class MarginalizedTimeObjective(SummationObjective):
         """The ``(NoiseModel, {param: SigmaSource})`` for one observable -- its override or the
         class default (shape mirrors :meth:`LikelihoodObjective._spec_for`)."""
         return self.overrides.get(col_name, (self.noise, self._default_sources()))
+
+    # Borrowed rather than inherited: this is a SummationObjective, whose _check_columns
+    # rejects any .exp column absent from the simulation output, so a per-point noise
+    # column (``obs_SD``, from ``sigma = read_exp_file _SD``) read as an unmatched
+    # observable and every evaluation raised. LikelihoodObjective's version resolves the
+    # noise sources through ``_spec_for``, which this class also defines with the same
+    # shape, so it exempts the noise column for exactly the same reason (ADR-0021).
+    _check_columns = LikelihoodObjective._check_columns
 
     def required_free_noise_params(self):
         """The free-parameter names this objective estimates -- the noise sources' (exactly as
