@@ -507,6 +507,62 @@ Required Keys
     loguniform_var = sigma_obs 1e-3 1e3   # still declared; bounds now inert
     noise_profiling = 1
 
+.. _linear_profiling:
+
+**linear_profiling**
+  Solve every **observable coefficient that enters an observable formula linearly** out of
+  the search analytically instead of fitting it as an ordinary free parameter (``1`` to
+  enable; default ``0``, off). Applies to a free parameter that an
+  ``observable: <id>, formula: <expr>`` line reads as a scale (``Z*scale``), an offset
+  (``Z + offset``), or the coupled pair (``Z*scale + offset``), named directly or through a
+  row-varying ``observableParameters`` placeholder bound to it. At every evaluation such a
+  coefficient is replaced by its weighted least-squares value over the scored points that
+  read it -- the minimizer of the Gaussian objective over those coefficients, weighted by
+  each point's fit weight over its variance -- so those dimensions leave the search entirely
+  and every parameter set the fit evaluates is coefficient-optimal by construction.
+
+  Why it helps: an offset or a scale is a cheap direction in the box that has a closed
+  form, so searching it spends evaluations ranking candidates by how wrong their scale
+  happens to be rather than by their dynamics. On the ADR-0130 fixture the profiled search
+  reached the optimum in about half the simulations, and its ordering of candidates tracked
+  the true rate constants where the searched ordering did not. Six of the twenty-three
+  benchmark models carry such coefficients, up to a third of a fit's search dimensions.
+
+  Coefficients that share an observable are solved together, so a scale tied across several
+  experiments is one solve over all of them. The switch is **all-or-nothing** within a fit,
+  and is refused before the run starts -- naming the parameter and the reason -- when any
+  linear coefficient cannot be solved for: it is also a model parameter (so it moves the
+  simulation); a noise source reads it (a ``fit`` sigma, a sigma ``formula`` or
+  ``prediction_formula``, or a row-varying noise token -- moving it would move sigma);
+  it enters some observable nonlinearly; its observable is not a linear-scale Gaussian
+  (``normal`` / ``chi_sq``; a ``lognormal`` or ``laplace`` observable's loss is not the sum
+  of squares the closed form minimizes); its observable is affine in each coefficient
+  separately but not in all of them jointly (``scale*(Z + offset)``); its observable is
+  ``cumulative``, already carries ``normalization = scale``, or has a prediction-dependent
+  sigma; or, with ``noise_profiling`` also on, its group's observables do not all share one
+  profiled sigma. Also refused for the Bayesian samplers, by the same argument as
+  ``noise_profiling``, and for the gradient methods (``trf``, ``lbfgs``, ``gntr``, ``ms``),
+  whose reduced Jacobian is not yet built.
+
+  The profiled parameters must still be **declared** as free parameters (the same ``.conf``
+  runs with and without the key). Unlike a profiled noise scale, their declared bounds are
+  **not** inert: the closed form is unconstrained and can return a negative scale for a
+  parameter declared positive, so the solve is held inside the declared box and the run says
+  when a bound held a coefficient. They remain estimated quantities, so they keep counting
+  in ``k`` in ``Results/information_criteria.txt``, and their fitted values are written to
+  ``Results/profiled_linear.txt`` with a column saying whether a bound held them at the
+  best fit -- they are not coordinates of the best parameter set, so they appear in no
+  ``sorted_params_*.txt`` row.
+
+  Example::
+
+    edition = 2
+    job_type = ss
+    observable: Ca, formula: Z_state*scale + offset
+    uniform_var = scale 0 100        # still declared; the solve stays inside the box
+    uniform_var = offset -10 10
+    linear_profiling = 1
+
 
 .. _noise_model_key:
 

@@ -6,6 +6,7 @@ from .noise import (LN, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, Dat
                     StudentT)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
+from .measurement.linear import PLACEHOLDER as _LINEAR_PLACEHOLDER, affine_roles, formula_symbol_names, solve_group
 
 from collections import namedtuple
 from statistics import fmean, stdev
@@ -225,6 +226,17 @@ class ObjectiveFunction:
     #: (``Results/profiled_noise.txt``). Empty for a fit that profiles nothing.
     _profiled_noise = {}
 
+    #: Analytic linear-coefficient profiling (ADR-0132, #671): the observation-layer
+    #: free-parameter names this fit solves for in closed form at every evaluation instead of
+    #: searching, the :class:`~pybnf.measurement.linear.LinearGroup` s they are solved in, and
+    #: from the most recent evaluation the values ``{name: c_hat}`` and, for a coefficient the
+    #: bounded solve held at a declared bound, which bound. The empty defaults are an exact
+    #: no-op. Populated from ``linear_profiling = 1`` at build.
+    _profiled_linear_params = frozenset()
+    _linear_groups = ()
+    _profiled_linear = {}
+    _profiled_linear_at_bound = {}
+
     @staticmethod
     def _experiments(sim_data_dict, exp_data_dict):
         """The ``(sim_data, exp_data, data_key)`` triples this evaluation scores -- every
@@ -245,6 +257,13 @@ class ObjectiveFunction:
         The base is the no-op ``True``: a non-likelihood objective estimates no noise
         parameter, so there is nothing to profile. :class:`LikelihoodObjective` overrides it.
         """
+        return True
+
+    def _resolve_linear_coefficients(self, sim_data_dict, exp_data_dict):
+        """Solve every analytically profiled linear coefficient from the data and put it in
+        ``_pset_values`` before the measurement layer materializes the observables that read
+        it (ADR-0132, #671). The base is the no-op ``True``: only a linear-scale Gaussian
+        likelihood has the closed form. :class:`LikelihoodObjective` overrides it."""
         return True
 
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
@@ -288,6 +307,12 @@ class ObjectiveFunction:
                 # expression observableFormula's column into the simulated data using the
                 # PSet, *before* the by-name match below finds it. A no-op when no layer is
                 # attached (the default), so every non-PEtab job is byte-identical.
+                # Analytic linear-coefficient profiling (ADR-0132, #671): solve every profiled
+                # observable coefficient from the data BEFORE the layer materializes the
+                # observables that read it, so this evaluation is coefficient-optimal by
+                # construction. Skipped entirely for a fit that profiles nothing.
+                if self._linear_groups:
+                    self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
                 if self.measurement:
                     self.measurement.apply(sim_data_dict, self._pset_values)
                 # Analytic noise profiling (ADR-0108, #562): put every profiled scale at its
@@ -1368,6 +1393,357 @@ class LikelihoodObjective(SummationObjective):
                 entry[0] += weight * family.profile_statistic(prediction, observation)
                 entry[1] += weight
 
+    # ------------------------------------------------------------------------------
+    # Analytic linear-coefficient profiling (ADR-0132, #671)
+    # ------------------------------------------------------------------------------
+    def linear_profiling_plan(self, free_names, model_names, exp_data_dict, profiled_noise=()):
+        """What ``linear_profiling = 1`` would solve for in this fit, and why it would refuse
+        (ADR-0132, #671) -- the config-time gate, answered from the declared observable
+        formulas, noise specs and binding tables rather than a walked point set, so a fit is
+        refused before it starts.
+
+        Returns ``(groups, refusals)``. ``groups`` is a sorted list of ``(names, columns)``
+        pairs: the sorted free-parameter names solved jointly and the frozenset of observable
+        ids whose formulas read them. Coefficients that share an observable are solved
+        together, transitively, because one observable's residual couples every coefficient
+        it reads. ``refusals`` is a list of one-line reasons; a caller enables profiling only
+        when it is empty, since profiling some of a fit's linear coefficients while searching
+        others changes what the searched ones mean.
+
+        A declared free parameter is a candidate when an observable formula reads it, named
+        directly or through a row-varying placeholder whose binding table maps to it on some
+        row. It is refused, by name, when any of these holds:
+
+        * it is also a model entity, so it moves the simulation, which a linear solve would
+          ignore;
+        * a noise source reads it -- a free sigma, a sigma formula, a prediction-dependent
+          sigma's coefficient, or a per-row noise token -- so moving it moves sigma and it is
+          not a free linear coefficient (ADR-0123 finding 2: the Fiedler / Raia double
+          binding, tested on resolved names);
+        * it enters some observable's formula nonlinearly;
+        * an observable reading it is not a linear-scale Gaussian, whose sum of squares is
+          what the closed form minimizes (ADR-0130 finding 4). A log family's homogeneous
+          scale has the ADR-0066 geometric-mean form, which is not built here;
+        * an observable reading it is affine in each of its coefficients separately but not
+          in all of them jointly (``scale*(x + offset)``), whose solve is over a different
+          parametrization than the declared one;
+        * an observable reading it is scored as a cumulative count (an offset cancels in the
+          per-interval difference), already carries an ADR-0066 analytic per-series scale, or
+          has a prediction-dependent sigma (the solve's weights would depend on its own
+          answer);
+        * with noise profiling also on, its group's observables do not all share one
+          profiled sigma: the weights then depend on scales that depend on the coefficients,
+          which needs an alternating solve (ADR-0130 finding 5).
+        """
+        exp_datas = [(m, s, d) for m, by_suffix in exp_data_dict.items()
+                     for s, d in by_suffix.items()]
+        noise_names = set(self.required_free_noise_params())
+        noise_names |= self._row_bound_noise_tokens(exp_datas)
+        models = {}
+        for mm in (self.measurement.models if self.measurement else []):
+            models[mm.observable_id] = mm
+        for col, pm in self._per_measurement_models.items():
+            models[col] = pm
+        scaled_cols = set()
+        for cols in (getattr(self, '_analytic_scale', None) or {}).values():
+            scaled_cols |= set(cols)
+
+        reads = {}       # observable id -> {name: role}
+        problems = {}    # name -> [reason]
+        for col, model in sorted(models.items()):
+            symbols = formula_symbol_names(model.formula)
+            direct = [s for s in symbols if s in free_names]
+            placeholders = [s for s in symbols if _LINEAR_PLACEHOLDER.match(s)]
+            bound = self._row_bound_tokens(exp_datas, col, placeholders)
+            roles, jointly = affine_roles(model.formula, direct + placeholders)
+            per_name = {}
+            for name in direct:
+                if name in roles:
+                    per_name[name] = roles[name]
+            for placeholder, tokens in bound.items():
+                if placeholder not in roles:
+                    continue
+                for token in sorted(tokens):
+                    if token in free_names:
+                        # A token bound under two placeholders keeps the worse reading.
+                        if per_name.get(token) != 'nonlinear':
+                            per_name[token] = roles[placeholder]
+            if not per_name:
+                continue
+            family, sources = self._spec_for(col)
+            gate = self._linear_profile_gate(col, family, sources, scaled_cols)
+            for name, role in per_name.items():
+                reasons = problems.setdefault(name, [])
+                if name in model_names:
+                    reasons.append(
+                        "'%s' is a model parameter as well as a coefficient of observable "
+                        "'%s', so it moves the simulation; only an observation-layer "
+                        "parameter has a closed-form profile" % (name, col))
+                if name in noise_names:
+                    reasons.append(
+                        "'%s' is read by a noise source as well as by observable '%s', so "
+                        "moving it moves sigma and it is not a free linear coefficient"
+                        % (name, col))
+                if role == 'nonlinear':
+                    reasons.append(
+                        "'%s' enters observable '%s' (%s) nonlinearly"
+                        % (name, col, model.formula))
+                if gate:
+                    reasons.append("observable '%s' reads '%s' but %s" % (col, name, gate))
+                if not jointly:
+                    reasons.append(
+                        "observable '%s' (%s) is affine in each of its coefficients but not "
+                        "in all of them jointly, so its solve is over a different "
+                        "parametrization than the declared one" % (col, model.formula))
+            reads[col] = per_name
+
+        # Coefficients that share an observable form one group, transitively.
+        parent = {}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for per_name in reads.values():
+            names = sorted(per_name)
+            for name in names:
+                parent.setdefault(name, name)
+            for name in names[1:]:
+                parent[find(name)] = find(names[0])
+        members = {}
+        for name in parent:
+            members.setdefault(find(name), set()).add(name)
+        groups = []
+        for names in members.values():
+            cols = frozenset(col for col, per_name in reads.items() if set(per_name) & names)
+            groups.append((tuple(sorted(names)), cols))
+        groups.sort()
+
+        profiled_noise = set(profiled_noise or ())
+        for names, cols in groups:
+            shared, other = set(), []
+            for col in sorted(cols):
+                family, sources = self._spec_for(col)
+                source = sources.get(family.noise_params[0])
+                if isinstance(source, FreeParameterSigma) and source.name in profiled_noise:
+                    shared.add(source.name)
+                else:
+                    other.append(col)
+            if shared and (other or len(shared) > 1):
+                for name in names:
+                    problems.setdefault(name, []).append(
+                        "'%s' is solved jointly over observables (%s) whose noise scales are "
+                        "not one shared profiled parameter (profiled: %s%s), so the weights of "
+                        "its solve depend on scales that depend on it; profile one noise scale "
+                        "for the whole group, or search those scales"
+                        % (name, ', '.join(sorted(cols)), ', '.join(sorted(shared)),
+                           '; not profiled: ' + ', '.join(other) if other else ''))
+        refusals = sorted({reason for reasons in problems.values() for reason in reasons})
+        return groups, refusals
+
+    def _linear_profile_gate(self, col, family, sources, scaled_cols):
+        """Why one observable's coefficients cannot be solved in closed form, or ``None``."""
+        if not (isinstance(family, Gaussian) and family.additive_on.ln_base == 0.0):
+            return ("its noise family %s is not a linear-scale Gaussian, whose sum of squares "
+                    "is what the closed form minimizes" % type(family).__name__)
+        if self._is_cumulative(col):
+            return "it is scored as a cumulative count, whose per-interval difference cancels an offset"
+        if col in scaled_cols:
+            return ("it already carries an analytic per-series scale (normalization = scale, "
+                    "ADR-0066)")
+        source = sources.get(family.noise_params[0])
+        if isinstance(source, PredictionFormulaSigma):
+            return ("its noise scale depends on the prediction, so the weights of the solve "
+                    "would depend on its own answer")
+        return None
+
+    @staticmethod
+    def _row_bound_tokens(exp_datas, col, placeholders):
+        """``{placeholder: {parameter id}}`` bound to observable ``col``'s placeholders on any
+        data row of any experiment; a numeric token inlines and is not a parameter."""
+        found = {ph: set() for ph in placeholders}
+        if not placeholders:
+            return found
+        for _model, _suffix, data in exp_datas:
+            table = getattr(data, 'measurement_params', None)
+            if not table or col not in table:
+                continue
+            for ph in placeholders:
+                for token in table[col].get(ph, []):
+                    if token is None:
+                        continue
+                    try:
+                        float(token)
+                    except (TypeError, ValueError):
+                        found[ph].add(str(token))
+        return found
+
+    def _row_bound_noise_tokens(self, exp_datas):
+        """Every parameter id a row-varying noise placeholder resolves to, across the binding
+        tables -- the Fiedler route of the double binding (ADR-0123 finding 2)."""
+        placeholders = set()
+        specs = [self._default_sources(), *[s for _family, s in self.overrides.values()]]
+        for sources in specs:
+            for source in sources.values():
+                formula = getattr(source, 'formula', None)
+                if isinstance(formula, str):
+                    placeholders |= set(_LINEAR_PLACEHOLDER.findall(formula))
+        names = set()
+        if not placeholders:
+            return names
+        for _model, _suffix, data in exp_datas:
+            table = getattr(data, 'measurement_params', None) or {}
+            for by_placeholder in table.values():
+                for ph in placeholders:
+                    for token in by_placeholder.get(ph, []):
+                        if token is None:
+                            continue
+                        try:
+                            float(token)
+                        except (TypeError, ValueError):
+                            names.add(str(token))
+        return names
+
+    def _resolve_linear_coefficients(self, sim_data_dict, exp_data_dict):
+        """Solve every profiled linear coefficient from the data at this evaluation and put
+        it in ``_pset_values`` before the measurement layer materializes and the scoring loop
+        reads it (ADR-0132, #671). Overrides the base no-op.
+
+        One walk over exactly the points the caller is about to score -- the same row match,
+        NaN-observation skip and domain skip as ``evaluate`` -- builds each group's weighted
+        design by evaluating the measurement model at basis coefficient vectors: with every
+        profiled coefficient of the group at 0 the prediction is the intercept, and
+        coefficient ``j`` at 1 gives its column, which is exact for an affine formula and
+        needs no second parse. A point whose design row or intercept is not finite is left
+        out, as a NaN prediction is left out of the score. The weight is the point's fit
+        weight over its Gaussian variance, read from the same sources the scoring loop reads,
+        except that a profiled noise scale -- one the config guaranteed is shared by the
+        whole group -- cancels out of the solve and is taken as 1. Linear first, then the
+        noise scale from the residuals at these coefficients: the coefficients do not depend
+        on a shared sigma, while sigma does depend on them (ADR-0130 finding 5).
+
+        A group no scored point reads gets 0 for every coefficient, since nothing scores it.
+        A coefficient the bounded solve held at a declared bound is recorded and warned about
+        once; the evaluation is scoreable either way, so this always returns ``True``.
+        """
+        if not self._linear_groups:
+            return True
+        layer = {m.observable_id: m for m in (self.measurement.models if self.measurement else [])}
+        col_group = {col: gi for gi, group in enumerate(self._linear_groups) for col in group.columns}
+        design = [([], [], []) for _ in self._linear_groups]
+        for sim_data, exp_data, _data_key in self._experiments(sim_data_dict, exp_data_dict):
+            indvar = min(exp_data.cols, key=exp_data.cols.get)
+            cols = sorted(c for c in exp_data.cols
+                          if c in col_group and c != indvar
+                          and (c in layer or c in self._per_measurement_models))
+            if not cols:
+                continue
+            basis = {}
+            for rownum in range(exp_data.data.shape[0]):
+                sim_row = None
+                for col in cols:
+                    observation = exp_data.data[rownum, exp_data.cols[col]]
+                    if np.isnan(observation):
+                        continue
+                    family, sources = self._spec_for(col)
+                    if not family.observation_in_domain(observation):
+                        continue
+                    if sim_row is None:
+                        sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum,
+                                                    show_warnings=False)
+                    gi = col_group[col]
+                    row, intercept = self._linear_design_row(
+                        self._linear_groups[gi], col, sim_data, sim_row, exp_data, rownum,
+                        layer, basis)
+                    if not (np.all(np.isfinite(row)) and np.isfinite(intercept)):
+                        continue
+                    variance = self._linear_variance(family, sources, sim_data, sim_row,
+                                                     exp_data, rownum, col)
+                    if not np.isfinite(variance) or variance <= 0.0:
+                        continue
+                    weight = exp_data.weights[rownum, exp_data.cols[col]]
+                    design[gi][0].append(row)
+                    design[gi][1].append(observation - intercept)
+                    design[gi][2].append(weight / variance)
+        values, at_bound = {}, {}
+        for gi, group in enumerate(self._linear_groups):
+            phi, target, weight = design[gi]
+            if not phi:
+                values.update({name: 0.0 for name in group.names})
+                continue
+            coef, active = solve_group(np.array(phi), np.array(target), np.array(weight),
+                                       group.lower, group.upper)
+            for name, value, side in zip(group.names, coef, active):
+                values[name] = float(value)
+                if side:
+                    at_bound[name] = side
+                    self._warn_linear_at_bound(name, side)
+        self._pset_values.update(values)
+        self._profiled_linear = values
+        self._profiled_linear_at_bound = at_bound
+        return True
+
+    def _linear_design_row(self, group, col, sim_data, sim_row, exp_data, exp_row, layer, basis):
+        """One scored point's ``(design row, intercept)`` over ``group.names``, from the
+        measurement model evaluated at basis coefficient vectors. A constant-per-observable
+        model is materialized over the whole trajectory once per experiment (``basis`` is the
+        per-experiment cache); a row-varying one is evaluated at the matched point, with the
+        row's own token binding."""
+        zero = {name: 0.0 for name in group.names}
+        model = self._per_measurement_models.get(col)
+        if model is not None:
+            values = dict(self._pset_values)
+            values.update(zero)
+            intercept = float(model.value(sim_data, sim_row, exp_data, exp_row, col, values))
+            row = []
+            for name in group.names:
+                values[name] = 1.0
+                row.append(float(model.value(sim_data, sim_row, exp_data, exp_row, col, values))
+                           - intercept)
+                values[name] = 0.0
+            return np.array(row, dtype=float), intercept
+        if col not in basis:
+            values = dict(self._pset_values)
+            values.update(zero)
+            intercept_col = np.asarray(layer[col].materialize(sim_data, values), dtype=float)
+            columns = []
+            for name in group.names:
+                values[name] = 1.0
+                columns.append(np.asarray(layer[col].materialize(sim_data, values), dtype=float)
+                               - intercept_col)
+                values[name] = 0.0
+            basis[col] = (intercept_col, columns)
+        intercept_col, columns = basis[col]
+        return (np.array([column[sim_row] for column in columns], dtype=float),
+                float(intercept_col[sim_row]))
+
+    def _linear_variance(self, family, sources, sim_data, sim_row, exp_data, exp_row, col):
+        """The Gaussian variance weighting one point of the solve: ``sigma**2`` from the point's
+        own sources, or 1 for a profiled sigma, which the config guaranteed the whole group
+        shares and which therefore cancels out of the least-squares solution."""
+        source = sources.get(family.noise_params[0])
+        if isinstance(source, FreeParameterSigma) and source.name in self._profiled_noise_params:
+            return 1.0
+        primary, _extra = self._noise_values(family, sources, self, sim_data, sim_row,
+                                             exp_data, exp_row, col)
+        return float(primary) ** 2
+
+    def _warn_linear_at_bound(self, name, side):
+        """Say once that a profiled coefficient's closed form left its declared box and the
+        bounded solve held it at the bound (ADR-0132). Deduplicated through ``warned``: an
+        optimizer that keeps proposing such points would otherwise print one line each."""
+        key = 'linear-at-bound:%s' % name
+        if key in self.warned:
+            return
+        self.warned.add(key)
+        print1("Warning: the analytically profiled coefficient '%s' was held at its declared "
+               "%s bound for at least one parameter set: the unconstrained least-squares value "
+               "lies outside the declared box, so the solve reports the best value inside it. "
+               "Widen the box if that is not what you intend. profiled_linear.txt says whether "
+               "the best fit is one of those parameter sets." % (name, side))
+
     def _warn_degenerate_profile(self, name, stat_total):
         """Say once why a profiled noise group left an evaluation unscoreable (ADR-0108).
 
@@ -1414,6 +1790,9 @@ class LikelihoodObjective(SummationObjective):
         self._pset_values = {p.name: p.value for p in pset}
         ids, values = [], []
         with np.errstate(all='ignore'):
+            # The profiled linear coefficients first, as in evaluate_multiple (ADR-0132).
+            if self._linear_groups:
+                self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
             # The densities are scored at the same profiled scales the fit scored (ADR-0108),
@@ -1511,6 +1890,9 @@ class LikelihoodObjective(SummationObjective):
         self._pset_values = {p.name: p.value for p in pset}
         preds, obs, var = [], [], []
         with np.errstate(all='ignore'):
+            # The profiled linear coefficients first, as in evaluate_multiple (ADR-0132).
+            if self._linear_groups:
+                self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
             # R = diag(sigma**2) is formed from the same profiled scales the fit scored

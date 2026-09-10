@@ -40,7 +40,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'bootstrap', 'crossover_number', 'ind_var_rounding',
                # Profile every estimated free-parameter noise scale out analytically instead
                # of searching it (#562, ADR-0108): 0 = off.
-               'noise_profiling',
+               'noise_profiling', 'linear_profiling',
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'embed_best_fit_data',
                'smooth_plot_points', 'output_inference_data',
                'parallelize_models', 'adaptive', 'continue_run',
