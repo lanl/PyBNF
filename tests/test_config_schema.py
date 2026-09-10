@@ -232,7 +232,8 @@ class TestRegistrySchemaSeam:
         from pybnf.registry import FIT_TYPE_REGISTRY
         assert FIT_TYPE_REGISTRY['ss'].schema is ScatterSearchConfig
         assert ScatterSearchConfig.owned_keys() == {
-            'local_min_limit', 'n_starts', 'ss_noise_handling', 'ss_noise_max_draws'}
+            'local_min_limit', 'n_starts', 'ss_noise_handling', 'ss_noise_max_draws',
+            'ss_diverse_by_distance'}
 
     def test_sim_owns_only_defaulted_simplex_keys(self):
         # Simplex owns the six unconditionally-read simplex_* knobs plus the shared

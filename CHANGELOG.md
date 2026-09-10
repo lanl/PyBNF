@@ -6,6 +6,15 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Changed
+- **Scatter search fills the diverse half of its first reference set by distance under
+  `edition = 2` (#660 step 2, ADR-0137).** Glover's template builds the first reference set
+  from the best half of the initial population and the most *diverse* half of the rest,
+  chosen one at a time as the candidate farthest from the nearest member already in the
+  set. PyBNF picked that half at random, which is diverse only on average and, with many
+  parameters, far less so than choosing for it. Distance is measured in the parameter
+  sampling space with each parameter divided by its spread over the initial population.
+  The legacy edition keeps the random choice, and `ss_diverse_by_distance` sets it either
+  way.
 - **PyBNF requires Python 3.12 or newer, and the `petab` extra requires petab 0.9 or
   newer (#591).** petab 0.9.0 is the first release that loads a `language: bngl` model
   natively, through the `BnglModel` loader PyBNF contributed upstream

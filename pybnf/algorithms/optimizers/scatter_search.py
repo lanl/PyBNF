@@ -21,6 +21,7 @@ its single draws, as before, and is byte-identical.
 """
 from ..base import Algorithm
 from ..noise_handling import pooled_sd, separated
+from ... import edition
 from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...pset import PSet
 from ...printing import print1, print2
@@ -28,6 +29,7 @@ from ...registry import register_fit_type
 
 import copy
 import logging
+from typing import Optional
 
 import numpy as np
 from pydantic import Field
@@ -54,6 +56,10 @@ class ScatterSearchConfig(MultiStartConfig):
     # switch, and the cap on draws per parameter set a decision in doubt may spend.
     ss_noise_handling: int = 1
     ss_noise_max_draws: int = Field(default=5, ge=1)
+    # The diverse half of the first reference set chosen by distance (#660 step 2,
+    # ADR-0137): unset resolves to on under edition 2 and off under the legacy edition,
+    # whose contract is that an unchanged conf keeps behaving as it always has.
+    ss_diverse_by_distance: Optional[int] = None
 
     # init_size (-> 10*len(variables)) and reserve_size (-> max_iterations) default at
     # runtime in __init__, so they are not schema fields but ARE valid ss keys (#401).
@@ -105,6 +111,11 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                 self.init_size = self.popsize
 
         self.local_min_limit = config.config['local_min_limit']
+        # The diverse half of the first reference set (#660 step 2, ADR-0137): Glover's
+        # template fills it with the members most distant from what is already in the set;
+        # the pre-#660 code picked it at random. On by default under a modern edition, off
+        # under the legacy one (ADR-0031); an explicit ss_diverse_by_distance wins.
+        self.diverse_by_distance = self._resolve_diverse_by_distance()
         # Noise-aware reference set (#660 step 3, ADR-0136): only where running a parameter
         # set again would give a different answer, and only when asked for (the default).
         self.max_draws = int(config.config.get('ss_noise_max_draws', 5))
@@ -133,6 +144,16 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # set is still in play, since the pooled spread is a property of the fit and must
         # not forget a member the moment a child replaces it.
         self.repeat_draws = dict()   # {PSet: the same list as in draws}
+
+    def _resolve_diverse_by_distance(self):
+        """Whether the first reference set's second half is chosen by distance: an explicit
+        ``ss_diverse_by_distance`` wins; unset, it is on under a modern edition and off under
+        the legacy one, whose contract is that an unchanged conf keeps behaving as it always
+        has (ADR-0031, ADR-0137)."""
+        configured = self.config.config.get('ss_diverse_by_distance')
+        if configured is not None:
+            return bool(int(configured))
+        return edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
 
     def expected_parallelism(self):
         """Scatter search runs up to ``population_size * (population_size - 1)``
@@ -205,14 +226,55 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
 
     def round_1_init(self):
         start_psets = sorted(self.received[None], key=lambda x: x[1])
-        # Half is the top of the list, half is random.
+        # Half is the top of the list; the other half is the most diverse of the rest
+        # (Glover's template, #660 step 2) or, under the legacy edition, random.
         topcount = int(np.ceil(self.popsize / 2.))
         randcount = int(np.floor(self.popsize / 2.))
         self.refs = start_psets[:topcount]
-        randindices = self.rng.choice(np.arange(topcount, len(start_psets)), randcount, replace=False)
-        for i in randindices:
-            self.refs.append(start_psets[i])
+        if self.diverse_by_distance:
+            self.refs += self._most_diverse(start_psets[topcount:], randcount)
+        else:
+            randindices = self.rng.choice(np.arange(topcount, len(start_psets)), randcount, replace=False)
+            for i in randindices:
+                self.refs.append(start_psets[i])
         self.stuckcounter = {r[0]: 0 for r in self.refs}
+
+    def _most_diverse(self, candidates, count):
+        """The ``count`` candidates that, added one at a time, each maximize the distance
+        to the nearest member already in the reference set (#660 step 2, ADR-0137).
+
+        Glover's template fills the second half of the first reference set with its most
+        *diverse* members, not a random sample of the rest: a random half is diverse only
+        on average, which in many dimensions is far weaker than choosing for it. The
+        greedy max-min rule is the standard construction. Distance is Euclidean in sampling
+        space, so a log-scaled parameter is measured on its log scale, with each coordinate
+        divided by its spread over the whole initial population so no parameter dominates
+        by its units. Ties go to the better score, since ``candidates`` arrive sorted by
+        it. A candidate whose score is not finite is taken only when no finite one is left:
+        a point the model could not simulate is not a useful reference, however far away.
+        """
+        if count <= 0 or not candidates:
+            return []
+        members = [self._param_vec(p) for p, _ in self.refs]
+        pool = [(p, s, self._param_vec(p)) for p, s in candidates]
+        everything = np.array(members + [u for _, _, u in pool], dtype=float)
+        spread = everything.max(axis=0) - everything.min(axis=0)
+        spread = np.where(np.isfinite(spread) & (spread > 0.0), spread, 1.0)
+        chosen = []
+        current = [u / spread for u in members]
+        remaining = [(p, s, u / spread) for p, s, u in pool]
+        while remaining and len(chosen) < count:
+            finite = [c for c in remaining if np.isfinite(c[1])] or remaining
+            best, best_distance = None, -1.0
+            for candidate in finite:
+                distance = min((float(np.linalg.norm(candidate[2] - m)) for m in current),
+                               default=np.inf)
+                if distance > best_distance:
+                    best, best_distance = candidate, distance
+            chosen.append((best[0], best[1]))
+            current.append(best[2])
+            remaining = [c for c in remaining if c is not best]
+        return chosen
 
     def _search_got_result(self, res):
         """

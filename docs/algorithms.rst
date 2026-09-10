@@ -194,7 +194,7 @@ Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
 The PyBNF implementation follows the outline presented in the introduction of [Penas2017]_ and uses the recombination method described in [Egea2009]_.
 
-We maintain a reference set of ``population_size`` individuals, recommended to be a small number (~ 9-18). Each newly proposed parameter set is based on a "parent" parameter set and a "helper" parameter set, both from the current reference set. In each iteration, we consider all possible parent-helper combinations, for a total of n\*(n-1) parameter sets. The new parameter set depends on the rank of the parent and helper (call them :math:`p_i` and :math:`h_i`) when the reference set is sorted from best to worst. 
+We maintain a reference set of ``population_size`` individuals, recommended to be a small number (~ 9-18). The first reference set is half the best of the initial population by objective value and half its most diverse members, each chosen as the candidate farthest from the nearest member already in the set (Glover's template; under the legacy edition the second half is a random sample, see ``ss_diverse_by_distance``). Each newly proposed parameter set is based on a "parent" parameter set and a "helper" parameter set, both from the current reference set. In each iteration, we consider all possible parent-helper combinations, for a total of n\*(n-1) parameter sets. The new parameter set depends on the rank of the parent and helper (call them :math:`p_i` and :math:`h_i`) when the reference set is sorted from best to worst. 
 
 Then we apply a series of formulas to choose the next parameter value.
 

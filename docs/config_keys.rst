@@ -2215,6 +2215,24 @@ The following options are only available with ``job_type = de``, and serve to ma
   Example:
 
     * ``ss_noise_max_draws = 10``
+
+**ss_diverse_by_distance**
+  How the second half of scatter search's first reference set is chosen. The first half is
+  the best of the initial population by objective value. With this key on, the second half
+  is the most **diverse** of the rest, as Glover's scatter search template prescribes: one
+  member at a time, the candidate farthest from the nearest member already in the set,
+  measured in the parameter sampling space (so a log-scaled parameter counts on its log
+  scale) with each parameter divided by its spread over the initial population, so no
+  parameter dominates by its units. With it off, the second half is a random sample of the
+  rest, which is diverse only on average and, in many dimensions, much less so than choosing
+  for it. A point the model could not simulate is taken only when nothing else is left.
+
+  Default: on under ``edition = 2`` and above, off under the legacy edition, whose unchanged
+  configuration files keep behaving as they always have.
+
+  Example:
+
+    * ``ss_diverse_by_distance = 1``
     
 **reserve_size**
   Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. 
