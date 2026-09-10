@@ -80,6 +80,18 @@ class TestFullConversion:
         row = obs.set_index('observableId').loc['obs_V']
         assert row['observableTransformation'] == 'log10'
 
+    def test_log10_observable_keeps_its_linear_base_distribution(self, tmp_path):
+        # petab1to2 folds the v1 transformation into noiseDistribution: petab < 0.9.0 left it
+        # blank (a missing return), petab >= 0.9.0 substitutes the natural-log family
+        # (log10-normal -> log-normal, with a warning). Either way the converter must state
+        # the scale once -- in the re-injected column -- over the v1 base family, or the
+        # importer refuses log10 stacked on log-normal as a contradiction (#679).
+        yaml = _write_v1_problem(tmp_path / 'v1', 'log10')
+        v2_yaml = petab1to2_preserve_scale(str(yaml), str(tmp_path / 'v2'))
+        obs = pd.read_csv(v2_yaml.parent / 'observables.tsv', sep='\t')
+        row = obs.set_index('observableId').loc['obs_V']
+        assert row['noiseDistribution'] == 'normal'
+
     def test_linear_observable_gets_no_transformation(self, tmp_path):
         # A lin observable needs no re-injection (lin is the v2 default) -> no column added,
         # so the converted problem stays byte-identical to plain petab1to2 on the observables.
@@ -229,6 +241,33 @@ class TestInjectObservableTransformations:
         df['observableTransformation'] = float('nan')
         inject_observable_transformations(df, {'obs_V': 'log10'})  # must not raise
         assert df.set_index('observableId').loc['obs_V', 'observableTransformation'] == 'log10'
+
+    def test_folded_log_normal_is_reset_to_the_v1_base(self):
+        # The petab >= 0.9.0 shape: the transformation already folded into noiseDistribution
+        # as the natural-log family. With the v1 base supplied, the log observable's row is
+        # reset to it and the linear observable's row is left exactly as petab1to2 wrote it.
+        df = self._petab1to2_obs_shape()
+        df['noiseDistribution'] = ['log-normal', 'normal']
+        inject_observable_transformations(df, {'obs_V': 'log10'}, {'obs_V': 'normal'})
+        by_id = df.set_index('observableId')
+        assert by_id.loc['obs_V', 'noiseDistribution'] == 'normal'
+        assert by_id.loc['obs_V', 'observableTransformation'] == 'log10'
+        assert by_id.loc['obs_lin', 'noiseDistribution'] == 'normal'
+
+    def test_folded_log_laplace_is_reset_to_laplace(self):
+        # The base family is the v1 author's, not always normal: log10 + laplace comes back
+        # from petab1to2 as log-laplace and must return to laplace under the log10 column.
+        df = self._petab1to2_obs_shape()
+        df['noiseDistribution'] = ['log-laplace', '']
+        inject_observable_transformations(df, {'obs_V': 'log10'}, {'obs_V': 'laplace'})
+        assert df.set_index('observableId').loc['obs_V', 'noiseDistribution'] == 'laplace'
+
+    def test_without_distributions_the_column_is_untouched(self):
+        # The pre-#679 contract: callers that pass no base map get only the transformation.
+        df = self._petab1to2_obs_shape()
+        df['noiseDistribution'] = ['log-normal', '']
+        inject_observable_transformations(df, {'obs_V': 'log10'})
+        assert df.set_index('observableId').loc['obs_V', 'noiseDistribution'] == 'log-normal'
 
 
 class TestHelpers:

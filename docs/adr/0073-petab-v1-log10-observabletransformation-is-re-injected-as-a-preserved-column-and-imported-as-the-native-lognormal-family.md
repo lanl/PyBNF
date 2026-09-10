@@ -118,3 +118,35 @@ log10, PEtab `log-normal` is natural log"), **0032** (the importer read path tha
 `noiseDistribution`), **0011** (the per-point kernel and the median location). Sibling:
 **#491** (`petab1to2_preserve_scale` re-injecting `parameterScale` as a `log-uniform` prior —
 the parameter-axis twin). Related: the benchmark build siblings (#492–#496).
+
+## Addendum (2026-09-10): the converter also resets `noiseDistribution` to the v1 base family (issue #679)
+
+**Accepted and implemented 2026-09-10.** The re-injection above was silently leaning on a
+petab bug. `petab1to2` is *designed* to fold the v1 `observableTransformation` into the v2
+`noiseDistribution`; a missing `return` in that merge left the column blank in every
+petab < 0.9.0, the importer defaulted the blank to `normal`, and `log10` over `normal`
+imported as `lognormal` exactly as this ADR describes. petab 0.9.0 (2026-09-07,
+PEtab-dev/libpetab-python#502) fixed the merge. Because PEtab v2 has no `log10-normal`, the
+converter now substitutes the natural-log family — `log10` + `normal` → `log-normal`, with a
+warning — which is a silent `ln 10` rescaling of sigma. Stacked under our re-injected `log10`
+column, the importer's "give the residual scale in one place" rule refused every converted
+log10 observable as a contradiction, and `test_converted_log10_problem_imports_as_lognormal`
+went red on every Python ≥ 3.12 CI leg (petab 0.9.0 requires 3.12, so 3.11 stayed on 0.8.2
+and green).
+
+The fix keeps the ADR's design and closes the gap it left: `petab1to2_preserve_scale` now
+reads each log observable's **v1** `noiseDistribution` (blank → `normal`) alongside its
+transformation, and `inject_observable_transformations` takes an optional
+`{observableId: 'normal' | 'laplace'}` map and resets the row's `noiseDistribution` to that
+linear base while writing the transformation. The scale is then stated once, in the preserved
+column, regardless of which petab produced the v2 table — a blank cell (0.8.2) and a folded
+`log-normal` / `log-laplace` (0.9.0) both come back to the v1 family. Rows without a
+transformation keep whatever petab1to2 wrote, so a linear problem is still byte-identical.
+petab's own substitution warning is inside the `catch_warnings` block the converter already
+uses to silence the `parameterScale` warning, for the same reason: re-adding the scale is
+this function's job.
+
+This is not an upstream bug. The substitution is documented and warned, and the underlying
+gap — no log10-normal in PEtab v2 — is a specification decision (ADR-0022's "PyBNF
+`lognormal` is log10, PEtab `log-normal` is natural log"). The preserved column is the
+workaround the specification leaves us.
