@@ -4,13 +4,14 @@ The one canonical BNGL parser for the ``pybnf.petab`` package: a stdlib
 ``begin/end <block>`` scanner that enumerates the *named entities* of a model
 (parameters with their values, observables, global functions, molecule types,
 seed species, compartments) without BNG2.pl, network generation, or ``bngsim``.
-It exists so the exporter (:mod:`pybnf.petab.export`) and the PEtab ``Model``
-adapter (:mod:`pybnf.petab.bngl_model`) share *one* reader rather than two that
-drift -- the neutral-seam discipline ADR-0025 used for ``PetabParameterRow``.
+It exists so the exporter (:mod:`pybnf.petab.export`) and the importer
+(:mod:`pybnf.petab.import_`) share *one* reader rather than two that drift -- the
+neutral-seam discipline ADR-0025 used for ``PetabParameterRow``.
 
-Validation needs only *parsing*, never simulation, so this is enough to back the
-PEtab ``Model`` ABC (the one method that wants more, ``is_valid``, shells out to
-``BNG2.pl --check`` separately; see :mod:`pybnf.petab.bngl_model`). The entity
+Validation needs only *parsing*, never simulation, so this was enough to back the
+PEtab ``Model`` ABC while PyBNF carried its own adapter (the one method that wants
+more, ``is_valid``, shells out to ``BNG2.pl --check``; that adapter now lives
+upstream, see the drift note). The entity
 sets were fixed against BNG2.pl's ``Perl2/`` modules, not the PySB analogy:
 expression symbols are exactly the ``ParamList`` (parameters, observables, global
 functions), and compartments are *not* expression symbols (ADR-0026).
@@ -21,9 +22,11 @@ repo, ``docs/bngl-grammar.md``): line continuations (a trailing ``\\``), the
 ``species`` block alias (``begin species`` = ``begin seed species``), the seed-
 species ``$`` clamp marker, and the observable/function/compartment line shapes.
 
-**Drift note (#420 Step B):** this reader has an upstream twin — the standalone,
-pybnf-free port now merged into ``libpetab-python`` main
-(``petab/v1/models/bngl_model.py``, PEtab-dev/libpetab-python#508). The two carry
+**Drift note (#420 Step B, #591):** this reader has an upstream twin — the
+standalone, pybnf-free port shipped in ``petab`` since 0.9.0
+(``petab/v1/models/bngl_model.py``, PEtab-dev/libpetab-python#508), which now backs
+the PEtab ``Model`` ABC for ``language: bngl``; PyBNF's local adapter and its
+``register_bngl()`` shim were retired with the ``petab >= 0.9`` floor. The two carry
 the *same* entity-enumeration semantics and grammar hardening; any change here
 (e.g. a block alias or pattern-modifier rule) must be ported upstream, guarded by
 the mirrored grammar-hardening tests on both sides.

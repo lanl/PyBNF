@@ -6,12 +6,11 @@ self-contained BNGL-native PEtab v2 problem per subdirectory: a ``clean/``
 baseline that lints without complaint, and a gallery of ``*/`` variants each
 carrying exactly ONE defect that a specific ``petab.v2.lint`` task must flag.
 
-The point is dogfooding: PyBNF registers a BNGL model loader into ``petab``
-(``pybnf.petab.bngl_model.register_bngl``), so the standard petab validator can
-load and check a ``language: bngl`` problem. This clinic proves that with that
-loader in place, petab's own lint tasks correctly catch the mistakes a
-BNGL-native problem can make -- exactly the confidence we want before proposing
-the loader upstream to libpetab-python (issue #420).
+The point is dogfooding: ``petab`` loads a ``language: bngl`` model natively
+(the loader PyBNF contributed upstream to libpetab-python, issue #420), so the
+standard petab validator can load and check a BNGL-native problem. This clinic
+proves that petab's own lint tasks correctly catch the mistakes such a problem
+can make.
 
 The *expected outcome* of each fixture (which lint task flags it, or that it
 raises at load) is recorded test-side in ``examples/tutorial/_manifest.py``

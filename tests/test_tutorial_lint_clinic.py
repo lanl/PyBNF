@@ -4,8 +4,8 @@ Where ``test_tutorial_petab.py`` proves the linter is *quiet* on valid problems
 (export a tutorial conf -> lint it clean), this module proves it is *loud* on
 broken ones: a gallery of tiny BNGL-native PEtab v2 fixtures, each carrying
 exactly one defect, and the assertion that the standard ``petab.v2`` validator --
-loading the ``language: bngl`` model through PyBNF's registered loader
-(``register_bngl``) -- reacts as recorded in ``examples/tutorial/_manifest.py``:
+loading the ``language: bngl`` model through petab's native BNGL loader --
+reacts as recorded in ``examples/tutorial/_manifest.py``:
 
   * ``clean``   -> ``lint_problem`` finds no errors;
   * ``error``   -> ``lint_problem`` finds errors, and the expected ``Check`` task
@@ -33,10 +33,7 @@ import pytest
 from petab.v2 import Problem
 from petab.v2.lint import lint_problem, ValidationIssueSeverity
 
-from pybnf.petab.bngl_model import register_bngl, _locate_bng2
-
-# Teach petab to load `language: bngl` problems (idempotent).
-register_bngl()
+from petab.v1.models.bngl_model import _locate_bng2
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CLINIC = _REPO_ROOT / 'examples' / 'tutorial' / '13_petab_lint_clinic'

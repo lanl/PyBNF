@@ -34,13 +34,10 @@ from petab.v2 import Problem
 from petab.v2.lint import lint_problem
 
 from pybnf.petab import export_job, import_job
-from pybnf.petab.bngl_model import register_bngl
 from pybnf.parse import ploop
 from pybnf.data import Data
 
 from . import recovery_harness as H
-
-register_bngl()   # teach petab to load `language: bngl` problems (idempotent)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _LESSON = _REPO_ROOT / 'examples' / 'tutorial' / '34_petab_observable_formula'

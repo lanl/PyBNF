@@ -280,3 +280,29 @@ and the neutral-seam discipline reused for `_bngl.parse_model`). Issues: **#420*
 **#407** (umbrella), upstream **PEtab-dev/PEtab#436** (Step B target / spec). Follow-ups: Step B
 (`libpetab-python` PR mirroring `PySBModel`); conditions/experiments + dose-response export (which
 will exercise `get_valid_ids_for_condition_table` / `is_state_variable` for real).
+
+## Addendum (2026-09-10): the adapter and `register_bngl()` are retired; petab 0.9.0 ships the loader (issue #591)
+
+**Accepted and implemented 2026-09-10.** Step B landed: the pybnf-free port of `BnglModel`
+merged into `libpetab-python` (PEtab-dev/libpetab-python#508) and shipped in petab 0.9.0 on
+2026-09-07, whose `known_model_types` is `{sbml, bngl, pysb}`. The "collapse to a no-op" this
+ADR anticipated had therefore already happened on every 0.9.0 installation: `register_bngl()`
+saw `bngl` registered and returned without rebinding, and `Problem.from_yaml` loaded BNGL
+through petab's own class. #591 removes what that left behind: `pybnf/petab/bngl_model.py`
+(the adapter, `register_bngl()`, and its `_locate_bng2` helper), the dedicated CI leg that
+installed upstream `main` to reach the native loader ahead of a release, the `petab-spec`
+input of the setup action that leg used, and every test and lesson that called the shim. The
+`petab` and `tests` extras now floor at `petab >= 0.9`, which floors the project at Python 3.12
+(petab 0.9.0 requires it), so the 3.11 matrix leg and classifier go with it.
+
+**What stays, and one gap the retirement exposes.** `_bngl.parse_model` stays: it is the
+reader the importer and exporter use, and the upstream twin's drift note now points at the
+shipped module rather than a branch. `_bngl_expr` (#666, the parameter-expression evaluator)
+also stays, though its only consumer was the adapter: petab's native `BnglModel` does not
+evaluate an expression-valued parameter (`get_parameter_value` raises `NotImplementedError`,
+`get_free_parameter_ids_with_values` skips it), which is the pre-#666 behaviour on the
+petab-side validation path. That is not a regression of this change, since the no-op already
+routed 0.9.0 users to the native class, but it is the next upstream port, and the evaluator is
+kept as its staging copy. `TestNativeBnglModel` in `tests/test_petab_export.py` pins the ABC
+seam the exporter relies on against petab's class and asserts the native loader is present, in
+place of the retired adapter unit tests and the CI leg's assert step.

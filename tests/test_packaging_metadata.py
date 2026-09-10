@@ -17,7 +17,7 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     metadata = tomllib.loads(pyproject_path.read_text())
     project = metadata['project']
 
-    assert project['requires-python'] == '>=3.11'
+    assert project['requires-python'] == '>=3.12'
     # bngsim >= 0.15.0 is bought by a CONTRACT, not by a feature PyBNF wants. lanl/bngsim#431
     # publishes `event_sensitivities` as a real capabilities() feature key. Until it existed
     # PyBNF read `effective_ic_sensitivity` as a WITNESS for the same thing (ADR-0119), which
@@ -68,7 +68,7 @@ def _requirements_quoted_in(text):
 
     The CI action is a shell script embedded in YAML, so its requirements are ordinary
     single-quoted shell words -- in the `uv pip install` argument list, in the BNGSIM_SPEC
-    and JAX_SPEC arrays, and in the `petab-spec` input's default. Quotes are matched
+    and JAX_SPEC arrays. Quotes are matched
     within a single line and comment lines are dropped, because the surrounding YAML prose
     is full of apostrophes ("pyproject.toml's", "the action's") that otherwise pair up with
     each other and swallow the real strings.

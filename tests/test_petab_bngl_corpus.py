@@ -3,8 +3,8 @@
 Runs the ``writeModel`` differential (:mod:`tests._bngl_differential`) over a
 curated set of *public* community BNGL models committed under
 ``tests/petab_fixtures/bngl_corpus/``, asserting our reader
-(:func:`pybnf.petab._bngl.parse_model`, the one backing the ``BnglModel`` PEtab
-linter) enumerates the same entities BNG2.pl's canonical parse does. This locks in
+(:func:`pybnf.petab._bngl.parse_model`, the twin of the reader behind petab's
+native ``BnglModel``) enumerates the same entities BNG2.pl's canonical parse does. This locks in
 the parity the corpus differential established -- so a future "simplification" of
 the reader that silently drops line-continuation, line-label, alias, or ``$``-clamp
 handling fails here.
@@ -20,9 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from pybnf.petab.bngl_model import BnglModel, _locate_bng2
-
 from . import _bngl_differential as diff
+from ._bngl_differential import _locate_bng2
 
 _FIXTURES = Path(__file__).parent / 'petab_fixtures' / 'bngl_corpus'
 _BNG2 = _locate_bng2()
@@ -62,6 +61,9 @@ def test_reader_agrees_with_bng2(model):
 
 @pytest.mark.parametrize('model', _curated(), ids=lambda p: p.stem)
 def test_curated_models_are_valid(model):
-    # Exercises BnglModel.is_valid() (a real `BNG2.pl --check`) over real models,
-    # complementing the faked-subprocess unit tests: every curated model is valid.
-    assert BnglModel.from_file(model).is_valid() is True
+    # Exercises petab's native BnglModel.is_valid() (a real `BNG2.pl --check`)
+    # over real models: every curated model is valid. The id is given explicitly
+    # because petab derives it from the file stem and requires a PEtab identifier,
+    # which the hyphenated corpus filenames are not; the check is about the model.
+    bngl_model = pytest.importorskip('petab.v1.models.bngl_model')
+    assert bngl_model.BnglModel.from_file(model, model_id='m').is_valid() is True

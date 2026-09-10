@@ -28,7 +28,6 @@ from pybnf.petab._bngl_expr import (
     evaluate_parameters,
     evaluate_parameters_partial,
 )
-from pybnf.petab.bngl_model import BnglModel
 
 #: ``(expression, value BNG2.pl computes)``. Self-contained, so each one can be
 #: dropped straight into a parameters block.
@@ -207,14 +206,14 @@ begin parameters
 end parameters
 end model
 """
-    m = BnglModel(parse_model(text), model_id='demo')
+    declared = parse_model(text).parameters
+    values = evaluate_parameters(declared)
 
-    assert m.get_parameter_value('kon') == pytest.approx(0.1 / (5.0 * 6.022e23 * 1e-12))
+    assert values['kon'] == pytest.approx(0.1 / (5.0 * 6.022e23 * 1e-12))
 
-    # The parameter used to be dropped from this list entirely.
-    ids = [name for name, _ in m.get_free_parameter_ids_with_values()]
-    assert ids == list(m.get_parameter_ids())
-    assert 'kon' in ids
+    # The parameter used to be dropped entirely; every declared name resolves.
+    assert list(values) == list(declared)
+    assert 'kon' in values
 
 
 def test_declaration_order_does_not_matter():
@@ -317,40 +316,12 @@ begin parameters
 end parameters
 end model
 """
-    m = BnglModel(parse_model(text), model_id='demo')
-    with pytest.warns(UserWarning, match='could not be evaluated'):
-        pairs = dict(m.get_free_parameter_ids_with_values())
-    assert pairs == {'good1': 2.0, 'good2': 6.0}
+    values, errors = evaluate_parameters_partial(parse_model(text).parameters)
+    assert values == {'good1': 2.0, 'good2': 6.0}
+    assert set(errors) == {'bad'}
 
 
-def test_unevaluable_parameter_surfaces_from_the_model():
-    """The adapter reports the failure instead of dropping the parameter."""
-    text = """
-begin model
-begin parameters
-  a  b
-end parameters
-end model
-"""
-    m = BnglModel(parse_model(text), model_id='demo')
-    with pytest.raises(ValueError, match='could not be evaluated'):
-        m.get_parameter_value('a')
-
-
-def test_missing_parameter_still_raises_value_error():
-    text = """
-begin model
-begin parameters
-  a  1
-end parameters
-end model
-"""
-    m = BnglModel(parse_model(text), model_id='demo')
-    with pytest.raises(ValueError, match='does not exist'):
-        m.get_parameter_value('nope')
-
-
-def test_fully_resolvable_model_warns_about_nothing():
+def test_fully_resolvable_block_reports_no_errors():
     text = """
 begin model
 begin parameters
@@ -359,8 +330,6 @@ begin parameters
 end parameters
 end model
 """
-    m = BnglModel(parse_model(text), model_id='demo')
-    import warnings as _w
-    with _w.catch_warnings():
-        _w.simplefilter('error')
-        assert dict(m.get_free_parameter_ids_with_values()) == {'a': 2.0, 'b': 6.0}
+    values, errors = evaluate_parameters_partial(parse_model(text).parameters)
+    assert values == {'a': 2.0, 'b': 6.0}
+    assert errors == {}

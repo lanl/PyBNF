@@ -46,12 +46,6 @@ Measurement formulas
 .. automodule:: pybnf.petab.formula
    :members:
 
-BNGL model loader
-==============================
-
-.. automodule:: pybnf.petab.bngl_model
-   :members:
-
 Importing a problem
 ==============================
 

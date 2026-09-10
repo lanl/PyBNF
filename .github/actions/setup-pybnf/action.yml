@@ -12,7 +12,7 @@ description: >-
 
 inputs:
   python-version:
-    description: Python version for the venv (e.g. "3.11", "3.12").
+    description: Python version for the venv (e.g. "3.12", "3.13").
     required: true
   bngsim:
     description: >-
@@ -36,24 +36,14 @@ inputs:
       [jax] extra.
     required: false
     default: 'false'
-  petab-spec:
-    description: >-
-      The petab requirement to install. Defaults to stock PyPI petab. A CI leg
-      overrides it with upstream libpetab-python main
-      (git+…/PEtab-dev/libpetab-python@main), where the native BnglModel loader
-      landed (PEtab-dev/libpetab-python#508), so the exporter oracle validates
-      `language: bngl` problems through petab's OWN native loader rather than the
-      register_bngl() monkeypatch (ADR-0026).
-    required: false
-    default: 'petab>=0.8,<1'
   cache-suffix:
     description: >-
       uv cache namespace suffix. Two jobs that run the SAME python version
       through this action share one content-addressed cache key (os/arch/python/
       pyproject hash + this suffix) and race to save it -- a benign "another job
       may be creating this cache" warning. Override per job to give each its own
-      namespace (e.g. the native-BNGL leg also runs 3.12, colliding with the
-      matrix 3.12 job under a shared suffix).
+      namespace (e.g. the jax leg also runs 3.12, colliding with the matrix
+      3.12 job under a shared suffix).
     required: false
     default: 'pybnf'
 
@@ -101,7 +91,6 @@ runs:
       env:
         BNGSIM: ${{ inputs.bngsim }}
         JAX: ${{ inputs.jax }}
-        PETAB_SPEC: ${{ inputs.petab-spec }}
       run: |
         # Build the venv from the setup-python interpreter (see note above), not
         # a uv-managed one.
@@ -141,10 +130,9 @@ runs:
         # BNG2.pl is installed above, so model-level validation runs here too) AND
         # the runtime math translator backing the expression observableFormula
         # path (pybnf[petab], ADR-0035, petab.v2.math); stock PyPI petab carries
-        # the math grammar, so one install covers both. The exact petab
-        # requirement is the `petab-spec` input (default stock PyPI; a CI leg
-        # overrides it with upstream libpetab-python main to run the NATIVE BNGL
-        # loader, PEtab-dev/libpetab-python#508).
+        # the math grammar, so one install covers both. petab >= 0.9.0 ships the
+        # native `language: bngl` loader (PEtab-dev/libpetab-python#508), which
+        # is what the oracle loads BNGL problems through (#591).
         # arviz/h5netcdf/h5py unskip the ArviZ InferenceData bridge oracle
         # (ADR-0055; tests/test_inference_data.py + the tutorial diagnostics beat)
         # and matplotlib unskips the profile-likelihood plot oracle (#467). These
@@ -174,7 +162,7 @@ runs:
           'h5netcdf>=1' \
           'h5py' \
           'matplotlib>=3.5' \
-          "$PETAB_SPEC"
+          'petab>=0.9,<1'
         # Install pybnf itself without re-resolving deps: on a bngsim: 'false'
         # leg a re-resolve would pull bngsim in through pyproject.toml and
         # defeat the point, and everywhere it would re-derive a dependency set

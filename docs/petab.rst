@@ -71,20 +71,23 @@ free parameters, priors, noise models, and data.
 The BNGL model loader
 ---------------------
 
-Stock libpetab ships only ``sbml`` and ``pysb`` model loaders, so on its own it
-cannot load — or lint — a problem whose model is BNGL.
-``pybnf.petab.register_bngl()`` teaches a running ``petab`` to load
-``language: bngl`` models. It is idempotent and additive: it routes ``bngl`` to
-PyBNF's loader and delegates every other language to the original, leaving
-``sbml``/``pysb`` untouched. ``import_job`` and ``export_job`` arrange this for
-you; call it yourself only when driving the ``petab`` library directly::
+``petab`` (libpetab-python) loads ``language: bngl`` models natively since 0.9.0,
+through the ``BnglModel`` loader PyBNF contributed upstream
+(PEtab-dev/libpetab-python#508). PEtab's own validator (``petab.v2.lint`` /
+``petablint``) therefore checks a BNGL-model problem with no PyBNF code
+involved::
 
-  from pybnf.petab import register_bngl
+  from petab.v2 import Problem
+  from petab.v2.lint import lint_problem
 
-  register_bngl()
+  report = lint_problem(Problem.from_yaml("petab/problem.yaml"))
 
-With the loader installed, PEtab's own validator (``petab.v2.lint`` /
-``petablint``) can check a BNGL-model problem — see the lint-clinic lesson below.
+The model-level check shells out to ``BNG2.pl --check`` when a BioNetGen is on
+``BNGPATH`` or ``PATH`` and degrades to "valid" when none is, so validation never
+falsely fails for lack of a backend. The ``register_bngl()`` shim that taught
+older petab releases the same loader was retired together with the
+``petab >= 0.9`` floor of the ``pybnf[petab]`` extra. See the lint-clinic lesson
+below.
 
 What round-trips
 ----------------

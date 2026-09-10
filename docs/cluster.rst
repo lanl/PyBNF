@@ -5,8 +5,8 @@ Running on a cluster
 
 PyBNF is designed to run on computing clusters that utilize a shared network filesystem. PyBNF comes with built-in support for clusters running Slurm. It may also be manually configured to run on clusters with other managers (Torque, PBS, etc.).
 
-Installation of PyBNF on a cluster has the same requirements as installation on a workstation, namely Python 3.11 or higher with the pip package manager. This is available on many clusters,
-but may require loading a module to access. In Slurm, you can view the available modules with the command ``module avail``, and load the appropriate one with ``module load [modulename]``. Once Python 3.11 or higher and pip are loaded, the same :ref:`installation instructions <installation>` apply as for a standard installation.
+Installation of PyBNF on a cluster has the same requirements as installation on a workstation, namely Python 3.12 or higher with the pip package manager. This is available on many clusters,
+but may require loading a module to access. In Slurm, you can view the available modules with the command ``module avail``, and load the appropriate one with ``module load [modulename]``. Once Python 3.12 or higher and pip are loaded, the same :ref:`installation instructions <installation>` apply as for a standard installation.
 Assistance from the cluster administrators may be helpful if any cluster-specific issues arise during installation.
  
 
@@ -104,8 +104,8 @@ An example batch script -- ``examples/tcr/tcr_batch.sh`` with a single word chan
     #SBATCH --job-name=pybnf
 
     # EDIT THIS LINE for your cluster: load a module (or activate a virtual
-    # environment) that provides Python 3.11 or newer with PyBNF installed.
-    module load python/3.11
+    # environment) that provides Python 3.12 or newer with PyBNF installed.
+    module load python/3.12
 
     pybnf -c tcr-ss.conf -t slurm-srun -o
 
