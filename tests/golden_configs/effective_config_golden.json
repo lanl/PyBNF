@@ -13242,6 +13242,14 @@
     1
    ],
    [
+    "ss_noise_handling",
+    1
+   ],
+   [
+    "ss_noise_max_draws",
+    5
+   ],
+   [
     "starting_params",
     null
    ],

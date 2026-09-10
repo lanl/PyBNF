@@ -2182,6 +2182,39 @@ The following options are only available with ``job_type = de``, and serve to ma
   Example:
   
     * ``local_min_limit = 10``
+
+**ss_noise_handling**
+  Whether scatter search treats its objective values as noisy when a model is stochastic
+  (``1``, the default) or as exact (``0``). A stochastic simulation gives a different
+  objective value every run, and scatter search decides everything by ranking: whether a
+  child beat its parent, whether a member is stuck, and the rank gap that sets a
+  combination's step size. With exact values a member whose recorded score was a lucky
+  draw could never be beaten by an honest child, so its stuck counter climbed until it was
+  retired into the archive of local minima as one it never was. With the handling on, every
+  reference member is ranked on the mean of its draws, the draw-to-draw spread of the
+  objective is pooled across the fit, and a decision the spread leaves in doubt is not made:
+  both sides are simulated again, at fresh seeds, and the decision waits for those draws. A
+  member is never counted stuck without being drawn again, so a lucky member's mean
+  regresses to its true value. Neighbours in the sorted reference set that the spread cannot
+  order are drawn again too, since their rank gap sets a step size. Nothing is done for a
+  deterministic model, or when every stochastic model pins its seed.
+
+  Default: 1
+
+  Example:
+
+    * ``ss_noise_handling = 0``
+
+**ss_noise_max_draws**
+  The most simulations one parameter set may accumulate under ``ss_noise_handling``. A
+  decision still in doubt when both sides have reached this many draws is made on their
+  means.
+
+  Default: 5
+
+  Example:
+
+    * ``ss_noise_max_draws = 10``
     
 **reserve_size**
   Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. 

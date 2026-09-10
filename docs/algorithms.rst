@@ -198,6 +198,20 @@ We maintain a reference set of ``population_size`` individuals, recommended to b
 
 Then we apply a series of formulas to choose the next parameter value.
 
+Stochastic models
+^^^^^^^^^^^^^^^^^
+Scatter search decides everything by ranking, and a stochastic simulation gives a
+different objective value every run, so a reference member whose recorded score was a
+lucky draw could never be beaten by an honest child and was eventually retired into the
+archive of local minima as one it never was. When a model is stochastic the reference set
+therefore holds an estimate and an uncertainty per member rather than a single value: each
+member is ranked on the mean of its draws, the draw-to-draw spread of the objective is pooled
+across the fit, and a decision the spread leaves in doubt, a child against its parent or
+two neighbours whose rank gap sets a step size, is not made until both sides have been
+simulated again at fresh seeds (up to ``ss_noise_max_draws`` draws each). A member counted
+stuck is drawn again as well, so its recorded value cannot stay lucky. ``ss_noise_handling``
+turns this off. A deterministic model makes every decision on single draws, as before.
+
 Let :math:`\alpha` = -1 if :math:`h_i>p_i` or 1 if :math:`p_i<h_i`, let :math:`\beta = (|h_i-p_i|-1) / (n-2)`, let :math:`d = \textrm{helper}[P] - \textrm{parent}[P]` for some parameter P. 
 
 Then the in the new parameter set, :math:`P = \textrm{parent}[P] + \textrm{rand\_uniform}(-d * (1 + \alpha * \beta), d * (1 - \alpha * \beta))`

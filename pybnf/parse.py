@@ -84,6 +84,8 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # CMA-ES uncertainty handling on a stochastic model (#661/ADR-0135): the
                # switch, and the cap on simulations per candidate it may grow to.
                'cmaes_noise_handling', 'cmaes_noise_max_evals',
+               # Scatter search's noise-aware reference set (#660 step 3 / ADR-0136).
+               'ss_noise_handling', 'ss_noise_max_draws',
                # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).
