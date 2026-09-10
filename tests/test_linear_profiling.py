@@ -237,7 +237,7 @@ class TestPlan:
     def test_the_coupled_pair_is_one_group(self):
         groups, refusals = _plan(_obj())
         assert refusals == []
-        assert groups == [(('a', 'b'), frozenset({'y'}))]
+        assert groups == [(('a', 'b'), frozenset({'y'}), 'linear')]
 
     def test_two_unrelated_observables_are_two_groups(self):
         obj = _obj()
@@ -246,7 +246,7 @@ class TestPlan:
             MeasurementModel('y2', 'c*x', {'x', 'c'})])
         groups, refusals = _plan(obj, free=('a', 'b', 'c'))
         assert refusals == []
-        assert groups == [(('a', 'b'), frozenset({'y'})), (('c',), frozenset({'y2'}))]
+        assert groups == [(('a', 'b'), frozenset({'y'}), 'linear'), (('c',), frozenset({'y2'}), 'linear')]
 
     def test_a_shared_coefficient_merges_the_groups(self):
         obj = _obj()
@@ -254,7 +254,7 @@ class TestPlan:
             MeasurementModel('y', 'a*x + b', {'x', 'a', 'b'}),
             MeasurementModel('y2', 'a*x + c', {'x', 'a', 'c'})])
         groups, _ = _plan(obj, free=('a', 'b', 'c'))
-        assert groups == [(('a', 'b', 'c'), frozenset({'y', 'y2'}))]
+        assert groups == [(('a', 'b', 'c'), frozenset({'y', 'y2'}), 'linear')]
 
     def test_a_model_parameter_in_the_formula_is_refused(self):
         obj = _obj()
@@ -301,7 +301,7 @@ class TestPlan:
         exp.measurement_params = {'y': {'observableParameter1_y': ['s1', 's1', 's2', '3.0']}}
         groups, refusals = _plan(obj, free=('s1', 's2', 'k'), exp=exp)
         assert refusals == []
-        assert groups == [(('s1', 's2'), frozenset({'y'}))]
+        assert groups == [(('s1', 's2'), frozenset({'y'}), 'linear')]
 
     def test_nonlinear_entry_is_refused(self):
         obj = _obj()
@@ -309,24 +309,52 @@ class TestPlan:
         _, refusals = _plan(obj)
         assert any("'a' enters observable 'y'" in r and 'nonlinearly' in r for r in refusals)
 
-    @pytest.mark.parametrize('family, sources, word', [
-        (noise.Gaussian(additive_on=noise.LOG10), {'sigma': noise.ConstantSigma(1.0)}, 'Gaussian'),
-        (noise.Laplace(), {'scale': noise.ConstantSigma(1.0)}, 'Laplace'),
-    ])
-    def test_a_family_without_the_sum_of_squares_loss_is_refused(self, family, sources, word):
-        obj = objective.LikelihoodObjective(noise=family, sigma_sources=sources)
+    def test_a_family_without_the_sum_of_squares_loss_is_refused(self):
+        obj = objective.LikelihoodObjective(
+            noise=noise.Laplace(), sigma_sources={'scale': noise.ConstantSigma(1.0)})
         obj.measurement = MeasurementLayer([MeasurementModel('y', 'a*x + b', {'x', 'a', 'b'})])
         _, refusals = _plan(obj)
-        assert any('not a linear-scale Gaussian' in r and word in r for r in refusals)
+        assert any('not a Gaussian' in r and 'Laplace' in r for r in refusals)
 
-    def test_a_log_family_on_one_observable_refuses_only_its_coefficients(self):
+    def test_a_log_family_admits_a_single_homogeneous_scale(self):
         obj = _obj(overrides={'y2': (noise.Gaussian(additive_on=noise.LOG10),
                                      {'sigma': noise.ConstantSigma(1.0)})})
         obj.measurement = MeasurementLayer([
             MeasurementModel('y', 'a*x + b', {'x', 'a', 'b'}),
             MeasurementModel('y2', 'c*x', {'x', 'c'})])
-        _, refusals = _plan(obj, free=('a', 'b', 'c'))
-        assert len(refusals) == 1 and "'c'" in refusals[0]
+        groups, refusals = _plan(obj, free=('a', 'b', 'c'))
+        assert refusals == []
+        assert groups == [(('a', 'b'), frozenset({'y'}), 'linear'), (('c',), frozenset({'y2'}), 'log')]
+
+    def test_a_log_family_refuses_an_offset(self):
+        obj = objective.LikelihoodObjective(
+            noise=noise.Gaussian(additive_on=noise.LOG10), sigma_sources={'sigma': noise.ConstantSigma(1.0)})
+        obj.measurement = MeasurementLayer([MeasurementModel('y', 'x + b', {'x', 'b'})])
+        _, refusals = _plan(obj)
+        assert any("'b' enters as an offset" in r for r in refusals)
+
+    def test_a_log_family_refuses_the_coupled_pair(self):
+        obj = objective.LikelihoodObjective(
+            noise=noise.Gaussian(additive_on=noise.LOG10), sigma_sources={'sigma': noise.ConstantSigma(1.0)})
+        obj.measurement = MeasurementLayer([MeasurementModel('y', 'a*x + b', {'x', 'a', 'b'})])
+        _, refusals = _plan(obj)
+        assert any('more than one coefficient' in r for r in refusals)
+
+    def test_a_log_family_refuses_two_scales_on_one_observable(self):
+        obj = objective.LikelihoodObjective(
+            noise=noise.Gaussian(additive_on=noise.LOG10), sigma_sources={'sigma': noise.ConstantSigma(1.0)})
+        obj.measurement = MeasurementLayer([MeasurementModel('y', 'a*b*x', {'x', 'a', 'b'})])
+        _, refusals = _plan(obj)
+        assert any('more than one coefficient' in r for r in refusals)
+
+    def test_a_scale_read_in_two_residual_spaces_is_refused(self):
+        obj = _obj(overrides={'y2': (noise.Gaussian(additive_on=noise.LOG10),
+                                     {'sigma': noise.ConstantSigma(1.0)})})
+        obj.measurement = MeasurementLayer([
+            MeasurementModel('y', 'a*x', {'x', 'a'}),
+            MeasurementModel('y2', 'a*x', {'x', 'a'})])
+        _, refusals = _plan(obj, free=('a', 'k'))
+        assert any('different residual spaces' in r for r in refusals)
 
     def test_the_reparametrization_is_refused(self):
         obj = _obj()
@@ -765,8 +793,9 @@ class TestGradient:
         exp = _exp_g(obs=-2.0 * RAW + 1.0 + np.array([0.4, -0.9, 0.6, -0.3]))
         res, experiments = _profiled_assembly(obj, exp, fisher=True)
         assert obj._profiled_linear_at_bound == {'a': 'lower'}
+        a_hat, b_hat = obj._profiled_linear['a'], obj._profiled_linear['b']
         npt.assert_allclose(res.gradient[0], _fd_profiled(obj, exp), rtol=1e-6, atol=1e-9)
-        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'])
+        full = _unprofiled_gauss_newton(exp, a_hat, b_hat)
         # The pinned scale is a constant here, not a parameter: drop its row and column, then
         # take the Schur complement over the intercept, the one coefficient still solved for.
         over_k_b = (full.jacobian.T @ full.jacobian)[np.ix_([0, 2], [0, 2])]
@@ -789,3 +818,147 @@ class TestGradient:
         assert q.shape == (3, 1)
         assert design_basis(rows, np.array([False, False])) is None
         assert design_basis(np.zeros((0, 2)), np.array([True, True])) is None
+
+
+# --------------------------------------------------------------------------- #
+# Tier 7: a homogeneous scale on a log-scale family (ADR-0134)
+# --------------------------------------------------------------------------- #
+POS_SIM = _mkdata(['# t  x\n', ' 0  1\n', ' 1  2\n', ' 2  3\n', ' 3  4\n'])
+POS_EXP = _mkdata(['# t  y\n', ' 0  2.3\n', ' 1  3.7\n', ' 2  6.4\n', ' 3  7.5\n'])
+
+
+def _log_obj(sigma=0.3, additive_on=None, location=None):
+    family = noise.Gaussian(additive_on=additive_on or noise.LOG10)
+    if location is not None:
+        family = family.with_location(location)
+    obj = objective.LikelihoodObjective(
+        noise=family, sigma_sources={'sigma': noise.ConstantSigma(sigma)})
+    obj.measurement = MeasurementLayer([MeasurementModel('y', 'a*x', {'x', 'a'})])
+    return obj
+
+
+def _log_linear(obj, lower=-np.inf, upper=np.inf):
+    obj._profiled_linear_params = frozenset({'a'})
+    obj._linear_groups = (LinearGroup(('a',), frozenset({'y'}), np.array([lower]),
+                                      np.array([upper]), 'log'),)
+    return obj
+
+
+def _numeric_log_optimum(obj, sim, exp, bounds=None, extra=()):
+    """``(a*, score*)`` from a numeric minimization of the unprofiled objective over log(a)."""
+    def loss(v):
+        return _score(obj, sim, exp, [_Param('a', float(np.exp(v[0])))] + list(extra))
+    if bounds is None:
+        res = minimize(loss, [0.0], method='Nelder-Mead',
+                       options={'xatol': 1e-12, 'fatol': 1e-14, 'maxiter': 20000})
+    else:
+        res = minimize(loss, [0.0], method='L-BFGS-B', bounds=[bounds],
+                       options={'ftol': 1e-15, 'gtol': 1e-12})
+    return float(np.exp(res.x[0])), float(res.fun)
+
+
+class TestLogFamily:
+
+    @pytest.mark.parametrize('base', [None, 'ln'])
+    def test_the_profiled_score_equals_a_numeric_minimization(self, base):
+        additive = noise.LN if base == 'ln' else noise.LOG10
+        a_star, score_star = _numeric_log_optimum(_log_obj(additive_on=additive), POS_SIM, POS_EXP)
+        profiled = _log_linear(_log_obj(additive_on=additive))
+        npt.assert_allclose(_score(profiled, POS_SIM, POS_EXP), score_star, rtol=1e-9)
+        npt.assert_allclose(profiled._profiled_linear['a'], a_star, rtol=1e-6)
+
+    def test_the_closed_form_is_the_weighted_geometric_mean_ratio(self):
+        exp = copy.deepcopy(POS_EXP)
+        exp.weights[2, exp.cols['y']] = 4.0
+        profiled = _log_linear(_log_obj())
+        _score(profiled, POS_SIM, exp)
+        w = exp.weights[:, exp.cols['y']]
+        expected = np.exp(np.sum(w * np.log(POS_EXP['y'] / POS_SIM['x'])) / np.sum(w))
+        npt.assert_allclose(profiled._profiled_linear['a'], expected, rtol=1e-12)
+
+    def test_a_mean_centred_log_family_with_a_searched_sigma_is_still_the_optimum(self):
+        def make():
+            family = noise.Gaussian(additive_on=noise.LOG10).with_location(noise.MEAN)
+            obj = objective.LikelihoodObjective(
+                noise=family, sigma_sources={'sigma': noise.FreeParameterSigma('sd')})
+            obj.measurement = MeasurementLayer([MeasurementModel('y', 'a*x', {'x', 'a'})])
+            return obj
+        sd = _Param('sd', 0.4)
+        a_star, score_star = _numeric_log_optimum(make(), POS_SIM, POS_EXP, extra=[sd])
+        profiled = _log_linear(make())
+        npt.assert_allclose(_score(profiled, POS_SIM, POS_EXP, [sd]), score_star, rtol=1e-9)
+        npt.assert_allclose(profiled._profiled_linear['a'], a_star, rtol=1e-6)
+
+    def test_a_declared_bound_holds_in_log_space(self):
+        a_star, score_star = _numeric_log_optimum(_log_obj(), POS_SIM, POS_EXP,
+                                                  bounds=(np.log(3.0), None))
+        profiled = _log_linear(_log_obj(), lower=3.0)
+        npt.assert_allclose(_score(profiled, POS_SIM, POS_EXP), score_star, rtol=1e-8)
+        npt.assert_allclose(profiled._profiled_linear['a'], 3.0)
+        assert profiled._profiled_linear_at_bound == {'a': 'lower'}
+
+    def test_a_non_positive_observation_or_prediction_is_out_of_the_solve(self):
+        exp = _mkdata(['# t  y\n', ' 0  2.3\n', ' 1  0\n', ' 2  6.4\n', ' 3  7.5\n'])
+        sim = _mkdata(['# t  x\n', ' 0  1\n', ' 1  2\n', ' 2  3\n', ' 3  -1\n'])
+        profiled = _log_linear(_log_obj())
+        _score(profiled, sim, exp)
+        keep = [0, 2]
+        expected = np.exp(np.mean(np.log(exp['y'][keep] / sim['x'][keep])))
+        npt.assert_allclose(profiled._profiled_linear['a'], expected, rtol=1e-12)
+
+    def test_the_gradient_is_the_partial_and_the_curvature_the_schur_complement(self):
+        """On a log family the profiled direction is log(a), whose design column is a constant,
+        the same direction as the searched coefficient's column up to a scalar, so the same
+        oracle applies."""
+        obs = 2.0 * RAW * np.array([1.05, 0.9, 1.1, 0.97])
+        exp = Data.from_columns(np.column_stack([TIMES_G, obs]), ['time', 'obs'])
+        family = noise.Gaussian(additive_on=noise.LOG10)
+
+        def make():
+            obj = objective.LikelihoodObjective(
+                noise=family, sigma_sources={'sigma': noise.ConstantSigma(0.3)})
+            obj.measurement = MeasurementLayer([MeasurementModel('obs', 'a*Stot', {'Stot', 'a'})])
+            return obj
+
+        profiled = make()
+        profiled._profiled_linear_params = frozenset({'a'})
+        profiled._linear_groups = (LinearGroup(('a',), frozenset({'obs'}), np.array([-np.inf]),
+                                               np.array([np.inf]), 'log'),)
+        res, _ = _profiled_assembly(profiled, exp, fisher=True)
+        # The finite difference below re-solves the coefficient at perturbed points and leaves
+        # the last one on the objective, so read the value at this point first.
+        a_hat = profiled._profiled_linear['a']
+        npt.assert_allclose(res.gradient[0], _fd_profiled(profiled, exp), rtol=1e-6, atol=1e-9)
+
+        searched = make()
+        sims = {'e': _sim_g()}
+        searched._pset_values = {'a': a_hat}
+        searched.measurement.apply({'m': sims}, searched._pset_values)
+        routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+                                            'a': ParamRoute.single('a', NONE, None, 1.0)})
+        free = _free_k() + [FreeParameter('a', 'uniform_var', 0.0, 100.0, value=a_hat)]
+        full = assemble_gaussian_gradient(searched, [(sims['e'], exp, routing, 'e')], free)
+        expected = _schur(full.jacobian.T @ full.jacobian, drop=[1])
+        npt.assert_allclose(res.hessian, expected, rtol=1e-9)
+        npt.assert_allclose(res.jacobian.T @ res.jacobian, expected, rtol=1e-9)
+        npt.assert_allclose(res.gradient[0], full.gradient[0], rtol=1e-9)
+
+
+class TestLogFamilyConfig:
+
+    def test_a_lognormal_scale_is_profiled_in_log_space(self, tmp_path):
+        conf = _build(tmp_path, _BASE + ['noise_model = lognormal, sigma = read_exp_file _SD',
+                                         'observable: z, formula: a_obs*y',
+                                         'loguniform_var = a_obs 0.01 100', 'linear_profiling = 1'],
+                      exp_text="# time\tz\tz_SD\n1\t3\t0.1\n2\t5\t0.1\n")
+        assert conf.profiled_linear_params == ['a_obs']
+        (group,) = conf.obj._linear_groups
+        assert group.space == 'log'
+        npt.assert_allclose(group.lower, [0.01])
+
+    def test_a_lognormal_offset_is_refused_with_the_reason(self, tmp_path):
+        with pytest.raises(printing.PybnfError, match='enters as an offset'):
+            _build(tmp_path, _BASE + ['noise_model = lognormal, sigma = read_exp_file _SD',
+                                      'observable: z, formula: y + b_obs',
+                                      'uniform_var = b_obs -5 5', 'linear_profiling = 1'],
+                   exp_text="# time\tz\tz_SD\n1\t3\t0.1\n2\t5\t0.1\n")

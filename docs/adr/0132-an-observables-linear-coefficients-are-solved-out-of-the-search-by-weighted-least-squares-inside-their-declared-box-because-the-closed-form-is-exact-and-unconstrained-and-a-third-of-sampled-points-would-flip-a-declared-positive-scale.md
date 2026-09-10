@@ -48,7 +48,7 @@ different object whose derivatives are identically zero.
 | the parameter is also a model entity | it moves the simulation, which a linear solve ignores |
 | a noise source reads it -- a `fit` sigma, a sigma `formula`, a `prediction_formula` coefficient, or a per-row noise token | moving it moves sigma; it is not a free linear coefficient. Tested on **resolved names**, formula sources included, which is what catches `Raia` as well as `Fiedler` (ADR-0123 finding 2) |
 | it enters some observable nonlinearly | no closed form |
-| an observable reading it is not a linear-scale Gaussian | the closed form minimizes a sum of squares; a Laplace loss is a sum of absolute values and its conditional optimum is a different fit (ADR-0130 finding 4). The gate is the family and its additive scale, per observable, not `is_linear_gaussian()` over the whole fit, so a `lognormal` observable elsewhere in the fit refuses only its own coefficients |
+| an observable reading it is not a Gaussian | the closed form minimizes a sum of squares; a Laplace loss is a sum of absolute values and its conditional optimum is a different fit (ADR-0130 finding 4). The gate is per observable, not `is_linear_gaussian()` over the whole fit. A log-scale Gaussian was refused here and is admitted for a single homogeneous scale by ADR-0134 |
 | an observable is affine in each coefficient but not in all jointly (`scale*(Z + offset)`) | the solve is over the span, and mapping back to the declared names is ill posed as `scale -> 0` |
 | an observable is `cumulative`, carries `normalization = scale`, or has a prediction-dependent sigma | an offset cancels in a difference; a series already has a profiled scale; the weights would depend on the solve's own answer |
 | with `noise_profiling` on, a group's observables do not all share one profiled sigma | the weights depend on scales that depend on the coefficients: an alternating solve, not built |
@@ -127,13 +127,16 @@ reported beside the results rather than synthesized into the best PSet.
   Gauss-Newton matrix are projected off the span of the solved design (Kaufman 1975), so
   `lbfgs`, `gntr` and `trf` run with the switch. `ms` and `design`, whose assembly is not the
   shared one, remain refused with the reason.
-* **A log family's homogeneous scale** (the geometric-mean form). Refused by the family gate;
-  no corpus slug needs it.
+* **A log family's homogeneous scale** (the geometric-mean form) was refused in this version
+  and is built by ADR-0134: a log-scale Gaussian observable read by a single scale of the
+  whole formula is solved in log space, in the same groups and with the same projection.
 * **The `Schwen` reparametrization** and the alternating solve for a group whose observables
   carry different profiled sigmas. Both refused by name.
-* **`sos`.** The same least-squares solve applies with `W = diag(w_i)`, but the seam this rides
-  (per-point variance from a noise source) is the likelihood's. `Smith` is `chi_sq`, which is
-  admitted.
+* **`sos`.** Correction: this bullet originally said `sos` was not admitted and that `Smith` is
+  `chi_sq`. Both were wrong. Under edition 2 `objective = sos` desugars to a Gaussian likelihood
+  with `sigma = fix_at 1` (`_OBJECTIVE_DESUGAR`), so it has always been admitted, and `Smith`,
+  whose conf says `objective = sos`, loads with the switch on: nine one-coefficient groups, 16 of
+  25 parameters searched.
 
 ## Consequences
 

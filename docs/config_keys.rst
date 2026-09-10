@@ -534,9 +534,13 @@ Required Keys
   linear coefficient cannot be solved for: it is also a model parameter (so it moves the
   simulation); a noise source reads it (a ``fit`` sigma, a sigma ``formula`` or
   ``prediction_formula``, or a row-varying noise token -- moving it would move sigma);
-  it enters some observable nonlinearly; its observable is not a linear-scale Gaussian
-  (``normal`` / ``chi_sq``; a ``lognormal`` or ``laplace`` observable's loss is not the sum
-  of squares the closed form minimizes); its observable is affine in each coefficient
+  it enters some observable nonlinearly; its observable is not a Gaussian family (a
+  ``laplace`` observable's loss is not the sum of squares the closed form minimizes); its
+  observable is a log-scale Gaussian (``lognormal`` / ``lnnormal``) and it is not the single
+  scale that multiplies the whole formula, since on a log scale only such a scale is affine
+  in the residual, as its logarithm, and is solved by the geometric-mean form of
+  ``normalization = scale`` (an offset there, or two scales, has no closed form); it is read
+  by observables on a linear scale and on a log scale; its observable is affine in each coefficient
   separately but not in all of them jointly (``scale*(Z + offset)``); its observable is
   ``cumulative``, already carries ``normalization = scale``, or has a prediction-dependent
   sigma; or, with ``noise_profiling`` also on, its group's observables do not all share one
