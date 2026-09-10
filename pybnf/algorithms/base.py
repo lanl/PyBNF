@@ -1004,6 +1004,11 @@ class Algorithm(ABC):
         :type replicate_offset: int
         :return: list of Jobs
         """
+        # A PSet an Algorithm returns from got_result can carry its own offset (ADR-0135,
+        # #661): the run loop submits it through here with none, so this is where a request
+        # for a fresh draw of an already-scored parameter set is honoured.
+        if not replicate_offset:
+            replicate_offset = int(getattr(params, 'replicate_offset', 0) or 0)
         if params.name:
             job_id = params.name
         else:

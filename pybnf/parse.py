@@ -81,6 +81,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # of IPOP / BIPOP restarts (0 = a single run), and the optional
                # per-run generation cap (#507/ADR-0085).
                'cmaes_restarts', 'cmaes_run_maxgen',
+               # CMA-ES uncertainty handling on a stochastic model (#661/ADR-0135): the
+               # switch, and the cap on simulations per candidate it may grow to.
+               'cmaes_noise_handling', 'cmaes_noise_max_evals',
                # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).

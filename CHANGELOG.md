@@ -135,6 +135,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **CMA-ES no longer ranks a stochastic model's population on single noisy simulations
+  (#661, ADR-0135).** CMA-ES reads only the ordering of its population, and for a stochastic
+  model each objective value is one draw, so when the noise was comparable to the real
+  differences between candidates the ordering was partly random: the distribution update was
+  pulled in arbitrary directions and the step-size adaptation, reading noise as stagnation,
+  shrank a step that should not have shrunk. When running a parameter set again would give a
+  different answer, each generation now ends by simulating a few of its candidates again at
+  fresh seeds and measuring how far they move in the ranking against what pure noise would
+  do, the uncertainty handling of Hansen, Niederberger, Guzzella and Koumoutsakos (IEEE
+  Transactions on Evolutionary Computation 13(1), 180-197, 2009). While the ranking is unreliable every
+  candidate is simulated more times, up to `cmaes_noise_max_evals`, and ranked on its
+  average, and the step size is held up; when it is reliable the extra simulations are
+  dropped again. `cmaes_noise_handling = 0` turns it off. A deterministic fit is unchanged.
+  The measurement lives in its own module so scatter search can reuse it (#660).
 - **The information criteria of a stochastic fit no longer come from a single simulation
   (#676).** `Results/information_criteria.txt` reports AIC, BIC and AICc from the
   log-likelihood of the best fit, and that log-likelihood came from simulating the best fit
