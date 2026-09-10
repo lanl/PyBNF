@@ -798,6 +798,21 @@ restart (a progressively broader global search, [AugerHansen2005]_);
 ``cmaes_restart_strategy = bipop`` interleaves that with a small-population regime,
 balancing broad and fine-grained search across the budget ([Hansen2009]_). This is
 the recommended setting for a primary global search over a multimodal landscape.
+
+Stochastic models
+^^^^^^^^^^^^^^^^^
+CMA-ES reads only the ordering of its population, and a stochastic simulation gives a
+different objective value every run, so when that noise is comparable to the real
+differences between candidates the ordering is partly random. When a model is stochastic
+CMA-ES therefore measures how reliable each generation's ranking is: it runs a few of the
+generation's candidates again at fresh seeds and compares how far they move in the ranking
+with how far pure noise would move them. While the ranking is unreliable it simulates every
+candidate more times, ranks each on its average, and holds the step size up instead of
+letting the noise shrink it; when the ranking is reliable it drops the extra simulations
+again. ``cmaes_noise_handling`` turns this off and ``cmaes_noise_max_evals`` caps the
+simulations per candidate. A deterministic model never re-simulates anything. The reported
+best fit is then settled by the end-of-fit confirmation stage
+(:ref:`best_fit_confirmation`), which re-runs the top parameter sets.
 Set ``cmaes_run_maxgen`` to bound every individual run (initial and restarted) to a
 fixed number of generations. Reaching that cap yields to the next restart while one
 remains, ensuring a run that keeps making slow progress in one basin cannot monopolize

@@ -69,17 +69,32 @@ prevents one steadily improving local basin from monopolizing the global
 schedule. BIPOP small runs retain their automatic evaluation-balancing cap; when the
 user cap is set, the smaller of the two applies.
 
+Uncertainty handling for a stochastic model (#661, ADR-0135). CMA-ES reads only the
+ordering of its population, and for a stochastic model each objective value is one draw,
+so when the noise is comparable to the real differences between candidates the ordering
+is partly random: the distribution is pulled in arbitrary directions and the step-size
+adaptation, reading noise as stagnation, shrinks a step that should not shrink. When
+running a parameter set again would give a different answer (``_replicates_would_differ``)
+and ``cmaes_noise_handling`` is on, each generation ends by simulating a few of its
+candidates again at fresh seeds and measuring how far they move in the ranking against
+what pure noise would do (Hansen et al. 2009, :mod:`pybnf.algorithms.noise_handling`).
+While the ranking is unreliable every candidate is simulated more times, up to
+``cmaes_noise_max_evals``, and ranked on its average, and the step size is held up. A
+deterministic fit never re-simulates anything and is byte-identical.
+
 All state is plain ``numpy`` / ``float`` / ``list`` (mean, sigma, covariance,
-evolution paths, the pending generation, the restart bookkeeping) -- picklable, so
-backup/resume work like every other method.
+evolution paths, the pending generation, the restart bookkeeping, the uncertainty
+level) -- picklable, so backup/resume work like every other method.
 """
 
 from .local_base import StartPointOptimizer
+from ..noise_handling import RankChangeNoise
 from ...config_schema import PyBNFConfigModel
 from ...printing import print1, print2, PybnfError
 from ...pset import PSet
 from ...registry import register_fit_type
 
+import copy
 import logging
 from typing import Optional
 
@@ -122,6 +137,10 @@ class CMAESConfig(PyBNFConfigModel):
     IPOP and by BIPOP's large regime. ``cmaes_run_maxgen`` (#507, ADR-0085) is an
     optional positive per-run generation cap applied to the initial run and every
     restart.
+
+    ``cmaes_noise_handling`` (#661, ADR-0135) turns the uncertainty handling for a
+    stochastic model on (the default) or off; it does nothing for a deterministic fit.
+    ``cmaes_noise_max_evals`` caps how many simulations per candidate it may grow to.
     """
 
     cmaes_sigma0: float = 0.3
@@ -131,6 +150,8 @@ class CMAESConfig(PyBNFConfigModel):
     cmaes_restart_strategy: str = 'ipop'
     cmaes_ipop_factor: float = 2.0
     cmaes_run_maxgen: Optional[int] = Field(default=None, ge=1)
+    cmaes_noise_handling: int = 1
+    cmaes_noise_max_evals: int = Field(default=10, ge=1)
 
 
 @register_fit_type('cmaes', family='optimizer', display_name='CMA-ES',
@@ -205,6 +226,16 @@ class CMAESAlgorithm(StartPointOptimizer):
             logger.warning('Increased CMA-ES population size to minimum allowed value of 4')
             self.base_lam = self.lam
 
+        # Uncertainty handling (#661, ADR-0135): only where running a parameter set again
+        # would give a different answer, and only when asked for (the default). None
+        # otherwise, and every path below that reads it is then the pre-#661 one.
+        self.noise = None
+        if config.config.get('cmaes_noise_handling', 1) and self._replicates_would_differ():
+            self.noise = RankChangeNoise(self.n, config.config.get('cmaes_noise_max_evals', 10))
+            logger.info('CMA-ES uncertainty handling is on: a stochastic model gives a '
+                        'different objective value every run, so each generation re-simulates '
+                        'a few candidates at fresh seeds to measure how reliable its ranking '
+                        'is (up to %d simulations per candidate)' % self.noise.max_evals)
         self.start_pset = self._resolve_start_pset()
         self._init_state()
 
@@ -278,10 +309,20 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.run_generation = 0    # generations since this run's start (CSA normalization)
         self._run_best_history = []  # best objective per generation THIS run (TolFun window, #506)
         # Pending generation (filled by start_run / _sample_generation).
-        self.pending = {}          # pset name -> individual index
+        self.pending = {}          # pset name -> (individual index, 'eval' | 'reev')
         self.gen_x = [None] * self.lam   # sampled point (u-space) per index
         self.gen_score = [None] * self.lam
         self.waiting = 0
+        # Uncertainty handling (#661): every evaluation's score per candidate (a candidate
+        # is ranked on their mean), the re-evaluation phase's scores, which candidates it
+        # re-simulated, how many simulations each candidate got this generation, and the
+        # step-size factor the measurement asks the update to apply.
+        self.gen_scores = [[] for _ in range(self.lam)]
+        self.reev_scores = {}
+        self.reev_indices = []
+        self.gen_evals = 1
+        self.phase = 'eval'
+        self._noise_sigma_factor = 1.0
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
@@ -302,12 +343,23 @@ class CMAESAlgorithm(StartPointOptimizer):
 
     def _sample_generation(self):
         """Draw ``lambda`` candidates from ``N(mean, sigma**2 C)`` and queue them.
-        Caches ``B`` / ``d`` for the post-generation update."""
+        Caches ``B`` / ``d`` for the post-generation update.
+
+        Under uncertainty handling (#661) each candidate is queued ``gen_evals`` times, at
+        replicate offsets ``0, smoothing, 2 smoothing, ...`` so every copy is a fresh draw,
+        and is ranked on the mean of its scores. One copy at offset 0 -- the pre-#661 job,
+        byte for byte -- is what every deterministic fit queues."""
         self.B, self.d = self._eigen()
         self.pending = {}
         self.gen_x = [None] * self.lam
         self.gen_score = [None] * self.lam
-        self.waiting = self.lam
+        self.gen_scores = [[] for _ in range(self.lam)]
+        self.reev_scores = {}
+        self.reev_indices = []
+        self.phase = 'eval'
+        self._noise_sigma_factor = 1.0
+        self.gen_evals = self.noise.evaluations() if self.noise is not None else 1
+        self.waiting = self.lam * self.gen_evals
         psets = []
         for i in range(self.lam):
             z = self.rng.standard_normal(self.n)
@@ -316,9 +368,25 @@ class CMAESAlgorithm(StartPointOptimizer):
             # generation is monotonic across restarts, so the restart index is
             # redundant for uniqueness, but it keeps the sim-folder name legible.
             name = 'cmaes_r%i_gen%i_ind%i' % (self.restart_count, self.generation, i)
-            self.pending[name] = i
-            psets.append(self._pset_from_u(x, name=name))
+            pset = self._pset_from_u(x, name=name)
+            if self.gen_evals == 1:
+                self.pending[name] = (i, 'eval')
+                psets.append(pset)
+                continue
+            for e in range(self.gen_evals):
+                psets.append(self._queue_copy(pset, i, 'eval', '%s_e%i' % (name, e), e))
         return psets
+
+    def _queue_copy(self, pset, index, phase, name, draw):
+        """A copy of ``pset`` queued under ``name`` as draw number ``draw`` of candidate
+        ``index`` in ``phase``: its replicate offset is ``draw * smoothing``, past every
+        index a lower draw used, so each is a fresh trajectory (#661)."""
+        smoothing = max(1, int(self.config.config.get('smoothing') or 1))
+        copy_ = copy.copy(pset)
+        copy_.name = name
+        copy_.replicate_offset = draw * smoothing
+        self.pending[name] = (index, phase)
+        return copy_
 
     def start_run(self):
         print2('Running CMA-ES with population size %i (mu=%i) for up to %i '
@@ -326,14 +394,77 @@ class CMAESAlgorithm(StartPointOptimizer):
         return self._sample_generation()
 
     def got_result(self, res):
-        index = self.pending.pop(res.pset.name)
-        # Use the actual (post-reflection) evaluated point so a candidate repaired
-        # into the box enters the update as the point that was really scored.
-        self.gen_x[index] = self._u_from_pset(res.pset)
-        self.gen_score[index] = res.score
+        index, phase = self.pending.pop(res.pset.name)
+        if phase == 'eval':
+            # Use the actual (post-reflection) evaluated point so a candidate repaired
+            # into the box enters the update as the point that was really scored.
+            if self.gen_x[index] is None:
+                self.gen_x[index] = self._u_from_pset(res.pset)
+            self.gen_scores[index].append(res.score)
+        else:
+            self.reev_scores.setdefault(index, []).append(res.score)
         self.waiting -= 1
         if self.waiting > 0:
             return []
+        if phase == 'eval':
+            self.gen_score = [self._mean_score(scores) for scores in self.gen_scores]
+            if self.noise is not None:
+                return self._reevaluate()
+            return self._update_distribution()
+        return self._measure_uncertainty()
+
+    @staticmethod
+    def _mean_score(scores):
+        """A candidate's score over its draws: their mean, or ``inf`` when any draw failed,
+        since a candidate that cannot be simulated reliably must not win on the draws that
+        happened to succeed."""
+        values = np.asarray(scores, dtype=float)
+        if values.size == 0 or not np.all(np.isfinite(values)):
+            return np.inf
+        return float(np.mean(values))
+
+    # --- uncertainty handling (#661, ADR-0135) ---------------------------- #
+    def _reevaluate(self):
+        """Queue the re-evaluation phase: a random subset of the finished generation,
+        each simulated ``gen_evals`` more times at replicate offsets past the ones this
+        generation used, so the measurement compares two independent draws of each."""
+        m = self.noise.count_to_reevaluate(self.lam)
+        self.reev_indices = sorted(int(i) for i in self.rng.choice(self.lam, size=m, replace=False))
+        self.reev_scores = {}
+        self.phase = 'reev'
+        self.waiting = m * self.gen_evals
+        psets = []
+        for i in self.reev_indices:
+            base = 'cmaes_r%i_gen%i_ind%i' % (self.restart_count, self.generation, i)
+            pset = self._pset_from_u(self.gen_x[i], name=base)
+            for e in range(self.gen_evals):
+                psets.append(self._queue_copy(pset, i, 'reev', '%s_r%i' % (base, e),
+                                              self.gen_evals + e))
+        return psets
+
+    def _measure_uncertainty(self):
+        """Turn the re-evaluation phase into a measurement, adapt, and update.
+
+        Each re-evaluated candidate is ranked on the mean of its two measurements. The
+        step-size factor the measurement calls for is applied inside the update, after
+        the cumulative step-length adaptation and before the next generation is drawn."""
+        f_old = [self.gen_score[i] for i in self.reev_indices]
+        f_new = [self._mean_score(self.reev_scores.get(i, [])) for i in self.reev_indices]
+        finite = [(a, b) for a, b in zip(f_old, f_new) if np.isfinite(a) and np.isfinite(b)]
+        evals_before = self.noise.evaluations()
+        if finite:
+            measurement = self.noise.measure([a for a, _ in finite], [b for _, b in finite])
+            self._noise_sigma_factor = self.noise.update(measurement)
+        for i, a, b in zip(self.reev_indices, f_old, f_new):
+            self.gen_score[i] = float(RankChangeNoise.combined(a, b)) if np.isfinite(a) and np.isfinite(b) else np.inf
+        print2('CMA-ES ranking uncertainty %.3g (level %.3g); %d simulation(s) per candidate%s'
+               % (self.noise.last_measurement if self.noise.last_measurement is not None else 0.0,
+                  self.noise.level, self.noise.evaluations(),
+                  ', step size held up' if self._noise_sigma_factor > 1.0 else ''))
+        if self.noise.evaluations() != evals_before:
+            logger.info('CMA-ES uncertainty handling: %d simulation(s) per candidate from the '
+                        'next generation (was %d; level %.3g)'
+                        % (self.noise.evaluations(), evals_before, self.noise.level))
         return self._update_distribution()
 
     # --- distribution update ---------------------------------------------- #
@@ -372,6 +503,10 @@ class CMAESAlgorithm(StartPointOptimizer):
 
         # Step-size update (cumulative step-length adaptation).
         self.sigma *= np.exp((self.cs / self.ds) * (ps_norm / self.chiN - 1.0))
+        # An unreliable ranking reads as stagnation to the adaptation above, which would
+        # shrink a step that should not shrink; the uncertainty measurement holds it up
+        # (Hansen 2009, #661). 1 for a deterministic fit and for a reliable ranking.
+        self.sigma *= self._noise_sigma_factor
 
         self.generation += 1
         self.run_generation += 1

@@ -5902,6 +5902,14 @@
     2.0
    ],
    [
+    "cmaes_noise_handling",
+    1
+   ],
+   [
+    "cmaes_noise_max_evals",
+    10
+   ],
+   [
     "cmaes_restart_strategy",
     "ipop"
    ],
@@ -6258,6 +6266,14 @@
    [
     "cmaes_ipop_factor",
     2.0
+   ],
+   [
+    "cmaes_noise_handling",
+    1
+   ],
+   [
+    "cmaes_noise_max_evals",
+    10
    ],
    [
     "cmaes_restart_strategy",
@@ -7381,6 +7397,14 @@
    [
     "cmaes_ipop_factor",
     2.0
+   ],
+   [
+    "cmaes_noise_handling",
+    1
+   ],
+   [
+    "cmaes_noise_max_evals",
+    10
    ],
    [
     "cmaes_restart_strategy",

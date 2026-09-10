@@ -2013,6 +2013,41 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_t
 
     * ``cmaes_ipop_factor = 2.0``
 
+**cmaes_noise_handling**
+  Whether CMA-ES measures how reliable its ranking is when a model is stochastic (``1``, the
+  default) or ranks on single simulations as before (``0``). A stochastic simulation gives a
+  different objective value every run, and CMA-ES reads only the ordering of its population,
+  so when that noise is comparable to the real differences between candidates the ordering is
+  partly random: the search is pulled in arbitrary directions and the step size shrinks
+  because noise reads as stagnation. With the handling on, each generation ends by running a
+  few of its candidates again at fresh seeds and comparing how far they move in the ranking
+  with how far pure noise would move them (Hansen et al. 2009). While the ranking is
+  unreliable every candidate is simulated more times and ranked on its average, and the step
+  size is held up; when it is reliable the extra simulations are dropped again. Nothing is
+  done for a deterministic model, or when every stochastic model pins its seed, since running
+  a parameter set again would give the same answer.
+
+  ``smoothing`` is not a substitute: it runs every simulation the same fixed number of times
+  for the whole fit, and cannot tell a generation whose ordering is obvious from one whose
+  ordering is not. The two compose: with ``smoothing`` on, each draw here is a smoothed one.
+
+  Default: 1
+
+  Example:
+
+    * ``cmaes_noise_handling = 0``
+
+**cmaes_noise_max_evals**
+  The most simulations per candidate the uncertainty handling may grow to. Each generation
+  whose ranking measures as unreliable multiplies the count by 1.5, up to this cap; each
+  generation whose ranking measures as reliable shrinks it back towards one.
+
+  Default: 10
+
+  Example:
+
+    * ``cmaes_noise_max_evals = 4``
+
 
 :ref:`Differential Evolution <alg-de>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

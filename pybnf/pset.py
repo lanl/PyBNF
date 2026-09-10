@@ -2710,6 +2710,16 @@ class PSet:
 
         self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
 
+    #: The replicate offset an Algorithm asks for when it returns this PSet from
+    #: ``got_result`` (ADR-0135, #661). Under the default ``stochastic_seed`` policy a
+    #: simulation's seed comes from the parameter values and the replicate index, so a
+    #: parameter set the fit has already scored would reproduce the same trajectory; an
+    #: Algorithm that wants a fresh draw of it sets an offset past every index it used, and
+    #: ``make_job`` reads it. A class attribute so a PSet unpickled from an older backup
+    #: reads as 0. Not part of the identity: two PSets with the same values are equal
+    #: whatever their offsets, as they are whatever their names.
+    replicate_offset = 0
+
     def __iter__(self):
         # Return a fresh iterator over the parameter list rather than making the
         # PSet its own iterator with a cursor stored on self -- the latter is not
