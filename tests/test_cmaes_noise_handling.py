@@ -34,6 +34,13 @@ from .test_best_fit_confirmation import _algo, _ps
 MU = np.array([2.0, -1.0])
 
 
+def _draw_seed(values, offset):
+    """A seed from the parameter VALUES and the replicate offset. Floats and ints hash the
+    same in every process, where a PSet's hash (through its parameter names) does not, so
+    the noise a test sees is the same on every run."""
+    return abs(hash((tuple(round(float(v), 9) for v in values), int(offset)))) % (2 ** 32)
+
+
 def _conf(tmp_path, **overrides):
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec(list(MU), [1.0, 1.0]))
     base = dict(n_params=2, population_size=8, max_iterations=40, cmaes_sigma0=0.3,
@@ -67,7 +74,7 @@ class _Scorer:
         offset = int(getattr(pset, 'replicate_offset', 0))
         self.calls.append((pset.name, offset))
         x = np.array([pset['p1'], pset['p2']])
-        rng = np.random.default_rng(abs(hash((hash(pset), offset))) % (2 ** 32))
+        rng = np.random.default_rng(_draw_seed(x, offset))
         return float(np.sum((x - MU) ** 2)) + self.sd * rng.standard_normal()
 
 
@@ -248,7 +255,7 @@ class TestCMAES:
         factors = []
         update = alg.noise.update
         alg.noise.update = lambda m: factors.append(update(m)) or factors[-1]
-        batch = _drive(alg, scorer, generations=8)
+        batch = _drive(alg, scorer, generations=15)
         assert alg.noise.level > 0.0
         assert alg.noise.evaluations() > 1
         # The generation just queued carries every candidate several times, at fresh offsets.
@@ -337,7 +344,7 @@ def test_a_stochastic_fit_runs_end_to_end_and_re_simulates_at_fresh_indices(tmp_
 
     def noisy_run_job(j, debug=False, failed_logs_dir=''):
         res = H.slim_run_job(j, debug, failed_logs_dir)
-        rng = np.random.default_rng(abs(hash((hash(j.params), int(j.replicate_index)))) % (2 ** 32))
+        rng = np.random.default_rng(_draw_seed([j.params['p1'], j.params['p2']], j.replicate_index))
         res.score = float(res.score) + 0.5 * rng.standard_normal()
         seen.append(int(j.replicate_index))
         return res
