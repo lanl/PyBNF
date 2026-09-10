@@ -23,6 +23,31 @@ All notable changes to PyBNF are documented below. This project adheres to
   parameter.
 
 ### Added
+- **An observable's scale and offset can be solved out of the search
+  (`linear_profiling = 1`, #671, ADR-0132).** A free parameter that an
+  `observable: <id>, formula: <expr>` line reads linearly, as a scale, an offset, or the
+  coupled pair, has a closed-form optimum for any fixed dynamics: the weighted least-squares
+  fit of the observable to its data. Searching it anyway spends evaluations ranking
+  candidates by how wrong their scale happens to be, and a twenty-decade box on an offset
+  becomes a search dimension. With the new switch every such coefficient leaves the search
+  and is solved at each evaluation from the data, so every parameter set the fit scores is
+  coefficient-optimal by construction. Coefficients that share an observable are solved
+  jointly, and a coefficient tied across several experiments is one solve over all of them.
+  The evaluation behind the switch (ADR-0130) found that on a linear-Gaussian fixture the
+  profiled search reaches the optimum in about half the simulations, and that its ordering
+  of candidates tracks the true rate constants where the searched ordering does not.
+  The switch is all-or-nothing and is refused before the run starts, naming the parameter
+  and the reason, for anything it cannot solve: a coefficient that is also a model
+  parameter, one a noise source reads (so moving it would move sigma), one that enters an
+  observable nonlinearly, an observable whose noise family is not a linear-scale Gaussian,
+  a formula affine in each coefficient but not jointly, a cumulative or analytically scaled
+  observable, a prediction-dependent sigma, and, with `noise_profiling` also on, a group
+  whose observables do not share one profiled sigma. It is also refused for the Bayesian
+  samplers and, in this first version, for the gradient methods.
+  A profiled coefficient stays declared and estimated: it counts in `k`, and its value is
+  reported in `Results/profiled_linear.txt`. Its declared bounds are respected rather than
+  ignored, since the closed form can return a negative scale for a parameter declared
+  positive; the solve stays inside the box and the file says when a bound held.
 - **A stochastic fit now confirms its best fit by running the top parameter sets again
   (#659).** When a model is stochastic, running it twice with the same parameter values
   gives two different answers, so the objective value PyBNF computes is a noisy measurement

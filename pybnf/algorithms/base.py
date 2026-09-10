@@ -156,6 +156,10 @@ class Algorithm(ABC):
     #: A **class** attribute, replaced rather than mutated, so an unpickled algorithm -- and
     #: the run loop's own tail -- always read a well-defined empty map.
     _profiled_noise = {}
+    #: The analytically profiled linear coefficients at the best fit (ADR-0132, #671), and how
+    #: many of the scoring runs held each at a declared bound; ``_emit_profiled_linear`` reports.
+    _profiled_linear = {}
+    _profiled_linear_bound_hits = {}
 
     #: Name of the parameter set ``Results/information_criteria_backup.txt`` currently
     #: describes (#560), or None while no checkpoint has been written. The checkpoint costs
@@ -1511,6 +1515,7 @@ class Algorithm(ABC):
             self._emit_information_criteria(self._compute_information_criteria(
                 best_pset, replicates=self._information_criteria_replicates(), client=client))
             self._emit_profiled_noise()
+            self._emit_profiled_linear()
             self._emit_inference_data()
         self._finalize_backup_pickle()
         self._teardown_sim_dir()
@@ -2070,8 +2075,11 @@ class Algorithm(ABC):
             # variables alone would shift every AIC/BIC in a profiled fit relative to the same
             # fit run without profiling, which is exactly the comparison k exists to support.
             profiled = getattr(self.config, 'profiled_noise_params', ()) or ()
-            k = len(self.variables) + len(profiled)
+            # A profiled linear coefficient is an estimated quantity too (ADR-0132, #671).
+            linear = getattr(self.config, 'profiled_linear_params', ()) or ()
+            k = len(self.variables) + len(profiled) + len(linear)
             log_likelihoods, counts, profiled_values, scored = [], [], [], 0
+            linear_values, linear_hits = [], {}
             for res in results:
                 if res is None or getattr(res, 'failed', False) or res.simdata is None:
                     continue
@@ -2087,6 +2095,11 @@ class Algorithm(ABC):
                 noise = getattr(self.objective, '_profiled_noise', None)
                 if noise:
                     profiled_values.append(dict(noise))
+                coefficients = getattr(self.objective, '_profiled_linear', None)
+                if coefficients:
+                    linear_values.append(dict(coefficients))
+                    for name in getattr(self.objective, '_profiled_linear_at_bound', None) or {}:
+                        linear_hits[name] = linear_hits.get(name, 0) + 1
                 if ic is None:
                     continue
                 log_likelihoods.append(ic.log_likelihood)
@@ -2096,6 +2109,11 @@ class Algorithm(ABC):
                 self._profiled_noise = {
                     name: fmean([d[name] for d in profiled_values if name in d])
                     for name in names_seen}
+                names_seen = sorted(set().union(*linear_values)) if linear_values else []
+                self._profiled_linear = {
+                    name: fmean([d[name] for d in linear_values if name in d])
+                    for name in names_seen}
+                self._profiled_linear_bound_hits = linear_hits
             if not log_likelihoods:
                 logger.warning('No simulation of the best fit produced a usable log-likelihood, '
                                'so no information criteria were computed')
@@ -2200,11 +2218,11 @@ class Algorithm(ABC):
         # it scores, and profiled_noise.txt reports the run's FINAL best fit, so a checkpoint
         # must not leave a mid-run value behind for the end-of-run tail to report if its own
         # scoring pass fails.
-        saved_profiled_noise = self._profiled_noise
+        saved = (self._profiled_noise, self._profiled_linear, self._profiled_linear_bound_hits)
         try:
             ic = self._compute_information_criteria(self.trajectory.best_fit())
         finally:
-            self._profiled_noise = saved_profiled_noise
+            self._profiled_noise, self._profiled_linear, self._profiled_linear_bound_hits = saved
         if ic is None:
             return
         # Mirrors sorted_params_backup.txt / sorted_params_refine_backup.txt, so both halves
@@ -2490,6 +2508,46 @@ class Algorithm(ABC):
         logger.info('Wrote profiled noise scales %s' % path)
         print1('Profiled noise scale(s) at the best fit: %s'
                % ', '.join('%s=%.6g' % (n, v) for n, v in sorted(self._profiled_noise.items())))
+
+    def _emit_profiled_linear(self):
+        """Write ``Results/profiled_linear.txt`` for a fit that solves an observable's linear
+        coefficients out of the search (``linear_profiling = 1``, ADR-0132, #671).
+
+        The sibling of :meth:`_emit_profiled_noise`, by the same argument: a profiled
+        coefficient is fitted, not proposed, so it is no coordinate of the best PSet and
+        appears in no ``sorted_params_*.txt`` row. This reports its least-squares value at the
+        best fit, and whether the bounded solve held it at a declared bound there, which is the
+        one way a profiled coefficient can still be a statement about the declared box.
+
+        A no-op when nothing was profiled or the end-of-run scoring did not run; every failure
+        is logged and swallowed, since a report must never abort a completed run."""
+        if not self._profiled_linear:
+            return
+        hits = self._profiled_linear_bound_hits or {}
+        lines = [
+            '# Observable coefficients solved out of the search analytically (linear_profiling = 1).',
+            '# Each value is the weighted least-squares coefficient over the scored points that',
+            '#   read it, evaluated at the best fit -- the estimate for a parameter the search',
+            '#   never proposed, so it appears in no sorted_params_*.txt row. These ARE estimated',
+            '#   parameters: they are counted in k in information_criteria.txt.',
+            '# at_bound is yes when the unconstrained least-squares value lay outside the',
+            '#   declared box and the solve held the coefficient at a bound; the value is then',
+            '#   the best inside the box, not the closed form.',
+            '# parameter\tvalue\tat_bound',
+        ]
+        lines += ['%s\t%.10g\t%s' % (name, value, 'yes' if hits.get(name) else 'no')
+                  for name, value in sorted(self._profiled_linear.items())]
+        path = str(Path(self.res_dir) / 'profiled_linear.txt')
+        try:
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception:
+            logger.exception('Failed to write profiled_linear.txt')
+            return
+        logger.info('Wrote profiled linear coefficients %s' % path)
+        print1('Profiled observable coefficient(s) at the best fit: %s'
+               % ', '.join('%s=%.6g%s' % (n, v, ' (at bound)' if hits.get(n) else '')
+                           for n, v in sorted(self._profiled_linear.items())))
 
     def _emit_inference_data(self):
         """Write Results/inference_data.nc when ``output_inference_data`` is set (ADR-0055).

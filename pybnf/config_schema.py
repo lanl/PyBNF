@@ -347,6 +347,11 @@ class GlobalConfig(PyBNFConfigModel):
     # a marginal, so the posterior it would produce is not one). Resolved in
     # Configuration._apply_noise_profiling.
     noise_profiling: int = 0
+    # Analytic linear-coefficient profiling (ADR-0132, #671): 1 solves every observation-layer
+    # free parameter that enters an observable formula affinely (a scale, an offset, or the
+    # coupled pair) out of the search in closed form at each evaluation. Resolved by
+    # Configuration._apply_linear_profiling.
+    linear_profiling: int = 0
 
     # --- simplex ---
     # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);

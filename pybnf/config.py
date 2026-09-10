@@ -359,6 +359,10 @@ class Configuration:
         # -- profiling removes a declared parameter from the search, not from the .conf.
         # A no-op (leaves self.variables untouched) unless noise_profiling = 1.
         self._apply_noise_profiling()
+        # Analytic linear-coefficient profiling (ADR-0132, #671), the same shape of change one
+        # step later: it reads the noise partition above (a group's solve must not depend on
+        # a scale that depends on it) and removes more declared parameters from the search.
+        self._apply_linear_profiling()
         # The fit's start point (#583/#559, ADR-0117). Deliberately the first thing after
         # _apply_noise_profiling: that is the earliest point at which self.variables is
         # FINAL (profiling prunes parameters out of the search here), so a start_point
@@ -3217,6 +3221,129 @@ class Configuration:
         logger.info('noise_profiling: profiling %s; searching %s'
                     % (self.profiled_noise_params, [v.name for v in self.variables]))
 
+    #: Gradient job types that cannot yet run with ``linear_profiling`` (ADR-0132). The scalar
+    #: gradient of the profiled objective is the partial at the solved coefficients, by the
+    #: envelope theorem, but the least-squares model the trust-region step and the Gauss-Newton
+    #: Fisher consume is not: the reduced residual's Jacobian is the partial Jacobian
+    #: projected off the span of the design (Kaufman 1975), and neither the projection nor the
+    #: seeding of the solved coefficients into the assembly is built. Refused with the reason
+    #: rather than run with a wrong curvature.
+    _LINEAR_PROFILING_GRADIENT_UNSUPPORTED = frozenset({'trf', 'lbfgs', 'gntr', 'ms'})
+
+    def _apply_linear_profiling(self):
+        """Resolve ``linear_profiling = 1`` and partition the free parameters (ADR-0132, #671).
+
+        Profiling solves every observation-layer free parameter that enters an observable
+        formula affinely -- a scale, an offset, or the coupled pair -- from the data in closed
+        form at each evaluation, so those parameters are no longer *searched*: they move from
+        :attr:`variables` (the list every algorithm builds its box, population and PSets from)
+        into :attr:`linear_profiled_variables`, and the objective solves for them per
+        evaluation from the groups handed to it here. Modelled on
+        :meth:`_apply_noise_profiling`, and everything that does not change there does not
+        change here either: the parameters stay **declared**, they stay **estimated** and
+        count in ``k``, and their fitted values are reported, in ``Results/profiled_linear.txt``.
+
+        One thing differs from a profiled noise scale. A profiled coefficient's declared bounds
+        are **not** inert: the closed form is unconstrained and on the ADR-0130 fixture returned
+        a negative scale for a ``loguniform`` parameter at a third of the sampled points, so the
+        solve is box-constrained to the declared support and says when a bound held.
+
+        Refusals, all pointed and all before the run starts: a non-likelihood objective, a
+        Bayesian sampler (a profile is not a marginal, ADR-0108's argument unchanged), a
+        gradient job type (see :attr:`_LINEAR_PROFILING_GRADIENT_UNSUPPORTED`), a fit with no
+        observable formula, every per-coefficient reason
+        :meth:`~pybnf.objective.LikelihoodObjective.linear_profiling_plan` lists, and a fit with
+        nothing to profile. All-or-nothing: profiling some linear coefficients while searching
+        others would silently change what the searched ones mean.
+        """
+        self.profiled_linear_params = []
+        self.linear_profiled_variables = []
+        if not self.config.get('linear_profiling'):
+            return
+        if not isinstance(self.obj, objective.LikelihoodObjective):
+            raise UnknownObjectiveFunctionError(
+                'linear_profiling needs a likelihood objective',
+                f"linear_profiling = 1 solves an observable's linear coefficients out of the "
+                f"search as the minimizer of a Gaussian likelihood, but the objective "
+                f"'{type(self.obj).__name__}' has no per-point noise model. Use a linear-scale "
+                f"Gaussian likelihood (chi_sq / normal).")
+        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
+        if entry is not None and entry.family == 'sampler':
+            raise PybnfError(
+                'linear_profiling is not available for a Bayesian sampler',
+                f"linear_profiling = 1 replaces each linear observable coefficient by its "
+                f"least-squares value, which is a PROFILE, not a marginal: it maximizes the "
+                f"nuisance out where a posterior integrates it over its prior. Draws from "
+                f"'{self.config['fit_type']}' ({entry.display_name}) would therefore not be "
+                f"posterior draws. Drop linear_profiling for this fit and sample the "
+                f"coefficients as free parameters, or use it with an optimizer.")
+        fit_type = self.config.get('fit_type')
+        if fit_type in self._LINEAR_PROFILING_GRADIENT_UNSUPPORTED:
+            raise PybnfError(
+                f'job_type = {fit_type} is not yet supported with linear_profiling',
+                f"linear_profiling = 1 solves an observable's linear coefficients out of the "
+                f"search, and the gradient path needs the reduced residual's Jacobian projected "
+                f"off the span of the solved coefficients, which is not built (ADR-0132). Use a "
+                f"gradient-free optimizer (de / ade / ss / pso / cmaes / powell / sim) with "
+                f"linear_profiling, or drop it for job_type = {fit_type}.")
+        if not (self.obj.measurement or self.obj._per_measurement_models):
+            raise PybnfError(
+                'linear_profiling has nothing to profile in this fit',
+                "linear_profiling = 1 was set, but no observable in this fit is declared with a "
+                "formula ('observable: <id>, formula: <expr>'), so no free parameter enters an "
+                "observable linearly. There is no search dimension to remove. Drop "
+                "linear_profiling, or declare the observable formula that carries the "
+                "coefficient.")
+        namespace, _constants, _rules = self._model_expression_namespace()
+        free = {v.name: v for v in self.variables}
+        groups, refusals = self.obj.linear_profiling_plan(
+            set(free), set(namespace), self.exp_data,
+            profiled_noise=set(self.profiled_noise_params))
+        if refusals:
+            listed = '\n  * '.join(refusals)
+            raise PybnfError(
+                'linear_profiling cannot profile every linear coefficient in this fit',
+                f"linear_profiling = 1 applies to EVERY free parameter that enters an observable "
+                f"formula linearly -- profiling some while searching others would silently change "
+                f"what the searched ones mean -- and this fit has one it cannot profile:\n  * "
+                f"{listed}\nDrop linear_profiling and search them, or change the declaration.")
+        if not groups:
+            raise PybnfError(
+                'linear_profiling has nothing to profile in this fit',
+                "linear_profiling = 1 was set, but no declared free parameter enters an observable "
+                "formula linearly (a scale, an offset, or the coupled pair). There is no search "
+                "dimension to remove. Drop linear_profiling.")
+        from .measurement.linear import LinearGroup
+        built = []
+        for names, cols in groups:
+            lower = np.array([self._declared_bound(free[n], 'lower_bound', -np.inf) for n in names])
+            upper = np.array([self._declared_bound(free[n], 'upper_bound', np.inf) for n in names])
+            built.append(LinearGroup(tuple(names), frozenset(cols), lower, upper))
+        profiled = {name for names, _cols in groups for name in names}
+        self.linear_profiled_variables = [v for v in self.variables if v.name in profiled]
+        self.variables = [v for v in self.variables if v.name not in profiled]
+        self.profiled_linear_params = sorted(profiled)
+        self.obj._profiled_linear_params = frozenset(profiled)
+        self.obj._linear_groups = tuple(built)
+        print1('Analytic linear profiling: %d observable coefficient(s) (%s) are solved out of '
+               'the search in %d group(s) (%d searched parameter(s) remain).'
+               % (len(self.profiled_linear_params), ', '.join(self.profiled_linear_params),
+                  len(built), len(self.variables)))
+        logger.info('linear_profiling: profiling %s in groups %s; searching %s'
+                    % (self.profiled_linear_params,
+                       [(g.names, sorted(g.columns)) for g in built],
+                       [v.name for v in self.variables]))
+
+    @staticmethod
+    def _declared_bound(variable, attr, default):
+        """One side of a free parameter's declared support in its own units, or ``default``
+        for an open side (an unbounded prior with no truncation there)."""
+        value = getattr(variable, attr, None)
+        if value is None:
+            return default
+        value = float(value)
+        return value if np.isfinite(value) else default
+
     def _qualitative_scale_param(self):
         """The free-parameter name that ``qualitative_scale = fit <param>`` ties every qualitative
         constraint's scale (logit ``s`` / probit ``sigma``) to, or ``None`` when
@@ -3436,8 +3563,8 @@ class Configuration:
                     raise PybnfError(
                         f"start point for non-searched parameter '{name}'",
                         f"{where} names a parameter that is declared but is not part of the "
-                        f"search: noise_profiling = 1 profiles it out analytically, so it has "
-                        f"no start point to set. Remove that line.")
+                        f"search: noise_profiling = 1 or linear_profiling = 1 profiles it out "
+                        f"analytically, so it has no start point to set. Remove that line.")
                 raise PybnfError(
                     f"start point for unknown parameter '{name}'",
                     f"{where} names '{name}', which is not a declared free parameter. "

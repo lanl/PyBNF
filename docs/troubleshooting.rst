@@ -334,6 +334,27 @@ of the run). It is still an estimated parameter, so it is still counted in ``k``
 as an ordinary free parameter and reported alongside the model parameters.
 
 
+.. _profiled_coefficient_missing:
+
+My observable scale or offset is missing from ``sorted_params_final.txt``
+-------------------------------------------------------------------------
+
+You set :ref:`linear_profiling <linear_profiling>` ``= 1``, so every free parameter that an
+observable formula reads linearly -- a scale, an offset, or the pair -- is no longer
+*searched*: PyBNF solves for it by weighted least squares at every evaluation instead of
+proposing values for it. It is therefore not a coordinate of the best parameter set and
+appears in no ``sorted_params_*.txt`` row.
+
+Its fitted value is in ``Results/profiled_linear.txt`` (and is echoed on the console at the
+end of the run), with an ``at_bound`` column. That column is ``yes`` when the unconstrained
+least-squares value lay outside the box you declared for the parameter and the solve held it
+at a bound; the reported value is then the best one inside the box. A warning during the run
+names each coefficient that was held at a bound for at least one parameter set. It is still
+an estimated parameter, so it is still counted in ``k`` in
+``Results/information_criteria.txt``. Drop ``linear_profiling`` if you want the coefficient
+searched as an ordinary free parameter and reported alongside the model parameters.
+
+
 Could not start the workers on the other machines
 -------------------------------------------------
 
