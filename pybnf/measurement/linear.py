@@ -47,8 +47,12 @@ PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 #: One group of coefficients the fit solves for jointly: the coefficients that share an
 #: observable, transitively. ``names`` is the sorted tuple of free-parameter names,
 #: ``columns`` the frozenset of observable ids whose formulas read them, ``lower`` /
-#: ``upper`` the declared bounds as arrays parallel to ``names``.
-LinearGroup = namedtuple('LinearGroup', 'names columns lower upper')
+#: ``upper`` the declared bounds as arrays parallel to ``names``, in the parameters' own
+#: units. ``space`` is the residual space the solve runs in: ``'linear'`` for a
+#: linear-scale Gaussian family, where the prediction is affine in the coefficients, or
+#: ``'log'`` for a log-scale one, where the group is a single scale that multiplies the whole
+#: formula and the solve is over its logarithm (the ADR-0066 geometric-mean form, ADR-0134).
+LinearGroup = namedtuple('LinearGroup', 'names columns lower upper space', defaults=('linear',))
 
 #: One group's solved design from the most recent evaluation, kept for the gradient path
 #: (ADR-0133): ``keys`` identifies each scored point that entered the solve, as

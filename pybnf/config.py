@@ -3317,11 +3317,11 @@ class Configuration:
                 "dimension to remove. Drop linear_profiling.")
         from .measurement.linear import LinearGroup
         built = []
-        for names, cols in groups:
+        for names, cols, space in groups:
             lower = np.array([self._declared_bound(free[n], 'lower_bound', -np.inf) for n in names])
             upper = np.array([self._declared_bound(free[n], 'upper_bound', np.inf) for n in names])
-            built.append(LinearGroup(tuple(names), frozenset(cols), lower, upper))
-        profiled = {name for names, _cols in groups for name in names}
+            built.append(LinearGroup(tuple(names), frozenset(cols), lower, upper, space))
+        profiled = {name for names, _cols, _space in groups for name in names}
         self.linear_profiled_variables = [v for v in self.variables if v.name in profiled]
         self.variables = [v for v in self.variables if v.name not in profiled]
         self.profiled_linear_params = sorted(profiled)
@@ -3333,7 +3333,7 @@ class Configuration:
                   len(built), len(self.variables)))
         logger.info('linear_profiling: profiling %s in groups %s; searching %s'
                     % (self.profiled_linear_params,
-                       [(g.names, sorted(g.columns)) for g in built],
+                       [(g.names, sorted(g.columns), g.space) for g in built],
                        [v.name for v in self.variables]))
 
     @staticmethod

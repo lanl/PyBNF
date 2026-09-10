@@ -1430,9 +1430,15 @@ class LikelihoodObjective(SummationObjective):
           not a free linear coefficient (ADR-0123 finding 2: the Fiedler / Raia double
           binding, tested on resolved names);
         * it enters some observable's formula nonlinearly;
-        * an observable reading it is not a linear-scale Gaussian, whose sum of squares is
-          what the closed form minimizes (ADR-0130 finding 4). A log family's homogeneous
-          scale has the ADR-0066 geometric-mean form, which is not built here;
+        * an observable reading it is not a Gaussian, whose sum of squares in its own residual
+          space is what the closed form minimizes (ADR-0130 finding 4);
+        * an observable reading it is a log-scale Gaussian and it is not the single scale
+          that multiplies the whole formula: on a log scale only a homogeneous scale is
+          affine in the residual (as its logarithm), the ADR-0066 geometric-mean form
+          (ADR-0134); an offset there, or two scales whose product is one degree of freedom,
+          has no closed form;
+        * observables reading it live in different residual spaces (one linear, one log), so
+          its group has no single space to solve in;
         * an observable reading it is affine in each of its coefficients separately but not
           in all of them jointly (``scale*(x + offset)``), whose solve is over a different
           parametrization than the declared one;
@@ -1458,7 +1464,9 @@ class LikelihoodObjective(SummationObjective):
             scaled_cols |= set(cols)
 
         reads = {}       # observable id -> {name: role}
+        space_of = {}    # observable id -> 'linear' | 'log'
         problems = {}    # name -> [reason]
+        profiled_noise = set(profiled_noise or ())
         for col, model in sorted(models.items()):
             symbols = formula_symbol_names(model.formula)
             direct = [s for s in symbols if s in free_names]
@@ -1480,7 +1488,9 @@ class LikelihoodObjective(SummationObjective):
             if not per_name:
                 continue
             family, sources = self._spec_for(col)
-            gate = self._linear_profile_gate(col, family, sources, scaled_cols)
+            gate = self._linear_profile_gate(col, family, sources, scaled_cols, per_name,
+                                             profiled_noise)
+            space_of[col] = self._linear_profile_space(family)
             for name, role in per_name.items():
                 reasons = problems.setdefault(name, [])
                 if name in model_names:
@@ -1527,11 +1537,18 @@ class LikelihoodObjective(SummationObjective):
         groups = []
         for names in members.values():
             cols = frozenset(col for col, per_name in reads.items() if set(per_name) & names)
-            groups.append((tuple(sorted(names)), cols))
+            spaces = {space_of[col] for col in cols}
+            if len(spaces) > 1:
+                for name in sorted(names):
+                    problems.setdefault(name, []).append(
+                        "'%s' is read by observables in different residual spaces (linear: %s; "
+                        "log: %s), so its solve has no single space"
+                        % (name, ', '.join(sorted(c for c in cols if space_of[c] == 'linear')),
+                           ', '.join(sorted(c for c in cols if space_of[c] == 'log'))))
+            groups.append((tuple(sorted(names)), cols, 'log' if spaces == {'log'} else 'linear'))
         groups.sort()
 
-        profiled_noise = set(profiled_noise or ())
-        for names, cols in groups:
+        for names, cols, _space in groups:
             shared, other = set(), []
             for col in sorted(cols):
                 family, sources = self._spec_for(col)
@@ -1552,11 +1569,38 @@ class LikelihoodObjective(SummationObjective):
         refusals = sorted({reason for reasons in problems.values() for reason in reasons})
         return groups, refusals
 
-    def _linear_profile_gate(self, col, family, sources, scaled_cols):
+    @staticmethod
+    def _linear_profile_space(family):
+        """The residual space one observable's solve runs in: ``'log'`` for a log-scale
+        family, ``'linear'`` otherwise (ADR-0134)."""
+        return 'log' if getattr(family, 'additive_on', None) is not None \
+            and family.additive_on.ln_base != 0.0 else 'linear'
+
+    def _linear_profile_gate(self, col, family, sources, scaled_cols, per_name, profiled_noise):
         """Why one observable's coefficients cannot be solved in closed form, or ``None``."""
-        if not (isinstance(family, Gaussian) and family.additive_on.ln_base == 0.0):
-            return ("its noise family %s is not a linear-scale Gaussian, whose sum of squares "
-                    "is what the closed form minimizes" % type(family).__name__)
+        if not isinstance(family, Gaussian):
+            return ("its noise family %s is not a Gaussian, whose sum of squares in its own "
+                    "residual space is what the closed form minimizes" % type(family).__name__)
+        if family.additive_on.ln_base != 0.0:
+            # On a log scale the residual is log(pred) - log(d): affine in log(a) for a formula
+            # a*A(rest) and in nothing else, so one homogeneous scale per observable (ADR-0066's
+            # geometric-mean form, ADR-0134).
+            if len(per_name) > 1:
+                return ("it is a log-scale family reading more than one coefficient (%s), whose "
+                        "product is one degree of freedom in log space; only a single scale that "
+                        "multiplies the whole formula has the geometric-mean form"
+                        % ', '.join(sorted(per_name)))
+            (name, role), = per_name.items()
+            if role != 'scale':
+                return ("it is a log-scale family in which '%s' enters as %s rather than as a "
+                        "scale of the whole formula; only a homogeneous scale is affine on a log "
+                        "scale (the geometric-mean form, ADR-0066)"
+                        % (name, 'an offset' if role == 'offset' else 'an affine term'))
+            source = sources.get(family.noise_params[0])
+            if (isinstance(source, FreeParameterSigma) and source.name in profiled_noise
+                    and not family.location.offset_always_zero):
+                return ("its mean-centred log family moves its location with a noise scale that "
+                        "is itself profiled, which the solve would need before it is solved")
         if self._is_cumulative(col):
             return "it is scored as a cumulative count, whose per-interval difference cancels an offset"
         if col in scaled_cols:
@@ -1669,18 +1713,32 @@ class LikelihoodObjective(SummationObjective):
                         sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum,
                                                     show_warnings=False)
                     gi = col_group[col]
+                    group = self._linear_groups[gi]
+                    if group.space == 'log' and observation <= 0.0:
+                        continue
                     row, intercept = self._linear_design_row(
-                        self._linear_groups[gi], col, sim_data, sim_row, exp_data, rownum,
-                        layer, basis)
+                        group, col, sim_data, sim_row, exp_data, rownum, layer, basis, family)
                     if not (np.all(np.isfinite(row)) and np.isfinite(intercept)):
                         continue
-                    variance = self._linear_variance(family, sources, sim_data, sim_row,
-                                                     exp_data, rownum, col)
+                    variance, sigma = self._linear_variance(family, sources, sim_data, sim_row,
+                                                            exp_data, rownum, col)
                     if not np.isfinite(variance) or variance <= 0.0:
                         continue
+                    if group.space == 'log':
+                        # The residual is forward(pred) - offset - forward(d), with the
+                        # prediction at coefficient 1 as the intercept; a profiled sigma has a
+                        # MEDIAN location (ADR-0108), so its unknown value never enters here.
+                        if intercept <= 0.0:
+                            continue
+                        offset = (0.0 if sigma is None or family.location.offset_always_zero
+                                  else family.location.offset(family, sigma))
+                        intercept = family.additive_on.forward(intercept) - offset
+                        target = family.additive_on.forward(observation)
+                    else:
+                        target = observation
                     weight = exp_data.weights[rownum, exp_data.cols[col]]
                     design[gi][0].append(row)
-                    design[gi][1].append(observation - intercept)
+                    design[gi][1].append(target - intercept)
                     design[gi][2].append(weight / variance)
                     design[gi][3].append((id(exp_data), rownum, col))
         values, at_bound, kept = {}, {}, []
@@ -1692,9 +1750,16 @@ class LikelihoodObjective(SummationObjective):
                                          np.ones(len(group.names), dtype=bool)))
                 continue
             phi, weight = np.array(phi), np.array(weight)
-            coef, active = solve_group(phi, np.array(target), weight, group.lower, group.upper)
+            lower, upper = group.lower, group.upper
+            if group.space == 'log':
+                # The solve is over log(a); a declared box on a maps to one on log(a), with a
+                # non-positive lower bound an open side.
+                with np.errstate(divide='ignore'):
+                    lower = np.where(lower > 0.0, np.log(np.where(lower > 0.0, lower, 1.0)), -np.inf)
+                    upper = np.where(np.isfinite(upper) & (upper > 0.0), np.log(np.where(upper > 0.0, upper, 1.0)), np.inf)
+            coef, active = solve_group(phi, np.array(target), weight, lower, upper)
             for name, value, side in zip(group.names, coef, active):
-                values[name] = float(value)
+                values[name] = float(np.exp(value)) if group.space == 'log' else float(value)
                 if side:
                     at_bound[name] = side
                     self._warn_linear_at_bound(name, side)
@@ -1706,14 +1771,29 @@ class LikelihoodObjective(SummationObjective):
         self._linear_design = tuple(kept)
         return True
 
-    def _linear_design_row(self, group, col, sim_data, sim_row, exp_data, exp_row, layer, basis):
+    def _linear_design_row(self, group, col, sim_data, sim_row, exp_data, exp_row, layer, basis,
+                           family=None):
         """One scored point's ``(design row, intercept)`` over ``group.names``, from the
         measurement model evaluated at basis coefficient vectors. A constant-per-observable
         model is materialized over the whole trajectory once per experiment (``basis`` is the
         per-experiment cache); a row-varying one is evaluated at the matched point, with the
-        row's own token binding."""
-        zero = {name: 0.0 for name in group.names}
+        row's own token binding.
+
+        For a ``'log'`` group the solve is over the logarithm of its one coefficient, so the
+        row is ``d forward(a * A) / d log(a) = 1 / ln(base)`` and the second value returned is
+        the prediction at ``a = 1`` -- the caller takes its ``forward`` and subtracts the
+        location offset to make the intercept (ADR-0134)."""
         model = self._per_measurement_models.get(col)
+        if group.space == 'log':
+            row = np.array([1.0 / family.additive_on.ln_base], dtype=float)
+            values = dict(self._pset_values)
+            values.update({name: 1.0 for name in group.names})
+            if model is not None:
+                return row, float(model.value(sim_data, sim_row, exp_data, exp_row, col, values))
+            if col not in basis:
+                basis[col] = np.asarray(layer[col].materialize(sim_data, values), dtype=float)
+            return row, float(basis[col][sim_row])
+        zero = {name: 0.0 for name in group.names}
         if model is not None:
             values = dict(self._pset_values)
             values.update(zero)
@@ -1741,15 +1821,15 @@ class LikelihoodObjective(SummationObjective):
                 float(intercept_col[sim_row]))
 
     def _linear_variance(self, family, sources, sim_data, sim_row, exp_data, exp_row, col):
-        """The Gaussian variance weighting one point of the solve: ``sigma**2`` from the point's
-        own sources, or 1 for a profiled sigma, which the config guaranteed the whole group
-        shares and which therefore cancels out of the least-squares solution."""
+        """``(variance, sigma)`` weighting one point of the solve: ``sigma**2`` from the point's
+        own sources, or ``(1, None)`` for a profiled sigma, which the config guaranteed the
+        whole group shares and which therefore cancels out of the least-squares solution."""
         source = sources.get(family.noise_params[0])
         if isinstance(source, FreeParameterSigma) and source.name in self._profiled_noise_params:
-            return 1.0
+            return 1.0, None
         primary, _extra = self._noise_values(family, sources, self, sim_data, sim_row,
                                              exp_data, exp_row, col)
-        return float(primary) ** 2
+        return float(primary) ** 2, float(primary)
 
     def _warn_linear_at_bound(self, name, side):
         """Say once that a profiled coefficient's closed form left its declared box and the

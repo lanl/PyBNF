@@ -39,7 +39,9 @@ All notable changes to PyBNF are documented below. This project adheres to
   The switch is all-or-nothing and is refused before the run starts, naming the parameter
   and the reason, for anything it cannot solve: a coefficient that is also a model
   parameter, one a noise source reads (so moving it would move sigma), one that enters an
-  observable nonlinearly, an observable whose noise family is not a linear-scale Gaussian,
+  observable nonlinearly, an observable whose noise family is not Gaussian, a log-scale
+  Gaussian read by anything but a single scale of the whole formula (that one case is solved
+  in log space, the geometric-mean form of `normalization = scale`, ADR-0134),
   a formula affine in each coefficient but not jointly, a cumulative or analytically scaled
   observable, a prediction-dependent sigma, and, with `noise_profiling` also on, a group
   whose observables do not share one profiled sigma. It is also refused for the Bayesian
