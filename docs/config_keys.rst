@@ -1121,7 +1121,9 @@ Output Options
   report: nothing is spent while the best fit is unchanged (the file already describes it), and
   nothing is spent at all unless the objective is a proper likelihood, since no information
   criterion is defined otherwise. The cadence is ``backup_every``. Set this to 0 for a model
-  where even that is too expensive.
+  where even that is too expensive. The checkpoint is always that one simulation, even for a
+  stochastic model, and its ``replicates`` line says so; the final file averages
+  ``best_fit_replicates`` simulations for a stochastic model.
 
   Default: 1
 
@@ -1620,7 +1622,9 @@ Algorithm Options
 **best_fit_replicates**
   How many times to run each of those candidate parameter sets. Their average objective values decide which one the run reports as its best fit, and ``Results/best_fit_confirmation.txt`` records the averages and their uncertainties. Set to 0 to turn the whole stage off.
 
-  The cost is ``best_fit_candidates`` times ``best_fit_replicates`` simulations after the search has ended, all submitted at once, and times ``smoothing`` again when that is also set. Ignored when no model is stochastic.
+  The same number of runs goes into ``Results/information_criteria.txt``: the winning parameter set is simulated ``best_fit_replicates`` more times at fresh seeds, and the log-likelihood behind its AIC, BIC and AICc is the mean over those runs, with its standard error reported beside it. With this key at 0 or 1 the criteria come from a single simulation, as they always did.
+
+  The cost is ``best_fit_candidates`` times ``best_fit_replicates`` simulations after the search has ended, all submitted at once, plus ``best_fit_replicates`` more for the information criteria when the objective is a likelihood, and times ``smoothing`` again when that is also set. Ignored when no model is stochastic.
 
   Default: 10 under ``edition = 2`` and above, and 0 (off) under the legacy edition
 

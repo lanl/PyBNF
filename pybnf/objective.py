@@ -8,6 +8,8 @@ from .printing import PybnfError, print1
 from .registry import register_objfunc
 
 from collections import namedtuple
+from statistics import fmean, stdev
+import math
 import re
 
 import numpy as np
@@ -41,8 +43,15 @@ _PLACEHOLDER_IN_FORMULA = re.compile(r'(?:observable|noise)Parameter\d')
 #: AIC/BIC/AICc for a fit, alongside the inputs (``k`` free params, ``n`` data
 #: points, ``log_likelihood``) so a report can show the derivation. ``aicc`` is
 #: ``None`` when the small-sample correction is undefined (``n <= k + 1``).
+# ``replicates`` and ``log_likelihood_standard_error`` describe how the log-likelihood was
+# measured (#676, ADR-0131): over how many simulations of the best fit it is averaged, and
+# the uncertainty in that average. One and ``None`` for a deterministic model, whose single
+# simulation is exact; :func:`replicated_information_criteria` fills them for a stochastic one.
 InformationCriteria = namedtuple(
-    'InformationCriteria', ['k', 'n', 'log_likelihood', 'aic', 'bic', 'aicc'])
+    'InformationCriteria',
+    ['k', 'n', 'log_likelihood', 'aic', 'bic', 'aicc',
+     'replicates', 'log_likelihood_standard_error'],
+    defaults=(1, None))
 
 
 def information_criteria(log_likelihood, k, n):
@@ -68,6 +77,39 @@ def information_criteria(log_likelihood, k, n):
     aicc = float(aic + (2.0 * k * (k + 1.0)) / denom) if denom > 0 else None
     return InformationCriteria(k=k, n=n, log_likelihood=log_likelihood,
                                aic=aic, bic=bic, aicc=aicc)
+
+
+def replicated_information_criteria(log_likelihoods, k, n):
+    """AIC / BIC / AICc from several log-likelihoods of ONE parameter set, each from its
+    own simulation, with the standard error of their mean (#676, ADR-0131).
+
+    For a stochastic model a simulation of the best fit is a draw, so the log-likelihood
+    it gives is a noisy measurement of the parameter set rather than a fixed number. The
+    criteria here are computed from the MEAN of the per-simulation log-likelihoods. That
+    is the same average ``best_fit_confirmation.txt`` reports for the objective value, so
+    the two files estimate the same quantity for the same parameter set. It is not the log
+    of the mean likelihood: over a handful of draws that number is dominated by the
+    luckiest of them, which reintroduces exactly the optimism the confirmation stage
+    removed. The mean of the log-likelihoods is a lower bound on the log marginal
+    likelihood (Jensen), and the gap grows with the spread the standard error reports, so
+    a reader can see how much the two would differ.
+
+    :param log_likelihoods: one full normalized log-likelihood per simulation; at least one.
+    :param k: free-parameter count, as for :func:`information_criteria`.
+    :param n: scored point count, the same for every simulation.
+    :returns: an :class:`InformationCriteria` whose ``log_likelihood`` is the mean,
+        ``replicates`` the number of values, and ``log_likelihood_standard_error`` the
+        standard error of that mean, or ``None`` when there is a single value. AIC, BIC
+        and AICc each carry twice that standard error, since each is ``-2 lnL`` plus a
+        constant.
+    """
+    values = [float(v) for v in log_likelihoods]
+    if not values:
+        raise ValueError('replicated_information_criteria needs at least one log-likelihood')
+    mean = fmean(values)
+    se = stdev(values) / math.sqrt(len(values)) if len(values) >= 2 else None
+    return information_criteria(mean, k, n)._replace(
+        replicates=len(values), log_likelihood_standard_error=se)
 
 
 def likelihood_information_criteria(objective, sim_data_dict, exp_data_dict, pset, k):
