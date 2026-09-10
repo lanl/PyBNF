@@ -13,9 +13,10 @@ that runs the sweep over an arbitrary corpus directory --
 
     python tests/_bngl_differential.py <corpus_dir>
 
-Needs a BNG2.pl on ``BNGPATH``/``PATH`` (reuses ``bngl_model._locate_bng2``).
+Needs a BNG2.pl on ``BNGPATH``/``PATH`` (:func:`_locate_bng2` below).
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -24,7 +25,16 @@ import tempfile
 from pathlib import Path
 
 from pybnf.petab._bngl import parse_model
-from pybnf.petab.bngl_model import _locate_bng2
+
+
+def _locate_bng2():
+    """A path to ``BNG2.pl`` via ``BNGPATH`` or ``PATH``, or ``None`` if unavailable."""
+    bngpath = os.environ.get('BNGPATH')
+    if bngpath:
+        candidate = Path(bngpath) / 'BNG2.pl'
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which('BNG2.pl')
 
 # Blocks that define model entities; everything else (actions, directives) is
 # dropped before handing the model to BNG2.pl so no network is generated.

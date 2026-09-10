@@ -24,10 +24,7 @@ from petab.v2 import Problem
 from petab.v2.lint import lint_problem
 
 from pybnf.petab import export_job, import_job
-from pybnf.petab.bngl_model import BnglModel, register_bngl, _locate_bng2
-
-# Teach petab to load `language: bngl` problems (idempotent).
-register_bngl()
+from petab.v1.models.bngl_model import BnglModel, _locate_bng2
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TUT = _REPO_ROOT / 'examples' / 'tutorial'

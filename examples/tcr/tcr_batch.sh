@@ -19,9 +19,9 @@
 #SBATCH --job-name=pybnf
 
 # EDIT THIS LINE for your cluster: load a module (or activate a virtual environment)
-# that provides Python 3.11 or newer with PyBNF installed. Some clusters need nothing
+# that provides Python 3.12 or newer with PyBNF installed. Some clusters need nothing
 # here at all.
-module load python/3.11
+module load python/3.12
 
 # Run PyBNF. Use "-t slurm-srun" instead if your cluster's nodes cannot be logged
 # into over SSH with a key or a password; see "Which ways of starting a run log in to

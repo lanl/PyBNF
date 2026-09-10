@@ -38,8 +38,12 @@ Expressions are therefore tokenized and parsed here rather than handed to
 with the obvious injection problem.
 
 This module is deliberately self-contained: stdlib only, and no imports from
-the rest of PyBNF, so that it can move to ``libpetab-python`` alongside the
-BNGL model adapter it serves (see #591, #420 Step B).
+the rest of PyBNF, so that it can move to ``libpetab-python``. Its consumer, the
+local ``BnglModel`` adapter, was retired in #591 once petab 0.9.0 shipped the
+loader upstream, and petab's native ``BnglModel`` does not yet evaluate an
+expression-valued parameter (``get_parameter_value`` raises
+``NotImplementedError`` and ``get_free_parameter_ids_with_values`` skips it), so
+this evaluator is the staging copy for that upstream port (#666, #420 Step B).
 """
 
 from __future__ import annotations

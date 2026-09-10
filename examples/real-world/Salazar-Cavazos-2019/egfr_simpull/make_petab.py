@@ -111,11 +111,9 @@ def _lint(problem_yaml: Path) -> tuple[str, str]:
     try:
         from petab.v2 import Problem
         from petab.v2.lint import lint_problem
-        from pybnf.petab.bngl_model import register_bngl
     except Exception as exc:  # noqa: BLE001 -- petab extra not installed
         return "skipped", f"petab lint unavailable ({exc!r}); install pybnf[petab] to enforce it"
 
-    register_bngl()
     report = lint_problem(Problem.from_yaml(str(problem_yaml)))
     has_errors = report.has_errors() if hasattr(report, "has_errors") else bool(report)
     return ("errors", str(report)) if has_errors else ("clean", "")

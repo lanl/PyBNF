@@ -1,18 +1,17 @@
 # Lesson 13 — A PEtab lint clinic (see the validator catch mistakes)
 
-**Feature:** PEtab v2 validation (`petab.v2.lint`) through PyBNF's BNGL loader · **Difficulty:** ★★☆
+**Feature:** PEtab v2 validation (`petab.v2.lint`) through petab's native BNGL loader · **Difficulty:** ★★☆
 
 Lesson 12 showed the *happy path*: export a job, lint it, get silence. This lesson
 is the opposite — a **gallery of broken problems**, each with exactly one defect,
 so you can watch the linter catch each one and learn to read what it says.
 
-Why a whole lesson on *broken* problems? Because PyBNF registers a **BNGL model
-loader** into the `petab` library (`pybnf.petab.bngl_model.register_bngl`), the
+Why a whole lesson on *broken* problems? Because the `petab` library loads a
+**BNGL model** natively (a loader PyBNF contributed upstream to
+[libpetab-python](https://github.com/PEtab-dev/libpetab-python), issue #420), the
 standard `petab.v2` validator can load and check a `language: bngl` problem — and
 we want hard evidence that petab's lint tasks actually catch the mistakes a
-BNGL-native problem can make, *before* we propose the loader upstream to
-[libpetab-python](https://github.com/PEtab-dev/libpetab-python) (issue #420). This
-clinic is that evidence: one fixture per lint task, each asserted in
+BNGL-native problem can make. This clinic is that evidence: one fixture per lint task, each asserted in
 [`tests/test_tutorial_lint_clinic.py`](../../../tests/test_tutorial_lint_clinic.py).
 
 ## The gallery
@@ -60,9 +59,7 @@ flagged, so a co-firing sibling is fine.
 ```python
 from petab.v2 import Problem
 from petab.v2.lint import lint_problem
-from pybnf.petab.bngl_model import register_bngl
 
-register_bngl()                                    # teach petab about BNGL
 report = lint_problem(Problem.from_yaml("undefined_observable/problem.yaml"))
 print(report.has_errors())                         # -> True
 for item in report:

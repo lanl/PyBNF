@@ -273,8 +273,6 @@ class TestSyntacticRoundTrip:
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        from pybnf.petab.bngl_model import register_bngl
-        register_bngl()
         src = _write_crafted_src(tmp_path)
         p1, imported, p2 = tmp_path / 'p1', tmp_path / 'imp', tmp_path / 'p2'
         export_job(src / 'job.conf', p1, inline_functions=True)

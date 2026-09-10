@@ -32,7 +32,7 @@ THREADS_PER_WORKER=1
 # Uncomment and edit one of these lines, or add your own:
 # source /path/to/your/virtualenv/bin/activate
 # conda activate your-env-name
-# module load python/3.11
+# module load python/3.12
 #
 # Example (edit the path):
 # source $HOME/path/to/pybnf-env/bin/activate

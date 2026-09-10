@@ -5,8 +5,9 @@ experiment: / data: / condition: / observable:) and serializes it to a PEtab v2 
 Its contracts, by strength of oracle:
 
 1. **The external oracle, at model level.** petab's own validation, run on the whole
-   problem loaded via ``Problem.from_yaml`` after ``register_bngl()`` installs the
-   ``BnglModel`` loader (ADR-0026). The exported ``demo`` problem must pass **every**
+   problem loaded via ``Problem.from_yaml`` through petab's native ``BnglModel``
+   loader (ADR-0026; upstream since petab 0.9.0, #591). The exported ``demo`` problem
+   must pass **every**
    ``default_validation_task`` -- including the model-cross checks (``CheckModel`` et
    al.) ADR-0025 had to exclude -- with no errors.
 2. **The measurement pivot is exact.** Every long measurement cell equals the source
@@ -83,8 +84,8 @@ def _petab_validation_errors(problem_yaml):
     """Load a problem via the real petablint path and return its ERROR-level issues.
 
     The model-level external oracle: ``Problem.from_yaml`` exercises
-    ``model_factory -> BnglModel -> BNG2.pl --check`` (after ``register_bngl()``,
-    which is a no-op on a petab that ships BNGL natively, #420 Step B), then runs
+    ``model_factory -> BnglModel -> BNG2.pl --check`` through petab's native BNGL
+    loader (upstream since petab 0.9.0; #420 Step B, #591), then runs
     **every** ``default_validation_task`` -- the model-cross checks included. Returns
     ``[(task, message), ...]``; empty means a clean problem.
     """
@@ -92,8 +93,6 @@ def _petab_validation_errors(problem_yaml):
     from petab.v2 import Problem
     from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-    from pybnf.petab.bngl_model import register_bngl
-    register_bngl()
     problem = Problem.from_yaml(str(problem_yaml))
     assert type(problem.model).__name__ == 'BnglModel'   # the BNGL loader ran
     errors = []
@@ -305,25 +304,14 @@ class TestExportDemo:
         # Problem.from_yaml (the real petablint path -- exercises model_factory ->
         # BnglModel.from_file -> BNG2.pl --check), run ALL tasks.
         pytest.importorskip('petab.v2')  # the v2 typed-table API the oracle needs
-        import petab.v1.models as models
-        import petab.v2.core as v2core
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        # register_bngl() teaches a stock petab about BNGL, and is a no-op on a
-        # petab that ships it natively (#420 Step B) -- so this same path validates
-        # against both. We dogfood the fork: when petab is native (bngl known and
-        # our wrapper never installed), the loaded model must be petab's OWN
-        # BnglModel, not our local stand-in.
-        native = ('bngl' in models.known_model_types
-                  and not hasattr(v2core, '_pybnf_orig_model_factory'))
-        from pybnf.petab.bngl_model import register_bngl
-        register_bngl()
-
+        # petab loads `language: bngl` through its own native BnglModel (upstream
+        # since petab 0.9.0; #420 Step B, #591): the loaded model must be petab's.
         problem = Problem.from_yaml(str(exported / 'problem.yaml'))
         assert type(problem.model).__name__ == 'BnglModel'  # the BNGL loader ran
-        if native:
-            assert type(problem.model).__module__.startswith('petab.')
+        assert type(problem.model).__module__.startswith('petab.')
 
         errors = []
         for task in default_validation_tasks:
@@ -1520,8 +1508,6 @@ def _petab_multimodel_validation_errors(problem_yaml):
     from petab.v2 import Problem
     from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-    from pybnf.petab.bngl_model import register_bngl
-    register_bngl()
     problem = Problem.from_yaml(str(problem_yaml))
     assert len(problem.models) > 1                 # the multi-model problem loaded
     errors = []
@@ -2080,32 +2066,42 @@ class TestBnglGrammarHardening:
         # variable under its bare id (is_state_variable drives CheckModel's species
         # cross-checks in petablint).
         pytest.importorskip('petab')
-        from pybnf.petab._bngl import parse_model
-        from pybnf.petab.bngl_model import BnglModel
+        from petab.v1.models.bngl_model import BnglModel, parse_bngl
         model = BnglModel(
-            parse_model('begin seed species\n $A() 100\nend seed species\n'),
+            parse_bngl('begin seed species\n $A() 100\nend seed species\n'),
             model_id='m')
         assert model.is_state_variable('A()')
         assert not model.is_state_variable('$A()')
 
 
 # ---------------------------------------------------------------------------
-# 4'. The BnglModel adapter ABC, unit-tested directly (ADR-0026 -- the model-level
-#     guarantees the table oracle now checks externally, asserted method by method).
+# 4'. petab's native BnglModel, pinned at the ABC seam the exporter relies on
+#     (ADR-0026). PyBNF's local adapter and its register_bngl() monkeypatch were
+#     retired in #591 once petab 0.9.0 shipped the loader upstream; these are the
+#     model-level semantics the table oracle checks externally, asserted method by
+#     method, as verified against BNG2.pl when the adapter was written.
 # ---------------------------------------------------------------------------
 
-class TestBnglModel:
+class TestNativeBnglModel:
 
     @pytest.fixture
     def model(self, tmp_path):
-        # A BnglModel parsed from the exported (cleaned, numeric-nominal) demo model --
-        # the same file Problem.from_yaml loads.
+        # petab's BnglModel parsed from the exported (cleaned, numeric-nominal) demo
+        # model -- the same file Problem.from_yaml loads.
         pytest.importorskip('petab')
-        from pybnf.petab.bngl_model import BnglModel
+        from petab.v1.models.bngl_model import BnglModel
         from pybnf.petab.export import export_job
         out = tmp_path / 'p'
         export_job(DEMO_CONF, out)
         return BnglModel.from_file(out / DEMO_MODEL)
+
+    def test_petab_ships_the_bngl_loader_natively(self):
+        # The #591 trigger, pinned: stock petab (>= 0.9.0) knows `bngl`. Were this
+        # to fail, the installed petab predates the native loader and every
+        # `language: bngl` oracle in this file would raise "Unknown model format".
+        pytest.importorskip('petab')
+        import petab.v1.models as models
+        assert 'bngl' in models.known_model_types
 
     def test_parameter_ids_and_values(self, model):
         # The exported model is carried verbatim (ADR-0034), so the parameter values are
@@ -2140,130 +2136,6 @@ class TestBnglModel:
         assert model.is_state_variable('counter()')   # the concrete seed species
         assert not model.is_state_variable('v1')       # a parameter is not a species
         assert not model.is_state_variable('x')        # nor is an observable
-
-    def test_expression_valued_parameter_is_evaluated(self):
-        # Superseded by #666: an expression RHS used to raise NotImplementedError,
-        # and get_free_parameter_ids_with_values dropped the parameter without
-        # saying so. A parameters block is arithmetic over other parameters, so
-        # it is resolved here without BNG2.pl; see pybnf.petab._bngl_expr, whose
-        # semantics are pinned against a real BNG2.pl in test_petab_bngl_expr.py.
-        pytest.importorskip('petab')
-        from pybnf.petab._bngl import parse_model
-        from pybnf.petab.bngl_model import BnglModel
-        ent = parse_model(
-            "begin parameters\n base 2\n k_on 2*base\nend parameters\n")
-        model = BnglModel(ent, model_id='m')
-        assert model.get_parameter_value('base') == 2.0   # numeric RHS -> float
-        assert model.get_parameter_value('k_on') == 4.0   # expression RHS -> resolved
-        assert dict(model.get_free_parameter_ids_with_values()) == {
-            'base': 2.0, 'k_on': 4.0,
-        }
-
-    # -- is_valid: both contract paths pinned (#437) --------------------------
-    # The contract (ADR-0026): shell to `BNG2.pl --check` when a BNG2.pl is
-    # locatable and the model has a path; otherwise degrade to True -- never a
-    # false failure where no BNG backend is available. Both paths are exercised
-    # by faking _locate_bng2 / subprocess.run, so neither needs a real BNG2.pl.
-
-    def test_is_valid_true_when_bng2_not_locatable(self, model, monkeypatch):
-        # Degrade-to-True: no BNG2.pl on BNGPATH/PATH -> True even though `model`
-        # has a real source path to check.
-        import pybnf.petab.bngl_model as bm
-        monkeypatch.setattr(bm, '_locate_bng2', lambda: None)
-        assert model.is_valid() is True
-
-    def test_is_valid_true_when_model_has_no_path(self, monkeypatch):
-        # An in-memory BnglModel has no file to --check; degrade to True even when a
-        # BNG2.pl IS locatable (nothing to hand it).
-        pytest.importorskip('petab')
-        import pybnf.petab.bngl_model as bm
-        from pybnf.petab._bngl import parse_model
-        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
-        m = bm.BnglModel(
-            parse_model('begin parameters\n k 1\nend parameters\n'), model_id='m')
-        assert m.is_valid() is True
-
-    def test_is_valid_shells_to_bng2_and_maps_returncode(self, model, monkeypatch):
-        # BNG2.pl-present path: is_valid is exactly `BNG2.pl --check <model>` exiting 0.
-        import pybnf.petab.bngl_model as bm
-        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
-        seen = {}
-
-        class _Result:
-            def __init__(self, rc):
-                self.returncode = rc
-
-        def fake_run(cmd, **kwargs):
-            seen['cmd'] = cmd
-            return _Result(seen['rc'])
-
-        monkeypatch.setattr(bm.subprocess, 'run', fake_run)
-        seen['rc'] = 0
-        assert model.is_valid() is True
-        seen['rc'] = 1
-        assert model.is_valid() is False
-        assert seen['cmd'][:2] == ['/fake/BNG2.pl', '--check']   # real invocation shape
-
-    def test_is_valid_true_when_bng2_invocation_errors(self, model, monkeypatch):
-        # A tooling hiccup (OSError/SubprocessError from the subprocess) must not
-        # masquerade as an invalid model.
-        import pybnf.petab.bngl_model as bm
-        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
-
-        def boom(cmd, **kwargs):
-            raise OSError('perl not found')
-
-        monkeypatch.setattr(bm.subprocess, 'run', boom)
-        assert model.is_valid() is True
-
-
-class TestRegisterBngl:
-
-    @staticmethod
-    def _petab_is_native():
-        """True iff petab already supports BNGL (the #420 Step B fork) and we
-        have not installed our own wrapper -- i.e. register_bngl is a no-op."""
-        import petab.v1.models as models
-        import petab.v2.core as v2core
-        return ('bngl' in models.known_model_types
-                and not hasattr(v2core, '_pybnf_orig_model_factory'))
-
-    def test_native_support_makes_register_a_noop(self):
-        # Against a petab that ships BNGL natively (the dogfooded fork branch),
-        # register_bngl must leave model_factory untouched so the native loader
-        # wins -- the collapse-to-no-op of ADR-0026.
-        pytest.importorskip('petab.v2')
-        import petab.v2.core as v2core
-        from pybnf.petab.bngl_model import register_bngl
-
-        if not self._petab_is_native():
-            pytest.skip("petab does not support BNGL natively in this env")
-
-        before = v2core.model_factory
-        register_bngl()
-        assert v2core.model_factory is before                 # not rebound
-        assert not hasattr(v2core, '_pybnf_orig_model_factory')  # no sentinel
-
-    def test_idempotent_guarded_rebind(self):
-        # Against a stock petab without native BNGL, register_bngl installs an
-        # idempotent wrapper that routes 'bngl' and delegates everything else.
-        pytest.importorskip('petab.v2')
-        import petab.v1.models as models
-        import petab.v2.core as v2core
-        from pybnf.petab.bngl_model import register_bngl
-
-        if self._petab_is_native():
-            pytest.skip("petab supports BNGL natively; register_bngl is a no-op")
-
-        register_bngl()
-        wrapper = v2core.model_factory
-        captured = v2core._pybnf_orig_model_factory
-        assert wrapper is not captured            # wrapper installed, original captured
-        assert 'bngl' in models.known_model_types
-
-        register_bngl()                            # second call must not re-wrap
-        assert v2core._pybnf_orig_model_factory is captured
-        assert v2core.model_factory is not captured
 
 
 # ---------------------------------------------------------------------------
@@ -2311,8 +2183,6 @@ def _assert_petab_clean(exported):
     from petab.v2 import Problem
     from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-    from pybnf.petab.bngl_model import register_bngl
-    register_bngl()
     problem = Problem.from_yaml(str(exported / 'problem.yaml'))
     assert type(problem.model).__name__ == 'BnglModel'   # the BNGL loader ran
     errors = []

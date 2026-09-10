@@ -11,11 +11,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every supported version (requires-python >= 3.11; classifiers list
+        # Every supported version (requires-python >= 3.12; classifiers list
         # through 3.14). CI is free on this public repo, so we test each claimed
-        # version rather than just the endpoints.
+        # version rather than just the endpoints. 3.11 left with the petab 0.9
+        # floor (#591): petab 0.9.0 requires >= 3.12.
         include:
-          - python-version: '3.11'
           - python-version: '3.12'
           - python-version: '3.13'
           # bngsim publishes cp310-cp313 wheels, so 3.14 would fall back to
@@ -37,7 +37,7 @@ jobs:
           bngsim: ${{ matrix.no-bngsim == '1' && 'false' || 'true' }}
 
       - name: Warm the arviz version-check stamp
-        # arviz < 1.0 (the py<3.12 resolution) prints a daily refactor warning on import and
+        # arviz < 1.0 prints a daily refactor warning on import and
         # records the date through a helper it calls atomic, which it is not: the temp file has
         # a FIXED name, `daily_warning.tmp`, so every process shares it.
         #
@@ -84,52 +84,6 @@ jobs:
         # pull bngsim right back in).
         run: uv run --no-sync pytest -m "not slow and not recovery" -n auto
 
-  # The PEtab v2 export oracle (ADR-0025/0026) validates emitted `language: bngl`
-  # problems at MODEL level. On the pytest job above (stock PyPI petab) that runs
-  # through the register_bngl() monkeypatch. This job installs upstream
-  # libpetab-python main instead -- where the native BnglModel loader landed
-  # (PEtab-dev/libpetab-python#508) -- so Problem.from_yaml loads BNGL through
-  # petab's OWN native loader, exercising the collapse-to-no-op path that
-  # otherwise only ever SKIPS and keeping us green against the merged upstream
-  # contribution ahead of its first PyPI release (0.8.2 does not yet carry it).
-  # One Python version is enough; the loader is pure Python.
-  pytest-native-bngl:
-    runs-on: ubuntu-latest
-    name: pytest (native BNGL loader)
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: ./.github/actions/setup-pybnf
-        with:
-          python-version: '3.12'
-          # This leg is about petab's loader, not simulation: the two oracle
-          # files it runs are backend-free, so skip the bngsim install (and run
-          # under PYBNF_NO_BNGSIM=1 below) rather than pay for a wheel nothing
-          # here exercises. The matrix legs above cover bngsim.
-          bngsim: 'false'
-          petab-spec: 'petab @ git+https://github.com/PEtab-dev/libpetab-python.git@main'
-          # This job also runs 3.12 through setup-pybnf, so without its own
-          # suffix it shares the matrix py3.12 job's cache key and one save loses
-          # the reservation (the "another job may be creating this cache"
-          # warning). Give it a distinct namespace.
-          cache-suffix: pybnf-native
-
-      # Fail loudly if the upstream build did not actually install (e.g. a
-      # resolution fallback to stock petab): the native path would silently skip
-      # otherwise.
-      - name: Assert petab has native BNGL support
-        run: |
-          uv run --no-sync python -c "import petab.v1.models as m; assert 'bngl' in m.known_model_types, 'upstream libpetab-python main is not installed: bngl is not a known petab model type'; print('native BNGL loader present')"
-
-      - name: Run the PEtab oracle through the native loader
-        env:
-          PYBNF_NO_BNGSIM: '1'
-        # The export + import oracles both drive Problem.from_yaml, which loads
-        # `language: bngl` through petab's own native BnglModel here (the
-        # register_bngl() monkeypatch collapses to a no-op). This is where the
-        # TestRegisterBngl native-no-op test actually runs instead of skipping.
-        run: uv run --no-sync pytest -m "not slow and not recovery" tests/test_petab_export.py tests/test_petab_import.py
-
   # The gradient path (ADR-0059): the HMC reference sampler and the jax-gated
   # gradient-assembly tests need the optional pybnf[jax] extra (jax + jaxlib +
   # blackjax). jaxlib is a large install relative to the rest of the dep set, so
@@ -155,7 +109,7 @@ jobs:
           jax: 'true'
           # This job also runs 3.12 through setup-pybnf, so give it its own cache
           # namespace to avoid racing the matrix py3.12 job's save (see the
-          # cache-suffix input / the native-BNGL job above).
+          # cache-suffix input).
           cache-suffix: pybnf-jax
 
       - name: Run the HMC + jax gradient tests

@@ -226,8 +226,6 @@ class TestImportDemoRoundTrip:
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        from pybnf.petab.bngl_model import register_bngl
-        register_bngl()
         _, _, petab2, _ = imported
         problem = Problem.from_yaml(str(petab2 / 'problem.yaml'))
         assert type(problem.model).__name__ == 'BnglModel'
@@ -548,8 +546,6 @@ class TestImportDoseResponseRoundTrip:
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        from pybnf.petab.bngl_model import register_bngl
-        register_bngl()
         _, _, petab2, _ = imported
         problem = Problem.from_yaml(str(petab2 / 'problem.yaml'))
         errors = [type(t).__name__ for t in default_validation_tasks
@@ -860,8 +856,6 @@ class TestImportPreequilibratedDoseResponseRoundTrip:
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        from pybnf.petab.bngl_model import register_bngl
-        register_bngl()
         _, _, petab2, _ = imported
         problem = Problem.from_yaml(str(petab2 / 'problem.yaml'))
         errors = [type(t).__name__ for t in default_validation_tasks
@@ -1945,7 +1939,7 @@ class TestRealWorldBoehmV2:
             assert obs[o]['noisePlaceholders'] == ''
             assert params[f'sd_{o}']['estimate'] == 'true'
         # The external oracle: the re-exported (SBML) problem validates via the real petablint
-        # path (register_bngl is a no-op for an SBML model).
+        # path.
         problem = Problem.from_yaml(str(out / 'problem.yaml'))
         errors = [type(t).__name__ for t in default_validation_tasks
                   if (i := t.run(problem)) is not None

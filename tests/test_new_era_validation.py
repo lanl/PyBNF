@@ -66,15 +66,13 @@ def _petab_validation_errors(problem_yaml):
 
     The model-level external oracle, identical to ``test_petab_export``'s: load the whole
     problem via ``Problem.from_yaml`` (the real petablint path -- ``model_factory`` ->
-    ``BnglModel.from_file`` -> ``BNG2.pl --check``, after ``register_bngl()``), then run
+    ``BnglModel.from_file`` -> ``BNG2.pl --check``, through petab's native BNGL loader), then run
     **every** ``default_validation_task`` (the model-cross checks included).
     """
     pytest.importorskip('petab.v2')
     from petab.v2 import Problem
     from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-    from pybnf.petab.bngl_model import register_bngl
-    register_bngl()
     problem = Problem.from_yaml(str(problem_yaml))
     assert type(problem.model).__name__ == 'BnglModel'   # the BNGL loader ran
     errors = []

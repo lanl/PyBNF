@@ -12,7 +12,7 @@ For documentation, refer to the online documentation at <https://lanl.github.io/
 
 ## Installation
 
-PyBNF requires Python 3.11 or higher.
+PyBNF requires Python 3.12 or higher.
 
 ```bash
 python3 -m pip install pybnf

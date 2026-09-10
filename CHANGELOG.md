@@ -5,6 +5,23 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- **PyBNF requires Python 3.12 or newer, and the `petab` extra requires petab 0.9 or
+  newer (#591).** petab 0.9.0 is the first release that loads a `language: bngl` model
+  natively, through the `BnglModel` loader PyBNF contributed upstream
+  (PEtab-dev/libpetab-python#508), and it requires Python 3.12. Python 3.11 support is
+  dropped with it.
+
+### Removed
+- **The `pybnf.petab.bngl_model` module, its `BnglModel` adapter, and the
+  `register_bngl()` shim that taught older petab releases to load BNGL models (#591).**
+  petab now does this itself, so PEtab's own validator checks a BNGL-model problem with no
+  PyBNF code involved; `register_bngl()` had already collapsed to a no-op on petab 0.9.0.
+  The stand-alone BNGL reader and the parameter-expression evaluator (#666) stay: the
+  importer and exporter use the reader, and the evaluator is the staging copy for an
+  upstream port, since petab's native loader does not yet evaluate an expression-valued
+  parameter.
+
 ### Added
 - **A stochastic fit now confirms its best fit by running the top parameter sets again
   (#659).** When a model is stochastic, running it twice with the same parameter values

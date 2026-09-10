@@ -30,10 +30,6 @@ from petab.v2 import Problem
 from petab.v2.lint import lint_problem
 
 from pybnf.petab import import_job
-from pybnf.petab.bngl_model import register_bngl
-
-# Teach petab to load `language: bngl` problems (idempotent).
-register_bngl()
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _LESSON = _REPO_ROOT / 'examples' / 'tutorial' / '20_petab_observable_parameters'
