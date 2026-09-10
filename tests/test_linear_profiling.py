@@ -26,8 +26,13 @@ from scipy.optimize import minimize
 
 from .context import noise, objective, printing
 from pybnf.algorithms import base as algorithm_base
+from pybnf.data import Data, OutputSensitivities
+from pybnf.gradient import (
+    assemble_fisher_hessian, assemble_gaussian_gradient, assemble_gradient_and_fisher_hessian,
+    ExperimentRouting, ParamRoute, PARAM, NONE)
 from pybnf.measurement.base import MeasurementLayer, MeasurementModel, PerMeasurementModel
-from pybnf.measurement.linear import LinearGroup, affine_roles, solve_group
+from pybnf.measurement.linear import LinearGroup, affine_roles, design_basis, solve_group
+from pybnf.pset import FreeParameter
 from .test_noise_profiling import (
     _BASE, _ICAlgorithm, _build, _gaussian_objective, _mkdata, _Param, _profiled)
 
@@ -520,11 +525,23 @@ class TestConfigSurface:
                    + ['job_type = dream'] + _NOISE + _LINEAR + ['linear_profiling = 1'],
                    exp_text=_EXP_Z)
 
-    def test_a_gradient_job_type_is_refused_with_the_reason(self, tmp_path):
-        with pytest.raises(printing.PybnfError, match='not yet supported with linear_profiling'):
+    @pytest.mark.parametrize('job_type', ['lbfgs', 'gntr', 'trf'])
+    def test_the_gradient_optimizers_are_accepted(self, tmp_path, job_type):
+        """ADR-0133: the assembly projects the solved coefficients off the residual Jacobian
+        and the Gauss-Newton matrix, so the gradient job types run with the switch."""
+        conf = _build(tmp_path, [l for l in _BASE if not l.startswith('job_type')]
+                      + ['job_type = %s' % job_type] + _NOISE + _LINEAR + ['linear_profiling = 1'],
+                      exp_text=_EXP_Z)
+        assert conf.profiled_linear_params == ['a_obs', 'b_obs']
+
+    @pytest.mark.parametrize('job_type, word', [('ms', 'segment'), ('design', 'Schur')])
+    def test_a_job_type_with_its_own_assembly_is_refused_with_the_reason(self, tmp_path,
+                                                                          job_type, word):
+        with pytest.raises(printing.PybnfError, match='not supported with linear_profiling') as e:
             _build(tmp_path, [l for l in _BASE if not l.startswith('job_type')]
-                   + ['job_type = lbfgs'] + _NOISE + _LINEAR + ['linear_profiling = 1'],
+                   + ['job_type = %s' % job_type] + _NOISE + _LINEAR + ['linear_profiling = 1'],
                    exp_text=_EXP_Z)
+        assert word in str(e.value)
 
     def test_a_start_point_on_a_profiled_coefficient_is_refused(self, tmp_path):
         with pytest.raises(printing.PybnfError, match='linear_profiling = 1 profiles it out'):
@@ -597,3 +614,178 @@ class TestReporting:
         alg = _ICAlgorithm(str(tmp_path), [], _gaussian_objective())
         alg._emit_profiled_linear()
         assert not os.path.exists(tmp_path / 'profiled_linear.txt')
+
+
+# --------------------------------------------------------------------------- #
+# Tier 6: the gradient path (ADR-0133)
+# --------------------------------------------------------------------------- #
+# The dynamics: a single simulated observable ``Stot`` with a sensitivity to one free parameter
+# ``k``; the observation model ``obs = a*Stot + b`` with ``(a, b)`` profiled. The data sit near
+# ``a = 2, b = 1`` with a deliberate miss at every point so no residual is zero.
+TIMES_G = np.array([0.0, 1.0, 2.0, 3.0])
+RAW = np.array([2.0, 9.0, 5.0, 3.0])
+DK = np.array([0.5, -2.0, 1.3, -0.7])
+OBS_G = 2.0 * RAW + 1.0 + np.array([0.4, -0.9, 0.6, -0.3])
+ROUTING_K = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+ROUTING_KAB = ExperimentRouting(routes={
+    'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+    'a': ParamRoute.single('a', NONE, None, 1.0),
+    'b': ParamRoute.single('b', NONE, None, 1.0)})
+
+
+def _sim_g(eps=0.0):
+    """The trajectory at ``k + eps``, carrying ``d Stot / d k``."""
+    sim = Data.from_columns(np.column_stack([TIMES_G, RAW + eps * DK]), ['time', 'Stot'])
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:Stot'], param_names=['k'], ic_species=[],
+        d_param=DK.reshape(len(RAW), 1, 1), d_ic=None)
+    return sim
+
+
+def _exp_g(obs=OBS_G):
+    return Data.from_columns(np.column_stack([TIMES_G, np.asarray(obs, float)]), ['time', 'obs'])
+
+
+def _layer_obj(sigma=2.0):
+    obj = objective.LikelihoodObjective(
+        noise=noise.Gaussian(), sigma_sources={'sigma': noise.ConstantSigma(sigma)})
+    obj.measurement = MeasurementLayer([MeasurementModel('obs', 'a*Stot + b', {'Stot', 'a', 'b'})])
+    return obj
+
+
+def _free_k():
+    return [FreeParameter('k', 'uniform_var', 0.0, 10.0, value=0.3)]
+
+
+def _profiled_assembly(obj, exp, suffixes=('e',), fisher=False):
+    """Score the point, which solves the coefficients and materializes the layer at them,
+    then assemble on the same simulation data -- the order ``gradient_at`` takes."""
+    sims = {s: _sim_g() for s in suffixes}
+    obj.evaluate_multiple({'m': sims}, {'m': {s: exp for s in suffixes}}, [], show_warnings=False)
+    experiments = [(sims[s], exp, ROUTING_K, s) for s in suffixes]
+    assemble = assemble_gradient_and_fisher_hessian if fisher else assemble_gaussian_gradient
+    return assemble(obj, experiments, _free_k()), experiments
+
+
+def _fd_profiled(obj, exp, suffixes=('e',), h=1e-6):
+    """A central finite difference of the PROFILED objective in ``k``: the coefficients are
+    re-solved at each perturbed point, so the difference includes whatever their dependence
+    on ``k`` contributes -- which the envelope theorem says is nothing."""
+    def loss(eps):
+        return obj.evaluate_multiple({'m': {s: _sim_g(eps) for s in suffixes}},
+                                     {'m': {s: exp for s in suffixes}}, [], show_warnings=False)
+    return (loss(h) - loss(-h)) / (2.0 * h)
+
+
+def _unprofiled_gauss_newton(exp, a, b, suffixes=('e',), sigma=2.0):
+    """The Gauss-Newton matrix over ``(k, a, b)`` with the coefficients SEARCHED, at ``(a, b)``:
+    the oracle whose Schur complement over ``(a, b)`` the profiled curvature must equal."""
+    obj = _layer_obj(sigma)
+    sims = {s: _sim_g() for s in suffixes}
+    obj._pset_values = {'a': a, 'b': b}
+    obj.measurement.apply({'m': sims}, obj._pset_values)
+    free = _free_k() + [FreeParameter('a', 'uniform_var', -100.0, 100.0, value=a),
+                        FreeParameter('b', 'uniform_var', -100.0, 100.0, value=b)]
+    res = assemble_gaussian_gradient(obj, [(sims[s], exp, ROUTING_KAB, s) for s in suffixes], free)
+    assert res.param_names == ['k', 'a', 'b']
+    return res
+
+
+def _schur(h, drop):
+    keep = [i for i in range(h.shape[0]) if i not in drop]
+    hkk = h[np.ix_(keep, keep)]
+    hkd = h[np.ix_(keep, drop)]
+    hdd = h[np.ix_(drop, drop)]
+    return hkk - hkd @ np.linalg.solve(hdd, hkd.T)
+
+
+class TestGradient:
+
+    def test_the_gradient_matches_a_finite_difference_of_the_profiled_objective(self):
+        obj = _linear(_layer_obj(), columns=('obs',))
+        exp = _exp_g()
+        res, _ = _profiled_assembly(obj, exp)
+        assert res.param_names == ['k'] and res.gradient.shape == (1,)
+        npt.assert_allclose(res.gradient[0], _fd_profiled(obj, exp), rtol=1e-6, atol=1e-9)
+
+    def test_the_gradient_is_the_partial_at_the_solved_coefficients(self):
+        """The envelope theorem, literally: the profiled gradient in k equals the k entry of
+        the unprofiled gradient evaluated at the solved (a, b)."""
+        obj = _linear(_layer_obj(), columns=('obs',))
+        exp = _exp_g()
+        res, _ = _profiled_assembly(obj, exp)
+        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'])
+        npt.assert_allclose(res.gradient[0], full.gradient[0], rtol=1e-9)
+        npt.assert_allclose(res.residual, full.residual, rtol=1e-9)
+
+    def test_the_jacobian_is_projected_off_the_solved_design(self):
+        """Kaufman's variable-projection Jacobian: its Gauss-Newton product is the Schur
+        complement of the searched-coefficient Gauss-Newton matrix over (a, b), and its
+        product with the residual is still the gradient, since the residual is already
+        orthogonal to the design's span."""
+        obj = _linear(_layer_obj(), columns=('obs',))
+        exp = _exp_g()
+        res, _ = _profiled_assembly(obj, exp)
+        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'])
+        expected = _schur(full.jacobian.T @ full.jacobian, drop=[1, 2])
+        npt.assert_allclose(res.jacobian.T @ res.jacobian, expected, rtol=1e-9)
+        npt.assert_allclose(res.jacobian.T @ res.residual, res.gradient, rtol=1e-9)
+        assert res.least_squares_exact is True
+        # And it is a genuine projection: the unprojected product is larger.
+        assert (full.jacobian[:, :1].T @ full.jacobian[:, :1])[0, 0] > expected[0, 0]
+
+    def test_the_gauss_newton_hessian_is_the_schur_complement_on_both_fisher_paths(self):
+        obj = _linear(_layer_obj(), columns=('obs',))
+        exp = _exp_g()
+        res, experiments = _profiled_assembly(obj, exp, fisher=True)
+        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'])
+        expected = _schur(full.jacobian.T @ full.jacobian, drop=[1, 2])
+        npt.assert_allclose(res.hessian, expected, rtol=1e-9)
+        npt.assert_allclose(assemble_fisher_hessian(obj, experiments, _free_k()), expected,
+                            rtol=1e-9)
+
+    def test_a_group_tied_across_experiments_is_projected_across_them(self):
+        """Two experiments share the pair, so the design spans both and the projection couples
+        their rows; the oracle is the Schur complement of the two-experiment matrix."""
+        obj = _linear(_layer_obj(), columns=('obs',))
+        exp = _exp_g()
+        res, experiments = _profiled_assembly(obj, exp, suffixes=('e1', 'e2'), fisher=True)
+        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'],
+                                        suffixes=('e1', 'e2'))
+        expected = _schur(full.jacobian.T @ full.jacobian, drop=[1, 2])
+        npt.assert_allclose(res.hessian, expected, rtol=1e-9)
+        npt.assert_allclose(res.gradient[0], _fd_profiled(obj, exp, suffixes=('e1', 'e2')),
+                            rtol=1e-6, atol=1e-9)
+
+    def test_a_coefficient_held_at_a_bound_is_pinned_not_projected(self):
+        """With the data anti-correlated the scale wants to be negative and its declared lower
+        bound holds it. The gradient is still the partial (the active set is locally constant),
+        and the curvature is the Schur complement over the one coefficient still solved for."""
+        obj = _linear(_layer_obj(), columns=('obs',), lower=[1e-3, -np.inf])
+        exp = _exp_g(obs=-2.0 * RAW + 1.0 + np.array([0.4, -0.9, 0.6, -0.3]))
+        res, experiments = _profiled_assembly(obj, exp, fisher=True)
+        assert obj._profiled_linear_at_bound == {'a': 'lower'}
+        npt.assert_allclose(res.gradient[0], _fd_profiled(obj, exp), rtol=1e-6, atol=1e-9)
+        full = _unprofiled_gauss_newton(exp, obj._profiled_linear['a'], obj._profiled_linear['b'])
+        # The pinned scale is a constant here, not a parameter: drop its row and column, then
+        # take the Schur complement over the intercept, the one coefficient still solved for.
+        over_k_b = (full.jacobian.T @ full.jacobian)[np.ix_([0, 2], [0, 2])]
+        expected = _schur(over_k_b, drop=[1])
+        npt.assert_allclose(res.hessian, expected, rtol=1e-9)
+        npt.assert_allclose(res.jacobian.T @ res.jacobian, expected, rtol=1e-9)
+
+    def test_profiling_off_leaves_the_assembly_byte_identical(self):
+        obj = _layer_obj()
+        sims = {'e': _sim_g()}
+        obj._pset_values = {'a': 2.0, 'b': 1.0}
+        obj.measurement.apply({'m': sims}, obj._pset_values)
+        res = assemble_gaussian_gradient(obj, [(sims['e'], _exp_g(), ROUTING_K, 'e')], _free_k())
+        assert obj._linear_design == ()
+        npt.assert_allclose(res.jacobian[:, 0], np.sqrt(1.0) * 2.0 * DK / 2.0)
+
+    def test_the_design_basis_drops_a_dependent_column(self):
+        rows = np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
+        q = design_basis(rows, np.array([True, True]))
+        assert q.shape == (3, 1)
+        assert design_basis(rows, np.array([False, False])) is None
+        assert design_basis(np.zeros((0, 2)), np.array([True, True])) is None

@@ -50,6 +50,37 @@ PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 #: ``upper`` the declared bounds as arrays parallel to ``names``.
 LinearGroup = namedtuple('LinearGroup', 'names columns lower upper')
 
+#: One group's solved design from the most recent evaluation, kept for the gradient path
+#: (ADR-0133): ``keys`` identifies each scored point that entered the solve, as
+#: ``(id(exp_data), exp_row, observable)`` in the order of ``rows``; ``rows`` is the weighted
+#: design ``sqrt(w_i / sigma_i**2) * Phi_i`` (``n`` x ``m``); ``free`` is a boolean array over
+#: the group's coefficients, ``False`` where a declared bound held the coefficient, since a
+#: coefficient pinned at a bound is not solved for and its column is not projected off.
+LinearDesign = namedtuple('LinearDesign', 'keys rows free')
+
+
+def design_basis(rows, free, rtol=1e-12):
+    """An orthonormal basis ``Q`` (``n`` x ``r``) of the range of the free columns of a
+    group's weighted design, or ``None`` when there is nothing to project off.
+
+    The variable-projection Jacobian (Kaufman 1975) is the partial Jacobian with its
+    component in the span of the design removed, ``(I - Q Q^T) J``, and the profiled
+    Gauss-Newton matrix is ``J^T (I - Q Q^T) J``. Formed through a thin SVD with small
+    singular values dropped, so a singular design (a simulated column constant over the
+    group) projects off exactly its rank and never its noise, and so the cost is
+    ``O(n r p)`` rather than an ``n`` x ``n`` projector.
+    """
+    rows = np.asarray(rows, dtype=float)
+    free = np.asarray(free, dtype=bool)
+    if rows.size == 0 or not free.any():
+        return None
+    a = rows[:, free]
+    u, s, _vt = np.linalg.svd(a, full_matrices=False)
+    if s.size == 0 or s[0] <= 0.0:
+        return None
+    rank = int(np.sum(s > rtol * s[0]))
+    return u[:, :rank] if rank else None
+
 
 def _parse(formula):
     from ..petab.formula import _parse as parse_petab, _require_petab_math

@@ -122,15 +122,11 @@ reported beside the results rather than synthesized into the best PSet.
 
 ## What this does not do
 
-* **The gradient path.** The scalar gradient of the profiled objective is the partial at the
-  solved coefficients, by the envelope theorem, so `lbfgs` would need only the coefficients
-  seeded before the point walk. But the least-squares model `trf` consumes and the
-  Gauss-Newton Fisher `gntr` consumes are not the partial ones: the reduced residual's Jacobian
-  is the partial Jacobian projected off the span of the design (Kaufman 1975), and an
-  unprojected Fisher is too large. Neither the projection nor the seeding is built, so
-  `trf`, `lbfgs`, `gntr` and `ms` are refused with the reason, in the style of the
-  `time_error` table. `Smith`, the real-slug measurement ADR-0130 still wants, runs under
-  `gntr`; measuring it needs either a gradient-free run of that conf or this follow-up.
+* **The gradient path** was refused in this version and is built by ADR-0133: the scalar
+  gradient is the partial at the solved coefficients, and the residual Jacobian and the
+  Gauss-Newton matrix are projected off the span of the solved design (Kaufman 1975), so
+  `lbfgs`, `gntr` and `trf` run with the switch. `ms` and `design`, whose assembly is not the
+  shared one, remain refused with the reason.
 * **A log family's homogeneous scale** (the geometric-mean form). Refused by the family gate;
   no corpus slug needs it.
 * **The `Schwen` reparametrization** and the alternating solve for a group whose observables

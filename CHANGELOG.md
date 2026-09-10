@@ -43,7 +43,12 @@ All notable changes to PyBNF are documented below. This project adheres to
   a formula affine in each coefficient but not jointly, a cumulative or analytically scaled
   observable, a prediction-dependent sigma, and, with `noise_profiling` also on, a group
   whose observables do not share one profiled sigma. It is also refused for the Bayesian
-  samplers and, in this first version, for the gradient methods.
+  samplers, and for `ms` and `design`, whose assembly is not the shared one. The gradient
+  optimizers `lbfgs`, `gntr` and `trf` run with it: the gradient of the profiled objective is
+  the partial derivative at the solved coefficients, and the residual Jacobian and
+  Gauss-Newton curvature are projected off the span of the solved design, Kaufman's
+  variable-projection form, so the curvature is the information about the dynamics with the
+  coefficients estimated rather than known (ADR-0133).
   A profiled coefficient stays declared and estimated: it counts in `k`, and its value is
   reported in `Results/profiled_linear.txt`. Its declared bounds are respected rather than
   ignored, since the closed form can return a negative scale for a parameter declared

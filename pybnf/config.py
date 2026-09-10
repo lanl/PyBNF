@@ -3221,14 +3221,21 @@ class Configuration:
         logger.info('noise_profiling: profiling %s; searching %s'
                     % (self.profiled_noise_params, [v.name for v in self.variables]))
 
-    #: Gradient job types that cannot yet run with ``linear_profiling`` (ADR-0132). The scalar
-    #: gradient of the profiled objective is the partial at the solved coefficients, by the
-    #: envelope theorem, but the least-squares model the trust-region step and the Gauss-Newton
-    #: Fisher consume is not: the reduced residual's Jacobian is the partial Jacobian
-    #: projected off the span of the design (Kaufman 1975), and neither the projection nor the
-    #: seeding of the solved coefficients into the assembly is built. Refused with the reason
-    #: rather than run with a wrong curvature.
-    _LINEAR_PROFILING_GRADIENT_UNSUPPORTED = frozenset({'trf', 'lbfgs', 'gntr', 'ms'})
+    #: Job types that cannot run with ``linear_profiling``, and why (ADR-0132, ADR-0133).
+    #: The gradient optimizers are supported: the scalar gradient is the partial at the solved
+    #: coefficients (the envelope theorem), and the residual Jacobian and Gauss-Newton matrix
+    #: are projected off the span of the solved design (Kaufman's variable projection). What
+    #: remains is a job type whose assembly is not the shared one.
+    _LINEAR_PROFILING_UNSUPPORTED = {
+        'ms': ("job_type = ms (multiple shooting) assembles each trajectory segment's gradient "
+               "separately, while a profiled coefficient is solved over every segment's data "
+               "at once, so the projection its Jacobian needs would couple segments. Use "
+               "job_type = lbfgs, gntr or trf with linear_profiling, or drop it for ms."),
+        'design': ("job_type = design scores a planned measurement by the Fisher term it adds, "
+                   "which is a sum over points, while the information about the dynamics with "
+                   "a coefficient solved out is a Schur complement over all the points at once. "
+                   "Drop linear_profiling for the design run; the fit it follows can keep it."),
+    }
 
     def _apply_linear_profiling(self):
         """Resolve ``linear_profiling = 1`` and partition the free parameters (ADR-0132, #671).
@@ -3249,9 +3256,9 @@ class Configuration:
         solve is box-constrained to the declared support and says when a bound held.
 
         Refusals, all pointed and all before the run starts: a non-likelihood objective, a
-        Bayesian sampler (a profile is not a marginal, ADR-0108's argument unchanged), a
-        gradient job type (see :attr:`_LINEAR_PROFILING_GRADIENT_UNSUPPORTED`), a fit with no
-        observable formula, every per-coefficient reason
+        Bayesian sampler (a profile is not a marginal, ADR-0108's argument unchanged), a job
+        type whose assembly is not the shared one (:attr:`_LINEAR_PROFILING_UNSUPPORTED`), a
+        fit with no observable formula, every per-coefficient reason
         :meth:`~pybnf.objective.LikelihoodObjective.linear_profiling_plan` lists, and a fit with
         nothing to profile. All-or-nothing: profiling some linear coefficients while searching
         others would silently change what the searched ones mean.
@@ -3278,14 +3285,9 @@ class Configuration:
                 f"posterior draws. Drop linear_profiling for this fit and sample the "
                 f"coefficients as free parameters, or use it with an optimizer.")
         fit_type = self.config.get('fit_type')
-        if fit_type in self._LINEAR_PROFILING_GRADIENT_UNSUPPORTED:
-            raise PybnfError(
-                f'job_type = {fit_type} is not yet supported with linear_profiling',
-                f"linear_profiling = 1 solves an observable's linear coefficients out of the "
-                f"search, and the gradient path needs the reduced residual's Jacobian projected "
-                f"off the span of the solved coefficients, which is not built (ADR-0132). Use a "
-                f"gradient-free optimizer (de / ade / ss / pso / cmaes / powell / sim) with "
-                f"linear_profiling, or drop it for job_type = {fit_type}.")
+        if fit_type in self._LINEAR_PROFILING_UNSUPPORTED:
+            raise PybnfError(f'job_type = {fit_type} is not supported with linear_profiling',
+                             self._LINEAR_PROFILING_UNSUPPORTED[fit_type])
         if not (self.obj.measurement or self.obj._per_measurement_models):
             raise PybnfError(
                 'linear_profiling has nothing to profile in this fit',

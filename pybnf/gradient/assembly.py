@@ -166,6 +166,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..measurement.linear import design_basis
+
 from .errors import GradientNotSupported
 from .routing import PARAM, IC, NONE
 from ..printing import PybnfError
@@ -270,6 +272,7 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     # fixed parameters survive (a fixed-sigma fit never reads it -- harmless there).
     existing = getattr(objective, '_pset_values', None) or {}
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_linear(objective, experiments)
     _seed_profiled_noise(objective, experiments)
 
     rho_rows = []
@@ -285,14 +288,21 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     data_fit_gradient = np.zeros(n_param)
     hessian = np.zeros((n_param, n_param)) if include_fisher else None
     least_squares_exact = True
+    row_keys = [] if getattr(objective, '_linear_design', None) else None
     for sim_data, exp_data, routing, *rest in experiments:
         if _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
                                   rho_rows, jac_rows, noise_gradient, data_fit_gradient,
-                                  hessian=hessian, data_key=rest[0] if rest else None):
+                                  hessian=hessian, data_key=rest[0] if rest else None,
+                                  row_keys=row_keys):
             least_squares_exact = False
 
     rho = np.asarray(rho_rows, dtype=float)
     jac = np.asarray(jac_rows, dtype=float).reshape(len(rho_rows), n_param)
+    if row_keys is not None:
+        # Variable projection (ADR-0133): the profiled coefficients' component leaves the
+        # residual Jacobian and the Gauss-Newton matrix, in native space, before both are
+        # scaled to sampling space below (the projection acts on rows, the scaling on columns).
+        jac = _project_linear_profile(objective, jac, row_keys, hessian)
 
     # Native -> sampling space, applied exactly once (ADR-0029): rho is invariant, each
     # Jacobian column scales by d theta_j/d u_j at the current value, and the two scalar
@@ -309,6 +319,61 @@ def _assemble_gradient(objective, experiments, free_params, include_fisher):
     return GradientResult(residual=rho, jacobian=jac, gradient=gradient,
                           param_names=names, least_squares_exact=least_squares_exact,
                           hessian=hessian)
+
+
+def _seed_profiled_linear(objective, experiments):
+    """Solve every analytically profiled linear coefficient at this point before the point
+    walk (ADR-0133, #671), so the seams below differentiate the loss at ``c_hat(theta)``, the
+    value the fit's own scoring used, and so the objective holds each group's weighted design
+    for :func:`_project_linear_profile`.
+
+    A profiled coefficient is not among ``free_params``, so the ``_pset_values`` seeding above
+    cannot supply it; a measurement model's ``d f/d column`` reads it (``a`` in ``a*x + b``), so
+    without this the chain rule would use a stale value. Linear first, then the noise scale:
+    the coefficients do not depend on a shared profiled sigma while sigma depends on them
+    (ADR-0130 finding 5). A no-op for a fit that profiles no coefficient."""
+    if not getattr(objective, '_linear_groups', None):
+        return
+    triples = [(sim_data, exp_data, rest[0] if rest else None)
+               for sim_data, exp_data, _routing, *rest in experiments]
+    objective._resolve_linear_coefficients(triples)
+
+
+def _project_linear_profile(objective, jac, keys, hessian=None):
+    """Project each profiled group's rows of the residual Jacobian off the span of its solved
+    design, and take the same component out of the Gauss-Newton matrix (ADR-0133, #671).
+
+    With the coefficients ``c`` solved out, the residual is ``r(theta) = (I - P) W^1/2 (B - d)``
+    and its Jacobian, in Kaufman's (1975) variable-projection form, is the partial Jacobian
+    ``J`` at ``c_hat`` with its component in the span of the weighted design removed:
+    ``J_K = (I - Q Q^T) J``, ``Q`` an orthonormal basis of that span. The scalar gradient
+    ``J_K^T r`` equals ``J^T r``, since ``r`` is already orthogonal to the span (the normal
+    equations of the solve), which is the envelope theorem in matrix form. The Gauss-Newton
+    curvature ``J_K^T J_K = J^T J - (Q^T J)^T (Q^T J)`` is the Schur complement of the full
+    ``(theta, c)`` Fisher over ``c`` -- the information about the dynamics with the
+    coefficients estimated rather than known -- where the unprojected ``J^T J`` overstates it.
+
+    ``jac`` is the native-space residual Jacobian, ``keys`` the ``(id(exp_data), exp_row,
+    observable)`` of each of its rows; a row the solve did not see (a non-finite design at
+    that point) is left alone. A coefficient a declared bound held is pinned, not solved, so
+    its column is not in the span (``LinearDesign.free``). Returns the projected Jacobian;
+    ``hessian``, when given, is corrected in place, in the same native space."""
+    key_index = {key: i for i, key in enumerate(keys)}
+    jac = np.array(jac, dtype=float, copy=True)
+    for design in getattr(objective, '_linear_design', ()) or ():
+        present = [(j, key_index[key]) for j, key in enumerate(design.keys) if key in key_index]
+        if not present:
+            continue
+        design_rows, jac_rows = zip(*present)
+        q = design_basis(np.asarray(design.rows)[list(design_rows)], design.free)
+        if q is None:
+            continue
+        rows = list(jac_rows)
+        coefficients = q.T @ jac[rows]
+        jac[rows] = jac[rows] - q @ coefficients
+        if hessian is not None:
+            hessian -= coefficients.T @ coefficients
+    return jac
 
 
 def _seed_profiled_noise(objective, experiments):
@@ -341,7 +406,7 @@ def _seed_profiled_noise(objective, experiments):
 
 def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
                            rho_rows, jac_rows, noise_gradient, data_fit_gradient, hessian=None,
-                           data_key=None):
+                           data_key=None, row_keys=None):
     """Append one experiment's per-point residual and native-space Jacobian rows (for a
     least-squares column -- Gaussian or Student-t, #459), accumulate any estimated-noise gradient
     columns into ``noise_gradient``, and accumulate a no-residual family's scalar data-fit gradient
@@ -360,7 +425,7 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
             objective, sim_data, exp_data, routing, index, n_param, quantity, data_key):
         if _accumulate_gradient_point(
                 objective, sim_data, exp_data, index, point, rho_rows, jac_rows,
-                noise_gradient, data_fit_gradient):
+                noise_gradient, data_fit_gradient, row_keys=row_keys):
             inexact = True
         if hessian is not None:
             _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
@@ -433,8 +498,11 @@ def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, 
 
 
 def _accumulate_gradient_point(objective, sim_data, exp_data, index, point,
-                               rho_rows, jac_rows, noise_gradient, data_fit_gradient):
-    """Consume one :func:`_iter_scored_points` item for the scalar/residual gradient."""
+                               rho_rows, jac_rows, noise_gradient, data_fit_gradient,
+                               row_keys=None):
+    """Consume one :func:`_iter_scored_points` item for the scalar/residual gradient.
+    ``row_keys``, when given, receives the ``(id(exp_data), exp_row, observable)`` of every
+    residual row appended, so :func:`_project_linear_profile` can find a profiled group's rows."""
     sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens = point
     sqrt_w = np.sqrt(weight)
     # Layer D/G (#451/#454), ADR-0079: an estimated noise scale contributes its full
@@ -453,6 +521,8 @@ def _accumulate_gradient_point(objective, sim_data, exp_data, index, point,
             sim_data, exp_data, sim_row, rownum, col_name)
         rho_rows.append(sqrt_w * rho)
         jac_rows.append(sqrt_w * drho_dpred * dpred_dtheta)
+        if row_keys is not None:
+            row_keys.append((id(exp_data), rownum, col_name))
     else:
         # Laplace and count families have no clean least-squares residual; accumulate their
         # complete data-fit gradient on the scalar path.
@@ -463,13 +533,18 @@ def _accumulate_gradient_point(objective, sim_data, exp_data, index, point,
     return inexact
 
 
-def _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian):
-    """Consume one :func:`_iter_scored_points` item for its expected-Fisher terms."""
+def _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian, linear=None):
+    """Consume one :func:`_iter_scored_points` item for its expected-Fisher terms. ``linear``,
+    when given, is a ``(rows, keys)`` pair that receives the point's location row
+    ``sqrt(w kappa) s_i`` and its key, for :func:`_project_linear_profile` (ADR-0133)."""
     sim_row, rownum, col_name, weight, dpred_dtheta, raw_sens = point
     # Location block: w_i * kappa_i * outer(s_i, s_i).
     kappa = objective.location_fisher_point(sim_data, exp_data, sim_row, rownum, col_name)
     if kappa:
         hessian += (weight * kappa) * np.outer(dpred_dtheta, dpred_dtheta)
+        if linear is not None:
+            linear[0].append(np.sqrt(weight * kappa) * dpred_dtheta)
+            linear[1].append((id(exp_data), rownum, col_name))
     # Noise block (ADR-0080): ``sum_p I_scale_p * outer(g_i^p, g_i^p)``. A single free
     # sigma supplies a diagonal unit-vector block; prediction-dependent scales may couple axes.
     noise_block = objective.noise_fisher_point(
@@ -504,6 +579,7 @@ def iter_fisher_points(objective, experiments, free_params):
     # assemble_fisher_hessian does, so a free sigma resolves the same way here.
     existing = getattr(objective, '_pset_values', None) or {}
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_linear(objective, experiments)
     _seed_profiled_noise(objective, experiments)
 
     factors = _sampling_scale_factors(free_params)
@@ -557,12 +633,21 @@ def assemble_fisher_hessian(objective, experiments, free_params):
     # does, so the Fisher is formed at u (idempotent -- the gradient assembly already seeded it).
     existing = getattr(objective, '_pset_values', None) or {}
     objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+    _seed_profiled_linear(objective, experiments)
     _seed_profiled_noise(objective, experiments)
 
     hessian = np.zeros((n_param, n_param))
+    linear = ([], []) if getattr(objective, '_linear_design', None) else None
     for sim_data, exp_data, routing, *rest in experiments:
         _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
-                                      hessian, data_key=rest[0] if rest else None)
+                                      hessian, data_key=rest[0] if rest else None,
+                                      linear=linear)
+    if linear is not None and linear[0]:
+        # Variable projection (ADR-0133): the location rows a profiled group's points
+        # contributed, ``sqrt(w kappa) s_i``, are exactly the residual-Jacobian rows, so the
+        # Schur complement over the solved coefficients is the same rank correction.
+        rows = np.asarray(linear[0], dtype=float).reshape(len(linear[0]), n_param)
+        _project_linear_profile(objective, rows, linear[1], hessian)
 
     # Native -> sampling space, applied once on both axes (ADR-0029): the same per-parameter
     # d theta/d u factor the gradient scales its columns by, here as an outer product.
@@ -571,7 +656,7 @@ def assemble_fisher_hessian(objective, experiments, free_params):
 
 
 def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
-                                  hessian, data_key=None):
+                                  hessian, data_key=None, linear=None):
     """Accumulate one experiment's per-point Fisher rank-1 terms into ``hessian`` (the
     curvature twin of :func:`_accumulate_experiment`). Same independent variable, same
     comparable-column intersection, same NaN skip, same ``_sim_row_for`` row match, same
@@ -580,7 +665,8 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
     per-point matrix ``sum_p I_scale_p * outer(g_i^p, g_i^p)`` (``noise_fisher_point``, ADR-0080)."""
     for point in _iter_scored_points(
             objective, sim_data, exp_data, routing, index, n_param, "Hessian", data_key):
-        _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian)
+        _accumulate_fisher_point(objective, sim_data, exp_data, index, point, hessian,
+                                 linear=linear)
 
 
 def _sensitivity(sens, selector, contribution, sim_row, free_param):

@@ -541,8 +541,15 @@ Required Keys
   ``cumulative``, already carries ``normalization = scale``, or has a prediction-dependent
   sigma; or, with ``noise_profiling`` also on, its group's observables do not all share one
   profiled sigma. Also refused for the Bayesian samplers, by the same argument as
-  ``noise_profiling``, and for the gradient methods (``trf``, ``lbfgs``, ``gntr``, ``ms``),
-  whose reduced Jacobian is not yet built.
+  ``noise_profiling``, and for ``ms`` and ``design``, whose assembly is not the shared one.
+
+  Supported by the gradient optimizers ``lbfgs``, ``gntr`` and ``trf``. The gradient of the
+  profiled objective is the partial derivative at the solved coefficients (the envelope
+  theorem), and the residual Jacobian and Gauss-Newton curvature the trust-region steps use
+  are projected off the span of the solved design, which is the variable-projection form of
+  Golub and Pereyra in Kaufman's approximation. The curvature is then the information about
+  the dynamics with the coefficients estimated rather than known, where the unprojected one
+  would overstate it.
 
   The profiled parameters must still be **declared** as free parameters (the same ``.conf``
   runs with and without the key). Unlike a profiled noise scale, their declared bounds are
