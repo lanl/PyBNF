@@ -240,6 +240,17 @@ with a warning at startup, when ``stochastic_seed`` is one of the ``_honorbngl``
 every stochastic model in the fit carries an explicit ``seed`` argument, because then every
 replicate would reproduce the same trajectory and there would be nothing to average.
 
+The information criteria follow the same rule. ``Results/information_criteria.txt`` used
+to come from one more simulation of the best fit, which for a stochastic model is one more
+draw, so its ``log_likelihood`` and the AIC built on it moved from run to run and disagreed
+with the averaged objective value above. The best fit is now simulated
+``best_fit_replicates`` times for it too, at fresh seeds, and ``log_likelihood`` is the mean
+over those runs. The file carries a ``replicates`` line saying how many runs that was and a
+``log_likelihood_standard_error`` line saying how far they spread; AIC, BIC and AICc each
+carry twice that. Two models whose AIC values differ by less than it have not been told
+apart, so raise ``best_fit_replicates`` if you need to separate them. The periodic checkpoint
+``information_criteria_backup.txt`` stays a single simulation, and says so in the same line.
+
 This covers the answer the fit reports, and not the search that produced it. The same noise
 also affects the search while it is running, where a lucky value recorded for a population
 member can never be displaced except by a luckier one. That is a larger piece of work, and

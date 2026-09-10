@@ -897,6 +897,19 @@ contribute nothing to the objective, are left out of :math:`n` and :math:`\ln L`
 are off the LOO/WAIC observation axis; the fit reports how many it excluded, per
 observable.
 
+For a stochastic model, one simulation of the best fit is a draw rather than an exact
+answer, so :math:`\ln L` from a single simulation is a noisy number and an AIC built on it
+would change from one run to the next for the same parameter set. At the end of such a fit
+the best fit is therefore simulated ``best_fit_replicates`` times, the same number of runs
+the :ref:`best-fit confirmation stage <best_fit_confirmation>` uses, and :math:`\ln L` is
+the mean over those runs. ``Results/information_criteria.txt`` says how many runs went into
+it (``replicates``) and how far they spread (``log_likelihood_standard_error``); AIC, BIC
+and AICc each carry twice that standard error, so two models whose AIC values differ by
+less than it have not been told apart. The mean of the log-likelihoods is the same average
+the confirmation stage reports for the objective value, so the two files describe the same
+parameter set the same way. It is a lower bound on the log marginal likelihood, and the
+reported spread says how far below it could be.
+
 **ArviZ / LOO / WAIC.** A completed MCMC run can be exported as an ArviZ
 ``InferenceData`` object by setting
 :ref:`output_inference_data <output_inference_data>` ``= 1`` (needs the optional

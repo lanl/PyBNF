@@ -103,6 +103,27 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **The information criteria of a stochastic fit no longer come from a single simulation
+  (#676).** `Results/information_criteria.txt` reports AIC, BIC and AICc from the
+  log-likelihood of the best fit, and that log-likelihood came from simulating the best fit
+  once more at the end of the run. For a stochastic model that one simulation is a draw, so
+  the reported AIC was a noisy number that changed from one run to the next for the same
+  parameter set, and under the default seed policy the draw it reported was the very
+  trajectory the search had scored. Since the best-fit confirmation stage above landed, the
+  averaged objective value in `Results/best_fit_confirmation.txt` and the single-draw
+  log-likelihood in `Results/information_criteria.txt` also disagreed about the same
+  parameter set, with nothing to say which to trust.
+  At the end of a stochastic fit the best fit is now simulated `best_fit_replicates` times
+  at fresh seeds, all submitted at once, and the log-likelihood behind the criteria is the
+  mean over those runs. The file gains a `replicates` line saying how many runs that was and
+  a `log_likelihood_standard_error` line saying how far they spread; AIC, BIC and AICc each
+  carry twice that, so two models whose AIC values differ by less than it have not been
+  told apart by the runs. The mean of the log-likelihoods is the same average the
+  confirmation stage reports for the objective value, so the two files now describe the
+  same parameter set the same way (ADR-0131). A deterministic fit, a legacy-edition fit,
+  a fit whose seed policy pins every trajectory, a fit whose wall-time budget is spent, and
+  the periodic checkpoint all keep their single simulation; the two new lines then say
+  `1` and `n/a`.
 - **A bootstrap replicate of a multiple-shooting fit no longer reports a start belonging to
   the replicate before it.** A bootstrap run reuses the algorithm object across replicates,
   and `job_type = ms` kept adding each start's ladder result to a list that was never

@@ -32,7 +32,8 @@ from ..bngsim_model import (
     missing_bngsim_nf_action_support,
 )
 from ..printing import print0, print1, print2, PybnfError
-from ..objective import ObjectiveCalculator, likelihood_information_criteria
+from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
+                         replicated_information_criteria)
 from ..budget import format_duration
 
 from abc import ABC, abstractmethod
@@ -47,6 +48,8 @@ import re
 from pathlib import Path
 from glob import glob
 from concurrent.futures import CancelledError
+from collections import Counter
+from statistics import fmean
 
 
 # Preserve the original module logger name (was getLogger(__name__) in
@@ -1505,7 +1508,8 @@ class Algorithm(ABC):
             self._copy_best_fit_sims(best_pset, best_name)
             self._rerun_best_fit_to_save_data(best_pset)
             self._emit_best_fit_bngl(best_pset, best_name)
-            self._emit_information_criteria(self._compute_information_criteria(best_pset))
+            self._emit_information_criteria(self._compute_information_criteria(
+                best_pset, replicates=self._information_criteria_replicates(), client=client))
             self._emit_profiled_noise()
             self._emit_inference_data()
         self._finalize_backup_pickle()
@@ -1969,7 +1973,31 @@ class Algorithm(ABC):
                 logger.exception('Failed to write best-fit BNGL for model %s' % m)
                 print1('Could not write the best-fit BNGL artifact for model %s; see log.' % m)
 
-    def _compute_information_criteria(self, best_pset):
+    def _information_criteria_replicates(self):
+        """How many times the end of a fit simulates its best fit for the information
+        criteria (#676): ``best_fit_replicates`` when the runs would differ, otherwise one.
+
+        One for every deterministic fit, since a second simulation would give the same
+        trajectory and the same log-likelihood, and one for a stochastic fit whose seed
+        policy pins every model to one trajectory (:meth:`_replicates_would_differ`). One
+        under the legacy edition, where ``best_fit_replicates`` defaults to off, so a conf
+        that names no edition keeps costing exactly what it always has (ADR-0031). And one
+        once the wall-time budget is spent, by the confirmation stage's argument: a budget
+        is a promise about the whole run. The checkpoint never comes through here; it is
+        always a single simulation, because it fires on a cadence.
+        """
+        if not self._replicates_would_differ():
+            return 1
+        _, replicates = self._best_fit_confirmation_settings()
+        if replicates < 2:
+            return 1
+        if self._budget_spent():
+            logger.info('The wall-time budget is spent, so the information criteria come from a '
+                        'single simulation of the best fit rather than from %d' % replicates)
+            return 1
+        return replicates
+
+    def _compute_information_criteria(self, best_pset, replicates=1, client=None):
         """AIC / BIC / AICc for the best-fit parameter set, or ``None``.
 
         A no-op (``None``) unless there is a best fit AND the objective is a proper
@@ -1978,14 +2006,29 @@ class Algorithm(ABC):
         no normalized density, so no information criterion is defined for it -- the
         same gate LOO/WAIC use (ADR-0056).
 
-        Otherwise the best pset is re-simulated once, in-process, to get its
-        simulation data back (``core.run_job`` with no calculator future does not
-        null ``res.simdata`` the way worker-side scoring does), then scored through
-        the same normalize -> postprocess -> pointwise-``log_density`` path the fit
-        used -- giving the FULL normalized log-likelihood behind an ABSOLUTE AIC.
-        One extra simulation at the end of a run that already ran thousands is
-        negligible, and it is the only place the best pset's simdata is in hand
-        (an optimizer discards it after scoring on the workers).
+        Otherwise the best pset is re-simulated to get its simulation data back
+        (``core.run_job`` with no calculator future does not null ``res.simdata`` the
+        way worker-side scoring does), then scored through the same normalize ->
+        postprocess -> pointwise-``log_density`` path the fit used -- giving the FULL
+        normalized log-likelihood behind an ABSOLUTE AIC. It is the only place the best
+        pset's simdata is in hand (an optimizer discards it after scoring on the workers).
+
+        ``replicates`` is how many times it is simulated (#676, ADR-0131). One, the
+        default, is a single in-process simulation at replicate index 0, which is what
+        every deterministic fit and every checkpoint asks for; under the default seed
+        policy that index reproduces the trajectory the fit itself scored. For a
+        stochastic model one simulation is a draw, so the log-likelihood it gives is a
+        noisy measurement of the parameter set. With ``replicates`` of two or more the
+        parameter set is simulated that many times, at replicate indices past every one
+        the fit and the best-fit confirmation stage (#659) used so each is a fresh draw,
+        and the reported log-likelihood is the mean over them with its standard error
+        beside it. The mean of the log-likelihoods is the quantity
+        ``best_fit_confirmation.txt`` averages, so the two files estimate the same thing
+        for the same parameter set. The simulations are independent, so they go out
+        through ``client`` together when one is given, and run one after another
+        in-process otherwise. A replicate that fails or scores nothing is left out and
+        the count reported is the number that were used; a profiled noise scale
+        (ADR-0108) is averaged over the same runs.
 
         Every failure is logged and swallowed (returns ``None``): the run has
         otherwise completed, and a diagnostics field must never abort it. Split out
@@ -1996,37 +2039,122 @@ class Algorithm(ABC):
         if not getattr(self.objective, 'supports_pointwise_log_likelihood', False):
             return None
         try:
+            replicates = max(1, int(replicates))
+            if replicates < 2:
+                names, indices = ['bestfit_infocrit'], [0]
+            else:
+                # Past the fit's own indices (0 .. smoothing-1 for every parameter set) and
+                # past the confirmation stage's, which used the next best_fit_replicates
+                # blocks of smoothing; see _run_confirmation_replicates.
+                smoothing = max(1, int(self.config.config.get('smoothing') or 1))
+                names = ['bestfit_infocrit_run%d' % (r + 1) for r in range(replicates)]
+                indices = [(replicates + r + 1) * smoothing for r in range(replicates)]
+            # A job submitted through the client carries the model_list Future scattered
+            # once per fit, as every other submitted job does (_job_models, #416); one run
+            # in-process carries the concrete list, as it always has.
+            models = self._job_models()[0] if client is not None and replicates > 1 else self.model_list
             # calc_future=None keeps simdata on the Result (no worker-side scoring);
             # delete_folder=True cleans up the one-off rerun (its gdat/scan are already
             # saved by _copy_best_fit_sims / _rerun_best_fit_to_save_data above).
-            job = core.Job(self.model_list, best_pset, 'bestfit_infocrit',
-                           self.sim_dir, self.config.config['wall_time_sim'], None,
-                           self.config.config['normalization'], self.config.postprocessing,
-                           True,
-                           stochastic_seed_policy=self.config.config['stochastic_seed'])
-            res = core.run_job(job)
-            if getattr(res, 'failed', False) or res.simdata is None:
-                logger.warning('Could not re-simulate the best fit to compute information criteria')
-                return None
-            # Mirror add_to_trajectory's scoring setup so the log-likelihood is scored
-            # against exactly the data the fit's objective saw.
-            res.normalize(self.config.config['normalization'])
-            res.postprocess_data(self.config.postprocessing)
+            jobs = [core.Job(models, best_pset, name,
+                             self.sim_dir, self.config.config['wall_time_sim'], None,
+                             self.config.config['normalization'], self.config.postprocessing,
+                             True,
+                             replicate_index=index,
+                             stochastic_seed_policy=self.config.config['stochastic_seed'])
+                    for name, index in zip(names, indices)]
+            results = self._run_information_criteria_jobs(jobs, client)
+
             # An analytically profiled noise scale (ADR-0108) is still an ESTIMATED quantity,
             # so it keeps counting in k -- only the search dropped it. Counting the searched
             # variables alone would shift every AIC/BIC in a profiled fit relative to the same
             # fit run without profiling, which is exactly the comparison k exists to support.
             profiled = getattr(self.config, 'profiled_noise_params', ()) or ()
             k = len(self.variables) + len(profiled)
-            ic = likelihood_information_criteria(
-                self.objective, res.simdata, self.exp_data, best_pset, k)
-            # The scoring call above put every profiled scale at its MLE for the best fit, so
-            # the objective now holds the values this fit estimated for the removed dimensions.
-            self._profiled_noise = dict(getattr(self.objective, '_profiled_noise', None) or {})
-            return ic
+            log_likelihoods, counts, profiled_values, scored = [], [], [], 0
+            for res in results:
+                if res is None or getattr(res, 'failed', False) or res.simdata is None:
+                    continue
+                # Mirror add_to_trajectory's scoring setup so the log-likelihood is scored
+                # against exactly the data the fit's objective saw.
+                res.normalize(self.config.config['normalization'])
+                res.postprocess_data(self.config.postprocessing)
+                ic = likelihood_information_criteria(
+                    self.objective, res.simdata, self.exp_data, best_pset, k)
+                scored += 1
+                # The scoring call put every profiled scale at its MLE for this run, so the
+                # objective now holds the values this fit estimated for the removed dimensions.
+                noise = getattr(self.objective, '_profiled_noise', None)
+                if noise:
+                    profiled_values.append(dict(noise))
+                if ic is None:
+                    continue
+                log_likelihoods.append(ic.log_likelihood)
+                counts.append(ic.n)
+            if scored:
+                names_seen = sorted(set().union(*profiled_values)) if profiled_values else []
+                self._profiled_noise = {
+                    name: fmean([d[name] for d in profiled_values if name in d])
+                    for name in names_seen}
+            if not log_likelihoods:
+                logger.warning('No simulation of the best fit produced a usable log-likelihood, '
+                               'so no information criteria were computed')
+                return None
+            n = Counter(counts).most_common(1)[0][0]
+            if len(set(counts)) > 1:
+                # Sums over different numbers of points are not the same quantity, so keep
+                # the runs that scored the usual number and say so.
+                logger.warning('The replicate runs of the best fit scored different numbers of '
+                               'points (%s); the information criteria use the %d run(s) that '
+                               'scored %d' % (sorted(set(counts)), counts.count(n), n))
+                log_likelihoods = [ll for ll, c in zip(log_likelihoods, counts) if c == n]
+            if len(log_likelihoods) < len(jobs):
+                logger.warning('%d of %d simulation(s) of the best fit produced a usable '
+                               'log-likelihood for the information criteria'
+                               % (len(log_likelihoods), len(jobs)))
+            return replicated_information_criteria(log_likelihoods, k, n)
         except Exception:
             logger.exception('Failed to compute information criteria for the best fit')
             return None
+
+    def _run_information_criteria_jobs(self, jobs, client):
+        """Run the best fit's information-criteria simulations and return one Result per
+        job, in submission order, with ``None`` standing in for one that could not run.
+
+        In-process, one after another, without a client or for a single job -- the path
+        every deterministic fit and every checkpoint takes, and the one the folder-free
+        test harnesses drive. Through ``client`` all at once otherwise, the way the
+        confirmation stage submits its replicates, since the simulations are independent
+        and the processors are idle at the end of a run. No calculator goes with them, so
+        the simdata comes back rather than being scored and dropped on the worker.
+        """
+        if client is None or len(jobs) < 2:
+            results = []
+            for job in jobs:
+                try:
+                    results.append(core.run_job(job))
+                except Exception:
+                    logger.exception('Failed to re-simulate the best fit (%s) for the '
+                                     'information criteria' % job.job_id)
+                    results.append(None)
+            return results
+        pending = dict()
+        futures = []
+        for job in jobs:
+            f = client.submit(core.run_job, job, False, self.failed_logs_dir,
+                              models=getattr(self, 'models_future', None))
+            futures.append(f)
+            pending[f] = (job.params, job.job_id)
+        by_future = dict()
+        for f, raw in core.as_completed(futures, with_results=True, raise_errors=False):
+            res = result_from_completed(f, raw, pending[f][0], pending[f][1])
+            if not isinstance(res, core.Result):
+                # A cancelled future, which the run loop treats as fatal. Here the fit is
+                # already over, so it costs this replicate and nothing more.
+                logger.warning('An information-criteria simulation of the best fit was cancelled')
+                res = None
+            by_future[f] = res
+        return [by_future.get(f) for f in futures]
 
     def _checkpoint_information_criteria(self):
         """Write ``Results/information_criteria_backup.txt`` for the best fit so far -- the
@@ -2233,6 +2361,8 @@ class Algorithm(ABC):
         if ic is None:
             return False
         aicc_str = ('%.10g' % ic.aicc) if ic.aicc is not None else 'n/a (n <= k+1)'
+        se = ic.log_likelihood_standard_error
+        se_str = ('%.10g' % se) if se is not None else 'n/a (one simulation)'
         lines = list(preamble) + [
             '# Information criteria for the best-fit parameter set (lower is better).',
             '# Valid for a likelihood objective only (normal / lognormal / lnnormal / laplace /',
@@ -2242,9 +2372,18 @@ class Algorithm(ABC):
             '#   AIC  = 2k - 2*lnL',
             '#   BIC  = k*ln(n) - 2*lnL',
             '#   AICc = AIC + 2k(k+1)/(n-k-1)   (undefined when n <= k+1)',
+            '# replicates is how many simulations of the best fit log_likelihood is averaged',
+            '#   over. One for a deterministic model, whose simulation is exact. For a',
+            '#   stochastic model every simulation is a draw, so at the end of the fit the',
+            '#   best fit is run best_fit_replicates times and log_likelihood is the mean over',
+            '#   those runs; log_likelihood_standard_error is the uncertainty in that mean,',
+            '#   and AIC, BIC and AICc each carry twice it. Two models whose AIC values',
+            '#   differ by less than that have not been told apart by these runs.',
             'k\t%d' % ic.k,
             'n\t%d' % ic.n,
+            'replicates\t%d' % ic.replicates,
             'log_likelihood\t%.10g' % ic.log_likelihood,
+            'log_likelihood_standard_error\t%s' % se_str,
             'AIC\t%.10g' % ic.aic,
             'BIC\t%.10g' % ic.bic,
             'AICc\t%s' % aicc_str,
@@ -2261,9 +2400,11 @@ class Algorithm(ABC):
         if name == '':
             # The checkpoint says the same thing about a run still in progress, on a
             # cadence; like the parameter-set checkpoint beside it, it stays in the log.
+            spread = ('' if se is None
+                      else ', over %d runs, lnL standard error %.3g' % (ic.replicates, se))
             print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
-                   '(k=%d, n=%d, lnL=%.6g)'
-                   % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
+                   '(k=%d, n=%d, lnL=%.6g%s)'
+                   % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood, spread))
         return True
 
     def multistart_records(self):

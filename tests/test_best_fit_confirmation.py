@@ -578,7 +578,7 @@ def test_the_rest_of_the_end_of_fit_path_uses_the_confirmed_parameter_set(
                     '_finalize_backup_pickle', '_teardown_sim_dir'):
         monkeypatch.setattr(_ConcreteAlgorithm, skipped, lambda self, *a, **k: None)
     monkeypatch.setattr(_ConcreteAlgorithm, '_compute_information_criteria',
-                        lambda self, p: None)
+                        lambda self, p, **k: None)
     monkeypatch.setattr(_ConcreteAlgorithm, '_emit_information_criteria', lambda self, ic: None)
 
     algo._finalize_run(_FakeClient())
