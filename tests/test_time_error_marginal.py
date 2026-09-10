@@ -413,3 +413,44 @@ class TestDenseGrid:
             types.SimpleNamespace(config={('time_error', None): ('truncated_normal', ('fix_at', '0.5'))}))
         no = Configuration._time_error_active(types.SimpleNamespace(config={('noise_model', None): ()}))
         assert yes is True and no is False
+
+
+class TestNoiseColumnCheck:
+    """A ``sigma = read_exp_file _SD`` marginal fit must not read its own noise column
+    as an unmatched observable (#677).
+
+    ``MarginalizedTimeObjective`` is a ``SummationObjective``, whose ``_check_columns``
+    rejects every ``.exp`` column absent from the simulation output. It defines
+    ``_spec_for`` the way ``LikelihoodObjective`` does but used to inherit the strict
+    check, so the per-point noise column raised on every evaluation. The fit did not
+    fail: ``evaluate`` is called per parameter set, the error is caught, the set scores
+    ``inf``, and a whole run returns ``inf`` with nothing to point at.
+    """
+
+    def _obj(self, sigma_field):
+        noise, sources = objective._build_noise_spec(
+            'y', ('gaussian', {'sigma': sigma_field}, None))
+        prior, sigma_t_source = build_time_error_spec('truncated_normal', ('fix_at', 0.5))
+        return MarginalizedTimeObjective(
+            noise=noise, sigma_source=sources['sigma'],
+            time_prior=prior, sigma_t_source=sigma_t_source)
+
+    def test_data_column_sigma_exempts_the_sd_column(self):
+        obj = self._obj(('read_exp_file', '_SD'))
+        obj._check_columns({'time', 'Central', 'Central_SD'}, {'time', 'Central'})  # no raise
+
+    def test_genuine_unmatched_column_still_raises(self):
+        # The exemption is for the noise column only; an actual typo must still be caught.
+        obj = self._obj(('read_exp_file', '_SD'))
+        with pytest.raises(PybnfError) as exc:
+            obj._check_columns({'time', 'Central', 'Bogus'}, {'time', 'Central'})
+        assert 'Bogus' in exc.value.log_message
+
+    def test_estimated_scale_still_rejects_a_leftover_sd_column(self):
+        # A fit that estimates sigma reads no data column, so a stale _SD column is an
+        # error, and the diagnostic names the observable rather than blaming the model.
+        obj = self._obj(('fit', 's__FREE'))
+        with pytest.raises(PybnfError) as exc:
+            obj._check_columns({'time', 'Central', 'Central_SD'}, {'time', 'Central'})
+        assert 'Central_SD' in exc.value.log_message
+        assert "observable 'Central'" in exc.value.message
