@@ -27,15 +27,20 @@ v1 specified.
 change-of-variables Jacobian) -- a *different objective* from the linear residual, not just
 a different search. PEtab v2 removed the column and folded transformation into
 ``noiseDistribution`` as **natural-log** ``log-normal`` / ``log-laplace`` prefixes, with **no
-log10 form**; ``petab1to2`` therefore drops a v1 ``log10`` transformation entirely (it
-downgrades ``log10-normal`` to a blank ``noiseDistribution``), so the observable imports as a
-linear Gaussian and the fit optimises the wrong objective. Since v2 has no faithful
+log10 form**; ``petab1to2`` therefore cannot carry a v1 ``log10`` transformation faithfully.
+petab < 0.9.0 dropped it entirely (a missing ``return`` left ``noiseDistribution`` blank, so
+the observable imported as a linear Gaussian and the fit optimised the wrong objective);
+petab >= 0.9.0 substitutes the natural-log family (``log10-normal`` -> ``log-normal``, with a
+warning), which silently rescales sigma by ``ln 10``. Since v2 has no faithful
 representation, we re-inject ``observableTransformation`` as a **preserved extra column** on
-the v2 observables table: PyBNF's importer reads it to select the noise family's additive
-scale (``lin`` / ``log10`` / ``log``; :mod:`pybnf.petab.observables`,
-:mod:`pybnf.petab.import_`), and other PEtab v2 tools ignore the unknown column (it passes v2
-lint). This is directly parallel to the parameterScale re-injection above -- the same
-"re-add the scale petab1to2 dropped" migration, on the observable axis.
+the v2 observables table and reset ``noiseDistribution`` to the v1 **linear base family**
+(``normal`` / ``laplace``), so the residual scale is stated in exactly one place: PyBNF's
+importer reads the column to select the noise family's additive scale (``lin`` / ``log10`` /
+``log``; :mod:`pybnf.petab.observables`, :mod:`pybnf.petab.import_`) and refuses a log
+transformation over an already-log distribution as a contradiction (issue #679), while other
+PEtab v2 tools ignore the unknown column (it passes v2 lint). This is directly parallel to
+the parameterScale re-injection above -- the same "re-add the scale petab1to2 dropped"
+migration, on the observable axis.
 
 This is the migration ``petab1to2`` should offer as an opt-in; it lives here as an
 explicit, named converter so :func:`pybnf.petab.import_job` stays a pure v2 importer with
@@ -60,6 +65,11 @@ _LOG_TRANSFORMATIONS = frozenset({'log', 'log10'})
 #: The preserved extra column re-injected onto the v2 observables table (PEtab v2 removed the
 #: v1 spelling; PyBNF's importer reads it, other v2 tools ignore it).
 _OBSERVABLE_TRANSFORMATION_COLUMN = 'observableTransformation'
+
+#: The v2 observables column petab1to2 folds the v1 transformation into (as the natural-log
+#: family, petab >= 0.9.0; blank before). Reset to the v1 linear base family alongside the
+#: re-injected transformation so the scale is stated once (issue #679).
+_NOISE_DISTRIBUTION_COLUMN = 'noiseDistribution'
 
 
 def petab1to2_preserve_scale(v1_yaml_path, out_dir):
@@ -123,12 +133,18 @@ def petab1to2_preserve_scale(v1_yaml_path, out_dir):
     # 4. Re-inject the dropped observableTransformation as a preserved column (issue #499).
     #    v2 has no log10 noiseDistribution, so a log/log10 observable has no v2-native home;
     #    the importer reads this extra column to pick the noise family's additive scale.
-    transformations = _v1_observable_transformations(v1_yaml_path, v1_spec)
-    if transformations:
+    #    petab1to2 folded the same transformation into noiseDistribution as the natural-log
+    #    family (petab >= 0.9.0; blank before), so that column is reset to the v1 linear base
+    #    (normal / laplace) -- the importer refuses a log transformation over an already-log
+    #    distribution as a contradiction (issue #679).
+    scales = _v1_observable_scales(v1_yaml_path, v1_spec)
+    if scales:
+        transformations = {oid: transformation for oid, (transformation, _) in scales.items()}
+        distributions = {oid: distribution for oid, (_, distribution) in scales.items()}
         for obs_file in v2_spec.get('observable_files', []):
             v2_obs_path = out_dir / obs_file
             v2_odf = pd.read_csv(v2_obs_path, sep='\t')
-            inject_observable_transformations(v2_odf, transformations)
+            inject_observable_transformations(v2_odf, transformations, distributions)
             v2_odf.to_csv(v2_obs_path, sep='\t', index=False)
 
     return v2_yaml
@@ -185,7 +201,7 @@ def inject_log_uniform_priors(v2_pdf, log_estimated_ids, declared_prior_ids=None
     return v2_pdf
 
 
-def inject_observable_transformations(v2_odf, transformations):
+def inject_observable_transformations(v2_odf, transformations, distributions=None):
     """Add an ``observableTransformation`` column to a v2 observables DataFrame in place.
 
     ``transformations`` is a ``{observableId: 'log' | 'log10'}`` map (linear observables are
@@ -194,6 +210,15 @@ def inject_observable_transformations(v2_odf, transformations):
     PEtab v2 dropped the column, so this is a **preserved extra column** the importer reads to
     select the noise family's additive scale (:mod:`pybnf.petab.observables`); other v2 tools
     ignore it. Mutates and returns ``v2_odf`` (a v2 observables :class:`pandas.DataFrame`).
+
+    ``distributions``, when given, is the matching ``{observableId: 'normal' | 'laplace'}``
+    map of each log observable's **v1** ``noiseDistribution`` -- its linear base family. Every
+    row that receives a transformation also has its ``noiseDistribution`` reset to that base.
+    petab1to2 folds the v1 transformation into this column as the natural-log family
+    (``log10-normal`` -> ``log-normal``, petab >= 0.9.0; a blank cell before that), and the
+    importer refuses a log transformation stacked over an already-log distribution, so the
+    scale must be stated in the transformation column alone (issue #679). Rows not in the
+    map keep whatever distribution petab1to2 wrote.
     """
     col = _OBSERVABLE_TRANSFORMATION_COLUMN
     if col not in v2_odf.columns:
@@ -201,25 +226,38 @@ def inject_observable_transformations(v2_odf, transformations):
     # petab1to2 may emit an all-empty column as float64 (NaN); coerce to object so the string
     # cells below don't raise a dtype error. Untouched rows still write as blank.
     v2_odf[col] = v2_odf[col].astype('object')
+    dcol = _NOISE_DISTRIBUTION_COLUMN
+    if distributions:
+        if dcol not in v2_odf.columns:
+            v2_odf[dcol] = ''
+        v2_odf[dcol] = v2_odf[dcol].astype('object')
     for i, row in v2_odf.iterrows():
-        transformation = transformations.get(str(row['observableId']))
+        oid = str(row['observableId'])
+        transformation = transformations.get(oid)
         if transformation is not None:
             v2_odf.at[i, col] = transformation
+            if distributions and oid in distributions:
+                v2_odf.at[i, dcol] = distributions[oid]
     return v2_odf
 
 
-def _v1_observable_transformations(v1_yaml_path, v1_spec):
-    """``{observableId: 'log' | 'log10'}`` for every v1 observable with a log residual scale.
+def _v1_observable_scales(v1_yaml_path, v1_spec):
+    """``{observableId: ('log' | 'log10', 'normal' | 'laplace')}`` for every v1 observable
+    with a log residual scale: its transformation and the linear base family of its v1
+    ``noiseDistribution`` (blank -> ``normal``, the v1 default).
 
     Reads each v1 problem's observable file(s) and keeps only the ``log`` / ``log10``
     transformations (linear -- or an absent column -- is the v2 default and needs no
-    re-injection). ``petab.v2.petab1to2`` drops this column, so the scale-preserving converter
-    re-injects what this returns (issue #499), mirroring the parameterScale re-injection.
+    re-injection). ``petab.v2.petab1to2`` drops the transformation column and folds it into
+    ``noiseDistribution``, so the scale-preserving converter re-injects the transformation and
+    restores the base distribution from what this returns (issues #499, #679), mirroring the
+    parameterScale re-injection.
     """
+    import pandas as pd
     import petab.v1 as petab_v1
     import petab.v1.C as C1
 
-    transformations = {}
+    scales = {}
     for problem in v1_spec.get('problems', []):
         for obs_file in problem.get('observable_files', []):
             odf = petab_v1.get_observable_df(str(Path(v1_yaml_path).parent / obs_file))
@@ -228,9 +266,13 @@ def _v1_observable_transformations(v1_yaml_path, v1_spec):
             for oid, row in odf.iterrows():
                 value = row.get(C1.OBSERVABLE_TRANSFORMATION)
                 transformation = str(value if value is not None else C1.LIN).strip().lower()
-                if transformation in _LOG_TRANSFORMATIONS:
-                    transformations[str(oid)] = transformation
-    return transformations
+                if transformation not in _LOG_TRANSFORMATIONS:
+                    continue
+                dist = row.get(C1.NOISE_DISTRIBUTION)
+                if dist is None or pd.isna(dist) or not str(dist).strip():
+                    dist = C1.NORMAL
+                scales[str(oid)] = (transformation, str(dist).strip().lower())
+    return scales
 
 
 def _sole_yaml(out_dir):
