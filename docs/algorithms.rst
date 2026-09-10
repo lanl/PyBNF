@@ -804,9 +804,10 @@ Stochastic models
 CMA-ES reads only the ordering of its population, and a stochastic simulation gives a
 different objective value every run, so when that noise is comparable to the real
 differences between candidates the ordering is partly random. When a model is stochastic
-CMA-ES therefore measures how reliable each generation's ranking is: it runs a few of the
-generation's candidates again at fresh seeds and compares how far they move in the ranking
-with how far pure noise would move them. While the ranking is unreliable it simulates every
+CMA-ES therefore measures how reliable each generation's ranking is
+([HansenNiederberger2009]_): it runs a few of the generation's candidates again at fresh
+seeds and compares how far they move in the ranking with how far pure noise would move
+them. While the ranking is unreliable it simulates every
 candidate more times, ranks each on its average, and holds the step size up instead of
 letting the noise shrink it; when the ranking is reliable it drops the extra simulations
 again. ``cmaes_noise_handling`` turns this off and ``cmaes_noise_max_evals`` caps the
@@ -942,6 +943,7 @@ information criterion (``az.waic``) can be computed directly.
 .. [Hoffman2014] Hoffman, M. D.; Gelman, A. The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo. J. Mach. Learn. Res. 2014, 15 (1), 1593–1623.
 .. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
 .. [Hansen2009] Hansen, N. Benchmarking a BI-Population CMA-ES on the BBOB-2009 Function Testbed. Proceedings of the 11th Annual Conference Companion on Genetic and Evolutionary Computation (GECCO) 2009, 2389–2396.
+.. [HansenNiederberger2009] Hansen, N.; Niederberger, A. S. P.; Guzzella, L.; Koumoutsakos, P. A Method for Handling Uncertainty in Evolutionary Optimization With an Application to Feedback Control of Combustion. IEEE Trans. Evol. Comput. 2009, 13 (1), 180–197. https://doi.org/10.1109/TEVC.2008.924423
 .. [Haario2001] Haario, H.; Saksman, E.; Tamminen, J. An Adaptive Metropolis Algorithm. Bernoulli 2001, 7 (2), 223–242.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.

@@ -141,7 +141,8 @@ All notable changes to PyBNF are documented below. This project adheres to
   shrank a step that should not have shrunk. When running a parameter set again would give a
   different answer, each generation now ends by simulating a few of its candidates again at
   fresh seeds and measuring how far they move in the ranking against what pure noise would
-  do, the uncertainty handling of Hansen and colleagues. While the ranking is unreliable every
+  do, the uncertainty handling of Hansen, Niederberger, Guzzella and Koumoutsakos (IEEE
+  Transactions on Evolutionary Computation 13(1), 180-197, 2009). While the ranking is unreliable every
   candidate is simulated more times, up to `cmaes_noise_max_evals`, and ranked on its
   average, and the step size is held up; when it is reliable the extra simulations are
   dropped again. `cmaes_noise_handling = 0` turns it off. A deterministic fit is unchanged.

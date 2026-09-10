@@ -77,7 +77,9 @@ adaptation, reading noise as stagnation, shrinks a step that should not shrink. 
 running a parameter set again would give a different answer (``_replicates_would_differ``)
 and ``cmaes_noise_handling`` is on, each generation ends by simulating a few of its
 candidates again at fresh seeds and measuring how far they move in the ranking against
-what pure noise would do (Hansen et al. 2009, :mod:`pybnf.algorithms.noise_handling`).
+what pure noise would do (Hansen, Niederberger, Guzzella and Koumoutsakos, IEEE Transactions
+on Evolutionary Computation 13(1), 2009; :mod:`pybnf.algorithms.noise_handling` carries the
+full citation).
 While the ranking is unreliable every candidate is simulated more times, up to
 ``cmaes_noise_max_evals``, and ranked on its average, and the step size is held up. A
 deterministic fit never re-simulates anything and is byte-identical.
@@ -505,7 +507,8 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.sigma *= np.exp((self.cs / self.ds) * (ps_norm / self.chiN - 1.0))
         # An unreliable ranking reads as stagnation to the adaptation above, which would
         # shrink a step that should not shrink; the uncertainty measurement holds it up
-        # (Hansen 2009, #661). 1 for a deterministic fit and for a reliable ranking.
+        # (Hansen, Niederberger, Guzzella and Koumoutsakos 2009, #661). 1 for a deterministic
+        # fit and for a reliable ranking.
         self.sigma *= self._noise_sigma_factor
 
         self.generation += 1

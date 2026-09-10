@@ -118,7 +118,8 @@ indices and still finds the mode.
 
 Hansen, N., Niederberger, A. S. P., Guzzella, L. and Koumoutsakos, P. (2009). A method for
 handling uncertainty in evolutionary optimization with an application to feedback control of
-combustion. IEEE Transactions on Evolutionary Computation 13(1), 180 to 197. The reference
+combustion. IEEE Transactions on Evolutionary Computation 13(1), 180-197.
+https://doi.org/10.1109/TEVC.2008.924423. The reference
 implementation is the `NoiseHandler` of Hansen's `cma` package, whose constants (a random
 tenth re-evaluated, the lower quartile, a filter of 0.3, growth by 1.5 and shrinkage by its
 fourth root, a step-size factor of `1 + 2/(n + 10)`) this follows.

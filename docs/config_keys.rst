@@ -2021,7 +2021,11 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_t
   partly random: the search is pulled in arbitrary directions and the step size shrinks
   because noise reads as stagnation. With the handling on, each generation ends by running a
   few of its candidates again at fresh seeds and comparing how far they move in the ranking
-  with how far pure noise would move them (Hansen et al. 2009). While the ranking is
+  with how far pure noise would move them (Hansen, N., Niederberger, A. S. P., Guzzella, L.
+  and Koumoutsakos, P., A method for handling uncertainty in evolutionary optimization with
+  an application to feedback control of combustion, IEEE Transactions on Evolutionary
+  Computation 13(1), 180-197, 2009, https://doi.org/10.1109/TEVC.2008.924423). While the
+  ranking is
   unreliable every candidate is simulated more times and ranked on its average, and the step
   size is held up; when it is reliable the extra simulations are dropped again. Nothing is
   done for a deterministic model, or when every stochastic model pins its seed, since running

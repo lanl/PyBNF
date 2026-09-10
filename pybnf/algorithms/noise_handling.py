@@ -1,5 +1,8 @@
 """Rank-based uncertainty handling for a ranking-driven search on a stochastic model
-(#661, ADR-0135): the method of Hansen, Niederberger, Guzzella and Koumoutsakos (2009).
+(#661, ADR-0135): the method of Hansen, N., Niederberger, A. S. P., Guzzella, L. and
+Koumoutsakos, P. (2009), "A method for handling uncertainty in evolutionary optimization
+with an application to feedback control of combustion", IEEE Transactions on Evolutionary
+Computation 13(1), 180-197, https://doi.org/10.1109/TEVC.2008.924423.
 
 A stochastic simulation gives a different objective value every time it is run, so a
 search that sorts its candidates on one value each is sorting partly on noise. CMA-ES reads
@@ -30,7 +33,8 @@ import numpy as np
 class RankChangeNoise:
     """The uncertainty level of a ranking, and the evaluations per candidate it calls for.
 
-    ``n_dim`` sets the step-size factor ``1 + 2 / (n_dim + 10)`` (Hansen 2009);
+    ``n_dim`` sets the step-size factor ``1 + 2 / (n_dim + 10)`` (Hansen, Niederberger,
+    Guzzella and Koumoutsakos 2009, cited in the module docstring);
     ``max_evals`` caps the evaluations per candidate; ``reevaluate_fraction`` is the share
     of a generation re-evaluated, floored at three candidates: with fewer, the pure-noise
     limit at every rank is zero, so the statistic can never come out negative and the
