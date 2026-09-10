@@ -135,6 +135,21 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Scatter search no longer archives a lucky draw as a local minimum (#660 step 3,
+  ADR-0136).** Scatter search decides everything by ranking, and for a stochastic model
+  each objective value is one draw. The reference set stored that draw as fact, so a
+  member whose value was a lucky draw could never be beaten by an honest child, its stuck
+  counter climbed, and it was retired into the archive of local minima as one it never
+  was, which is the list the run reports as its best results. When running a parameter
+  set again would give a different answer, every reference member is now ranked on the
+  mean of its draws, the draw-to-draw spread of the objective is pooled across the fit, and
+  a decision the spread leaves in doubt (a child against its parent, or two neighbours
+  whose rank gap sets a combination's step size) is not made: both sides are simulated
+  again at fresh seeds, up to `ss_noise_max_draws` draws each, and the decision waits. A
+  member counted stuck is drawn again too, so a lucky value regresses to the truth. The
+  pooled spread and the separation test live beside the CMA-ES measurement in
+  `pybnf.algorithms.noise_handling`. `ss_noise_handling = 0` turns it off; a deterministic
+  fit is unchanged.
 - **CMA-ES no longer ranks a stochastic model's population on single noisy simulations
   (#661, ADR-0135).** CMA-ES reads only the ordering of its population, and for a stochastic
   model each objective value is one draw, so when the noise was comparable to the real

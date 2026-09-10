@@ -128,3 +128,42 @@ class RankChangeNoise:
     def combined(f_old, f_new):
         """The value a re-evaluated candidate is ranked on: the mean of its two."""
         return 0.5 * (np.asarray(f_old, dtype=float) + np.asarray(f_new, dtype=float))
+
+
+def pooled_sd(draw_lists):
+    """The pooled within-parameter-set standard deviation of the objective over repeated
+    draws: ``sqrt(sum_p sum_i (d_pi - mean_p)**2 / sum_p (n_p - 1))`` over every parameter
+    set with at least two finite draws, or ``None`` when no parameter set has two.
+
+    One number for the whole fit, on the assumption that the draw-to-draw spread of the
+    objective is about the same at every parameter set a search visits. That is what
+    lets a single draw of a new candidate be given an uncertainty at all, and it is the
+    same pooling the best-fit confirmation stage's table invites a reader to do by eye.
+    """
+    total = 0.0
+    dof = 0
+    for draws in draw_lists:
+        values = np.asarray([d for d in draws if np.isfinite(d)], dtype=float)
+        if values.size < 2:
+            continue
+        total += float(np.sum((values - values.mean()) ** 2))
+        dof += values.size - 1
+    if dof == 0:
+        return None
+    return float(np.sqrt(total / dof))
+
+
+def separated(mean_a, n_a, mean_b, n_b, sd, z=1.0):
+    """Whether two estimates are safely ordered: their means differ by more than ``z``
+    standard errors of the difference, ``sd * sqrt(1/n_a + 1/n_b)``, with ``sd`` the pooled
+    draw-to-draw standard deviation. A non-finite mean is separated from anything, since a
+    parameter set that cannot be simulated is worse than every one that can; an unknown
+    ``sd`` (no repeated draw yet) separates nothing, so the caller draws again; a zero
+    ``sd`` separates everything that differs at all, which is the deterministic case."""
+    if not (np.isfinite(mean_a) and np.isfinite(mean_b)):
+        return True
+    if sd is None:
+        return False
+    if n_a < 1 or n_b < 1:
+        return False
+    return abs(float(mean_a) - float(mean_b)) > z * float(sd) * np.sqrt(1.0 / n_a + 1.0 / n_b)
