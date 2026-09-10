@@ -6,7 +6,8 @@ from .noise import (LN, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, Dat
                     StudentT)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
-from .measurement.linear import PLACEHOLDER as _LINEAR_PLACEHOLDER, affine_roles, formula_symbol_names, solve_group
+from .measurement.linear import (PLACEHOLDER as _LINEAR_PLACEHOLDER, LinearDesign, affine_roles,
+                                 formula_symbol_names, solve_group)
 
 from collections import namedtuple
 from statistics import fmean, stdev
@@ -236,6 +237,11 @@ class ObjectiveFunction:
     _linear_groups = ()
     _profiled_linear = {}
     _profiled_linear_at_bound = {}
+    #: Each group's solved design from the most recent evaluation, one
+    #: :class:`~pybnf.measurement.linear.LinearDesign` per group, which the gradient
+    #: assembly projects the residual Jacobian off (ADR-0133). Empty for a fit that profiles
+    #: nothing.
+    _linear_design = ()
 
     @staticmethod
     def _experiments(sim_data_dict, exp_data_dict):
@@ -259,11 +265,13 @@ class ObjectiveFunction:
         """
         return True
 
-    def _resolve_linear_coefficients(self, sim_data_dict, exp_data_dict):
+    def _resolve_linear_coefficients(self, experiments):
         """Solve every analytically profiled linear coefficient from the data and put it in
         ``_pset_values`` before the measurement layer materializes the observables that read
-        it (ADR-0132, #671). The base is the no-op ``True``: only a linear-scale Gaussian
-        likelihood has the closed form. :class:`LikelihoodObjective` overrides it."""
+        it (ADR-0132, #671). ``experiments`` is the ``(sim_data, exp_data, data_key)``
+        iterable :meth:`_experiments` builds. The base is the no-op ``True``: only a
+        linear-scale Gaussian likelihood has the closed form. :class:`LikelihoodObjective`
+        overrides it."""
         return True
 
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
@@ -312,7 +320,8 @@ class ObjectiveFunction:
                 # observables that read it, so this evaluation is coefficient-optimal by
                 # construction. Skipped entirely for a fit that profiles nothing.
                 if self._linear_groups:
-                    self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
+                    self._resolve_linear_coefficients(
+                    self._experiments(sim_data_dict, exp_data_dict))
                 if self.measurement:
                     self.measurement.apply(sim_data_dict, self._pset_values)
                 # Analytic noise profiling (ADR-0108, #562): put every profiled scale at its
@@ -1606,10 +1615,14 @@ class LikelihoodObjective(SummationObjective):
                             names.add(str(token))
         return names
 
-    def _resolve_linear_coefficients(self, sim_data_dict, exp_data_dict):
+    def _resolve_linear_coefficients(self, experiments):
         """Solve every profiled linear coefficient from the data at this evaluation and put
         it in ``_pset_values`` before the measurement layer materializes and the scoring loop
         reads it (ADR-0132, #671). Overrides the base no-op.
+
+        ``experiments`` is the ``(sim_data, exp_data, data_key)`` iterable :meth:`_experiments`
+        builds -- the same model/suffix pairs the caller is about to score, and the same
+        triples the gradient assembly seeds from (ADR-0133).
 
         One walk over exactly the points the caller is about to score -- the same row match,
         NaN-observation skip and domain skip as ``evaluate`` -- builds each group's weighted
@@ -1626,14 +1639,16 @@ class LikelihoodObjective(SummationObjective):
 
         A group no scored point reads gets 0 for every coefficient, since nothing scores it.
         A coefficient the bounded solve held at a declared bound is recorded and warned about
-        once; the evaluation is scoreable either way, so this always returns ``True``.
+        once; the evaluation is scoreable either way, so this always returns ``True``. Each
+        group's weighted design is kept on ``_linear_design``, keyed by scored point, for the
+        gradient assembly to project the residual Jacobian off (ADR-0133).
         """
         if not self._linear_groups:
             return True
         layer = {m.observable_id: m for m in (self.measurement.models if self.measurement else [])}
         col_group = {col: gi for gi, group in enumerate(self._linear_groups) for col in group.columns}
-        design = [([], [], []) for _ in self._linear_groups]
-        for sim_data, exp_data, _data_key in self._experiments(sim_data_dict, exp_data_dict):
+        design = [([], [], [], []) for _ in self._linear_groups]
+        for sim_data, exp_data, _data_key in experiments:
             indvar = min(exp_data.cols, key=exp_data.cols.get)
             cols = sorted(c for c in exp_data.cols
                           if c in col_group and c != indvar
@@ -1667,22 +1682,28 @@ class LikelihoodObjective(SummationObjective):
                     design[gi][0].append(row)
                     design[gi][1].append(observation - intercept)
                     design[gi][2].append(weight / variance)
-        values, at_bound = {}, {}
+                    design[gi][3].append((id(exp_data), rownum, col))
+        values, at_bound, kept = {}, {}, []
         for gi, group in enumerate(self._linear_groups):
-            phi, target, weight = design[gi]
+            phi, target, weight, keys = design[gi]
             if not phi:
                 values.update({name: 0.0 for name in group.names})
+                kept.append(LinearDesign([], np.zeros((0, len(group.names))),
+                                         np.ones(len(group.names), dtype=bool)))
                 continue
-            coef, active = solve_group(np.array(phi), np.array(target), np.array(weight),
-                                       group.lower, group.upper)
+            phi, weight = np.array(phi), np.array(weight)
+            coef, active = solve_group(phi, np.array(target), weight, group.lower, group.upper)
             for name, value, side in zip(group.names, coef, active):
                 values[name] = float(value)
                 if side:
                     at_bound[name] = side
                     self._warn_linear_at_bound(name, side)
+            kept.append(LinearDesign(keys, phi * np.sqrt(weight)[:, None],
+                                     np.array([side is None for side in active])))
         self._pset_values.update(values)
         self._profiled_linear = values
         self._profiled_linear_at_bound = at_bound
+        self._linear_design = tuple(kept)
         return True
 
     def _linear_design_row(self, group, col, sim_data, sim_row, exp_data, exp_row, layer, basis):
@@ -1792,7 +1813,8 @@ class LikelihoodObjective(SummationObjective):
         with np.errstate(all='ignore'):
             # The profiled linear coefficients first, as in evaluate_multiple (ADR-0132).
             if self._linear_groups:
-                self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
+                self._resolve_linear_coefficients(
+                    self._experiments(sim_data_dict, exp_data_dict))
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
             # The densities are scored at the same profiled scales the fit scored (ADR-0108),
@@ -1892,7 +1914,8 @@ class LikelihoodObjective(SummationObjective):
         with np.errstate(all='ignore'):
             # The profiled linear coefficients first, as in evaluate_multiple (ADR-0132).
             if self._linear_groups:
-                self._resolve_linear_coefficients(sim_data_dict, exp_data_dict)
+                self._resolve_linear_coefficients(
+                    self._experiments(sim_data_dict, exp_data_dict))
             if self.measurement:
                 self.measurement.apply(sim_data_dict, self._pset_values)
             # R = diag(sigma**2) is formed from the same profiled scales the fit scored
