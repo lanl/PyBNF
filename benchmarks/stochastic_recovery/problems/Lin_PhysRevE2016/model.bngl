@@ -1,0 +1,63 @@
+begin model
+#@model_id: Lin_PhysRevE2016
+#@title: Bursty positively autoregulated gene expression (Lin and Doering, 2016)
+#@description: |
+#  A gene transcribed at a basal rate plus a Hill-activated rate that depends on
+#  its own protein, with fast transcript turnover and slow protein dilution, so
+#  protein is made in bursts and the cell switches stochastically between a low
+#  and a high expression state.
+#@reference: |
+#  Lin YT, Doering CR (2016). Gene expression dynamics with stochastic bursts:
+#  Construction and exact results for a coarse-grained model. Physical Review E
+#  93:022409. doi:10.1103/PhysRevE.93.022409
+#@source: BNGL-Models/models/bursty_autoregulated_gene_expression_lin2016 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the burst size B, the basal and induced
+# transcription rates r0 and r1, and the half-activation copy number K are free via
+# the ``name name__FREE`` alias form; the mRNA and protein lifetimes and the Hill
+# coefficient are fixed at their published values; the published protocol (a
+# deterministic relaxation followed by a 1000-cell-cycle stationary trajectory) is
+# replaced by a ten-hour transient from the empty initial state.
+
+begin parameters
+  gamma   1/120       # /s  mRNA degradation (fixed)
+  gamma0  1/3600      # /s  protein dilution (fixed)
+  B       B__FREE     # mean translation events per transcript
+  gammaB  B*gamma     # /s  translation rate per transcript
+  r0      r0__FREE    # molecules/s  basal transcription
+  r1      r1__FREE    # molecules/s  induced transcription
+  n       4           # Hill coefficient (fixed)
+  K       K__FREE     # molecules  half-activation protein copy number
+end parameters
+
+begin molecule types
+  mRNA()
+  Protein()
+end molecule types
+
+begin seed species
+  mRNA()    0
+  Protein() 0
+end seed species
+
+begin observables
+  Molecules Obs_Tot_mRNA     mRNA()
+  Molecules Obs_Tot_Protein  Protein()
+end observables
+
+begin functions
+  transcription_rate() = r0 + r1*Obs_Tot_Protein^n/(K^n + Obs_Tot_Protein^n)
+end functions
+
+begin reaction rules
+  R_transcribe: 0 -> mRNA() transcription_rate()
+  R_translate: mRNA() -> mRNA() + Protein() gammaB
+  R_degrade_mRNA: mRNA() -> 0 gamma
+  R_dilute_Protein: Protein() -> 0 gamma0
+end reaction rules
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>36000,n_steps=>72})
+end actions

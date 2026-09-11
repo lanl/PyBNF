@@ -1,0 +1,73 @@
+begin model
+#@model_id: Hlavacek_PNAS2001
+#@title: Kinetic proofreading in receptor signaling (Hlavacek et al., 2001)
+#@description: |
+#  A symmetric bivalent ligand crosslinks monovalent receptors into dimers,
+#  which undergo five sequential unidirectional modifications; a dimer that
+#  dissociates before completing them reverts to the unmodified state, so the
+#  fraction of terminally modified dimers discriminates exponentially between
+#  ligands of different off rates.
+#@reference: |
+#  Hlavacek WS, Redondo A, Metzger H, Wofsy C, Goldstein B (2001). Kinetic
+#  proofreading models for cell signaling predict ways to escape kinetic
+#  proofreading. Proceedings of the National Academy of Sciences USA 98:7295-7300.
+#  doi:10.1073/pnas.121172298
+#  Hlavacek WS, Redondo A, Wofsy C, Goldstein B (2002). Kinetic proofreading in
+#  receptor-mediated transduction of cellular signals: receptor aggregation,
+#  partially activated receptors, and cytosolic messengers. Bulletin of
+#  Mathematical Biology 64:887-911. doi:10.1006/bulm.2002.0306
+#@source: BNGL-Models/models/kinetic_proofreading_hlavacek2001 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the two binding rates kon1 and kon2,
+# the dissociation rate koff, and the modification rate kp are free via the
+# ``name name__FREE`` alias form; the receptor and ligand counts are fixed at their
+# published values; three of the ten observables are kept (free ligand, total dimers,
+# terminally modified dimers); the library file's deterministic protocol is replaced
+# by the Gillespie protocol it lists as an alternative, over the published 600 s.
+
+begin parameters
+  NR    300000       # molecules  receptors per cell
+  NL    602          # molecules  ligands per cell
+  kon1  kon1__FREE   # /(molecule*s)  first ligand-receptor bond
+  kon2  kon2__FREE   # /(molecule*s)  crosslinking bond
+  koff  koff__FREE   # /s  bond dissociation
+  kp    kp__FREE     # /s  each modification step
+end parameters
+
+begin molecule types
+  L(r,r,mod~0~1~2~3~4~5)
+  R(l)
+end molecule types
+
+begin seed species
+  L(r,r,mod~0)  NL
+  R(l)          NR
+end seed species
+
+begin observables
+  Species  Obs_Free_L      L(r,r,mod~0)
+  Species  Obs_Tot_Dimers  L(r!+,r!+)
+  Species  Obs_D5          L(r!+,r!+,mod~5)
+end observables
+
+begin reaction rules
+  L(r,r,mod~0) + R(l) -> L(r!1,r,mod~0).R(l!1)  kon1
+  L(r!+,r,mod~0) + R(l) -> L(r!+,r!1,mod~0).R(l!1)  kon2
+  L(r!1,mod~0).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~1).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~2).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~3).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~4).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~5).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!+,r!+,mod~0) -> L(r!+,r!+,mod~1)  kp
+  L(r!+,r!+,mod~1) -> L(r!+,r!+,mod~2)  kp
+  L(r!+,r!+,mod~2) -> L(r!+,r!+,mod~3)  kp
+  L(r!+,r!+,mod~3) -> L(r!+,r!+,mod~4)  kp
+  L(r!+,r!+,mod~4) -> L(r!+,r!+,mod~5)  kp
+end reaction rules
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>600,n_steps=>60})
+end actions

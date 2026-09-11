@@ -1,0 +1,61 @@
+{
+  "id": "Hlavacek_PNAS2001",
+  "version": 1,
+  "title": "Kinetic proofreading in receptor signaling (Hlavacek et al., 2001)",
+  "reference": "Hlavacek WS, Redondo A, Metzger H, Wofsy C, Goldstein B (2001). Kinetic proofreading models for cell signaling predict ways to escape kinetic proofreading. Proc Natl Acad Sci USA 98:7295-7300. doi:10.1073/pnas.121172298. See also Hlavacek WS, Redondo A, Wofsy C, Goldstein B (2002). Kinetic proofreading in receptor-mediated transduction of cellular signals: receptor aggregation, partially activated receptors, and cytosolic messengers. Bull Math Biol 64:887-911. doi:10.1006/bulm.2002.0306",
+  "source": "BNGL-Models/models/kinetic_proofreading_hlavacek2001 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "ssa",
+    "suffix": "ssa",
+    "t_start": 0,
+    "t_end": 600,
+    "n_steps": 60
+  },
+  "observables": [
+    "Obs_Free_L",
+    "Obs_Tot_Dimers",
+    "Obs_D5"
+  ],
+  "parameters": {
+    "kon1__FREE": {
+      "true": 1.661e-08,
+      "low": 1e-10,
+      "high": 1e-06,
+      "identifiable": true,
+      "note": "first ligand-receptor bond, /(molecule*s)"
+    },
+    "kon2__FREE": {
+      "true": 3.333e-06,
+      "low": 1e-08,
+      "high": 0.0001,
+      "identifiable": true,
+      "note": "crosslinking bond, /(molecule*s)"
+    },
+    "koff__FREE": {
+      "true": 0.1,
+      "low": 0.001,
+      "high": 10.0,
+      "identifiable": true,
+      "note": "bond dissociation, /s"
+    },
+    "kp__FREE": {
+      "true": 0.4,
+      "low": 0.01,
+      "high": 10.0,
+      "identifiable": true,
+      "note": "each of the five modification steps, /s"
+    }
+  },
+  "data": {
+    "file": "ssa.exp",
+    "replicates": 200,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 20000,
+    "smoothing": 10
+  },
+  "notes": "Published default parameterization (300,000 receptors, 602 ligands, N=5 modification steps). Hundreds of ligands and dimers, so the relative noise is moderate; the terminally modified dimer count (about 20) is the noisy observable and the one that carries kp, since the fraction of dimers that complete all five steps scales as (kp/(kp+2*koff))^5."
+}

@@ -1,0 +1,78 @@
+{
+  "id": "Munsky_Science2012",
+  "version": 1,
+  "title": "Two-state gene expression noise (Munsky et al., 2012)",
+  "reference": "Munsky B, Neuert G, van Oudenaarden A (2012). Using gene expression noise to understand gene regulation. Science 336:183-187. doi:10.1126/science.1216379",
+  "source": "BNGL-Models/models/two_state_gene_expression_noise_munsky2012 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "ssa",
+    "suffix": "ssa",
+    "t_start": 0,
+    "t_end": 3000,
+    "n_steps": 300
+  },
+  "observables": [
+    "Obs_mRNA_I",
+    "Obs_mRNA_II",
+    "Obs_mRNA_III",
+    "Obs_on_I",
+    "Obs_on_II",
+    "Obs_on_III"
+  ],
+  "parameters": {
+    "k_on_I__FREE": {
+      "true": 0.0004444444444444444,
+      "low": 1e-05,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "class I activation, /s"
+    },
+    "k_off_I__FREE": {
+      "true": 0.0013333333333333335,
+      "low": 0.0001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "class I inactivation, /s"
+    },
+    "k_on_II__FREE": {
+      "true": 0.0022222222222222222,
+      "low": 1e-05,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "class II activation, /s"
+    },
+    "k_off_II__FREE": {
+      "true": 0.006666666666666667,
+      "low": 0.0001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "class II inactivation, /s"
+    },
+    "k_on_III__FREE": {
+      "true": 0.011111111111111112,
+      "low": 1e-05,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "class III activation, /s"
+    },
+    "k_off_III__FREE": {
+      "true": 0.03333333333333333,
+      "low": 0.0001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "class III inactivation, /s"
+    }
+  },
+  "data": {
+    "file": "ssa.exp",
+    "replicates": 200,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 20000,
+    "smoothing": 10
+  },
+  "notes": "Fig. 2B parameters of the paper (transcript lifetime 300 s, 100 transcripts per lifetime from an active promoter, class I/II/III switching rates in the ratio 1:5:25). Six free parameters, the most in the set. Each promoter's on/off observable is a telegraph signal whose replicate mean relaxes at rate k_on + k_off to the plateau k_on/(k_on + k_off); class III relaxes in about 20 s, so its two rates are the least determined by 10 s sampling."
+}

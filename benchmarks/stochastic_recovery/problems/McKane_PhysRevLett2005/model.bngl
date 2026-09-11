@@ -1,0 +1,66 @@
+begin model
+#@model_id: McKane_PhysRevLett2005
+#@title: Demographic-noise predator-prey cycles (McKane and Newman, 2005)
+#@description: |
+#  An individual-level predator-prey model on N sites with prey birth into
+#  empty sites, predator death, and two predation outcomes. The mean-field
+#  equations relax through damped oscillations to coexistence; individual
+#  trajectories cycle persistently because demographic noise is resonantly
+#  amplified.
+#@reference: |
+#  McKane AJ, Newman TJ (2005). Predator-prey cycles from resonant amplification
+#  of demographic stochasticity. Physical Review Letters 94:218102.
+#  doi:10.1103/PhysRevLett.94.218102
+#@source: BNGL-Models/models/demographic_noise_predator_prey_cycles_mckane2005 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the prey birth rate b, the predator
+# death rate d1, and the two predation rates p1 and p2 are free via the
+# ``name name__FREE`` alias form; the prey death rate d2 stays at its published
+# value of zero; the empty-site observable is dropped (the three counts sum to N);
+# the published 1200-time-unit trajectory is shortened to the first 400 time units,
+# which cover the transient from the published 800/800 initial populations.
+
+begin parameters
+  N       3200       # sites
+  n_init  800        # initial predators
+  m_init  800        # initial prey
+  b       b__FREE    # /time  prey birth
+  d1      d1__FREE   # /time  predator death
+  d2      0.00       # /time  prey death (fixed)
+  p1      p1__FREE   # /time  predation with predator reproduction
+  p2      p2__FREE   # /time  predation without reproduction
+  b_pair   b/N       # /site/time
+  p1_pair  p1/N      # /site/time
+  p2_pair  p2/N      # /site/time
+end parameters
+
+begin molecule types
+  A()
+  B()
+  E()
+end molecule types
+
+begin seed species
+  A() n_init
+  B() m_init
+  E() N-n_init-m_init
+end seed species
+
+begin observables
+  Molecules Obs_Tot_Predator  A()
+  Molecules Obs_Tot_Prey      B()
+end observables
+
+begin reaction rules
+  R_birth_prey: B() + E() -> B() + B() 2*b_pair
+  R_death_predator: A() -> E() d1
+  R_death_prey: B() -> E() d2
+  R_predation_reproduce: A() + B() -> A() + A() 2*p1_pair
+  R_predation_consume: A() + B() -> A() + E() 2*p2_pair
+end reaction rules
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>400,n_steps=>80})
+end actions

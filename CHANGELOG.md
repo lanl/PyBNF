@@ -5,6 +5,18 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **A stochastic parameter recovery benchmark, small version (#663, ADR-0140).**
+  `benchmarks/stochastic_recovery/` holds six published stochastic models (Shahrezaei and
+  Swain 2008, Lin and Doering 2016, McKane and Newman 2005, Hlavacek et al. 2001, Munsky et
+  al. 2012, Yang et al. 2008), each with a frozen problem definition (true parameter values,
+  bounds, sampling grid, observables, replicate count and seed offset, simulation budget),
+  committed synthetic data, a scoring protocol (log-decade error, success within a factor of
+  two, cost in simulations, success rate over seeds), a runner that scores the baseline methods
+  (`de`, `ss` and `cmaes` each with and without their noise handling) at equal simulation
+  budgets, and the baseline results. It is what makes the stochastic-fitting claims of #659,
+  #660 and #661 measurable; the full suite the issue asks for is built on it.
+
 ### Changed
 - **Scatter search gives idle processors another draw of a member whose rank is in doubt
   (#660 step 4, ADR-0139).** Scatter search waits for every simulation of a round before it
