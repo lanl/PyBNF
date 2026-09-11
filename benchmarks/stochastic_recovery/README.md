@@ -258,13 +258,72 @@ What the baseline shows:
   halved), and it hurts on McKane_PhysRevLett2005 (20 to 0 percent) and Yang_PhysRevE2008
   (40 to 0 percent), where its median error on the narrow direction is worse than without
   it. Five seeds resolve a difference of about two fits in five, so those two drops are at
-  the edge of what this run can tell apart; they are the first thing the full suite should
-  settle.
+  the edge of what this run can tell apart; the twenty-seed follow-up below settles them.
 * **No single method wins.** CMA-ES is the strongest on the receptor problem
   (Hlavacek_PNAS2001, 80 percent, 60 percent within 26 percent) and the predator-prey
   problem; differential evolution on the three-stage gene expression problem
   (Shahrezaei_PNAS2008, 80 percent); plain scatter search on the aggregation problem
   (Yang_PhysRevE2008, 40 percent).
+
+## Follow-up: scatter search's noise handling at twenty seeds
+
+The five-seed baseline left one question open: scatter search's noise handling (#660)
+appeared to hurt on McKane_PhysRevLett2005 and Yang_PhysRevE2008. To settle it, `ss` and
+`ss_noise` were run from twenty seeds (1 to 20) on the four problems that run fastest
+(Shahrezaei_PNAS2008, Lin_PhysRevE2016, Munsky_Science2012, McKane_PhysRevLett2005),
+everything else as in the baseline. `results/ss_noise_20seeds.json` holds the 160 records and
+`results/ss_noise_20seeds.md` the aggregate table. Seeds are paired: both variants start
+from the same initial population under the same seed, so a sign test on the final error
+applies.
+
+| problem | seeds | ss successes (95% CI) | ss_noise successes (95% CI) | ss median max error | ss_noise median max error | ss_noise better / worse / tie | sign-test p |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Lin_PhysRevE2016 | 20 | 1 (1-24%) | 1 (1-24%) | 0.571 | 0.905 | 8 / 12 / 0 | 0.503 |
+| McKane_PhysRevLett2005 | 20 | 4 (8-42%) | 4 (8-42%) | 0.674 | 0.888 | 6 / 14 / 0 | 0.115 |
+| Munsky_Science2012 | 20 | 1 (1-24%) | 0 (0-16%) | 0.806 | 0.895 | 8 / 12 / 0 | 0.503 |
+| Shahrezaei_PNAS2008 | 20 | 11 (34-74%) | 13 (43-82%) | 0.259 | 0.255 | 10 / 10 / 0 | 1.000 |
+| ALL | 80 | 17 (14-31%) | 18 (15-33%) | 0.600 | 0.631 | 32 / 48 / 0 | 0.093 |
+
+Per parameter, the median error in decades, `ss` / `ss_noise`:
+
+* Lin_PhysRevE2016: B 0.06/0.13  r0 0.32/0.36  r1 0.30/0.41  K 0.54/0.90
+* McKane_PhysRevLett2005: b 0.03/0.04  d1 0.04/0.03  p1 0.04/0.04  p2 0.67/0.89
+* Munsky_Science2012: k_on_I 0.38/0.36  k_off_I 0.59/0.43  k_on_II 0.65/0.34  k_off_II 0.64/0.41  k_on_III 0.50/0.56  k_off_III 0.49/0.57
+* Shahrezaei_PNAS2008: k0 0.14/0.11  k1 0.25/0.23  v0 0.08/0.10  v1 0.05/0.03
+
+The best-so-far error at simulation checkpoints, median over seeds, `ss` / `ss_noise`:
+
+* Lin_PhysRevE2016         2000: 1.01 / 1.24   5000: 0.62 / 0.91   10000: 0.58 / 0.79   15000: 0.57 / 0.60   20000: 0.56 / 0.60
+* McKane_PhysRevLett2005   2000: 0.64 / 0.64   5000: 0.72 / 0.66   10000: 0.67 / 0.57   15000: 0.67 / 0.55   20000: 0.66 / 0.75
+* Munsky_Science2012       2000: 1.53 / 1.23   5000: 0.87 / 1.15   10000: 0.92 / 1.25   15000: 0.84 / 1.05   20000: 0.85 / 0.97
+* Shahrezaei_PNAS2008      2000: 0.57 / 0.60   5000: 0.43 / 0.48   10000: 0.27 / 0.48   15000: 0.37 / 0.45   20000: 0.39 / 0.40
+
+What twenty seeds say:
+
+* **The five-seed drop was noise.** Success rates are the same on every problem
+  (McKane_PhysRevLett2005 4 of 20 against 4 of 20; Shahrezaei_PNAS2008 11 against 13; the
+  other two 1 against 1 and 1 against 0).
+* **There is no benefit at this budget either.** The noise handling raises the success rate
+  on none of the four problems, and the final error is worse with it on in 48 of the 80 paired
+  seeds (better in 32; sign test p = 0.09), with a worse median on three of the four problems.
+  Where it does help is in the middle of a run: on McKane_PhysRevLett2005 it leads from 5,000
+  to 15,000 simulations and loses at 20,000, and on Munsky_Science2012 it recovers the four
+  slow promoter rates better (medians 0.34 to 0.43 decades against 0.59 to 0.65) but the two
+  fast ones worse.
+* **Why.** Instrumenting two McKane_PhysRevLett2005 runs shows where the budget goes. With
+  noise handling on, scatter search accepted 60 and 45 replacements into its reference set
+  where the plain search accepted 91 and 105, left 95 and 116 parent-versus-child contests
+  undecided for another round, spent 199 and 213 of 2,000 evaluations on re-draws of points it
+  had already seen, and completed 19 rounds instead of 21. The reference set evolves about
+  half as fast. That is the trade the feature makes, a more reliable ranking for a slower
+  search, and at 20,000 simulations the two roughly cancel: what the plain search loses to
+  lucky draws it makes back by exploring more.
+
+What follows from it: the machinery is sound but its cost is too high for its benefit. The
+levers are the deferral length (`ss_noise_max_draws`, five by default, so a contest can wait
+five rounds), accepting a child that leads on the mean while the draws continue rather than
+holding it back, and drawing again only for the contests that matter most. Each can be scored
+here, on these four problems, in about half an hour.
 
 ## Scoring a change
 
