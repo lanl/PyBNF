@@ -13242,6 +13242,10 @@
     1
    ],
    [
+    "ss_diverse_by_distance",
+    null
+   ],
+   [
     "ss_noise_handling",
     1
    ],
