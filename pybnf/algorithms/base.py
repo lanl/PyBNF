@@ -119,6 +119,12 @@ class Algorithm(ABC):
     # base-class flag pattern as _is_simplex, so run() never names a leaf subclass.
     waits_for_full_generation = False
 
+    #: How many simulations this run can execute at once, read from dask when the run
+    #: loop starts (:meth:`_count_workers`), or None when it could not be read. A
+    #: generational fit that knows it can tell, from how many jobs it has in flight, when
+    #: processors are idle toward the end of a round (#660 step 4, ADR-0139).
+    worker_count = None
+
     # Overridable: the name of the setting the parallelism report points at when it
     # advises the user (#655). Most fits size their concurrency from population_size, so
     # that is the default. A fit that follows a different setting names it instead (the
@@ -1345,6 +1351,7 @@ class Algorithm(ABC):
             # call is exactly the historical one.
             pool_kwargs = {'timeout': self.budget.remaining()} if self.budget is not None else {}
             pool = core.as_completed(futures, with_results=True, raise_errors=False, **pool_kwargs)
+            self.worker_count = self._count_workers(client)
             self._report_parallelism(client, len(futures), len(psets))
             self.completed_simulations = self._drain_job_pool(client, pool, pending, backup_every, debug)
 
@@ -1372,6 +1379,20 @@ class Algorithm(ABC):
         that multiplier itself.
         """
         return None
+
+    @staticmethod
+    def _count_workers(client):
+        """How many simulations ``client`` can run at once: the threads of every connected
+        worker, summed, from dask's scheduler information, which a local cluster and a
+        cluster run both provide. ``None`` when it cannot be read; anything that goes wrong
+        is logged and never stops a fit (#660 step 4)."""
+        try:
+            workers = client.scheduler_info().get('workers', {})
+            count = sum(int(w.get('nthreads', 1) or 1) for w in workers.values())
+        except Exception:
+            logger.debug('Could not read the number of connected workers from dask', exc_info=True)
+            return None
+        return count if count > 0 else None
 
     def _report_parallelism(self, client, jobs_in_flight, psets_in_flight=None):
         """Log how many jobs the fit runs at once against how many workers connected, and

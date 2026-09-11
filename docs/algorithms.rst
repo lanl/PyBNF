@@ -220,8 +220,13 @@ member is ranked on the mean of its draws, the draw-to-draw spread of the object
 across the fit, and a decision the spread leaves in doubt, a child against its parent or
 two neighbours whose rank gap sets a step size, is not made until both sides have been
 simulated again at fresh seeds (up to ``ss_noise_max_draws`` draws each). A member counted
-stuck is drawn again as well, so its recorded value cannot stay lucky. ``ss_noise_handling``
-turns this off. A deterministic model makes every decision on single draws, as before.
+stuck is drawn again as well, so its recorded value cannot stay lucky. Scatter search
+waits for every simulation of a round before building the next, and for a stochastic model
+the spread in running times is wide, so toward the end of a round processors would sit idle
+waiting for the slowest simulation; they are given those same draws early instead, so the
+idle time is spent where a draw is worth most (``ss_fill_idle`` turns just that off).
+``ss_noise_handling`` turns all of this off.
+A deterministic model makes every decision on single draws, as before.
 
 Let :math:`\alpha` = -1 if :math:`h_i>p_i` or 1 if :math:`p_i<h_i`, let :math:`\beta = (|h_i-p_i|-1) / (n-2)`, let :math:`d = \textrm{helper}[P] - \textrm{parent}[P]` for some parameter P. 
 

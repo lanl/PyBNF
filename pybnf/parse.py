@@ -85,7 +85,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # switch, and the cap on simulations per candidate it may grow to.
                'cmaes_noise_handling', 'cmaes_noise_max_evals',
                # Scatter search's noise-aware reference set (#660 step 3 / ADR-0136).
-               'ss_noise_handling', 'ss_noise_max_draws',
+               'ss_noise_handling', 'ss_noise_max_draws', 'ss_fill_idle',
                # The diverse half of the first reference set chosen by distance (#660
                # step 2 / ADR-0137); unset follows the edition.
                'ss_diverse_by_distance',
