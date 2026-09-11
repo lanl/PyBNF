@@ -332,7 +332,51 @@ What follows from it: the machinery is sound but its cost is too high for its be
 levers are the deferral length (`ss_noise_max_draws`, five by default, so a contest can wait
 five rounds), accepting a child that leads on the mean while the draws continue rather than
 holding it back, and drawing again only for the contests that matter most. Each can be scored
-here, on these four problems, in about half an hour.
+here, on these four problems, in about half an hour. The first was:
+
+### The deferral length
+
+`ss_noise` with `ss_noise_max_draws` at 2 (`ss_noise_d2`) and at 3 (`ss_noise_d3`), the same
+twenty seeds on the same four problems, scored as variants (`--set ss_noise_max_draws=2 --as
+ss_noise_d2`); their records are in `results/ss_noise_20seeds.json` next to the others.
+Pooled over the 80 paired seeds:
+
+| method | deferral (draws) | successes of 80 | median max error | mean max error |
+|---|---:|---:|---:|---:|
+| `ss` | none | 17 | 0.600 | 0.621 |
+| `ss_noise` | 5 (the default) | 18 | 0.631 | 0.720 |
+| `ss_noise_d2` | 2 | 18 | 0.549 | 0.648 |
+| `ss_noise_d3` | 3 | 24 | 0.674 | 0.682 |
+
+Per problem, successes of 20 and the median max error, in the same order:
+
+| problem | `ss` | `ss_noise` | `ss_noise_d2` | `ss_noise_d3` |
+|---|---:|---:|---:|---:|
+| Lin_PhysRevE2016 | 1 (0.57) | 1 (0.90) | 0 (0.73) | 1 (0.85) |
+| McKane_PhysRevLett2005 | 4 (0.67) | 4 (0.89) | 5 (0.39) | 7 (0.63) |
+| Munsky_Science2012 | 1 (0.81) | 0 (0.89) | 2 (0.91) | 0 (0.99) |
+| Shahrezaei_PNAS2008 | 11 (0.26) | 13 (0.26) | 11 (0.27) | 16 (0.18) |
+
+Paired over seeds (sign test on the final error; McNemar's exact test on success):
+
+* A deferral of 2 beats the default of 5 on the final error in 50 of 79 decided seeds
+  (p = 0.024) and is indistinguishable from plain `ss` (37 better, 43 worse; successes 10
+  against 9). It removes the cost. On McKane_PhysRevLett2005 it recovers the narrow
+  direction `p2` far better than anything else (median 0.39 decades against 0.67 for `ss`
+  and 0.89 for the default).
+* A deferral of 3 has the most successes, 24 against 17 for plain `ss` (13 seeds it alone
+  won against 6, p = 0.17) and 16 of 20 on Shahrezaei_PNAS2008, where its final error beats
+  plain `ss` in 15 of 20 seeds (p = 0.041); its medians on Lin_PhysRevE2016 and
+  Munsky_Science2012 are worse, though not significantly. Against a deferral of 2 nothing
+  separates it (error 43 against 36, p = 0.5; successes 12 against 6, p = 0.24).
+* The default of 5 is the worst setting on final error of the three, and the only one that
+  is significantly worse than another.
+
+So the deferral length is the cost. At 2 or 3 the noise handling costs nothing measurable
+against plain scatter search and, at 3, shows the benefit it was built for on the problems
+whose noise misleads a single draw. Eighty paired seeds cannot separate 2 from 3; the
+default should be one of them, not 5.
+
 
 ## Scoring a change
 
