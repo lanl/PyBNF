@@ -69,7 +69,7 @@ class ScatterSearchConfig(MultiStartConfig):
     # A noise-aware reference set for a stochastic model (#660 step 3, ADR-0136): the
     # switch, and the cap on draws per parameter set a decision in doubt may spend.
     ss_noise_handling: int = 1
-    ss_noise_max_draws: int = Field(default=5, ge=1)
+    ss_noise_max_draws: int = Field(default=3, ge=1)
     # Whether a processor that would idle at the end of a round is given one of those
     # draws early (#660 step 4, ADR-0139); meaningful only with noise handling on.
     ss_fill_idle: int = 1
@@ -142,7 +142,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.diverse_by_distance = self._resolve_diverse_by_distance()
         # Noise-aware reference set (#660 step 3, ADR-0136): only where running a parameter
         # set again would give a different answer, and only when asked for (the default).
-        self.max_draws = int(config.config.get('ss_noise_max_draws', 5))
+        self.max_draws = int(config.config.get('ss_noise_max_draws', 3))
         self.fill_idle = bool(config.config.get('ss_fill_idle', 1))
         self.noise_handling = bool(config.config.get('ss_noise_handling', 1)) \
             and self._replicates_would_differ()

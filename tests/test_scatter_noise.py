@@ -147,7 +147,7 @@ class TestReferenceSet:
 
     def test_a_stochastic_fit_bootstraps_the_spread_with_one_re_draw_of_every_member(self, tmp_path):
         alg = algorithms.ScatterSearch(_stochastic(_conf(tmp_path)))
-        assert alg.noise_handling is True and alg.max_draws == 5
+        assert alg.noise_handling is True and alg.max_draws == 3
         scorer = _Scorer(0.5)
         init = alg.start_run()
         first = _feed(alg, init, scorer)

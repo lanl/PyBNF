@@ -4,7 +4,9 @@
 
 Accepted and implemented (2026-09-10). Step 3 of the #660 epic, taken first because it is
 the one step that fixes a fault in shipped behaviour, and because the piece it needs
-arrived with ADR-0135. Steps 1, 2 and 4 of the epic are separate changes.
+arrived with ADR-0135. Steps 1, 2 and 4 of the epic are separate changes. Amended by
+ADR-0141 (2026-09-11): the `ss_noise_max_draws` default is 3, not 5, on the stochastic
+recovery benchmark's measurement of the deferral as the feature's whole cost.
 
 ## The fault
 
@@ -90,7 +92,8 @@ of noise and separate changes.
 ## Consequences
 
 * `ScatterSearchConfig` gains `ss_noise_handling` (default 1) and `ss_noise_max_draws`
-  (default 5), registered in the parse layer, the docs and the effective-config golden.
+  (default 5 here; 3 since ADR-0141), registered in the parse layer, the docs and the
+  effective-config golden.
 * `ScatterSearch` gains `draws`, `contenders` and `pending_draws`; `_search_got_result`
   routes a re-draw to its parameter set and defers the round while any re-draw is in
   flight; `_update_reference_set`, `_count_stuck`, `_unseparated_neighbours` and
