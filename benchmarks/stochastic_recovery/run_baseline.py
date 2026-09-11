@@ -4,7 +4,8 @@
 Subcommands::
 
     run        fit problems x methods x seeds, appending one record per fit to a
-               JSON results file (resumable: pairs already in the file are skipped)
+               JSON results file (resumable: pairs already in the file are skipped);
+               --set key=value --as name scores a variant of a method under its own name
     summarize  aggregate a results file into the per-(problem, method) table
     generate   regenerate a problem's data file from its frozen definition
     leverage   how far a factor-of-two change in each parameter moves the objective,
@@ -51,6 +52,19 @@ def _save_records(path, records):
     tmp.replace(path)
 
 
+def _parse_setting(text):
+    """``key=value`` from the command line, the value read as an int, a float, or a string."""
+    if '=' not in text:
+        sys.exit('--set expects key=value, got %r' % text)
+    key, value = text.split('=', 1)
+    for convert in (int, float):
+        try:
+            return key.strip(), convert(value)
+        except ValueError:
+            pass
+    return key.strip(), value
+
+
 def cmd_run(args):
     from stochastic_recovery.harness import METHODS, run_fit_json
     problems = protocol.load_problems(ids=args.problems or None)
@@ -58,6 +72,11 @@ def cmd_run(args):
     unknown = [m for m in methods if m not in METHODS]
     if unknown:
         sys.exit('unknown method(s): %s (have %s)' % (unknown, sorted(METHODS)))
+    overrides = dict(_parse_setting(s) for s in (args.set or []))
+    if args.label and len(methods) != 1:
+        sys.exit('--as names one method variant; pass exactly one --methods with it')
+    if overrides and not args.label:
+        sys.exit('--set changes a method, so name the variant with --as (a record must say what ran)')
     seeds = list(range(args.first_seed, args.first_seed + args.seeds))
     records = _load_records(args.out)
     done = {(r['problem'], r['method'], r['seed']) for r in records}
@@ -67,9 +86,10 @@ def cmd_run(args):
         budget = (int(round(p.budget_simulations * args.budget_scale))
                   if args.budget is None else args.budget)
         for m in methods:
+            name = args.label or m
             for s in seeds:
-                if (p.id, m, s) not in done:
-                    jobs.append((str(p.directory), m, s, budget))
+                if (p.id, name, s) not in done:
+                    jobs.append((str(p.directory), m, s, budget, overrides, args.label))
     print('%d fit(s) to run (%d already in %s), %d worker(s)'
           % (len(jobs), len(done), args.out, args.parallel), flush=True)
     if not jobs:
@@ -139,6 +159,9 @@ def main(argv=None):
     r.add_argument('--first-seed', type=int, default=1)
     r.add_argument('--budget', type=int, default=None, help='override every problem\'s simulation budget')
     r.add_argument('--budget-scale', type=float, default=1.0, help='scale every problem\'s budget')
+    r.add_argument('--set', action='append', metavar='KEY=VALUE',
+                   help='lay a conf key over the method (repeatable); requires --as')
+    r.add_argument('--as', dest='label', help='record the fits under this method name (a variant of --methods)')
     r.add_argument('--parallel', type=int, default=max(1, (os.cpu_count() or 2) - 2))
     r.add_argument('--out', default=str(_HERE / 'results' / 'latest.json'))
     r.set_defaults(fn=cmd_run)
