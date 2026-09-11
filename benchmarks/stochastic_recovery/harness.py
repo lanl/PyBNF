@@ -424,9 +424,14 @@ def leverage(problem: Problem, workdir=None, n_truth=6, factors=(0.5, 2.0), seed
 # --------------------------------------------------------------------------- #
 # Running one fit
 # --------------------------------------------------------------------------- #
-def run_fit(problem: Problem, method, seed, workdir=None, budget=None, keep_workdir=False):
+def run_fit(problem: Problem, method, seed, workdir=None, budget=None, keep_workdir=False,
+            overrides=None, label=None):
     """Fit ``problem`` with baseline ``method`` from fit seed ``seed`` and return its
     scored record (see :func:`protocol.score_fit`).
+
+    ``overrides`` are conf keys laid over the method's own (``{'ss_noise_max_draws': 2}``),
+    which is how a variant of a baseline method is scored without editing ``METHODS``;
+    ``label`` is the method name the record carries for such a variant (default: ``method``).
 
     The fit stops when it has spent ``budget`` simulations (default: the problem's
     frozen budget), then runs PyBNF's end-of-fit confirmation of the best fit (#659),
@@ -442,6 +447,7 @@ def run_fit(problem: Problem, method, seed, workdir=None, budget=None, keep_work
     if workdir is None:
         tmp = workdir = tempfile.mkdtemp(prefix='srb_%s_%s_%d_' % (problem.id[:8], method, seed))
     spec = dict(METHODS[method])
+    spec.update(overrides or {})
     fit_type = spec.pop('fit_type')
     started = time.time()
     try:
@@ -466,7 +472,8 @@ def run_fit(problem: Problem, method, seed, workdir=None, budget=None, keep_work
         estimate = best_values(alg, problem.names) if len(alg.trajectory) else {}
         trace.append((simulations, log10_errors(estimate, truth)))
         record = score_fit(problem, estimate, simulations, trace,
-                           method=method, seed=int(seed), budget=budget,
+                           method=label or method, seed=int(seed), budget=budget,
+                           base_method=method, overrides=dict(overrides or {}),
                            simulations_search=(decide.search_simulations
                                                if decide.search_simulations is not None
                                                else simulations),
@@ -481,11 +488,13 @@ def run_fit(problem: Problem, method, seed, workdir=None, budget=None, keep_work
 
 
 def run_fit_json(args):
-    """``run_fit`` for a process pool: ``(problem_dir, method, seed, budget)`` in,
-    the JSON-serializable record out."""
+    """``run_fit`` for a process pool: ``(problem_dir, method, seed, budget)`` or
+    ``(problem_dir, method, seed, budget, overrides, label)`` in, the JSON-serializable
+    record out."""
     from .protocol import load_problem
-    problem_dir, method, seed, budget = args
-    return run_fit(load_problem(problem_dir), method, seed, budget=budget)
+    problem_dir, method, seed, budget = args[:4]
+    overrides, label = (args[4], args[5]) if len(args) > 4 else (None, None)
+    return run_fit(load_problem(problem_dir), method, seed, budget=budget, overrides=overrides, label=label)
 
 
 __all__ = ['METHODS', 'BEST_FIT_CANDIDATES', 'BEST_FIT_REPLICATES', 'InlineClient',

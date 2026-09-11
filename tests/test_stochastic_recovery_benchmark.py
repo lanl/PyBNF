@@ -275,3 +275,19 @@ def test_budgeted_fit_produces_a_complete_record(harness, tmp_path):
     assert 'budget reached' in rec['stop_reason']
     assert isinstance(rec['success_loose'], bool) and rec['wall_time'] > 0
     json.dumps(rec)
+
+
+@pytest.mark.recovery
+@pytest.mark.bngsim
+def test_method_variant_overrides_are_recorded(harness, tmp_path):
+    """A variant of a baseline method (a conf key laid over it) runs under its own name and
+    the record says what ran, so a results file never holds two different fits under one
+    method name."""
+    problem = _problem('Shahrezaei_PNAS2008')
+    rec = harness.run_fit(problem, 'ss_noise', seed=11, workdir=tmp_path, budget=200,
+                          overrides={'ss_noise_max_draws': 2}, label='ss_noise_d2')
+    assert rec['method'] == 'ss_noise_d2'
+    assert rec['base_method'] == 'ss_noise'
+    assert rec['overrides'] == {'ss_noise_max_draws': 2}
+    plain = harness.run_fit(problem, 'ss_noise', seed=11, workdir=tmp_path / 'plain', budget=200)
+    assert plain['method'] == 'ss_noise' and plain['overrides'] == {}

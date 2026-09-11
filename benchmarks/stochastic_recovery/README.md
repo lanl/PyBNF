@@ -134,7 +134,16 @@ python benchmarks/stochastic_recovery/run_baseline.py run --seeds 5 --parallel 8
 
 The results file is appended one record per fit and is resumable: a rerun skips the
 (problem, method, seed) triples it already holds. Restrict with `--problems`, `--methods`,
-`--seeds`, `--budget-scale`. Summarize with
+`--seeds`, `--budget-scale`. A variant of a baseline method is scored without editing the
+method table by laying conf keys over it and naming it, so its records never mix with the
+baseline's:
+
+```bash
+python benchmarks/stochastic_recovery/run_baseline.py run --methods ss_noise \
+    --set ss_noise_max_draws=2 --as ss_noise_d2 --seeds 20 --out benchmarks/stochastic_recovery/results/my_run.json
+```
+
+Summarize with
 
 ```bash
 python benchmarks/stochastic_recovery/run_baseline.py summarize benchmarks/stochastic_recovery/results/my_run.json
