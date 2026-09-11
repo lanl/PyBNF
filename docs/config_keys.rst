@@ -2211,9 +2211,14 @@ The following options are only available with ``job_type = de``, and serve to ma
 **ss_noise_max_draws**
   The most simulations one parameter set may accumulate under ``ss_noise_handling``. A
   decision still in doubt when both sides have reached this many draws is made on their
-  means.
+  means. This is also how long a parent-versus-child contest can stay open, and while it
+  is open the parent keeps seeding the next round, so a longer deferral slows the search:
+  at five, the value the noise handling shipped with, scatter search accepted about half as
+  many replacements into its reference set per run and gained nothing for it on the
+  stochastic recovery benchmark; at three it kept the benefit and lost most of the cost
+  (ADR-0141).
 
-  Default: 5
+  Default: 3
 
   Example:
 

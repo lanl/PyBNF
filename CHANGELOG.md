@@ -18,6 +18,14 @@ All notable changes to PyBNF are documented below. This project adheres to
   #660 and #661 measurable; the full suite the issue asks for is built on it.
 
 ### Changed
+- **Scatter search's noise handling defers an undecided contest for three draws, not five
+  (#663, ADR-0141).** `ss_noise_max_draws` now defaults to 3. Measured on the stochastic
+  recovery benchmark over twenty seeds and four problems, the deferral length was the cost
+  of the noise handling: at five, scatter search accepted about half as many replacements
+  into its reference set per run, spent a tenth of its budget re-drawing points it had seen,
+  and ended no better than without the feature; at three it had the most successes of the
+  settings tried and cost nothing measurable against plain scatter search. A conf that sets
+  `ss_noise_max_draws` itself is unchanged.
 - **Scatter search gives idle processors another draw of a member whose rank is in doubt
   (#660 step 4, ADR-0139).** Scatter search waits for every simulation of a round before it
   builds the next, so toward the end of a round processors sit idle waiting for the slowest
