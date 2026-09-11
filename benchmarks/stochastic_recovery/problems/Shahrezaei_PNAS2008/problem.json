@@ -1,0 +1,61 @@
+{
+  "id": "Shahrezaei_PNAS2008",
+  "version": 1,
+  "title": "Three-stage stochastic gene expression (Shahrezaei and Swain, 2008)",
+  "reference": "Shahrezaei V, Swain PS (2008). Analytical distributions for stochastic gene expression. Proc Natl Acad Sci USA 105:17256-17261. doi:10.1073/pnas.0803850105",
+  "source": "BNGL-Models/models/three_stage_stochastic_gene_expression_shahrezaei2008 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "ssa",
+    "suffix": "ssa",
+    "t_start": 0,
+    "t_end": 30000,
+    "n_steps": 60
+  },
+  "observables": [
+    "Obs_DNA_Active",
+    "Obs_Tot_mRNA",
+    "Obs_Tot_Protein"
+  ],
+  "parameters": {
+    "k0__FREE": {
+      "true": 0.0003,
+      "low": 1e-05,
+      "high": 0.01,
+      "identifiable": true,
+      "note": "promoter activation, /s (kappa_0*d1)"
+    },
+    "k1__FREE": {
+      "true": 0.0001,
+      "low": 1e-05,
+      "high": 0.01,
+      "identifiable": true,
+      "note": "promoter inactivation, /s (kappa_1*d1)"
+    },
+    "v0__FREE": {
+      "true": 0.002,
+      "low": 0.0001,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "transcription from the active promoter, /s (a*d1)"
+    },
+    "v1__FREE": {
+      "true": 0.05,
+      "low": 0.001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "translation per transcript, /s (b*d0)"
+    }
+  },
+  "data": {
+    "file": "ssa.exp",
+    "replicates": 200,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 20000,
+    "smoothing": 10
+  },
+  "notes": "Fig. 3D parameters of the paper (a=4, b=10, gamma=10, kappa_0=0.6, kappa_1=0.2, d1=5e-4/s). One promoter copy: the active-promoter observable is a 0/1 telegraph signal whose replicate mean is the activation probability. Copy numbers are low (tens of proteins at most), so this is the noisiest problem in the set relative to its signal."
+}

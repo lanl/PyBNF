@@ -93,6 +93,18 @@ A new numeric key must also be listed in the appropriate token-type list in ``py
 coerces its value. The parser uses the ``pyparsing`` module; a key with a more elaborate
 grammar than a single scalar adds a parse rule there as well.
 
+Scoring a change on stochastic models
+-------------------------------------
+
+A change that claims to fit stochastic models better is scored on the stochastic parameter
+recovery benchmark in ``benchmarks/stochastic_recovery/`` (issue #663, ADR-0140): six
+published models, each with frozen true parameter values, committed synthetic data, and a
+simulation budget, fit by the baseline methods (``de``, ``ss`` with and without noise handling,
+``cmaes`` with and without uncertainty handling) from several seeds. A fit is scored on whether
+every identifiable parameter comes back within a factor of two of its true value, and on how
+many simulations that took. Its ``README.md`` describes the protocol, how to run the baseline
+methods after a change, and how to add a problem.
+
 Pull requests
 -------------
 

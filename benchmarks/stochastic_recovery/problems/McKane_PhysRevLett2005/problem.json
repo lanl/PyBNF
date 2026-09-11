@@ -1,0 +1,60 @@
+{
+  "id": "McKane_PhysRevLett2005",
+  "version": 1,
+  "title": "Demographic-noise predator-prey cycles (McKane and Newman, 2005)",
+  "reference": "McKane AJ, Newman TJ (2005). Predator-prey cycles from resonant amplification of demographic stochasticity. Phys Rev Lett 94:218102. doi:10.1103/PhysRevLett.94.218102",
+  "source": "BNGL-Models/models/demographic_noise_predator_prey_cycles_mckane2005 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "ssa",
+    "suffix": "ssa",
+    "t_start": 0,
+    "t_end": 400,
+    "n_steps": 80
+  },
+  "observables": [
+    "Obs_Tot_Predator",
+    "Obs_Tot_Prey"
+  ],
+  "parameters": {
+    "b__FREE": {
+      "true": 0.1,
+      "low": 0.01,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "prey birth, /time"
+    },
+    "d1__FREE": {
+      "true": 0.1,
+      "low": 0.01,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "predator death, /time"
+    },
+    "p1__FREE": {
+      "true": 0.25,
+      "low": 0.01,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "predation with predator reproduction, /time"
+    },
+    "p2__FREE": {
+      "true": 0.05,
+      "low": 0.001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "predation without reproduction, /time"
+    }
+  },
+  "data": {
+    "file": "ssa.exp",
+    "replicates": 200,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 20000,
+    "smoothing": 10
+  },
+  "notes": "Fig. 1 parameters of the paper (N=3200, b=0.1, d1=0.1, d2=0, p1=0.25, p2=0.05; 800 predators and 800 prey initially). Individual trajectories cycle persistently with random phase, so the replicate mean is a damped oscillation whose fixed point, frequency and damping carry the four rates; the noise the fit averages over is the phase spread of the cycles."
+}

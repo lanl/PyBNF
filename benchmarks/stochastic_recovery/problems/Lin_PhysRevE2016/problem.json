@@ -1,0 +1,60 @@
+{
+  "id": "Lin_PhysRevE2016",
+  "version": 1,
+  "title": "Bursty positively autoregulated gene expression (Lin and Doering, 2016)",
+  "reference": "Lin YT, Doering CR (2016). Gene expression dynamics with stochastic bursts: Construction and exact results for a coarse-grained model. Phys Rev E 93:022409. doi:10.1103/PhysRevE.93.022409",
+  "source": "BNGL-Models/models/bursty_autoregulated_gene_expression_lin2016 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "ssa",
+    "suffix": "ssa",
+    "t_start": 0,
+    "t_end": 36000,
+    "n_steps": 72
+  },
+  "observables": [
+    "Obs_Tot_mRNA",
+    "Obs_Tot_Protein"
+  ],
+  "parameters": {
+    "B__FREE": {
+      "true": 40.0,
+      "low": 1.0,
+      "high": 1000.0,
+      "identifiable": true,
+      "note": "mean translation events per transcript"
+    },
+    "r0__FREE": {
+      "true": 0.0005555555555555556,
+      "low": 1e-05,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "basal transcription, molecules/s"
+    },
+    "r1__FREE": {
+      "true": 0.002777777777777778,
+      "low": 1e-05,
+      "high": 0.1,
+      "identifiable": true,
+      "note": "induced transcription, molecules/s"
+    },
+    "K__FREE": {
+      "true": 200.0,
+      "low": 10.0,
+      "high": 5000.0,
+      "identifiable": true,
+      "note": "half-activation protein copy number"
+    }
+  },
+  "data": {
+    "file": "ssa.exp",
+    "replicates": 200,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 20000,
+    "smoothing": 10
+  },
+  "notes": "Sec. II parameters of the paper. Positive feedback with Hill coefficient 4 makes single cells switch from the basal state (about 80 proteins) to the induced state (about 480) at random times, so the replicate mean rises as cells switch. The transcript mean is a fraction of a copy and carries little information; K and r1 are determined mostly by when and how high the protein mean rises, which makes this the hardest problem in the set."
+}

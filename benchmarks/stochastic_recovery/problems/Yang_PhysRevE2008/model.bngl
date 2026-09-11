@@ -1,0 +1,53 @@
+begin model
+#@model_id: Yang_PhysRevE2008
+#@title: Trivalent-ligand bivalent-receptor aggregation (Yang et al., 2008)
+#@description: |
+#  A trivalent ligand crosslinks bivalent cell-surface receptors through ligand
+#  capture, crosslinking to a receptor on a different complex, and bond
+#  dissociation. The reaction network is combinatorially large, so the model is
+#  simulated network-free with NFsim.
+#@reference: |
+#  Yang J, Monine MI, Faeder JR, Hlavacek WS (2008). Kinetic Monte Carlo method
+#  for rule-based modeling of biochemical networks. Physical Review E 78:031910.
+#  doi:10.1103/PhysRevE.78.031910
+#@source: BNGL-Models/models/tlbr_yang2008 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the three rate constants are free via
+# the ``name name__FREE`` alias form; the ligand and receptor counts are fixed at
+# their published values; three of the five observables are kept (free receptors,
+# bonds, free receptor sites); the published 3000 s window is sampled every 50 s.
+
+begin parameters
+  NL    4200         # molecules  ligands
+  NR    300          # molecules  receptors
+  koff  koff__FREE   # /s  bond dissociation
+  kon1  kon1__FREE   # /(molecule*s)  ligand capture
+  kon2  kon2__FREE   # /(molecule*s)  crosslinking
+end parameters
+
+begin molecule types
+  L(r,r,r)
+  R(l,l)
+end molecule types
+
+begin seed species
+  L(r,r,r)  NL
+  R(l,l)    NR
+end seed species
+
+begin observables
+  Species    Obs_Free_R        R(l,l)
+  Molecules  Obs_Bonds         L(r!1).R(l!1)
+  Molecules  Obs_Free_R_sites  R(l)
+end observables
+
+begin reaction rules
+  L(r,r,r) + R(l) -> L(r!1,r,r).R(l!1)  kon1
+  L(r!+,r) + R(l) -> L(r!+,r!1).R(l!1)  kon2
+  L(r!1).R(l!1) -> L(r) + R(l)  koff
+end reaction rules
+end model
+
+begin actions
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>3000,n_steps=>60})
+end actions

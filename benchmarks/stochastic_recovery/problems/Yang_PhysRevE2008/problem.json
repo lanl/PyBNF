@@ -1,0 +1,54 @@
+{
+  "id": "Yang_PhysRevE2008",
+  "version": 1,
+  "title": "Trivalent-ligand bivalent-receptor aggregation (Yang et al., 2008)",
+  "reference": "Yang J, Monine MI, Faeder JR, Hlavacek WS (2008). Kinetic Monte Carlo method for rule-based modeling of biochemical networks. Phys Rev E 78:031910. doi:10.1103/PhysRevE.78.031910",
+  "source": "BNGL-Models/models/tlbr_yang2008 (rev 00e65fa, 2026-09-10)",
+  "model": "model.bngl",
+  "simulation": {
+    "method": "nf",
+    "suffix": "nfr",
+    "t_start": 0,
+    "t_end": 3000,
+    "n_steps": 60
+  },
+  "observables": [
+    "Obs_Free_R",
+    "Obs_Bonds",
+    "Obs_Free_R_sites"
+  ],
+  "parameters": {
+    "koff__FREE": {
+      "true": 0.01,
+      "low": 0.0001,
+      "high": 1.0,
+      "identifiable": true,
+      "note": "bond dissociation, /s"
+    },
+    "kon1__FREE": {
+      "true": 6.667e-07,
+      "low": 1e-09,
+      "high": 1e-05,
+      "identifiable": true,
+      "note": "ligand capture, /(molecule*s)"
+    },
+    "kon2__FREE": {
+      "true": 3.333e-06,
+      "low": 1e-08,
+      "high": 0.0001,
+      "identifiable": true,
+      "note": "crosslinking, /(molecule*s)"
+    }
+  },
+  "data": {
+    "file": "nfr.exp",
+    "replicates": 100,
+    "seed_offset": 1000000,
+    "sd_floor_fraction": 0.05
+  },
+  "fit": {
+    "budget_simulations": 4000,
+    "smoothing": 4
+  },
+  "notes": "Published default parameterization (4200 ligands, 300 receptors; beta = kon2*NR/koff = 0.1, below the sol-gel transition). The only network-free problem in the set: every simulation is an NFsim run, about twenty times the cost of the SSA problems, so the budget and the replicates per evaluation are smaller. Three free parameters; the equilibrium is set by kon1*NL/koff and kon2*NR/koff and the approach to it by koff, so all three are determined."
+}

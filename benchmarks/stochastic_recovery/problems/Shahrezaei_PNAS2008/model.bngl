@@ -1,0 +1,60 @@
+begin model
+#@model_id: Shahrezaei_PNAS2008
+#@title: Three-stage stochastic gene expression (Shahrezaei and Swain, 2008)
+#@description: |
+#  A gene whose promoter switches between an inactive and an active state,
+#  transcription from the active state, translation, and first-order mRNA and
+#  protein turnover. Single promoter copy, so the promoter state is a telegraph
+#  process and the mRNA and protein counts are bursty and low.
+#@reference: |
+#  Shahrezaei V, Swain PS (2008). Analytical distributions for stochastic gene
+#  expression. Proceedings of the National Academy of Sciences USA 105:17256-17261.
+#  doi:10.1073/pnas.0803850105
+#@source: BNGL-Models/models/three_stage_stochastic_gene_expression_shahrezaei2008 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the four rates k0, k1, v0, v1 are free
+# via PyBNF's ``name name__FREE`` alias form; d0 and d1 are fixed at their published
+# values; the inactive-promoter observable is dropped (it is one minus the active
+# one); the published stationary-distribution protocol (a single 2.1e8 s trajectory)
+# is replaced by a 30,000 s transient from the inactive, empty initial state.
+
+begin parameters
+  d1  0.0005     # /s  protein degradation (fixed)
+  d0  0.005      # /s  mRNA degradation (fixed; gamma*d1 with gamma = 10)
+  k0  k0__FREE   # /s  promoter activation
+  k1  k1__FREE   # /s  promoter inactivation
+  v0  v0__FREE   # /s  transcription from the active promoter
+  v1  v1__FREE   # /s  translation per transcript
+end parameters
+
+begin molecule types
+  DNA(promoter~inactive~active)
+  mRNA()
+  Protein()
+end molecule types
+
+begin seed species
+  DNA(promoter~inactive) 1
+  mRNA()                 0
+  Protein()              0
+end seed species
+
+begin observables
+  Molecules Obs_DNA_Active   DNA(promoter~active)
+  Molecules Obs_Tot_mRNA     mRNA()
+  Molecules Obs_Tot_Protein  Protein()
+end observables
+
+begin reaction rules
+  R_switch_promoter: DNA(promoter~inactive) <-> DNA(promoter~active) k0,k1
+  R_transcribe: DNA(promoter~active) -> DNA(promoter~active) + mRNA() v0
+  R_translate: mRNA() -> mRNA() + Protein() v1
+  R_degrade_mRNA: mRNA() -> 0 d0
+  R_degrade_Protein: Protein() -> 0 d1
+end reaction rules
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>30000,n_steps=>60})
+end actions

@@ -1,0 +1,87 @@
+begin model
+#@model_id: Munsky_Science2012
+#@title: Two-state gene expression noise (Munsky et al., 2012)
+#@description: |
+#  Three independent promoters switch between transcriptionally inactive and
+#  active states with the same transcription and degradation rates but switching
+#  time scales that differ by a factor of five each, giving bimodal (class I),
+#  burst-like (class II), and near-Poisson (class III) transcript distributions
+#  at the same mean.
+#@reference: |
+#  Munsky B, Neuert G, van Oudenaarden A (2012). Using gene expression noise to
+#  understand gene regulation. Science 336:183-187. doi:10.1126/science.1216379
+#@source: BNGL-Models/models/two_state_gene_expression_noise_munsky2012 (rev 00e65fa)
+#
+# Benchmark adaptations (see problem.json): the six promoter switching rates are
+# free via the ``name name__FREE`` alias form; the transcription and degradation
+# rates are fixed at their published values; the constitutive transcript (which
+# carries no information about the promoters) is dropped; every transcript starts
+# at zero rather than at its stationary mean, and the promoters start inactive, so
+# the sampled window is the transient rise; the published 1e8 s stationary protocol
+# is replaced by a 3000 s transient sampled every 10 s.
+
+begin parameters
+  lifetime   300              # s  transcript lifetime (fixed)
+  gamma_R    1/lifetime       # /s  transcript degradation (fixed)
+  k_R_reg    100/lifetime     # molecules/s  transcription from an active promoter (fixed)
+  k_on_I     k_on_I__FREE     # /s
+  k_off_I    k_off_I__FREE    # /s
+  k_on_II    k_on_II__FREE    # /s
+  k_off_II   k_off_II__FREE   # /s
+  k_on_III   k_on_III__FREE   # /s
+  k_off_III  k_off_III__FREE  # /s
+end parameters
+
+begin molecule types
+  mRNA_I()
+  mRNA_II()
+  mRNA_III()
+  promoter_I(state~off~on)
+  promoter_II(state~off~on)
+  promoter_III(state~off~on)
+end molecule types
+
+begin seed species
+  mRNA_I()                 0
+  mRNA_II()                0
+  mRNA_III()               0
+  promoter_I(state~off)    1
+  promoter_II(state~off)   1
+  promoter_III(state~off)  1
+end seed species
+
+begin observables
+  Molecules Obs_mRNA_I    mRNA_I()
+  Molecules Obs_mRNA_II   mRNA_II()
+  Molecules Obs_mRNA_III  mRNA_III()
+  Molecules Obs_on_I      promoter_I(state~on)
+  Molecules Obs_on_II     promoter_II(state~on)
+  Molecules Obs_on_III    promoter_III(state~on)
+end observables
+
+begin functions
+  transcription_I() = if(Obs_on_I>0,k_R_reg,0)
+  transcription_II() = if(Obs_on_II>0,k_R_reg,0)
+  transcription_III() = if(Obs_on_III>0,k_R_reg,0)
+end functions
+
+begin reaction rules
+  R_transcribe_I: 0 -> mRNA_I() transcription_I()
+  R_transcribe_II: 0 -> mRNA_II() transcription_II()
+  R_transcribe_III: 0 -> mRNA_III() transcription_III()
+  R_clear_I: mRNA_I() -> 0 gamma_R
+  R_clear_II: mRNA_II() -> 0 gamma_R
+  R_clear_III: mRNA_III() -> 0 gamma_R
+  R_activate_I: promoter_I(state~off) -> promoter_I(state~on) k_on_I
+  R_activate_II: promoter_II(state~off) -> promoter_II(state~on) k_on_II
+  R_activate_III: promoter_III(state~off) -> promoter_III(state~on) k_on_III
+  R_inactivate_I: promoter_I(state~on) -> promoter_I(state~off) k_off_I
+  R_inactivate_II: promoter_II(state~on) -> promoter_II(state~off) k_off_II
+  R_inactivate_III: promoter_III(state~on) -> promoter_III(state~off) k_off_III
+end reaction rules
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>3000,n_steps=>300})
+end actions

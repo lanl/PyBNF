@@ -1,0 +1,32 @@
+| problem | method | seeds | success (factor 2) | success (26%) | median max error (decades) | median sims to success | mean sims | mean wall s |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Hlavacek_PNAS2001 | cmaes | 5 | 80% | 60% | 0.027 | 2472 | 21014 | 215 |
+| Hlavacek_PNAS2001 | cmaes_noise | 5 | 80% | 60% | 0.069 | 3016 | 21015 | 216 |
+| Hlavacek_PNAS2001 | de | 5 | 40% | 0% | 0.560 | 5548 | 21019 | 225 |
+| Hlavacek_PNAS2001 | ss | 5 | 20% | 0% | 0.843 | 1900 | 21012 | 337 |
+| Hlavacek_PNAS2001 | ss_noise | 5 | 20% | 0% | 0.747 | 2000 | 21012 | 305 |
+| Lin_PhysRevE2016 | cmaes | 5 | 0% | 0% | 0.977 | - | 21014 | 32 |
+| Lin_PhysRevE2016 | cmaes_noise | 5 | 0% | 0% | 0.578 | - | 21015 | 31 |
+| Lin_PhysRevE2016 | de | 5 | 0% | 0% | 0.642 | - | 21019 | 39 |
+| Lin_PhysRevE2016 | ss | 5 | 0% | 0% | 0.571 | - | 21011 | 79 |
+| Lin_PhysRevE2016 | ss_noise | 5 | 0% | 0% | 1.104 | - | 21012 | 92 |
+| McKane_PhysRevLett2005 | cmaes | 5 | 0% | 0% | 0.905 | - | 21017 | 192 |
+| McKane_PhysRevLett2005 | cmaes_noise | 5 | 40% | 0% | 0.346 | 4006 | 21017 | 194 |
+| McKane_PhysRevLett2005 | de | 5 | 0% | 0% | 0.662 | - | 21019 | 225 |
+| McKane_PhysRevLett2005 | ss | 5 | 20% | 0% | 0.649 | 21012 | 21012 | 213 |
+| McKane_PhysRevLett2005 | ss_noise | 5 | 0% | 0% | 0.951 | - | 21012 | 207 |
+| Munsky_Science2012 | cmaes | 5 | 0% | 0% | 0.945 | - | 21016 | 81 |
+| Munsky_Science2012 | cmaes_noise | 5 | 0% | 0% | 1.007 | - | 21016 | 78 |
+| Munsky_Science2012 | de | 5 | 0% | 0% | 0.936 | - | 21018 | 85 |
+| Munsky_Science2012 | ss | 5 | 0% | 0% | 0.840 | - | 21012 | 84 |
+| Munsky_Science2012 | ss_noise | 5 | 0% | 0% | 0.890 | - | 21012 | 81 |
+| Shahrezaei_PNAS2008 | cmaes | 5 | 20% | 0% | 0.462 | 1241 | 21015 | 110 |
+| Shahrezaei_PNAS2008 | cmaes_noise | 5 | 60% | 20% | 0.249 | 470 | 21015 | 107 |
+| Shahrezaei_PNAS2008 | de | 5 | 80% | 0% | 0.226 | 1770 | 21019 | 123 |
+| Shahrezaei_PNAS2008 | ss | 5 | 40% | 20% | 0.373 | 430 | 21012 | 116 |
+| Shahrezaei_PNAS2008 | ss_noise | 5 | 60% | 0% | 0.256 | 4060 | 21012 | 113 |
+| Yang_PhysRevE2008 | cmaes | 5 | 20% | 0% | 0.527 | 317 | 4411 | 1017 |
+| Yang_PhysRevE2008 | cmaes_noise | 5 | 20% | 0% | 0.699 | 1149 | 4411 | 1080 |
+| Yang_PhysRevE2008 | de | 5 | 0% | 0% | 1.151 | - | 4412 | 860 |
+| Yang_PhysRevE2008 | ss | 5 | 40% | 0% | 0.560 | 3082 | 4412 | 1375 |
+| Yang_PhysRevE2008 | ss_noise | 5 | 0% | 0% | 0.817 | - | 4412 | 1568 |
