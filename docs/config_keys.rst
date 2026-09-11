@@ -2233,6 +2233,58 @@ The following options are only available with ``job_type = de``, and serve to ma
   Example:
 
     * ``ss_diverse_by_distance = 1``
+
+**ss_local_search**
+  Whether scatter search refines the candidates it produces with a local search, the
+  *improvement method* of Glover's template. When a round accepts a child into the reference
+  set, the best such child is the start of a Nelder-Mead simplex search (the same one
+  ``job_type = sim`` runs), whose initial simplex spans a tenth of the reference set's spread
+  in each parameter. The search runs alongside the rounds that follow, its evaluations going
+  out with theirs, so on a cluster it costs wall clock only when processors are short; when
+  it finishes, its best point replaces the member it started from if it improved on it,
+  else the worst member if it beats that, else it is archived. Three filters keep it from
+  running on every candidate: at most one start every ``ss_local_every`` rounds, at most
+  ``ss_local_max_running`` searches at a time, and no start within a small distance (5 % of
+  the initial population's spread per parameter, root-mean-square) of a refinement already
+  started or already found. Off whenever noise handling is on (``ss_noise_handling``), since
+  a simplex over single draws of a stochastic model converges on the noise rather than the
+  objective.
+
+  Default: on under ``edition = 2`` and above, off under the legacy edition, whose unchanged
+  configuration files keep behaving as they always have.
+
+  Example:
+
+    * ``ss_local_search = 1``
+
+**ss_local_every**
+  The fewest rounds between two starts of the improvement method.
+
+  Default: 10
+
+  Example:
+
+    * ``ss_local_every = 5``
+
+**ss_local_max_iterations**
+  The simplex iterations one refinement may run before it is folded into the reference set.
+
+  Default: 50
+
+  Example:
+
+    * ``ss_local_max_iterations = 100``
+
+**ss_local_max_running**
+  How many refinements may run at the same time. One is the sequential search of the
+  scatter search literature; more uses the processors a large cluster has idle at the end
+  of a round.
+
+  Default: 1
+
+  Example:
+
+    * ``ss_local_max_running = 4``
     
 **reserve_size**
   Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. 

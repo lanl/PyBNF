@@ -13246,6 +13246,22 @@
     null
    ],
    [
+    "ss_local_every",
+    10
+   ],
+   [
+    "ss_local_max_iterations",
+    50
+   ],
+   [
+    "ss_local_max_running",
+    1
+   ],
+   [
+    "ss_local_search",
+    null
+   ],
+   [
     "ss_noise_handling",
     1
    ],

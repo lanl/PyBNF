@@ -32,6 +32,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   parameter.
 
 ### Added
+- **Scatter search gained the improvement method of Glover's template (#660 step 1,
+  ADR-0138).** PyBNF's scatter search relied on recombination alone; the template refines
+  the candidates combination produces with a local search, which Egea and colleagues' version
+  also does and which the issue names the largest gap. Under `edition = 2` the best child a
+  round accepts into the reference set now starts a Nelder-Mead simplex search, the same
+  one `job_type = sim` runs, driven asynchronously alongside the rounds that follow so it
+  costs wall clock only when processors are short. When it finishes, its best point
+  replaces the member it started from if it improved on it, else the worst member if it
+  beats that, else it is archived. Three filters keep it from running on every candidate:
+  at most one start every `ss_local_every` rounds, at most `ss_local_max_running` at a
+  time, and none within a small distance of a refinement already started or found.
+  `ss_local_search` turns it on or off; `ss_local_max_iterations` bounds each search. It is
+  off under noise handling, since a simplex over single draws of a stochastic model
+  converges on the noise. The legacy edition is unchanged.
 - **An observable's scale and offset can be solved out of the search
   (`linear_profiling = 1`, #671, ADR-0132).** A free parameter that an
   `observable: <id>, formula: <expr>` line reads linearly, as a scale, an offset, or the
