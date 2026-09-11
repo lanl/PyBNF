@@ -198,6 +198,17 @@ We maintain a reference set of ``population_size`` individuals, recommended to b
 
 Then we apply a series of formulas to choose the next parameter value.
 
+Improvement method
+^^^^^^^^^^^^^^^^^^
+Glover's template refines the candidates combination produces with a local search. Under
+``edition = 2`` (``ss_local_search``), the best child a round accepts into the reference
+set starts a Nelder-Mead simplex search, the same one ``job_type = sim`` runs, which runs
+alongside the rounds that follow and, when it finishes, replaces the member it started from
+if it improved on it, else the worst member if it beats that, else is archived. Following
+Egea and colleagues, three filters keep the search from running on every candidate: a
+cadence (``ss_local_every``), a concurrency cap (``ss_local_max_running``), and a distance
+filter against refinements already started or found. It is off under noise handling.
+
 Stochastic models
 ^^^^^^^^^^^^^^^^^
 Scatter search decides everything by ranking, and a stochastic simulation gives a

@@ -89,6 +89,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # The diverse half of the first reference set chosen by distance (#660
                # step 2 / ADR-0137); unset follows the edition.
                'ss_diverse_by_distance',
+               # The improvement method (#660 step 1 / ADR-0138): the switch (unset follows
+               # the edition), its cadence, its budget and its concurrency.
+               'ss_local_search', 'ss_local_every', 'ss_local_max_iterations',
+               'ss_local_max_running',
                # General multi-start for the metaheuristics (de / ss / pso / ade, #498/
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).

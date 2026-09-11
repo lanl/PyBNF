@@ -233,7 +233,8 @@ class TestRegistrySchemaSeam:
         assert FIT_TYPE_REGISTRY['ss'].schema is ScatterSearchConfig
         assert ScatterSearchConfig.owned_keys() == {
             'local_min_limit', 'n_starts', 'ss_noise_handling', 'ss_noise_max_draws',
-            'ss_diverse_by_distance'}
+            'ss_diverse_by_distance', 'ss_local_search', 'ss_local_every',
+            'ss_local_max_iterations', 'ss_local_max_running'}
 
     def test_sim_owns_only_defaulted_simplex_keys(self):
         # Simplex owns the six unconditionally-read simplex_* knobs plus the shared

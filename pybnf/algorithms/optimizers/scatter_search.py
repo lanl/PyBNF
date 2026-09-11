@@ -22,7 +22,9 @@ its single draws, as before, and is byte-identical.
 from ..base import Algorithm
 from ..noise_handling import pooled_sd, separated
 from ... import edition
+from .concurrent_multistart import DONE
 from .multistart import MultiStartConfig, MultiStartOptimizer
+from .simplex import SimplexRunner
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -38,6 +40,18 @@ from pydantic import Field
 # Preserve the original module logger name so log records keep the
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
+
+#: The improvement method's Nelder-Mead constants (#660 step 1, ADR-0138): the simplex
+#: fit type's own defaults, and a stop tolerance on the largest move in sampling space,
+#: below which a refinement has converged as far as a search inside another search needs.
+_LOCAL_REFLECTION, _LOCAL_EXPANSION, _LOCAL_CONTRACTION, _LOCAL_SHRINK = 1.0, 1.0, 0.5, 0.5
+_LOCAL_STOP_TOL = 1e-4
+#: The initial simplex's edge, as a fraction of the reference set's spread per coordinate.
+_LOCAL_STEP_FRACTION = 0.1
+#: The distance filter: a candidate closer than this, in root-mean-square per-coordinate
+#: units of the initial population's spread, to a previous refinement's start or optimum
+#: is in a basin already refined and is not refined again.
+_LOCAL_MIN_DISTANCE = 0.05
 
 
 class ScatterSearchConfig(MultiStartConfig):
@@ -60,6 +74,13 @@ class ScatterSearchConfig(MultiStartConfig):
     # ADR-0137): unset resolves to on under edition 2 and off under the legacy edition,
     # whose contract is that an unchanged conf keeps behaving as it always has.
     ss_diverse_by_distance: Optional[int] = None
+    # The improvement method (#660 step 1, ADR-0138): a Nelder-Mead refinement of the best
+    # child a round accepts, at most every ss_local_every rounds and ss_local_max_running
+    # at a time, for ss_local_max_iterations simplex iterations. Unset follows the edition.
+    ss_local_search: Optional[int] = None
+    ss_local_every: int = Field(default=10, ge=1)
+    ss_local_max_iterations: int = Field(default=50, ge=1)
+    ss_local_max_running: int = Field(default=1, ge=1)
 
     # init_size (-> 10*len(variables)) and reserve_size (-> max_iterations) default at
     # runtime in __init__, so they are not schema fields but ARE valid ss keys (#401).
@@ -126,6 +147,20 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                         'different objective value every run, so reference members are ranked '
                         'on the mean of their draws and a decision the noise leaves in doubt '
                         'draws again (up to %d draws per parameter set)' % self.max_draws)
+        # The improvement method (#660 step 1, ADR-0138): Glover's template refines the
+        # candidates combination produces with a local search. On by default under a modern
+        # edition, off under the legacy one; an explicit ss_local_search wins; and off
+        # whenever noise handling is on, since a simplex over single draws of a stochastic
+        # model converges on the noise rather than the objective.
+        self.local_search = self._resolve_local_search()
+        self.local_every = int(config.config.get('ss_local_every', 10))
+        self.local_max_iterations = int(config.config.get('ss_local_max_iterations', 50))
+        self.local_max_running = int(config.config.get('ss_local_max_running', 1))
+        if self.local_search:
+            logger.info('Scatter search improvement method is on: the best child a round '
+                        'accepts is refined by a Nelder-Mead simplex, at most every %d rounds '
+                        'and %d at a time, for up to %d simplex iterations'
+                        % (self.local_every, self.local_max_running, self.local_max_iterations))
 
         self.pending = dict() # {pendingPSet: parentPSet}
         self.received = dict() # {parentPSet: [(donependingPSet, score)]
@@ -144,6 +179,35 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # set is still in play, since the pooled spread is a property of the fit and must
         # not forget a member the moment a child replaces it.
         self.repeat_draws = dict()   # {PSet: the same list as in draws}
+        # The improvement method's bookkeeping (#660 step 1): the refinements in flight and
+        # the ones finished but not yet folded into the reference set, each under a tag,
+        # the member each started from, the tagged names of their jobs, every start and
+        # optimum so far (the distance filter), and the round the last one started in.
+        self.local_runners = dict()     # tag -> SimplexRunner in flight
+        self.local_finished = dict()    # tag -> SimplexRunner that returned DONE
+        self.local_origins = dict()     # tag -> the reference member it started from
+        self.pending_local = dict()     # tagged pset name -> tag
+        self.local_starts = []          # normalized u-vectors of every start
+        self.local_optima = []          # (PSet, score) of every finished refinement
+        self.local_count = 0
+        self.last_local_iteration = None
+        self._init_spread = None        # per-coordinate spread of the initial population in u
+        self._round_accepted = []       # (child, score) accepted into the reference set this round
+
+    def _resolve_local_search(self):
+        """Whether the improvement method runs: never under noise handling; otherwise an
+        explicit ``ss_local_search`` wins, and unset it is on under a modern edition and off
+        under the legacy one (ADR-0031, ADR-0138)."""
+        if self.noise_handling:
+            if self.config.config.get('ss_local_search'):
+                logger.info('ss_local_search is set, but this fit uses a stochastic model with '
+                            'noise handling on, and a simplex over single draws converges on '
+                            'the noise; the improvement method stays off')
+            return False
+        configured = self.config.config.get('ss_local_search')
+        if configured is not None:
+            return bool(int(configured))
+        return edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
 
     def _resolve_diverse_by_distance(self):
         """Whether the first reference set's second half is chosen by distance: an explicit
@@ -191,6 +255,16 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.contenders = dict()
         self.pending_draws = dict()
         self.repeat_draws = dict()
+        self.local_runners = dict()
+        self.local_finished = dict()
+        self.local_origins = dict()
+        self.pending_local = dict()
+        self.local_starts = []
+        self.local_optima = []
+        self.local_count = 0
+        self.last_local_iteration = None
+        self._init_spread = None
+        self._round_accepted = []
 
     def _search_start_run(self):
         # Reset every search counter first (iteration / refs / archive that start_run
@@ -288,6 +362,10 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         ps = res.pset
         score = res.score
 
+        if ps.name in self.pending_local:
+            # A refinement's evaluation (#660 step 1): advance that search and queue its
+            # next step at once; a round never waits for a refinement.
+            return self._advance_local_search(ps, score)
         if ps.name in self.pending_draws:
             # A fresh draw of a parameter set already in play (#660 step 3).
             target = self.pending_draws.pop(ps.name)
@@ -307,6 +385,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         if None in self.received:
             # This is the initialization round, special case
             self.round_1_init()
+            self._init_spread = self._spread([p for p, _ in self.received[None]])
             for member, score_ in self.refs:
                 self.draws[member] = [score_]
             if self.noise_handling:
@@ -316,6 +395,8 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         else:
             # 1) Replace parent with highest scoring child
             redraws += self._update_reference_set()
+        # 1b) Fold in every refinement that finished since the last round (#660 step 1).
+        self._fold_finished_local_searches()
 
         # 2) Sort the refs list by quality.
         self.refs = sorted(self.refs, key=lambda x: x[1])
@@ -342,6 +423,9 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         if self.iteration == self.max_iterations:
             return 'STOP'
 
+        # 2b) Refine the best child this round accepted, when the filters allow (#660 step 1).
+        local_psets = self._maybe_start_local_search()
+
         # 3) Do the combination antics to generate new candidates
         query_psets = []
         for pi in range(self.popsize): # parent index
@@ -364,7 +448,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                 else:
                     print(newpset)
         self.received = {r[0]: [] for r in self.refs}
-        return query_psets + redraws
+        return query_psets + redraws + local_psets
 
     # --- the noise-aware reference set (#660 step 3, ADR-0136) ------------ #
     def _update_reference_set(self):
@@ -385,6 +469,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         its recorded value was a lucky draw regresses to its true value and can be beaten.
         """
         redraws = []
+        self._round_accepted = []
         for i in range(len(self.refs)):
             parent = self.refs[i][0]
             p_mean, p_n = self._estimate(parent, fallback=self.refs[i][1])
@@ -419,6 +504,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                 self.refs[i] = (child, c_mean)
                 self.draws[child] = child_draws
                 self.draws.pop(parent, None)
+                self._round_accepted.append((child, c_mean))
                 continue
             self.refs[i] = (parent, p_mean)
             if not settled:
@@ -519,6 +605,133 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
             self.pending_draws[name] = pset
             queued.append(again)
         return queued
+
+    # --- the improvement method (#660 step 1, ADR-0138) ---------------------- #
+    def _spread(self, psets):
+        """The per-coordinate spread of ``psets`` in sampling space, as an array over the
+        variables; a coordinate with no spread (or none measurable) reads as 1."""
+        if not psets:
+            return np.ones(len(self.variables))
+        u = np.array([self._param_vec(p) for p in psets], dtype=float)
+        spread = u.max(axis=0) - u.min(axis=0)
+        return np.where(np.isfinite(spread) & (spread > 0.0), spread, 1.0)
+
+    def _normalized(self, pset):
+        """``pset``'s sampling-space vector divided by the initial population's spread."""
+        spread = self._init_spread if self._init_spread is not None else np.ones(len(self.variables))
+        return np.asarray(self._param_vec(pset), dtype=float) / spread
+
+    def _local_steps(self):
+        """The initial simplex's per-variable edge in sampling space: a tenth of the
+        reference set's spread, falling back to a tenth of the initial population's, and
+        to one unit where neither has any."""
+        current = self._spread([p for p, _ in self.refs])
+        fallback = self._init_spread if self._init_spread is not None else np.ones(len(self.variables))
+        steps = {}
+        for v, cur, init in zip(self.variables, current, fallback):
+            base = cur if cur > 0.0 and np.isfinite(cur) else init
+            steps[v.name] = _LOCAL_STEP_FRACTION * (base if base > 0.0 and np.isfinite(base) else 1.0)
+        return steps
+
+    def _tag_local(self, tag, pset):
+        pset.name = '%s_%s' % (tag, pset.name)
+        self.pending_local[pset.name] = tag
+        return pset
+
+    def _maybe_start_local_search(self):
+        """Start a refinement from the best child this round accepted, when the improvement
+        method is on and Egea's filters allow: not more often than every ``ss_local_every``
+        rounds, not more than ``ss_local_max_running`` at a time, and not from a point
+        within ``_LOCAL_MIN_DISTANCE`` of a refinement already started or already found.
+        Returns the refinement's first jobs, tagged, or nothing."""
+        if not self.local_search or not self._round_accepted:
+            return []
+        if len(self.local_runners) >= self.local_max_running:
+            return []
+        if (self.last_local_iteration is not None
+                and self.iteration - self.last_local_iteration < self.local_every):
+            return []
+        child, score = min(self._round_accepted, key=lambda x: x[1])
+        if not np.isfinite(score):
+            return []
+        u = self._normalized(child)
+        scale = np.sqrt(len(self.variables))
+        seen = self.local_starts + [self._normalized(p) for p, _ in self.local_optima]
+        if any(float(np.linalg.norm(u - v)) / scale < _LOCAL_MIN_DISTANCE for v in seen):
+            logger.debug('Scatter search: not refining %s, within %g of a refinement already made'
+                         % (child.name, _LOCAL_MIN_DISTANCE))
+            return []
+        tag = 'ls%i' % self.local_count
+        self.local_count += 1
+        start = copy.copy(child)
+        runner = SimplexRunner(self.variables, np.random.default_rng(int(self.rng.integers(2 ** 32))),
+                               start, self._local_steps(), self.local_max_iterations,
+                               max(len(self.variables) - 1, 1),
+                               _LOCAL_REFLECTION, _LOCAL_EXPANSION, _LOCAL_CONTRACTION,
+                               _LOCAL_SHRINK, _LOCAL_STOP_TOL)
+        self.local_runners[tag] = runner
+        self.local_origins[tag] = child
+        self.local_starts.append(u)
+        self.last_local_iteration = self.iteration
+        print2('Refining %s (objective %g) by a simplex search (%s)' % (child.name, score, tag))
+        logger.info('Scatter search: starting refinement %s from %s at objective %g'
+                    % (tag, child.name, score))
+        return [self._tag_local(tag, p) for p in runner.start()]
+
+    def _advance_local_search(self, pset, score):
+        """Route one refinement result to its search and return the search's next jobs; a
+        finished search is set aside to be folded in at the next round boundary."""
+        tag = self.pending_local.pop(pset.name)
+        runner = self.local_runners.get(tag)
+        if runner is None:
+            return []                       # a straggler of a search already set aside
+        pset.name = pset.name[len(tag) + 1:]
+        out = runner.got(pset, score)
+        if out is DONE:
+            del self.local_runners[tag]
+            self.local_finished[tag] = runner
+            logger.info('Scatter search: refinement %s finished at objective %g (%s)'
+                        % (tag, runner.fval if runner.fval is not None else np.inf,
+                           runner.stop_reason))
+            return []
+        return [self._tag_local(tag, p) for p in out]
+
+    def _fold_finished_local_searches(self):
+        """Put each finished refinement's best point into the reference set: in place of
+        the member it started from when that member is still there and the point is
+        better, else in place of the worst member when it beats that, else into the
+        archive. Every optimum is recorded for the distance filter."""
+        for tag in sorted(self.local_finished):
+            runner = self.local_finished.pop(tag)
+            origin = self.local_origins.pop(tag, None)
+            if not runner.simplex:
+                continue
+            best_score, best_pset = min(runner.simplex, key=lambda x: x[0])
+            best_pset = copy.copy(best_pset)
+            best_pset.name = '%s_best' % tag
+            self.local_optima.append((best_pset, best_score))
+            slot = next((i for i, (m, _) in enumerate(self.refs) if m == origin), None)
+            if slot is not None and best_score < self.refs[slot][1]:
+                self._replace_member(slot, best_pset, best_score)
+                print2('Refinement %s improved its start to %g' % (tag, best_score))
+                continue
+            worst = max(range(len(self.refs)), key=lambda i: self.refs[i][1])
+            if best_score < self.refs[worst][1]:
+                self._replace_member(worst, best_pset, best_score)
+                print2('Refinement %s enters the reference set at %g' % (tag, best_score))
+                continue
+            self.local_mins.append((best_pset, best_score))
+            self.local_mins = sorted(self.local_mins, key=lambda x: x[1])[:self.popsize]
+            print2('Refinement %s archived at %g' % (tag, best_score))
+
+    def _replace_member(self, slot, pset, score):
+        old = self.refs[slot][0]
+        self.stuckcounter.pop(old, None)
+        self.contenders.pop(old, None)
+        self.draws.pop(old, None)
+        self.stuckcounter[pset] = 0
+        self.draws[pset] = [score]
+        self.refs[slot] = (pset, score)
 
     def get_backup_every(self):
         """
