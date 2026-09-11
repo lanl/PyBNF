@@ -329,10 +329,10 @@ What twenty seeds say:
   lucky draws it makes back by exploring more.
 
 What follows from it: the machinery is sound but its cost is too high for its benefit. The
-levers are the deferral length (`ss_noise_max_draws`, five by default, so a contest can wait
-five rounds), accepting a child that leads on the mean while the draws continue rather than
-holding it back, and drawing again only for the contests that matter most. Each can be scored
-here, on these four problems, in about half an hour. The first was:
+levers are the deferral length (`ss_noise_max_draws`, five when this was measured, so a
+contest could wait five rounds), accepting a child that leads on the mean while the draws
+continue rather than holding it back, and drawing again only for the contests that matter
+most. Each can be scored here, on these four problems, in about half an hour. The first was:
 
 ### The deferral length
 
@@ -344,7 +344,7 @@ Pooled over the 80 paired seeds:
 | method | deferral (draws) | successes of 80 | median max error | mean max error |
 |---|---:|---:|---:|---:|
 | `ss` | none | 17 | 0.600 | 0.621 |
-| `ss_noise` | 5 (the default) | 18 | 0.631 | 0.720 |
+| `ss_noise` | 5 (the default until ADR-0141) | 18 | 0.631 | 0.720 |
 | `ss_noise_d2` | 2 | 18 | 0.549 | 0.648 |
 | `ss_noise_d3` | 3 | 24 | 0.674 | 0.682 |
 
@@ -374,8 +374,9 @@ Paired over seeds (sign test on the final error; McNemar's exact test on success
 
 So the deferral length is the cost. At 2 or 3 the noise handling costs nothing measurable
 against plain scatter search and, at 3, shows the benefit it was built for on the problems
-whose noise misleads a single draw. Eighty paired seeds cannot separate 2 from 3; the
-default should be one of them, not 5.
+whose noise misleads a single draw. Eighty paired seeds cannot separate 2 from 3. The
+default is 3 since ADR-0141; the baseline rows for `ss_noise` above were measured at 5 and
+stay as they are, labelled by what ran.
 
 
 ## Scoring a change
