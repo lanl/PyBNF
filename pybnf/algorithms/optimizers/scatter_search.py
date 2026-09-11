@@ -70,6 +70,9 @@ class ScatterSearchConfig(MultiStartConfig):
     # switch, and the cap on draws per parameter set a decision in doubt may spend.
     ss_noise_handling: int = 1
     ss_noise_max_draws: int = Field(default=5, ge=1)
+    # Whether a processor that would idle at the end of a round is given one of those
+    # draws early (#660 step 4, ADR-0139); meaningful only with noise handling on.
+    ss_fill_idle: int = 1
     # The diverse half of the first reference set chosen by distance (#660 step 2,
     # ADR-0137): unset resolves to on under edition 2 and off under the legacy edition,
     # whose contract is that an unchanged conf keeps behaving as it always has.
@@ -140,6 +143,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # Noise-aware reference set (#660 step 3, ADR-0136): only where running a parameter
         # set again would give a different answer, and only when asked for (the default).
         self.max_draws = int(config.config.get('ss_noise_max_draws', 5))
+        self.fill_idle = bool(config.config.get('ss_fill_idle', 1))
         self.noise_handling = bool(config.config.get('ss_noise_handling', 1)) \
             and self._replicates_would_differ()
         if self.noise_handling:
@@ -378,7 +382,10 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
             del self.pending[ps]
 
         if self.pending or self.pending_draws:
-            return []
+            # Mid-round. A processor this result frees would sit idle until the round's
+            # slowest simulation finishes; give it another draw of a member whose rank is
+            # still in doubt instead (#660 step 4).
+            return self._fill_idle_processors()
 
         # All of this generation done, make the next list of psets
         redraws = []
@@ -582,6 +589,34 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                     if not any(member is w for w in wanted):
                         wanted.append(member)
         return wanted
+
+    def _fill_idle_processors(self):
+        """Re-draws for the processors a round would otherwise leave idle (#660 step 4,
+        ADR-0139).
+
+        Scatter search waits for every simulation of a round before it builds the next, and
+        toward the end of a round only the slowest few are still running, so processors sit
+        idle; for a stochastic model the spread in running times is wide, so they sit idle
+        longest exactly where a draw is worth most. When the fit knows its processor count
+        and fewer jobs are in flight than that, the difference is filled with fresh draws of
+        the members whose rank the noise cannot settle (the same members
+        :meth:`_unseparated_neighbours` would draw again at the round's end, plus both sides
+        of every open contest), each within the same cap as any other re-draw, so a member
+        costs no more than ``ss_noise_max_draws`` simulations over its life however the
+        draws are timed. Nothing for a deterministic fit, with ``ss_fill_idle = 0``, when
+        the processor count is unknown, or when nothing is idle."""
+        if not self.noise_handling or not self.fill_idle or not self.worker_count:
+            return []
+        in_flight = len(self.pending) + len(self.pending_draws) + len(self.pending_local)
+        idle = int(self.worker_count) - in_flight
+        if idle <= 0 or not self.refs:
+            return []
+        wanted = list(self._unseparated_neighbours())
+        for parent, child in self.contenders.items():
+            for member in (parent, child):
+                if not any(member is w for w in wanted):
+                    wanted.append(member)
+        return self._redraws(wanted[:idle])
 
     def _redraws(self, psets):
         """Queue one fresh draw of each of ``psets`` that has a name, has been drawn at

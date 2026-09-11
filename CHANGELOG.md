@@ -6,6 +6,16 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Changed
+- **Scatter search gives idle processors another draw of a member whose rank is in doubt
+  (#660 step 4, ADR-0139).** Scatter search waits for every simulation of a round before it
+  builds the next, so toward the end of a round processors sit idle waiting for the slowest
+  simulation, and for a stochastic model the spread in running times is wide. The run now
+  records how many simulations it can execute at once, and when a stochastic scatter search
+  has fewer in flight than that, the difference is filled with fresh draws of the members
+  the noise cannot order, the same draws it would have spent at the round's end, each
+  within `ss_noise_max_draws`. `ss_fill_idle = 0` turns just this off, for a fit that would
+  rather end each round as soon as its own simulations do. A deterministic fit, a run whose
+  processor count cannot be read, and a round with nothing idle are unchanged.
 - **Scatter search fills the diverse half of its first reference set by distance under
   `edition = 2` (#660 step 2, ADR-0137).** Glover's template builds the first reference set
   from the best half of the initial population and the most *diverse* half of the rest,

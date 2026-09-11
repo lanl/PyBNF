@@ -2196,8 +2196,11 @@ The following options are only available with ``job_type = de``, and serve to ma
   both sides are simulated again, at fresh seeds, and the decision waits for those draws. A
   member is never counted stuck without being drawn again, so a lucky member's mean
   regresses to its true value. Neighbours in the sorted reference set that the spread cannot
-  order are drawn again too, since their rank gap sets a step size. Nothing is done for a
-  deterministic model, or when every stochastic model pins its seed.
+  order are drawn again too, since their rank gap sets a step size. Toward the end of a
+  round, when processors would otherwise sit idle waiting for the slowest simulation, they
+  are given those same draws early (``ss_fill_idle``), so a stochastic fit's idle time is
+  spent where a draw is worth most; every draw stays within ``ss_noise_max_draws``. Nothing
+  is done for a deterministic model, or when every stochastic model pins its seed.
 
   Default: 1
 
@@ -2215,6 +2218,21 @@ The following options are only available with ``job_type = de``, and serve to ma
   Example:
 
     * ``ss_noise_max_draws = 10``
+
+**ss_fill_idle**
+  Whether, toward the end of a round, a processor that would otherwise sit idle waiting for
+  the round's slowest simulation is given one of the noise handling's draws early (``1``,
+  the default) or left idle so the round ends as soon as its own simulations do (``0``). The
+  draws are the same ones the noise handling would spend at the round's end, so the cost of
+  leaving it on is at most one extra simulation's time at the end of a round; the cost of
+  turning it off is that idle time on a stochastic fit. Meaningful only with
+  ``ss_noise_handling`` on.
+
+  Default: 1
+
+  Example:
+
+    * ``ss_fill_idle = 0``
 
 **ss_diverse_by_distance**
   How the second half of scatter search's first reference set is chosen. The first half is
