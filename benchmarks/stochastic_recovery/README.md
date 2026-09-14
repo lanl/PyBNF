@@ -416,6 +416,86 @@ Both effects are concentrated: the learning's gain is Hlavacek_PNAS2001 under bo
 the guarantee's is Shahrezaei_PNAS2008 and McKane_PhysRevLett2005 under `ade`. Wall times in
 this file are not comparable with the baseline's, since these runs shared the machine.
 
+## Follow-up: differential evolution never proposing a copy of its base
+
+`results/de_force_mutation_5seeds.json` and `results/de_force_mutation_5seeds.md` score `de` and
+`ade` with `de_force_mutation = 1` (lanl/PyBNF#698, ADR-0143), under which a candidate always
+changes a parameter its donors move, and the learned settings again, since they now share that
+guarantee; five seeds per problem at the frozen budgets, from the same seeds as before. The
+guarantee is the default under `edition = 2`, and the benchmark's configurations are legacy
+syntax, so it is laid over the method as a variant:
+
+```bash
+python benchmarks/stochastic_recovery/run_baseline.py run --methods de --set fit_type=ade \
+    --set de_force_mutation=1 --as ade_force_mutation --seeds 5 --out benchmarks/stochastic_recovery/results/my_run.json
+```
+
+The learned-settings rows are named `de_adapt_698` and `ade_adapt_698`, so they cannot be
+mistaken for the rows of the same configuration in `de_adapt_5seeds.json`, which were measured
+before the change. That file holds everything they are compared with here: `de`, `ade`, the
+learned settings as first measured, and `de_forced` and `ade_forced`, the #667 controls that
+always mutated one parameter drawn at random but did not draw again when the donors could not
+move it.
+
+| method | successes of 30 (factor 2) | successes of 30 (26%) | stopped before the budget | median final error |
+|---|---:|---:|---:|---:|
+| `ade` | 4 | 1 | 24 | 0.706 |
+| `ade_forced` (#667 control) | 10 | 5 | 0 | 0.527 |
+| `ade_force_mutation` | 12 | 4 | 0 | 0.491 |
+| `ade_adapt` (#667) | 8 | 4 | 4 | 0.833 |
+| `ade_adapt_698` | 9 | 6 | 0 | 0.603 |
+| `de` | 6 | 0 | 0 | 0.630 |
+| `de_forced` (#667 control) | 8 | 4 | 0 | 0.540 |
+| `de_force_mutation` | 8 | 4 | 0 | 0.618 |
+| `de_adapt` (#667) | 11 | 5 | 0 | 0.573 |
+| `de_adapt_698` | 8 | 5 | 0 | 0.734 |
+
+Paired over seeds (two-sided sign tests; "only it / only the other" counts the seeds where one
+of the pair succeeded and the other did not):
+
+| comparison | only it / only the other | final error lower / higher |
+|---|---|---|
+| `ade_force_mutation` against `ade` | 8 / 0 (p = 0.008) | 19 / 11 (p = 0.20) |
+| `ade_force_mutation` against `ade_forced` | 6 / 4 (p = 0.75) | 18 / 12 (p = 0.36) |
+| `de_force_mutation` against `de` | 5 / 3 (p = 0.73) | 15 / 15 |
+| `de_force_mutation` against `de_forced` | 3 / 3 | 14 / 16 (p = 0.86) |
+| `ade_adapt_698` against `ade_adapt` | 3 / 2 | 15 / 15 |
+| `ade_adapt_698` against `ade_force_mutation` | 3 / 6 (p = 0.51) | 14 / 16 (p = 0.86) |
+| `de_adapt_698` against `de_adapt` | 1 / 4 (p = 0.38) | 12 / 18 (p = 0.36) |
+| `de_adapt_698` against `de_force_mutation` | 2 / 2 | 15 / 15 |
+
+Per problem, successes of 5 and the median final error:
+
+| problem | `ade` | `ade_forced` | `ade_force_mutation` | `ade_adapt_698` | `de` | `de_forced` | `de_force_mutation` | `de_adapt_698` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Hlavacek_PNAS2001 | 2 (0.48) | 2 (0.33) | 5 (0.09) | 5 (0.07) | 2 (0.56) | 3 (0.20) | 5 (0.04) | 5 (0.02) |
+| Lin_PhysRevE2016 | 0 (1.18) | 0 (0.83) | 0 (0.96) | 1 (0.74) | 0 (0.64) | 1 (0.54) | 0 (0.54) | 0 (0.83) |
+| McKane_PhysRevLett2005 | 1 (0.77) | 2 (0.37) | 4 (0.16) | 1 (0.60) | 0 (0.66) | 1 (0.62) | 2 (0.58) | 0 (0.91) |
+| Munsky_Science2012 | 0 (0.87) | 1 (0.94) | 0 (0.92) | 0 (0.78) | 0 (0.94) | 0 (0.84) | 0 (0.97) | 0 (0.82) |
+| Shahrezaei_PNAS2008 | 1 (0.34) | 4 (0.09) | 3 (0.22) | 2 (0.30) | 4 (0.23) | 2 (0.38) | 1 (0.40) | 3 (0.26) |
+| Yang_PhysRevE2008 | 0 (0.65) | 1 (1.63) | 0 (1.11) | 0 (1.27) | 0 (1.15) | 1 (0.54) | 0 (1.43) | 0 (1.56) |
+
+What it shows:
+
+* **The fault is gone.** None of the 120 fits stopped before its budget, against 24 of 30 for
+  plain `ade` and 4 of 30 for the learned settings as first measured.
+* **`ade` with the guarantee succeeds three times as often as plain `ade`,** 12 of 30 against
+  4, and failed on no seed where plain `ade` succeeded. The gain is on three problems,
+  Hlavacek_PNAS2001 (2 to 5), McKane_PhysRevLett2005 (1 to 4) and Shahrezaei_PNAS2008 (1 to 3);
+  on the other three no `ade` variant succeeded from more than one seed. It is level with the
+  #667 control (12 against 10), which five seeds cannot separate.
+* **For `de`, which never collapsed, the guarantee changes nothing five seeds can resolve:** 8
+  successes against 6, more on Hlavacek_PNAS2001 (5 against 2) and fewer on
+  Shahrezaei_PNAS2008 (1 against 4).
+* **The learned settings no longer stop early, but add nothing measurable over the guarantee
+  alone:** 9 successes against 12 under `ade`, 8 against 8 under `de`. `de_adapt_698` also has
+  fewer successes than the learned settings as first measured (8 against 11; one seed only the
+  new run won, four only the old), which five seeds cannot tell from noise. The #667 gain under
+  `de` is not reproduced once its code path changes.
+
+Wall times in this file are not comparable with the baseline's: these runs shared the machine
+with each other, with the test suite and with other measurements.
+
 ## Scoring a change
 
 Run the baseline methods again after the change with the same seeds, summarize, and compare

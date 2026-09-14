@@ -10,11 +10,26 @@ run from a success history (Tanabe and Fukunaga 2013; #667, ADR-0142) instead of
 ``mutation_rate`` and ``mutation_factor`` as written: :class:`SuccessHistory` holds the
 memory, the base draws each candidate's pair from it and records the outcome, and each
 subclass says when a generation has ended.
+
+With ``de_force_mutation`` on (the default under ``edition = 2``, and always with the
+learned settings) no candidate is an exact copy of the parameter set it was built from
+(#698, ADR-0143). A candidate is its base with some parameters moved by the donors'
+difference, and nothing else guaranteed that any parameter moved. Under the default seed
+policy a copy runs the same simulations as its base and ties it exactly, so it takes any
+slot whose member is worse; in ``ade`` those copies became bases for more copies until
+the whole population was one parameter set and the convergence test stopped the run.
+Binomial crossover's answer is one parameter chosen in advance that is always mutated.
+PyBNF crosses the mutant with the base rather than with the slot the candidate competes
+for, so an accepted candidate shares its unmutated values with a member that stays in the
+population, members come to share values, and the donors' difference is often zero in
+the parameter chosen. The guarantee therefore chooses again among the parameters the
+difference does move, and draws other donors when it moves none.
 """
 
 
 from ..base import Algorithm
 from .multistart import MultiStartConfig, MultiStartOptimizer
+from ... import edition
 from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2, PybnfError
@@ -135,6 +150,11 @@ class DEFamilyConfig(PyBNFConfigModel):
     # How many generations' worth of successful settings the history remembers (the
     # memory size H of Tanabe and Fukunaga; L-SHADE's 6).
     de_adapt_memory: int = Field(default=6, ge=1)
+    # Never propose a candidate that is an exact copy of its base (#698, ADR-0143): one
+    # parameter the donors' difference moves is always mutated. Unset resolves to on under
+    # edition 2 and off under the legacy edition, whose contract is that an unchanged conf
+    # keeps behaving as it always has; the learned settings above turn it on regardless.
+    de_force_mutation: Optional[int] = None
 
 
 class DifferentialEvolutionConfig(MultiStartConfig, DEFamilyConfig):
@@ -201,6 +221,31 @@ class DifferentialEvolutionBase(Algorithm):
         self.histories = []
         self._trial_settings = dict()
 
+        # Whether a candidate always mutates a parameter its donors move, so it is never an
+        # exact copy of its base (#698, ADR-0143).
+        self.force_mutation = self._resolve_force_mutation()
+
+    def _resolve_force_mutation(self):
+        """Whether the copy guarantee is on (#698, ADR-0143). The learned settings always
+        need it, since a learned rate can sit near 0 where most candidates would otherwise
+        be copies, and a copy can never be a success; otherwise an explicit
+        ``de_force_mutation`` wins, and unset it is on under a modern edition and off under
+        the legacy one, whose contract is that an unchanged conf keeps behaving as it always
+        has (ADR-0031)."""
+        configured = self.config.config.get('de_force_mutation')
+        if self.adapt_mutation:
+            if configured is not None and not int(configured):
+                message = ('de_force_mutation = 0 is set, but de_adapt_mutation = 1 learns a '
+                           'mutation rate that can sit near 0, where most candidates would be '
+                           'copies of the parameter set they were built from; every candidate '
+                           'still mutates at least one parameter')
+                logger.warning(message)
+                print1('Note: ' + message)
+            return True
+        if configured is not None:
+            return bool(int(configured))
+        return edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
+
     def new_individual(self, individuals, base_index=None, island=0):
         """
         Create a new individual for the specified island, according to the set strategy
@@ -236,27 +281,28 @@ class DifferentialEvolutionBase(Algorithm):
         others = [individuals[p] for p in picks[1:]]
 
         # The mutation settings for this candidate: the configured pair, or a draw from the
-        # island's success history (#667, ADR-0142). A drawn rate can be near 0, so one
-        # parameter chosen in advance is then always mutated, as binomial crossover does:
-        # no candidate is an exact copy of its base, which could never be a real success
-        # (under the default seed policy a copy ties its base exactly; under any other it
-        # beats it only by noise). Off, nothing here touches the rng.
+        # island's success history (#667, ADR-0142). Off, nothing here touches the rng.
         rate, factor = self.mutation_rate, self.mutation_factor
-        forced = None
         if self.adapt_mutation:
             rate, factor = self.histories[island].draw(self.rng)
-            forced = int(self.rng.integers(len(base)))
+
+        # The copy guarantee (#698, ADR-0143): one parameter the donors move is always
+        # mutated, so the candidate is not an exact copy of its base, which under the default
+        # seed policy would tie its base exactly and could take any worse member's slot. It
+        # can change the donors. Off, nothing here touches the rng.
+        forced, forced_value = None, None
+        if self.force_mutation:
+            others, forced, forced_value = self._forced_parameter(
+                individuals, picks[0], base, others, factor)
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
         for i, p in enumerate(base):
             if self.rng.random() < rate or i == forced:
-                if '1' in self.strategy:
-                    update_val = factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                if i == forced:
+                    new_pset_vars.append(forced_value)
                 else:
-                    update_val = factor * others[0].get_param(p.name).diff(others[1].get_param(p.name)) +\
-                                 factor * others[2].get_param(p.name).diff(others[3].get_param(p.name))
-                new_pset_vars.append(p.add(update_val))
+                    new_pset_vars.append(p.add(self._difference(p.name, others, factor)))
             else:
                 new_pset_vars.append(p)
 
@@ -269,6 +315,67 @@ class DifferentialEvolutionBase(Algorithm):
             base_fitness = float(self._island_fitnesses(island)[picks[0]])
             self._trial_settings[new_pset] = (rate, factor, base_fitness, island)
         return new_pset
+
+    def _difference(self, name, donors, factor):
+        """How far the donors move parameter ``name``, in its sampling space: ``factor`` times
+        the difference between the first two donors, plus the same for the second two under a
+        ``2`` strategy."""
+        step = factor * donors[0].get_param(name).diff(donors[1].get_param(name))
+        if '1' not in self.strategy:
+            step = step + factor * donors[2].get_param(name).diff(donors[3].get_param(name))
+        return step
+
+    def _moved(self, param, donors, factor):
+        """``param`` moved by the donors' difference, or ``None`` when that does not change
+        its value. The test is on the value, so a difference too small to change it in
+        floating point is not a move; a zero difference, the usual reason for no move, is
+        settled before the moved parameter is built, since building it is the costly part."""
+        step = self._difference(param.name, donors, factor)
+        if step == 0.0:
+            return None
+        moved = param.add(step)
+        return moved if moved.value != param.value else None
+
+    def _forced_parameter(self, individuals, base_pick, base, donors, factor):
+        """The parameter a candidate always mutates, with the donors it is mutated by (#698,
+        ADR-0143). ``base_pick`` is the base's position in ``individuals``. Returns
+        ``(donors, position, moved parameter)``.
+
+        One parameter is chosen at random, the draw binomial crossover makes. If the donors'
+        difference does not change it, because the donors share its value, the choice is
+        made again among the parameters the difference does change (drawn at random from
+        those with a nonzero difference, dropping any whose value it still leaves as it
+        was), so each parameter the difference changes is equally likely to be the one the
+        candidate is sure to change. If it changes none (the donors are one parameter set,
+        or their two differences cancel), other donors are drawn from the members other
+        than the base, up to as many times as the population has members. If none of them
+        changes anything either, the position is ``None`` and the candidate is left a copy
+        of its base. That many failures in a row are likely only when all but one or two of
+        the other members are one parameter set, so only a population that has all but
+        collapsed can still propose a copy.
+
+        When the first parameter chosen changes, as every parameter does until members share
+        values, this is exactly the draw the learned settings made before (#667), so such a
+        run is unchanged until the first time the choice is made again.
+        """
+        params = list(base)
+        forced = int(self.rng.integers(len(params)))
+        moved = self._moved(params[forced], donors, factor)
+        if moved is not None:
+            return donors, forced, moved
+        pool = [k for k in range(len(individuals)) if k != base_pick]
+        for attempt in range(len(individuals) + 1):
+            if attempt:
+                donors = [individuals[pool[k]]
+                          for k in self.rng.choice(len(pool), len(donors), replace=False)]
+            nonzero = [i for i, p in enumerate(params)
+                       if self._difference(p.name, donors, factor) != 0.0]
+            while nonzero:
+                position = nonzero.pop(int(self.rng.integers(len(nonzero))))
+                moved = self._moved(params[position], donors, factor)
+                if moved is not None:
+                    return donors, position, moved
+        return donors, None, None
 
     # --- the learned mutation settings (#667, ADR-0142) ------------------------- #
     def _island_fitnesses(self, island):

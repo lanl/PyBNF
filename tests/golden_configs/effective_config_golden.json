@@ -4529,6 +4529,10 @@
     0
    ],
    [
+    "de_force_mutation",
+    null
+   ],
+   [
     "de_strategy",
     "rand2"
    ],
@@ -6653,6 +6657,10 @@
     0
    ],
    [
+    "de_force_mutation",
+    null
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -7028,6 +7036,10 @@
    [
     "de_adapt_mutation",
     0
+   ],
+   [
+    "de_force_mutation",
+    null
    ],
    [
     "de_strategy",
@@ -7467,6 +7479,10 @@
     0
    ],
    [
+    "de_force_mutation",
+    null
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -7842,6 +7858,10 @@
    [
     "de_adapt_mutation",
     0
+   ],
+   [
+    "de_force_mutation",
+    null
    ],
    [
     "de_strategy",
@@ -8641,6 +8661,10 @@
     0
    ],
    [
+    "de_force_mutation",
+    null
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -9016,6 +9040,10 @@
    [
     "de_adapt_mutation",
     0
+   ],
+   [
+    "de_force_mutation",
+    null
    ],
    [
     "de_strategy",
@@ -9395,6 +9423,10 @@
     0
    ],
    [
+    "de_force_mutation",
+    null
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -9770,6 +9802,10 @@
    [
     "de_adapt_mutation",
     0
+   ],
+   [
+    "de_force_mutation",
+    null
    ],
    [
     "de_strategy",

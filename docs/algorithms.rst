@@ -127,6 +127,15 @@ Island-based version
 
 In the island-based version of the algorithm [Penas2015]_, the population is divided into ``num_islands`` islands, which each follow the above update procedure independently. Every ``migrate_every`` iterations, a migration step occurs in which ``num_to_migrate`` individuals from each island are transferred randomly to others (according to a random permutation of the islands, keeping the number of individuals on each island constant). The migration step does not require synchronization of the islands; it is performed when the last island reaches the appropriate iteration number, regardless of whether other islands are already further along.
 
+.. _alg-de-copies:
+
+Candidates that copy their base
+"""""""""""""""""""""""""""""""
+
+Nothing in the procedure above guarantees that any parameter is mutated. Each is left as it is with probability 1 - ``mutation_rate``, so the new parameter set is an exact copy of p1 one time in eight at the default rate on a model with three free parameters, and one time in sixty-four on six. Under the default ``stochastic_seed`` policy a simulation's seed comes from the parameter values, so a copy runs the same simulations as p1 and scores exactly the same, and it replaces the member at its index whenever p1 is the better of the two, although nothing was searched. In the asynchronous version the copy can itself be p1 for the very next proposal, so copies build further copies. The population drifts toward a single parameter set, and once every member is that set every difference between members is zero, nothing further can happen, and the convergence test below stops the run.
+
+With ``de_force_mutation`` on, the default under ``edition = 2`` and always the case when the mutation settings are learned, one parameter chosen at random is mutated whatever the coins say, which is the guarantee binomial crossover makes in the published method. That alone is not quite enough here. The new parameter set takes its unmutated values from p1 but, under the ``rand`` and ``best`` strategies, replaces a different member, so after a replacement two members share those values, and p2 and p3 come to agree on many parameters, where their difference is zero. When the parameter chosen is one of those, the choice is made again among the parameters in which p2 and p3 differ, each equally likely. If they differ in none (they are the same parameter set, or under a ``2`` strategy the two differences cancel), other members are drawn in their place, up to as many times as the population has members. A candidate can then copy p1 only when nearly every other member is one parameter set. The legacy edition keeps the original procedure, and ``de_force_mutation`` sets it either way.
+
 Convergence
 """""""""""
 
@@ -185,8 +194,9 @@ which under the ``rand`` and ``best`` strategies is not the set the candidate co
 so a success is judged against p1: the candidate has to beat the parameter set its settings
 were applied to. Judging it against the slot instead rewards a candidate for merely copying a
 better member, which teaches the run that a rate near zero is best and thins the population
-out into copies of its best members. And when the settings are learned, one parameter chosen
-in advance is always mutated, so no candidate is an exact copy of p1. The population-size
+out into copies of its best members. And when the settings are learned, ``de_force_mutation``
+is always on (see :ref:`alg-de-copies`), since a learned rate can sit near 0, where most
+candidates would otherwise be exact copies of p1. The population-size
 reduction of [Tanabe2014]_ is not adopted; it is a separate idea, and it interacts with how
 many processors a run keeps busy.
 

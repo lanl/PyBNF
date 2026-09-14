@@ -27,7 +27,7 @@ grows with the population size and the number of parameters.
 ## `initialization_distribution` — where they come from, and why it matters
 
 This lesson's two confs, on lesson 07's hard multimodal oscillator with a
-**deliberately tiny budget** (10 chains, 8 iterations, no refine), show that on a
+**deliberately tiny budget** (10 chains, 10 iterations, no refine), show that on a
 rugged landscape it is *where* the population starts that decides whether the fit
 finds the basin at all:
 
@@ -38,7 +38,7 @@ finds the basin at all:
   `(alpha, gamma) = (1.2, 0.8)`.
 - **[`uninformed.conf`](uninformed.conf)** uses flat `uniform_var` priors over the
   whole box. With no informative prior to draw from, the population scatters
-  uniformly and eight iterations can't climb out of a wrong-frequency local minimum
+  uniformly and ten iterations can't climb out of a wrong-frequency local minimum
   — the fit lands **far** off.
 
 ```bash
