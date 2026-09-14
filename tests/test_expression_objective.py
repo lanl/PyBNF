@@ -213,11 +213,14 @@ def test_expression_binding_is_by_name_not_position(tmp_path):
 # End to end: a fit on the inline expression recovers the analytical truth
 # --------------------------------------------------------------------------- #
 def test_expression_de_recovers_rosenbrock_mode(tmp_path):
-    # Rosenbrock mode is at (x1, x2) = (1, 1); a gentle curvature keeps DE tractable.
+    # Rosenbrock mode is at (x1, x2) = (1, 1); a gentle curvature keeps DE tractable. Thirty
+    # members, not twenty: with twenty the population sometimes converges on the valley
+    # floor short of the mode (from 4 of seeds 1-40 and 42 under edition 2's DE, #698, and
+    # 18 under the legacy operator); with thirty, edition 2's DE reaches it from all 41.
     body = ('edition = 2\nobjective = expression\n'
             'expression = 0.5*((1 - x1)^2 + 20*(x2 - x1^2)^2)\njob_type = de\n'
             'uniform_var = x1 -5 5\nuniform_var = x2 -5 5\n'
-            'population_size = 20\nmax_iterations = 300\nrandom_seed = 42')
+            'population_size = 30\nmax_iterations = 300\nrandom_seed = 42')
     c = _build(tmp_path, body)
     alg = algorithms.DifferentialEvolution(c)
     H.drive(alg)

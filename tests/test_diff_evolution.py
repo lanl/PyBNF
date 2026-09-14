@@ -614,9 +614,9 @@ class TestLearnedMutationSettings:
         assert ade._trial_settings[new] == (0.9, 0.6, 7.0, 0)
 
     def test_a_drawn_rate_of_zero_still_mutates_the_parameter_chosen_in_advance(self, tmp_path, monkeypatch):
-        """Oracle (binomial crossover's guarantee, on only when learning): with a drawn
-        rate of 0 no coin fires, but the parameter chosen in advance (index 1) is mutated
-        anyway, so the candidate is never an exact copy of its base."""
+        """Oracle (binomial crossover's guarantee, which learning always turns on, #698): with
+        a drawn rate of 0 no coin fires, but the parameter chosen in advance (index 1) is
+        mutated anyway, so the candidate is never an exact copy of its base."""
         ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
         ade.start_run()
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
@@ -771,3 +771,300 @@ class TestLearnedMutationSettings:
         assert len(printed) == 1
         assert 'rate 0.30, factor 0.80' in printed[0]
         assert 'mutation_rate 0.5, mutation_factor 0.5' in printed[0]
+
+
+# --------------------------------------------------------------------------- #
+# The copy guarantee (#698, ADR-0143): a candidate always mutates one parameter its
+# donors move, so it is never an exact copy of its base. On under edition 2 and whenever
+# the settings are learned; off under the legacy edition, whose draws stay as they were.
+# --------------------------------------------------------------------------- #
+import collections
+
+from pybnf._seed import derive_seed
+from pybnf.parse import ploop
+
+
+class _ScriptedRng:
+    """An rng that plays each draw from a script and records every call, so a test can say
+    exactly which draws a proposal makes and in what order. A draw the script does not hold
+    fails the test."""
+
+    def __init__(self, choice=(), integers=(), random=0.9):
+        self._choice = [np.array(c) for c in choice]
+        self._integers = list(integers)
+        self._random = random
+        self.calls = []
+
+    def choice(self, n, k, replace=False):
+        self.calls.append(('choice', n, k))
+        return self._choice.pop(0)
+
+    def integers(self, n):
+        self.calls.append(('integers', n))
+        return self._integers.pop(0)
+
+    def random(self):
+        self.calls.append(('random',))
+        return self._random
+
+
+class _CountingRng:
+    """A real generator that counts the calls to each draw. A numpy generator's methods are
+    read-only, so the whole rng is replaced rather than patched."""
+
+    def __init__(self, real):
+        self._real = real
+        self.counts = collections.Counter()
+
+    def __getattr__(self, name):
+        method = getattr(self._real, name)
+
+        def counted(*args, **kwargs):
+            self.counts[name] += 1
+            return method(*args, **kwargs)
+        return counted
+
+
+def _values(ps):
+    return [ps[name] for name in NAMES]
+
+
+class TestCopyGuaranteeGate:
+
+    def test_off_under_the_legacy_edition_and_on_under_a_modern_one(self, tmp_path):
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path))
+        assert ade.force_mutation is False                    # legacy: as it always was
+        ade.config.config['edition'] = 2
+        assert ade._resolve_force_mutation() is True
+        ade.config.config['edition'] = 1
+        assert ade._resolve_force_mutation() is False
+
+    def test_an_explicit_setting_wins_under_either_edition(self, tmp_path):
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_force_mutation=1))
+        assert ade.force_mutation is True
+        ade.config.config['edition'] = 2
+        ade.config.config['de_force_mutation'] = 0
+        assert ade._resolve_force_mutation() is False
+
+    @pytest.mark.parametrize('job_type, cls', [('de', 'DifferentialEvolution'),
+                                               ('ade', 'AsynchronousDifferentialEvolution')])
+    @pytest.mark.parametrize('line, expected', [('', True), ('de_force_mutation = 0\n', False)])
+    def test_a_modern_conf_has_it_on_unless_it_says_otherwise(self, tmp_path, job_type, cls,
+                                                               line, expected):
+        """Oracle (the gate through a real edition 2 conf and the parse layer): unset, both
+        methods have the guarantee on; ``de_force_mutation = 0`` turns it off."""
+        text = ('edition = 2\nobjective = banana, a = 1, b = 100\njob_type = %s\n'
+                'uniform_var = x1 -5 5\nuniform_var = x2 -5 5\npopulation_size = 6\n'
+                'max_iterations = 3\n%soutput_dir = %s/out\nwall_time_sim = 0\n'
+                % (job_type, line, tmp_path))
+        alg = getattr(algorithms, cls)(config.Configuration(ploop(text.splitlines(keepends=True))))
+        assert alg.force_mutation is expected
+
+    def test_the_learned_settings_keep_it_on_and_say_so_when_told_otherwise(self, tmp_path,
+                                                                            monkeypatch):
+        """Oracle (learning needs it): a learned rate can sit near 0, where most candidates
+        would be copies, so ``de_adapt_mutation = 1`` keeps the guarantee on; an explicit
+        ``de_force_mutation = 0`` beside it is overruled with a note, not silently."""
+        from pybnf.algorithms.optimizers import differential_evolution as de_module
+        printed = []
+        monkeypatch.setattr(de_module, 'print1', lambda s: printed.append(s))
+        unset = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        assert unset.force_mutation is True and printed == []
+        told_off = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_adapt_mutation=1, de_force_mutation=0))
+        assert told_off.force_mutation is True
+        assert len(printed) == 1 and 'de_force_mutation = 0' in printed[0]
+
+
+class TestCopyGuarantee:
+
+    def _alg(self, tmp_path, **over):
+        return algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_force_mutation=1, mutation_rate=0.5, **over))
+
+    def test_the_legacy_edition_makes_the_same_draws_and_can_still_propose_a_copy(self, tmp_path):
+        """Oracle (the off path is untouched): under the legacy edition a proposal draws its
+        picks and one coin per parameter and nothing else, so when no coin fires the candidate
+        is its base. That is the fault #698 describes, kept there because an unchanged conf
+        must keep behaving as it always has."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, mutation_rate=0.5))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]])
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 5., 30.)), _wide_pset((4., 5., 6.))]
+        assert ade.new_individual(inds) == inds[0]
+        assert ade.rng.calls == [('choice', 3, 3)] + [('random',)] * 3
+
+    def test_with_no_coin_firing_the_parameter_chosen_in_advance_is_mutated(self, tmp_path):
+        """Oracle (the first draw): one parameter is drawn after the picks and before the
+        coins, the draw binomial crossover makes, and with no coin firing it is the only one
+        mutated: v2 = 2 + 0.5 * (20 - 5)."""
+        ade = self._alg(tmp_path)
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[1])
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
+        npt.assert_allclose(_values(ade.new_individual(inds)), [1., 9.5, 3.])
+        assert ade.rng.calls == [('choice', 3, 3), ('integers', 3)] + [('random',)] * 3
+
+    def test_a_parameter_the_donors_share_is_chosen_again_among_those_they_move(self, tmp_path):
+        """Oracle (the shared-value case): the donors share v2, so their difference cannot move
+        the parameter drawn first. The choice is made again among the parameters with a nonzero
+        difference, [v1, v3], and takes v3: v3 = 3 + 0.5 * (30 - 6)."""
+        ade = self._alg(tmp_path)
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[1, 1])
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 5., 30.)), _wide_pset((4., 5., 6.))]
+        npt.assert_allclose(_values(ade.new_individual(inds)), [1., 2., 15.])
+        assert ade.rng.calls == [('choice', 3, 3), ('integers', 3), ('integers', 2)] + [('random',)] * 3
+
+    def test_a_difference_too_small_to_change_the_value_is_not_a_move(self, tmp_path):
+        """Oracle (a move is judged on the value): the donors' v1 differ in the last place, a
+        nonzero difference that leaves 64 as it is in floating point. Drawn first, v1 is no
+        move; drawn again among the nonzero differences it is dropped, and the next draw takes
+        v3, the one left: v3 = 3 + 0.5 * (7 - 9)."""
+        ade = self._alg(tmp_path)
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[0, 0, 0])
+        last_place = float(np.nextafter(1.0, 2.0))
+        inds = [_wide_pset((64., 2., 3.)), _wide_pset((last_place, 5., 7.)), _wide_pset((1., 5., 9.))]
+        new = ade.new_individual(inds)
+        assert _values(new) == [64., 2., 2.]
+        assert ade.rng.calls == ([('choice', 3, 3), ('integers', 3), ('integers', 2), ('integers', 1)]
+                                 + [('random',)] * 3)
+
+    def test_two_differences_that_cancel_are_no_move(self, tmp_path):
+        """Oracle (a 2 strategy): v1's two differences cancel, (10 - 20) + (30 - 20) = 0, and
+        v2's are both zero, so v3 is the parameter chosen again:
+        v3 = 3 + 0.5 * (30 - 31) + 0.5 * (33 - 30)."""
+        ade = self._alg(tmp_path, de_strategy='rand2')
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2, 3, 4]], integers=[0, 0])
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((20., 20., 31.)),
+                _wide_pset((30., 25., 33.)), _wide_pset((20., 25., 30.))]
+        npt.assert_allclose(_values(ade.new_individual(inds)), [1., 2., 4.])
+        assert ade.rng.calls == [('choice', 5, 5), ('integers', 3), ('integers', 1)] + [('random',)] * 3
+
+    def test_donors_that_are_one_parameter_set_are_drawn_again(self, tmp_path):
+        """Oracle (identical donors): the donors drawn with the base are the same parameter set,
+        so they move nothing. Other donors are drawn from the members other than the base
+        (positions 1 to 4; the script takes the third and fourth of them), and the parameter is
+        chosen among those they move: v1 = 1 + 0.5 * (4 - 7)."""
+        ade = self._alg(tmp_path)
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2], [2, 3]], integers=[1, 0])
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((10., 20., 30.)),
+                _wide_pset((4., 5., 6.)), _wide_pset((7., 8., 9.))]
+        npt.assert_allclose(_values(ade.new_individual(inds)), [-0.5, 2., 3.])
+        assert ade.rng.calls == ([('choice', 5, 3), ('integers', 3), ('choice', 4, 2), ('integers', 3)]
+                                 + [('random',)] * 3)
+
+    def test_a_base_whose_other_members_are_one_parameter_set_is_left_a_copy(self, tmp_path):
+        """Oracle (giving up): every member but the base is the same parameter set, so no donors
+        can move anything. Donors are drawn again as many times as the population has members,
+        four, and then the candidate is left its base; only a population that has all but
+        collapsed can still propose a copy."""
+        ade = self._alg(tmp_path)
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]] + [[0, 1]] * 4, integers=[2])
+        inds = [_wide_pset((1., 2., 3.))] + [_wide_pset((10., 20., 30.)) for _ in range(3)]
+        assert ade.new_individual(inds) == inds[0]
+        assert ade.rng.calls == ([('choice', 4, 3), ('integers', 3)] + [('choice', 3, 2)] * 4
+                                 + [('random',)] * 3)
+
+    def test_the_learned_settings_use_the_same_guarantee(self, tmp_path, monkeypatch):
+        """Oracle (one code path): with the settings learned and a drawn rate of 0, no coin fires,
+        and a first choice the donors cannot move is made again exactly as it is without
+        learning."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        ade.start_run()
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 5., 30.)), _wide_pset((4., 5., 6.))]
+        ade.individuals, ade.fitnesses = inds, [5.0, 3.0, 7.0]
+        monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.0, 0.5))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[1, 1], random=0.5)
+        npt.assert_allclose(_values(ade.new_individual(inds)), [1., 2., 15.])
+        assert ade.rng.calls == [('choice', 3, 3), ('integers', 3), ('integers', 2)] + [('random',)] * 3
+
+    @pytest.mark.parametrize('strategy', ['rand1', 'rand2'])
+    def test_no_candidate_is_a_copy_of_its_base_in_a_population_that_shares_values(self, tmp_path,
+                                                                                   strategy):
+        """Oracle (the guarantee itself): ten members built from the values 1 and 2, two of
+        them duplicates, so the donors often share the parameter drawn first and are sometimes
+        one parameter set. Proposing from every base in turn with the real generator, no
+        candidate equals its base, and those proposals did make the choice again and did draw
+        donors again; the legacy edition proposes copies from the same population."""
+        members = [(1, 1, 1), (1, 1, 2), (1, 2, 2), (2, 2, 2), (2, 2, 1), (2, 1, 1), (1, 2, 1),
+                   (2, 1, 2), (1, 1, 1), (2, 2, 2)]
+        inds = [_wide_pset(tuple(float(v) for v in m)) for m in members]
+        on = self._alg(tmp_path, de_strategy=strategy, random_seed=11)
+        on.rng = _CountingRng(on.rng)
+        off = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, mutation_rate=0.5, de_strategy=strategy, random_seed=11))
+        chosen_again = drawn_again = legacy_copies = 0
+        for trial in range(400):
+            base = trial % len(inds)
+            on.rng.counts.clear()
+            assert on.new_individual(inds, base) != inds[base]
+            chosen_again += on.rng.counts['integers'] > 1
+            drawn_again += on.rng.counts['choice'] > 1
+            legacy_copies += off.new_individual(inds, base) == inds[base]
+        assert chosen_again > 0 and drawn_again > 0
+        assert legacy_copies > 0
+
+
+class TestCopyGuaranteeDriven:
+    """``ade`` driven through ``got_result`` on a three-parameter bowl whose noise is drawn
+    from a seed derived from the parameter values, the way ``stochastic_seed = auto`` seeds
+    a simulation, so an exact copy scores exactly what its base scored and any other
+    candidate draws fresh noise. The score is set here, so the objective the conf names is
+    never evaluated."""
+
+    d1s = data.Data()
+    d1s.data = d1s._read_file_lines(
+        ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
+
+    @staticmethod
+    def _noisy_bowl(ps):
+        seed = derive_seed(param_set=ps, model_name='bowl', action_index=0, suffix='bowl',
+                           method='ssa')
+        noise = np.random.default_rng(seed).standard_normal()
+        values = np.array([ps[name] for name in sorted(ps.keys())])
+        return float(np.sum((values - 1.0) ** 2) + 0.5 * noise)
+
+    def _drive(self, alg, budget):
+        """Run the fit until it stops or has spent ``budget`` evaluations; the evaluation it
+        stopped at, or None if it ran to the budget."""
+        queue = list(alg.start_run())
+        for n in range(1, budget + 1):
+            ps = queue.pop(0)
+            res = algorithms.Result(ps, self.d1s, ps.name)
+            res.score = self._noisy_bowl(ps)
+            out = alg.got_result(res)
+            if out == 'STOP':
+                return n
+            queue.extend(out)
+        return None
+
+    def test_the_legacy_edition_collapses_onto_one_parameter_set_and_stops(self, tmp_path):
+        """Reproduces #698: at rate 0.5 on three parameters one candidate in eight is a copy of
+        its base, a copy ties its base exactly and takes any worse slot, the copies become
+        bases for more copies, and the population ends as one parameter set whose spread of
+        zero stops the run long before its budget."""
+        conf = {
+            'population_size': 10, 'max_iterations': 10 ** 6, 'mutation_rate': 0.5,
+            'mutation_factor': 0.5, 'de_strategy': 'rand1', 'fit_type': 'ade',
+            'stop_tolerance': 0, 'output_every': 10 ** 6, 'random_seed': 1,
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
+            'output_dir': str(tmp_path / 'ade_out')}
+        conf.update({('uniform_var', name): [-10, 10] for name in NAMES})
+        ade = algorithms.AsynchronousDifferentialEvolution(config.Configuration(conf))
+        assert not ade.force_mutation
+        assert self._drive(ade, 2000) is not None
+        assert len(set(ade.individuals)) == 1 and len(set(ade.fitnesses)) == 1
+
+    def test_under_edition_2_the_run_keeps_a_population_and_its_budget(self, tmp_path):
+        """The same fit under ``edition = 2``, where the guarantee is on by default: it runs to
+        its budget with a population of distinct parameter sets."""
+        text = ('edition = 2\nobjective = gaussian, mean = 1 1 1, variance = 1 1 1\njob_type = ade\n'
+                'uniform_var = x1 -10 10\nuniform_var = x2 -10 10\nuniform_var = x3 -10 10\n'
+                'population_size = 10\nmax_iterations = 1000000\nmutation_rate = 0.5\n'
+                'mutation_factor = 0.5\nde_strategy = rand1\nstop_tolerance = 0\n'
+                'output_every = 1000000\nrandom_seed = 1\noutput_dir = %s/out\nwall_time_sim = 0\n'
+                % tmp_path)
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            config.Configuration(ploop(text.splitlines(keepends=True))))
+        assert ade.force_mutation
+        assert self._drive(ade, 2000) is None
+        assert len(set(ade.individuals)) > 1

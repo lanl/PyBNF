@@ -210,6 +210,25 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Differential evolution no longer proposes a candidate that is an exact copy of the
+  parameter set it was built from, under `edition = 2` (#698, ADR-0143).** A candidate is its
+  base with each parameter moved by the donors' difference with probability `mutation_rate`,
+  and nothing guaranteed that any parameter moved: at the default rate one candidate in eight
+  on a three-parameter model was a copy. Under the default seed policy a copy scores exactly
+  what its base scored and takes the place of any worse member, and in `ade` the copies built
+  more copies until the population was one parameter set and the run stopped, reporting
+  convergence; on the stochastic recovery benchmark that stopped 24 of 30 `ade` fits early.
+  One parameter chosen at random is now always mutated, as binomial crossover guarantees, and
+  because PyBNF's candidates share values with the members they are built from, the choice is
+  made again among the parameters the donors' difference actually moves when it does not move
+  the one drawn, and other donors are drawn when it moves none. On the benchmark no fit stops
+  early any more, and `ade` succeeds from 12 of 30 seeds against 4 (8 seeds only with the
+  guarantee, none only without); `de`, which never collapsed, goes from 6 to 8, within noise.
+  The learned mutation settings (`de_adapt_mutation = 1`) now use the same guarantee, which
+  removes the early stops they still had. The legacy edition keeps the original proposal, draw
+  for draw, and `de_force_mutation` sets the guarantee either way. Tutorial lessons 24, 25 and
+  44 run more iterations, since at their old budgets the new proposal left the fits of their
+  recovery checks just short of the documented values.
 - **Scatter search no longer archives a lucky draw as a local minimum (#660 step 3,
   ADR-0136).** Scatter search decides everything by ranking, and for a stochastic model
   each objective value is one draw. The reference set stored that draw as fact, so a

@@ -101,6 +101,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # #667/ADR-0142): the switch (0 = off, the configured pair is used as
                # written) and how many generations of successes the history remembers.
                'de_adapt_mutation', 'de_adapt_memory',
+               # Differential evolution's copy guarantee (job_type = de / ade, #698/
+               # ADR-0143): a candidate always mutates a parameter its donors move, so it is
+               # never an exact copy of its base; unset follows the edition.
+               'de_force_mutation',
                # The end-of-fit stage that confirms which parameter set a stochastic fit
                # really found (#659): how many of the top parameter sets to run again, and
                # how many times to run each of them.
