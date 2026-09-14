@@ -321,7 +321,8 @@ class TestDifferentialEvolutionPlumbing:
                                                          de_strategy=strategy))
         recorded = []
         orig = de.new_individual
-        de.new_individual = lambda inds, base_index=None: recorded.append(base_index) or orig(inds, base_index)
+        de.new_individual = (lambda inds, base_index=None, island=0:
+                             recorded.append(base_index) or orig(inds, base_index, island=island))
         self._run_one_island_generation(de, [5.0, 3.0, 7.0])  # argmin at index 1
         assert len(recorded) == 3
         if expected == 'argmin':
@@ -483,3 +484,290 @@ class TestAsyncDifferentialEvolution:
             assert recorded == [0]
         else:
             assert recorded == [None]
+
+
+# --------------------------------------------------------------------------- #
+# The learned mutation settings (#667, ADR-0142): SuccessHistory holds SHADE's
+# success-history memory and its draw; the family base draws each candidate's
+# (rate, factor) from it, carries the pair with the candidate, judges the outcome
+# against the candidate's base, and folds a generation's successes in at the end.
+# --------------------------------------------------------------------------- #
+from pybnf.algorithms.optimizers.differential_evolution import SuccessHistory
+
+
+def _fake_rng(**draws):
+    """An rng whose named draws return fixed values (choice/random/integers/normal/
+    standard_cauchy/uniform), so a proposal has a closed form."""
+    return SimpleNamespace(**draws)
+
+
+class TestSuccessHistory:
+
+    def test_memory_starts_at_the_configured_pair(self):
+        """Oracle (initial memory): every slot holds the configured pair, so a run that
+        never records a success draws around the settings its author chose."""
+        h = SuccessHistory(4, 0.7, 0.3)
+        assert h.rates == [0.7] * 4 and h.factors == [0.3] * 4
+        assert h.means() == (0.7, 0.3)
+        assert h.next_slot == 0 and h.pending == []
+
+    def test_draw_is_around_one_slot_with_the_rate_clipped_and_the_factor_capped(self):
+        """Oracle (SHADE's draw): rate = normal(M_CR[r], 0.1) clipped to [0, 1], factor =
+        M_F[r] + 0.1 * cauchy capped at 1, both around the same randomly chosen slot."""
+        h = SuccessHistory(3, 0.5, 0.5)
+        h.rates = [0.2, 0.95, 0.5]
+        h.factors = [0.4, 0.98, 0.5]
+        high = _fake_rng(integers=lambda n: 1, normal=lambda loc, scale: loc + 2 * scale,
+                         standard_cauchy=lambda: 3.0)
+        assert h.draw(high) == (1.0, 1.0)          # 0.95 + 0.2 clipped; 0.98 + 0.3 capped
+        low = _fake_rng(integers=lambda n: 0, normal=lambda loc, scale: loc - 3 * scale,
+                        standard_cauchy=lambda: -1.0)
+        rate, factor = h.draw(low)
+        assert rate == 0.0                          # 0.2 - 0.3 clipped
+        npt.assert_allclose(factor, 0.3)            # 0.4 - 0.1, positive so kept
+
+    def test_a_factor_that_is_not_positive_is_drawn_again(self):
+        """Oracle (the factor's redraw): a Cauchy draw that lands at or below 0 is
+        discarded and drawn again around the same slot until it is positive."""
+        h = SuccessHistory(1, 0.5, 0.05)
+        cauchy = iter([-1.0, -0.5, 1.0])            # 0.05 - 0.1 < 0; 0.05 - 0.05 == 0; 0.05 + 0.1
+        rng = _fake_rng(integers=lambda n: 0, normal=lambda loc, scale: loc,
+                        standard_cauchy=lambda: next(cauchy))
+        rate, factor = h.draw(rng)
+        npt.assert_allclose(factor, 0.15)
+        assert rate == 0.5
+
+    def test_flush_folds_the_successes_with_gain_weighted_means(self):
+        """Oracle (SHADE's memory update): with successes (0.2, 0.2, gain 1) and
+        (0.8, 0.8, gain 3) the weights are 1/4 and 3/4; the rate is the weighted mean
+        0.65 and the factor the weighted Lehmer mean 0.49 / 0.65, which exceeds the
+        arithmetic 0.65 because the Lehmer mean leans toward the larger factors."""
+        h = SuccessHistory(2, 0.5, 0.5)
+        h.record(0.2, 0.2, 1.0)
+        h.record(0.8, 0.8, 3.0)
+        assert h.flush()
+        npt.assert_allclose(h.rates[0], 0.65)
+        npt.assert_allclose(h.factors[0], 0.49 / 0.65)
+        assert h.factors[0] > 0.65
+        assert h.rates[1] == 0.5 and h.factors[1] == 0.5      # the other slot untouched
+        assert h.next_slot == 1 and h.pending == []
+
+    def test_flush_with_no_success_leaves_the_memory_alone(self):
+        h = SuccessHistory(2, 0.5, 0.5)
+        assert not h.flush()
+        assert h.rates == [0.5, 0.5] and h.factors == [0.5, 0.5] and h.next_slot == 0
+
+    def test_the_slots_are_written_in_turn_and_wrap(self):
+        """Oracle (memory position): each flush writes the next slot, wrapping to the
+        first after the last, so the memory holds the last ``size`` generations that
+        had a success."""
+        h = SuccessHistory(2, 0.5, 0.5)
+        for rate in (0.1, 0.2, 0.3):
+            h.record(rate, 0.5, 1.0)
+            h.flush()
+        assert h.rates == [0.3, 0.2] and h.next_slot == 1
+
+
+class TestLearnedMutationSettings:
+
+    d1s = data.Data()
+    d1s.data = d1s._read_file_lines(
+        ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
+
+    def _result(self, pset, score):
+        res = algorithms.Result(pset, self.d1s, pset.name)
+        res.score = score
+        return res
+
+    def test_off_by_default_and_the_history_is_never_consulted(self, tmp_path, monkeypatch):
+        """Oracle (off by default, #667): de_adapt_mutation defaults to 0, under which no
+        candidate draws from a history or is recorded, so an existing configuration runs
+        as it always has (the TestNewIndividual oracles, whose fake rng has no integers /
+        normal / standard_cauchy draw, pin that the off path makes no extra draw)."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, population_size=3))
+        assert not ade.adapt_mutation
+        monkeypatch.setattr(SuccessHistory, 'draw',
+                            lambda self, rng: pytest.fail('the history was consulted while off'))
+        start = ade.start_run()
+        for ps, sc in zip(start, [5.0, 3.0, 7.0]):
+            ade.got_result(self._result(ps, sc))
+        assert ade._trial_settings == {}
+
+    def test_a_candidate_carries_its_settings_and_its_bases_fitness(self, tmp_path, monkeypatch):
+        """Oracle (the record that travels with a candidate): with the history drawing
+        (0.9, 0.6) and picks [2, 0, 1], every parameter of the candidate is
+        ind[2] + 0.6 * (ind[0] - ind[1]) -- the drawn factor, not the configured one --
+        and the candidate is registered with the drawn pair, the base's fitness (7.0 at
+        index 2) and its island."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_adapt_mutation=1, mutation_factor=0.5))
+        ade.start_run()
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
+        ade.individuals, ade.fitnesses = inds, [5.0, 3.0, 7.0]
+        monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.9, 0.6))
+        monkeypatch.setattr(ade, 'rng', _fake_rng(
+            choice=lambda n, k, replace=False: np.array([2, 0, 1]), integers=lambda n: 0,
+            random=lambda: 0.0))
+        new = ade.new_individual(inds)
+        for name in NAMES:
+            npt.assert_allclose(new[name], inds[2][name] + 0.6 * (inds[0][name] - inds[1][name]))
+        assert ade._trial_settings[new] == (0.9, 0.6, 7.0, 0)
+
+    def test_a_drawn_rate_of_zero_still_mutates_the_parameter_chosen_in_advance(self, tmp_path, monkeypatch):
+        """Oracle (binomial crossover's guarantee, on only when learning): with a drawn
+        rate of 0 no coin fires, but the parameter chosen in advance (index 1) is mutated
+        anyway, so the candidate is never an exact copy of its base."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        ade.start_run()
+        inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
+        ade.individuals, ade.fitnesses = inds, [5.0, 3.0, 7.0]
+        monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.0, 0.5))
+        monkeypatch.setattr(ade, 'rng', _fake_rng(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2]), integers=lambda n: 1,
+            random=lambda: 0.5))
+        new = ade.new_individual(inds)
+        assert new != inds[0]
+        npt.assert_allclose(new['v1__FREE'], 1.)
+        npt.assert_allclose(new['v2__FREE'], 2. + 0.5 * (20. - 5.))
+        npt.assert_allclose(new['v3__FREE'], 3.)
+
+    def test_a_success_is_judged_against_the_base_not_the_slot(self, tmp_path, monkeypatch):
+        """Oracle (what a success is): a candidate built from the base at index 1
+        (fitness 3) that competes for slot 2 (fitness 7) and scores 4 beats the slot but
+        not its base, so it records nothing; one that scores 2 records the drawn pair
+        with the gain 3 - 2 = 1 over its base."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        start = ade.start_run()
+        ade.individuals, ade.fitnesses = list(start), [5.0, 3.0, 7.0]
+        monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.9, 0.6))
+        monkeypatch.setattr(ade, 'rng', _fake_rng(
+            choice=lambda n, k, replace=False: np.array([1, 0, 2]), integers=lambda n: 0,
+            random=lambda: 0.0))
+        beats_slot_only = ade.new_individual(ade.individuals)
+        beats_slot_only.name = 'gen1ind2'
+        ade.got_result(self._result(beats_slot_only, 4.0))
+        assert ade.histories[0].pending == []
+        assert ade.fitnesses[2] == 4.0                       # it did take the slot
+        beats_base = ade.new_individual(ade.individuals)
+        beats_base.name = 'gen1ind0'
+        ade.got_result(self._result(beats_base, 2.0))
+        assert ade.histories[0].pending == [(0.9, 0.6, 1.0)]
+
+    def test_a_failed_simulation_on_either_side_records_nothing(self, tmp_path, monkeypatch):
+        """Oracle (no evidence from infinity): a candidate whose base had no finite
+        fitness yet, or whose own simulation failed, says nothing about the settings."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        start = ade.start_run()
+        ade.individuals = list(start)
+        monkeypatch.setattr(ade, 'rng', _fake_rng(
+            choice=lambda n, k, replace=False: np.array([1, 0, 2]), integers=lambda n: 0,
+            random=lambda: 0.0, normal=lambda loc, scale: loc, standard_cauchy=lambda: 0.0))
+        ade.fitnesses = [5.0, np.inf, 7.0]                   # base (index 1) unscored
+        unscored_base = ade.new_individual(ade.individuals)
+        unscored_base.name = 'gen1ind0'
+        ade.got_result(self._result(unscored_base, 1.0))
+        ade.fitnesses = [5.0, 3.0, 7.0]
+        failed = ade.new_individual(ade.individuals)
+        failed.name = 'gen1ind2'
+        ade.got_result(self._result(failed, np.inf))
+        assert ade.histories[0].pending == []
+
+    def test_de_flushes_at_the_end_of_each_island_generation(self, tmp_path):
+        """Oracle (when de learns): generation 0's results register nothing (the initial
+        population was not built by the history); generation 1's three candidates each
+        carry a record, and when the island's generation ends their successes are folded
+        into slot 0 and the next generation's candidates are registered afresh."""
+        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1, mutation_rate=0.5))
+        start = de.start_run()
+        assert de._trial_settings == {}
+        gen1 = None
+        for ps, sc in zip(start, [5.0, 3.0, 7.0]):
+            gen1 = de.got_result(self._result(ps, sc))
+        assert len(gen1) == 3 and len(de._trial_settings) == 3
+        for record in de._trial_settings.values():
+            assert record[2] in (5.0, 3.0, 7.0) and record[3] == 0
+        history = de.histories[0]
+        assert history.next_slot == 0
+        for ps in gen1:
+            de.got_result(self._result(ps, 1.0))            # below every base: 3 successes
+        assert history.next_slot == 1 and history.pending == []
+        assert len(de._trial_settings) == 3                  # generation 2 registered
+
+    def test_de_keeps_the_record_of_a_perturbed_duplicate(self, tmp_path):
+        """Oracle (the record follows the candidate): de moves a candidate that duplicates
+        one in flight by up to 1e-6 per parameter; the moved candidate keeps the record."""
+        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
+        de.start_run()
+        p = _wide_pset((1., 2., 3.))
+        de._trial_settings[p] = (0.5, 0.5, 2.0, 0)
+        moved = de._perturb_duplicate(p)
+        assert moved != p
+        assert de._trial_settings == {moved: (0.5, 0.5, 2.0, 0)}
+
+    def test_ade_flushes_every_population_size_results(self, tmp_path):
+        """Oracle (when ade learns): a population's worth of results is ade's generation.
+        The initial results fold nothing (no records yet); the next population's worth,
+        all scoring below every base, are successes and are folded at the boundary."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1,
+                                                                       population_size=3))
+        start = ade.start_run()
+        ade.fitnesses = [5.0, 3.0, 7.0]                      # every base finite from the start
+        proposals = []
+        for ps, sc in zip(start, [5.0, 3.0, 7.0]):
+            proposals += ade.got_result(self._result(ps, sc))
+        history = ade.histories[0]
+        assert ade.sims_completed == 3 and history.next_slot == 0
+        assert len(proposals) == 3 and len(ade._trial_settings) == 3
+        for ps in proposals[:2]:
+            ade.got_result(self._result(ps, 1.0))
+        assert len(history.pending) == 2 and history.next_slot == 0
+        ade.got_result(self._result(proposals[2], 1.0))
+        assert history.next_slot == 1 and history.pending == []
+
+    def test_each_start_of_a_multistart_run_learns_afresh(self, tmp_path):
+        """Oracle (reset): a new start rebuilds the histories at the configured pair and
+        forgets the candidates in flight, so it does not inherit the settings the previous
+        start ended on."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1,
+                                                                       de_adapt_memory=3))
+        ade.start_run()
+        assert len(ade.histories) == 1 and ade.histories[0].rates == [1.0] * 3
+        ade.histories[0].rates[0] = 0.2
+        ade._trial_settings[_wide_pset((1., 2., 3.))] = (0.5, 0.5, 2.0, 0)
+        ade._search_start_run()
+        assert ade.histories[0].rates == [1.0] * 3 and ade._trial_settings == {}
+
+    def test_learned_settings_average_over_the_islands(self, tmp_path):
+        """Oracle (the progress line): de keeps one history per island and reports the
+        mean over them."""
+        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1, islands=2,
+                                                         population_size=6))
+        de.start_run()
+        assert len(de.histories) == 2
+        de.histories[0].rates = [0.2] * 6
+        de.histories[1].rates = [0.4] * 6
+        rate, factor = de._learned_settings()
+        npt.assert_allclose(rate, 0.3)
+        npt.assert_allclose(factor, 0.5)
+
+    def test_the_final_output_reports_the_learned_pair_at_normal_verbosity(self, tmp_path, monkeypatch):
+        """Oracle (the end-of-run line): the final output_results call prints the memory's
+        mean pair and the pair the run started from, through print1 so a run at verbosity 1
+        sees it; a periodic or backup output_results call prints nothing."""
+        from pybnf.algorithms.base import Algorithm
+        from pybnf.algorithms.optimizers import differential_evolution as de_module
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1,
+                                                                       mutation_rate=0.5))
+        ade.start_run()
+        ade.histories[0].rates = [0.3] * ade.adapt_memory
+        ade.histories[0].factors = [0.8] * ade.adapt_memory
+        printed = []
+        monkeypatch.setattr(de_module, 'print1', lambda s: printed.append(s))
+        monkeypatch.setattr(Algorithm, 'output_results', lambda self, name='', no_move=False: None)
+        ade.output_results('backup', no_move=True)
+        ade.output_results()
+        assert printed == []
+        ade.output_results('final')
+        assert len(printed) == 1
+        assert 'rate 0.30, factor 0.80' in printed[0]
+        assert 'mutation_rate 0.5, mutation_factor 0.5' in printed[0]

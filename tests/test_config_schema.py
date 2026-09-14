@@ -212,6 +212,9 @@ class TestRegistrySchemaSeam:
         assert issubclass(DifferentialEvolutionConfig, DEFamilyConfig)
         assert issubclass(AsyncDEConfig, DEFamilyConfig)
         assert 'mutation_rate' in DEFamilyConfig.owned_keys()
+        # The learned mutation settings (#667) are read by the family base's __init__, so
+        # their keys ride the shared base and both de and ade own them.
+        assert {'de_adapt_mutation', 'de_adapt_memory'} <= DEFamilyConfig.owned_keys()
         assert 'islands' in DifferentialEvolutionConfig.owned_keys()
         assert 'islands' not in DEFamilyConfig.owned_keys()
         assert 'islands' not in AsyncDEConfig.owned_keys()    # async DE has no islands

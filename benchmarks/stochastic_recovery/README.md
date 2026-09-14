@@ -379,6 +379,43 @@ default is 3 since ADR-0141; the baseline rows for `ss_noise` above were measure
 stay as they are, labelled by what ran.
 
 
+## Follow-up: differential evolution with learned mutation settings
+
+`results/de_adapt_5seeds.json` and `results/de_adapt_5seeds.md` score `de` and `ade` with and
+without `de_adapt_mutation = 1` (lanl/PyBNF#667, ADR-0142), five seeds per problem at the
+frozen budgets, from the same seeds as the baseline; the `de` rows are the baseline's own, since
+the change leaves that code path byte-identical. `ade` had not been scored before; it is the
+`de` method with `fit_type = ade` laid over it, recorded under its own name.
+
+| method | successes of 30 (factor 2) | successes of 30 (26%) | only it / only its fixed-setting pair | final error better / worse than the pair | median final error |
+|---|---:|---:|---|---|---:|
+| `de` | 6 | 0 | | | 0.630 |
+| `de_adapt` | 11 | 5 | 6 / 1 | 17 / 13 | 0.573 |
+| `de_forced` | 8 | 4 | 6 / 4 | 16 / 14 | 0.540 |
+| `ade` | 4 | 1 | | | 0.706 |
+| `ade_adapt` | 8 | 4 | 5 / 1 | 15 / 15 | 0.833 |
+| `ade_forced` | 10 | 5 | 8 / 2 | 18 / 12 | 0.527 |
+
+The successes come from Hlavacek_PNAS2001, two of five to five of five under both methods with
+final errors of 0.006 to 0.10 decades against 0.14 to 1.5, and McKane_PhysRevLett2005 under
+`de`. Yang_PhysRevE2008 is worse on four of five seeds under both methods, and
+Shahrezaei_PNAS2008 under `de` is worse on four of five with the same successes. Neither sign
+test reaches significance at five seeds.
+Plain `ade` stopped before the budget in 24 of 30 fits with its population collapsed onto one
+parameter set (exact copies of a member tie it under the seed policy and replace worse slots);
+with the learned settings, which never propose an exact copy, 4 of 30.
+
+`de_forced` and `ade_forced` are controls, not PyBNF fit types: each method with the settings
+fixed at 0.5 / 0.5 and only the learned settings' guarantee that one parameter is always
+mutated, run through a subclass whose `new_individual` is the base's with that forced
+parameter and no history, under the same seeds and budgets. They separate the guarantee's
+effect from the learning's: the guarantee alone never stopped early and raised the successes
+to 8 (`de`) and 10 (`ade`); against it the learned settings add successes under `de` (8 to 11,
+better final error on 17 of 30 seeds) and lose them under `ade` (10 to 8, worse on 19 of 30).
+Both effects are concentrated: the learning's gain is Hlavacek_PNAS2001 under both methods,
+the guarantee's is Shahrezaei_PNAS2008 and McKane_PhysRevLett2005 under `ade`. Wall times in
+this file are not comparable with the baseline's, since these runs shared the machine.
+
 ## Scoring a change
 
 Run the baseline methods again after the change with the same seeds, summarize, and compare

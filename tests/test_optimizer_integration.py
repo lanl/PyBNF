@@ -903,6 +903,43 @@ def test_de_finds_banana_valley(tmp_path):
     assert np.allclose(recovered, [a, a ** 2], atol=0.2), recovered
 
 
+@pytest.mark.parametrize('fit_type', ['de', 'ade'])
+def test_de_family_finds_gaussian_mode_with_learned_mutation_settings(tmp_path, fit_type):
+    """With ``de_adapt_mutation = 1`` (#667, ADR-0142) each DE-family method still
+    recovers the Gaussian mode, and the success history has moved off the configured
+    pair by the end, which is to say it learned something from the run."""
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, fit_type, tgt, exp, n_params=2,
+        population_size=24, max_iterations=60, stop_tolerance=1e-7, de_adapt_mutation=1)
+    alg = OPTIMIZERS[fit_type](conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, mean, atol=0.25), \
+        '%s recovered %s, expected ~%s' % (fit_type, recovered, mean)
+    assert alg.trajectory.best_score() < 0.05
+    assert alg._learned_settings() != (0.5, 0.5)
+
+
+@pytest.mark.slow
+def test_de_finds_banana_valley_with_learned_mutation_settings(tmp_path):
+    """The banana valley from the configured defaults of 0.5 / 0.5, which the fixed-setting
+    test above has to override to 0.9 / 0.6 to pass: with ``de_adapt_mutation = 1`` the
+    run finds the settings the valley needs on its own (#667, ADR-0142)."""
+    a, b = 1.0, 100.0
+    tgt, exp = H.write_target(tmp_path, H.banana_spec(a, b))
+    conf = H.make_config(
+        tmp_path, 'de', tgt, exp, n_params=2, bounds=(-5.0, 5.0),
+        population_size=40, max_iterations=300, stop_tolerance=1e-9, de_adapt_mutation=1)
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, [a, a ** 2], atol=0.2), recovered
+
+
 @pytest.mark.slow
 def test_cmaes_finds_banana_valley(tmp_path):
     """CMA-ES finds the Rosenbrock/banana minimum at (a, a^2). The curved,

@@ -58,6 +58,9 @@ OWNERSHIP_CASES = [
     ('de', 'totally_made_up_key', True),                      # broad policy: typo warns
     # ade owns only the DE-family base (no island keys)
     ('ade', 'mutation_rate', False), ('ade', 'islands', True),
+    # the learned mutation settings (#667) are DE-family keys: both de and ade own them
+    ('de', 'de_adapt_mutation', False), ('ade', 'de_adapt_memory', False),
+    ('pso', 'de_adapt_mutation', True),
     # pso owns its swarm keys + the particle_weight_final runtime key
     ('pso', 'cognitive', False), ('pso', 'particle_weight_final', False),
     ('pso', 'mutation_rate', True),
