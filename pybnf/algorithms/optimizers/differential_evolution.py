@@ -4,6 +4,12 @@ DifferentialEvolutionBase is the shared base; DifferentialEvolution (``de``) and
 AsynchronousDifferentialEvolution (``ade``) subclass it. Extracted byte-identical
 (M1 Step 4). The family makes no core.* call of its own — the run loop and the
 execution seam are inherited from Algorithm.
+
+With ``de_adapt_mutation = 1`` the family learns its two mutation settings during the
+run from a success history (Tanabe and Fukunaga 2013; #667, ADR-0142) instead of using
+``mutation_rate`` and ``mutation_factor`` as written: :class:`SuccessHistory` holds the
+memory, the base draws each candidate's pair from it and records the outcome, and each
+subclass says when a generation has ended.
 """
 
 
@@ -26,6 +32,73 @@ import copy
 # Preserve the original module logger name so log records keep the
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
+
+
+class SuccessHistory:
+    """The success history of the mutation settings (Tanabe and Fukunaga 2013; #667,
+    ADR-0142): a short memory of the ``mutation_rate`` / ``mutation_factor`` pairs that
+    recently produced a candidate better than the parameter set it was built from, and
+    the draw that turns that memory into the pair for the next candidate.
+
+    The memory has ``size`` slots, each a (rate, factor) pair, all starting at the
+    configured pair so a run that never records a success keeps drawing around the
+    settings its author chose. A candidate's pair is drawn around a slot picked at
+    random: the rate from a normal distribution with spread 0.1, clipped to [0, 1]; the
+    factor from a Cauchy distribution with the same spread, capped at 1 and drawn again
+    while it is not positive. The Cauchy tail is what lets a memory sitting at 0.5 still
+    try a factor near 1 now and then, so the history can move once the search's needs
+    change. Successes accumulate as they are reported and are folded into the memory one
+    slot at a time when the method says a generation has ended: the rate as the mean of
+    the successful rates weighted by how much each improved on its base, the factor as
+    the weighted Lehmer mean, which leans toward the larger factors because a small step
+    succeeds more often but by less, and would otherwise pull the memory toward ever
+    smaller steps. A generation with no success leaves the memory as it was.
+
+    Plain lists and floats, so it rides the backup pickle with the rest of the optimizer
+    (ADR-0007). ``de`` keeps one per island, ``ade`` keeps one.
+    """
+
+    #: The spread of a draw around the remembered pair, on both settings (SHADE's 0.1).
+    SPREAD = 0.1
+
+    def __init__(self, size, mutation_rate, mutation_factor):
+        self.size = max(1, int(size))
+        self.rates = [float(mutation_rate)] * self.size
+        self.factors = [float(mutation_factor)] * self.size
+        self.next_slot = 0
+        self.pending = []   # (rate, factor, gain) of every success since the last flush
+
+    def draw(self, rng):
+        """The (rate, factor) pair for one new candidate, from the algorithm's ``rng``."""
+        slot = int(rng.integers(self.size))
+        rate = min(1.0, max(0.0, rng.normal(self.rates[slot], self.SPREAD)))
+        factor = self.factors[slot] + self.SPREAD * rng.standard_cauchy()
+        while factor <= 0.0:
+            factor = self.factors[slot] + self.SPREAD * rng.standard_cauchy()
+        return rate, min(1.0, factor)
+
+    def record(self, rate, factor, gain):
+        """A success: the pair built a candidate better than its base by ``gain``, which
+        the caller guarantees is positive and finite."""
+        self.pending.append((float(rate), float(factor), float(gain)))
+
+    def flush(self):
+        """Fold the successes since the last flush into the next slot. Returns whether
+        anything was folded (nothing is, and the memory is untouched, when no candidate
+        succeeded)."""
+        if not self.pending:
+            return False
+        rates, factors, gains = (np.asarray(col, dtype=float) for col in zip(*self.pending))
+        weights = gains / gains.sum()
+        self.rates[self.next_slot] = float(np.dot(weights, rates))
+        self.factors[self.next_slot] = float(np.dot(weights, factors ** 2) / np.dot(weights, factors))
+        self.next_slot = (self.next_slot + 1) % self.size
+        self.pending = []
+        return True
+
+    def means(self):
+        """The memory's mean (rate, factor), for reporting."""
+        return float(np.mean(self.rates)), float(np.mean(self.factors))
 
 
 class DEFamilyConfig(PyBNFConfigModel):
@@ -54,6 +127,14 @@ class DEFamilyConfig(PyBNFConfigModel):
     # ADR-0106), so an existing config keeps the threshold magnitude it had.
     de_tolfun: Optional[float] = Field(default=None, ge=0.0)
     de_strategy: str = 'rand1'
+    # Learn ``mutation_rate`` and ``mutation_factor`` during the run from a success
+    # history (#667, ADR-0142) instead of using the pair above as written. Off by
+    # default: an existing configuration runs exactly as it did. The configured pair is
+    # where the learning starts.
+    de_adapt_mutation: int = 0
+    # How many generations' worth of successful settings the history remembers (the
+    # memory size H of Tanabe and Fukunaga; L-SHADE's 6).
+    de_adapt_memory: int = Field(default=6, ge=1)
 
 
 class DifferentialEvolutionConfig(MultiStartConfig, DEFamilyConfig):
@@ -111,11 +192,24 @@ class DifferentialEvolutionBase(Algorithm):
         if self.strategy not in options:
             raise PybnfError('Invalid differential evolution strategy "{}". Options are: {}'.format(self.strategy, ','.join(options)))
 
-    def new_individual(self, individuals, base_index=None):
+        # The learned mutation settings (#667, ADR-0142): whether to learn them, how much
+        # to remember, one success history per island (``ade``: one), and the settings of
+        # every candidate still in flight, keyed by the candidate, since ``ade`` returns
+        # results in whatever order the simulations finish.
+        self.adapt_mutation = bool(config.config['de_adapt_mutation'])
+        self.adapt_memory = int(config.config['de_adapt_memory'])
+        self.histories = []
+        self._trial_settings = dict()
+
+    def new_individual(self, individuals, base_index=None, island=0):
         """
         Create a new individual for the specified island, according to the set strategy
 
+        :param individuals: The island's current population
         :param base_index: The index to use for the new individual, or None for a random index.
+        :param island: Which island the individual is for. With ``de_adapt_mutation`` on, that
+            island's success history supplies the mutation settings and learns from the outcome
+            (``ade`` has a single island, 0).
         :return:
         """
 
@@ -141,20 +235,120 @@ class DifferentialEvolutionBase(Algorithm):
         base = individuals[picks[0]]
         others = [individuals[p] for p in picks[1:]]
 
+        # The mutation settings for this candidate: the configured pair, or a draw from the
+        # island's success history (#667, ADR-0142). A drawn rate can be near 0, so one
+        # parameter chosen in advance is then always mutated, as binomial crossover does:
+        # no candidate is an exact copy of its base, which could never be a real success
+        # (under the default seed policy a copy ties its base exactly; under any other it
+        # beats it only by noise). Off, nothing here touches the rng.
+        rate, factor = self.mutation_rate, self.mutation_factor
+        forced = None
+        if self.adapt_mutation:
+            rate, factor = self.histories[island].draw(self.rng)
+            forced = int(self.rng.integers(len(base)))
+
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
-        for p in base:
-            if self.rng.random() < self.mutation_rate:
+        for i, p in enumerate(base):
+            if self.rng.random() < rate or i == forced:
                 if '1' in self.strategy:
-                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                    update_val = factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
                 else:
-                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name)) +\
-                                 self.mutation_factor * others[2].get_param(p.name).diff(others[3].get_param(p.name))
+                    update_val = factor * others[0].get_param(p.name).diff(others[1].get_param(p.name)) +\
+                                 factor * others[2].get_param(p.name).diff(others[3].get_param(p.name))
                 new_pset_vars.append(p.add(update_val))
             else:
                 new_pset_vars.append(p)
 
-        return PSet(new_pset_vars)
+        new_pset = PSet(new_pset_vars)
+        if self.adapt_mutation:
+            # What the outcome will be judged against: the base's fitness now, which is
+            # what these settings were applied to (the candidate replaces a slot chosen by
+            # the strategy, which under rand and best is not the base; see
+            # _note_trial_result).
+            base_fitness = float(self._island_fitnesses(island)[picks[0]])
+            self._trial_settings[new_pset] = (rate, factor, base_fitness, island)
+        return new_pset
+
+    # --- the learned mutation settings (#667, ADR-0142) ------------------------- #
+    def _island_fitnesses(self, island):
+        """The fitness list of ``island``'s current population, parallel to the
+        ``individuals`` list ``new_individual`` is given. Subclasses provide it."""
+        raise NotImplementedError
+
+    def _reset_adaptation(self, n_islands):
+        """Start the success histories over, one per island at the configured pair, with no
+        candidate in flight. Called wherever the search state resets, so each start of a
+        multi-start run learns from its own population rather than inheriting the settings
+        the previous start ended on, which suit a search that is finishing, not one that is
+        beginning."""
+        self.histories = [SuccessHistory(self.adapt_memory, self.mutation_rate, self.mutation_factor)
+                          for _ in range(n_islands)]
+        self._trial_settings = dict()
+
+    def _perturb_duplicate(self, pset):
+        """``pset`` moved by up to 1e-6 in every parameter, keeping the settings that built
+        it: ``de`` does this to a candidate that duplicates one already in flight, and the
+        record has to follow the candidate or its outcome is lost."""
+        moved = PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in pset])
+        record = self._trial_settings.pop(pset, None)
+        if record is not None:
+            self._trial_settings[moved] = record
+        return moved
+
+    def _note_trial_result(self, pset, score):
+        """Report a finished candidate's score to the history that built it.
+
+        A success is a candidate that scored strictly better than the parameter set it was
+        built from, its base, by a finite amount; the improvement is the success's weight
+        when the history folds it in. The base, not the population slot the candidate
+        competes for, is the reference on purpose: under the ``rand`` and ``best``
+        strategies the two differ, and judged against the slot a candidate that copies a
+        better member wins about half its contests by a wide margin without its settings
+        having done anything, which would teach the history that a rate near 0 is best and
+        collapse the population onto copies of its best members. Under ``all`` the base is
+        the slot, and this is the classic rule. A failed simulation on either side is not
+        evidence about the settings, since anything finite beats infinity, so it records
+        nothing. A candidate this history did not build (the initial population, or a
+        duplicate whose record another candidate overwrote) records nothing either.
+        """
+        record = self._trial_settings.pop(pset, None)
+        if record is None:
+            return
+        rate, factor, base_fitness, island = record
+        if np.isfinite(base_fitness) and np.isfinite(score) and score < base_fitness:
+            self.histories[island].record(rate, factor, base_fitness - score)
+
+    def _flush_adaptation(self, island):
+        """A generation of ``island`` has ended: fold its successes into the history."""
+        if self.adapt_mutation and self.histories:
+            history = self.histories[island]
+            n = len(history.pending)
+            if history.flush():
+                logger.debug('Island %d folded %d successful candidate(s) into its mutation history; '
+                             'memory now averages rate %.3f, factor %.3f'
+                             % (island, n, *history.means()))
+
+    def _learned_settings(self):
+        """The (rate, factor) the histories average to, over their slots and the islands,
+        for the progress report; the configured pair before any history exists."""
+        if not self.histories:
+            return float(self.mutation_rate), float(self.mutation_factor)
+        rates, factors = zip(*(history.means() for history in self.histories))
+        return float(np.mean(rates)), float(np.mean(factors))
+
+    def output_results(self, name='', no_move=False):
+        """As the base does, and at the end of the run say what the mutation settings were
+        learned to be, so a run at normal verbosity hears it too (the per-iteration line
+        prints at verbosity 2 only) and the pair can be carried into a fixed-setting run."""
+        super().output_results(name, no_move)
+        if name == 'final' and self.adapt_mutation:
+            rate, factor = self._learned_settings()
+            message = ('Mutation settings learned by the end of the run: rate %.2f, factor %.2f '
+                       '(the run started from mutation_rate %g, mutation_factor %g)'
+                       % (rate, factor, self.mutation_rate, self.mutation_factor))
+            logger.info(message)
+            print1(message)
 
     def _population_converged(self):
         """The DE-family convergence test (#561, ADR-0115; #648, ADR-0127), shared by
@@ -259,6 +453,8 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         max_iterations
         mutation_rate
         mutation_factor
+        de_adapt_mutation
+        de_adapt_memory
         migrate_every
         num_to_migrate
 
@@ -326,6 +522,10 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         self.migration_transit = dict()
         self.migration_indices = dict()
         self.migration_perms = dict()
+        self._reset_adaptation(self.num_islands)
+
+    def _island_fitnesses(self, island):
+        return self.fitnesses[island]
 
     def _search_start_run(self):
         # Reset every search counter first (the per-island iteration and migration
@@ -391,6 +591,10 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         pset = res.pset
         score = res.score
 
+        # Tell the success history how the candidate did, against the base it was built
+        # from (a no-op unless de_adapt_mutation built it).
+        self._note_trial_result(pset, score)
+
         # Calculate the fitness of this individual, and replace if it is better than the previous one.
         island, j = self.island_map.pop(pset)
         fitness = score
@@ -404,6 +608,9 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         if self.waiting_count[island] == 0:
 
             self.iter_num[island] += 1
+            # The island's generation is over: fold its successes into its history before
+            # the next generation draws from it.
+            self._flush_adaptation(island)
             if min(self.iter_num) == self.iter_num[island]:
                 # Last island to complete this iteration
                 if self.iter_num[island] % self.config.config['output_every'] == 0:
@@ -415,6 +622,8 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
                 print2('Current population fitnesses:')
                 for l in self.fitnesses:
                     print2(sorted(l))
+                if self.adapt_mutation:
+                    print2('Mutation settings learned so far: rate %.2f, factor %.2f' % self._learned_settings())
 
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
@@ -470,15 +679,15 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
             best = np.argmin(self.fitnesses[island])
             for jj in range(self.num_per_island):
                 if 'best' in self.strategy:
-                    new_pset = self.new_individual(self.individuals[island], best)
+                    new_pset = self.new_individual(self.individuals[island], best, island=island)
                 elif 'all' in self.strategy:
-                    new_pset = self.new_individual(self.individuals[island], jj)
+                    new_pset = self.new_individual(self.individuals[island], jj, island=island)
                 else:
-                    new_pset = self.new_individual(self.individuals[island])
+                    new_pset = self.new_individual(self.individuals[island], island=island)
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
-                    new_pset = PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in new_pset])
+                    new_pset = self._perturb_duplicate(new_pset)
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
@@ -566,6 +775,10 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
         self.sims_completed = 0
         self.individuals = []
         self.fitnesses = []
+        self._reset_adaptation(1)
+
+    def _island_fitnesses(self, island):
+        return self.fitnesses
 
     def _search_start_run(self):
         # Reset the search counter/population first (a no-op on the first start), so a
@@ -605,6 +818,11 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
         pset = res.pset
         fitness = res.score
 
+        # Tell the success history how the candidate did, against the base it was built
+        # from (a no-op unless de_adapt_mutation built it). The record travelled with the
+        # candidate, so it does not matter that results come back in any order.
+        self._note_trial_result(pset, fitness)
+
         gen = int(re.search(r'(?<=gen)\d+', pset.name).group(0))
         j = int(re.search(r'(?<=ind)\d+', pset.name).group(0))
 
@@ -617,6 +835,9 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
         # Do various "per iteration" stuff
         if self.sims_completed % self.population_size == 0:
             iters_complete = self.sims_completed / self.population_size
+            # A population's worth of results is this method's generation: fold the
+            # successes among them into the history before the next candidate draws from it.
+            self._flush_adaptation(0)
             if iters_complete % self.config.config['output_every'] == 0:
                 self.output_results()
             if iters_complete % 10 == 0:
@@ -625,6 +846,8 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
                 print2('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
             print2('Current population fitnesses:')
             print2(sorted(self.fitnesses))
+            if self.adapt_mutation:
+                print2('Mutation settings learned so far: rate %.2f, factor %.2f' % self._learned_settings())
             if iters_complete % 20 == 0:
                 logger.debug('Completed %i simulations' % self.sims_completed)
             if iters_complete >= self.max_iterations:

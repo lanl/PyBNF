@@ -4521,6 +4521,14 @@
     1.0
    ],
    [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
+   ],
+   [
     "de_strategy",
     "rand2"
    ],
@@ -6637,6 +6645,14 @@
     1.0
    ],
    [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -7004,6 +7020,14 @@
    [
     "constraint_scale",
     1.0
+   ],
+   [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
    ],
    [
     "de_strategy",
@@ -7435,6 +7459,14 @@
     1.0
    ],
    [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -7802,6 +7834,14 @@
    [
     "constraint_scale",
     1.0
+   ],
+   [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
    ],
    [
     "de_strategy",
@@ -8593,6 +8633,14 @@
     1.0
    ],
    [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -8960,6 +9008,14 @@
    [
     "constraint_scale",
     1.0
+   ],
+   [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
    ],
    [
     "de_strategy",
@@ -9331,6 +9387,14 @@
     1.0
    ],
    [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
+   ],
+   [
     "de_strategy",
     "rand1"
    ],
@@ -9698,6 +9762,14 @@
    [
     "constraint_scale",
     1.0
+   ],
+   [
+    "de_adapt_memory",
+    6
+   ],
+   [
+    "de_adapt_mutation",
+    0
    ],
    [
     "de_strategy",

@@ -153,6 +153,48 @@ In an island run, convergence is assessed only once every island has completed a
 iteration, so a single finished island cannot stop the whole search before the others have
 run.
 
+.. _alg-de-adapt:
+
+Learning the mutation settings
+""""""""""""""""""""""""""""""
+
+``mutation_rate`` and ``mutation_factor`` decide how a candidate is built, and neither has a
+value that is right for every model: an objective whose parameters act independently wants
+few of them changed at a time, one whose parameters are strongly correlated wants most of
+them changed together, and early exploration and late refinement want different step sizes.
+With ``de_adapt_mutation = 1`` the run learns both during the search, following the
+success-history adaptation of SHADE [Tanabe2013]_.
+
+The run keeps a memory of ``de_adapt_memory`` (rate, factor) pairs, every entry starting at
+the configured pair. Each new candidate draws its own pair around one entry chosen at random:
+the rate from a normal distribution of spread 0.1, clipped to [0, 1]; the factor from a
+Cauchy distribution of the same spread, capped at 1 and drawn again while it is not positive.
+A candidate that scores strictly better than the parameter set it was built from (p1 above)
+is a success, and its pair is remembered together with how much it improved. When a
+generation ends (for ``ade``, when a population's worth of simulations has completed), the
+successes since the last generation are folded into the next memory entry: the rate as their
+mean weighted by improvement, the factor as the weighted Lehmer mean, which favours the larger
+factors because a small step succeeds more often but by less. A generation with no success
+leaves the memory as it was. Settings that have been working recently are therefore drawn
+more often, and the learned values move with the search.
+
+Two details differ from the published method, because PyBNF builds its candidates
+differently. SHADE crosses the mutant with the parameter set the candidate will replace, so
+that set is also the one a success is judged against. Here the mutant is crossed with p1,
+which under the ``rand`` and ``best`` strategies is not the set the candidate competes with,
+so a success is judged against p1: the candidate has to beat the parameter set its settings
+were applied to. Judging it against the slot instead rewards a candidate for merely copying a
+better member, which teaches the run that a rate near zero is best and thins the population
+out into copies of its best members. And when the settings are learned, one parameter chosen
+in advance is always mutated, so no candidate is an exact copy of p1. The population-size
+reduction of [Tanabe2014]_ is not adopted; it is a separate idea, and it interacts with how
+many processors a run keeps busy.
+
+``de`` keeps one memory per island; ``ade`` keeps one. Each start of a multi-start run learns
+afresh. At the end of the run PyBNF reports the memory's mean rate and factor next to the pair
+the run started from, so a later fit can use them as fixed settings if that is preferred; at
+verbosity 2 the same pair is printed with each iteration's population summary.
+
 Applications
 ^^^^^^^^^^^^
 In our experience, differential evolution tends to be a good general-purpose algorithm.
@@ -984,6 +1026,8 @@ information criterion (``az.waic``) can be computed directly.
 .. [Penas2017] Penas, D. R.; González, P.; Egea, J. A.; Doallo, R.; Banga, J. R. Parameter Estimation in Large-Scale Systems Biology Models: A Parallel and Self-Adaptive Cooperative Strategy. BMC Bioinformatics 2017, 18 (1), 52.
 .. [Powell1964] Powell, M. J. D. An Efficient Method for Finding the Minimum of a Function of Several Variables without Calculating Derivatives. Comput. J. 1964, 7 (2), 155–162.
 .. [NumericalRecipes] Press, W. H.; Teukolsky, S. A.; Vetterling, W. T.; Flannery, B. P. Numerical Recipes: The Art of Scientific Computing, 3rd ed.; Cambridge University Press, 2007 (§10.7, Powell's method).
+.. [Tanabe2013] Tanabe, R.; Fukunaga, A. Success-History Based Parameter Adaptation for Differential Evolution. 2013 IEEE Congress on Evolutionary Computation 2013, 71–78.
+.. [Tanabe2014] Tanabe, R.; Fukunaga, A. S. Improving the Search Performance of SHADE Using Linear Population Size Reduction. 2014 IEEE Congress on Evolutionary Computation 2014, 1658–1665.
 .. [terBraak2008] ter Braak, C. J. F.; Vrugt, J. A. Differential Evolution Markov Chain with Snooker Updater and Fewer Chains. Stat. Comput. 2008, 18 (4), 435–446.
 .. [Vehtari2021] Vehtari, A.; Gelman, A.; Simpson, D.; Carpenter, B.; Bürkner, P.-C. Rank-Normalization, Folding, and Localization: An Improved R-hat for Assessing Convergence of MCMC. Bayesian Anal. 2021, 16 (2), 667–718.
 .. [Vrugt2016] Vrugt, J. A. Markov Chain Monte Carlo Simulation Using the DREAM Software Package: Theory, Concepts, and MATLAB Implementation. Environ. Model. Softw. 2016, 75, 273–316.

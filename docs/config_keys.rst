@@ -2074,7 +2074,7 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
 **mutation_factor**
   When mutating a parameter x, change it by mutation_factor*(PS1[x] - PS2[x]) where PS1 and PS2 are random other PSets in the population.  
   
-  Default: 1.0
+  Default: 0.5
   
   Example:
   
@@ -2130,6 +2130,26 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
   Example:
   
     * ``de_strategy = rand2``
+
+**de_adapt_mutation**
+  Learn ``mutation_rate`` and ``mutation_factor`` during the run instead of using them as written. The run keeps a short history of the settings that recently produced a candidate better than the parameter set it was built from, and draws each new candidate's settings from that history, with some spread, so values that have been working lately are used more often and the settings move with the search as it turns from exploring to refining. This is the success-history adaptation of Tanabe and Fukunaga's SHADE; see :ref:`the algorithm description <alg-de-adapt>` for what is remembered and how. The configured pair is where the learning starts, so a run that never produces a successful candidate keeps drawing around it. With this on, a candidate always has at least one parameter mutated, whatever rate it drew.
+
+  Off, the run uses the configured pair from the first iteration to the last, as it always has.
+
+  Default: 0 (off)
+
+  Example:
+
+    * ``de_adapt_mutation = 1``
+
+**de_adapt_memory**
+  How many generations' worth of successful settings the history remembers when ``de_adapt_mutation`` is on. Each generation in which some candidate succeeded writes one entry, replacing the oldest once the memory is full, so a small memory follows the search closely and a large one averages over more of it. Six is the size Tanabe and Fukunaga settled on for L-SHADE.
+
+  Default: 6
+
+  Example:
+
+    * ``de_adapt_memory = 10``
 
 The following options are only available with ``job_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
 

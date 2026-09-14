@@ -6,6 +6,28 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Differential evolution can learn its mutation settings during a run (#667, ADR-0142).**
+  `de_adapt_mutation = 1` makes `de` and `ade` draw each candidate's `mutation_rate` and
+  `mutation_factor` from a short history of the pairs that recently produced a candidate better
+  than the parameter set it was built from, the success-history adaptation of SHADE (Tanabe and
+  Fukunaga 2013), so the two settings no one can choose in advance follow the search instead.
+  The configured pair is where the learning starts, `de_adapt_memory` (default 6) is how many
+  generations of successes the history remembers, and the record of which settings built a
+  candidate travels with the candidate, so `ade`'s out-of-order results need no special case. A
+  success is judged against the candidate's base rather than the population slot it competes
+  for, because PyBNF crosses the mutant with the base: judged against the slot, copying a better
+  member counts as a success and the learned rate drifts toward zero. On a ten-parameter
+  Gaussian, five seeds and 4,500 evaluations each, the learned settings reached a median
+  objective of 6e-05 against 0.13 for the fixed defaults; on a ten-parameter Rosenbrock valley
+  3.8 against 8.3. On the stochastic recovery benchmark at five seeds it turned 6 successes of
+  30 into 11 for `de` and 4 into 8 for `ade` (tight successes 0 into 5 and 1 into 4), most of
+  them on Hlavacek_PNAS2001 where every seed now lands within a few percent of the truth, while
+  the final error pooled over all seeds was not significantly different and the network-free
+  problem got worse. A control with fixed settings and only the guarantee that one parameter is
+  always mutated showed that guarantee alone accounts for part of the gain, and for `ade` most
+  of it, since plain `ade` collapsed its population onto one parameter set and stopped early in
+  24 of 30 fits. Off by default: a configuration that does not set the key runs exactly as
+  before.
 - **A stochastic parameter recovery benchmark, small version (#663, ADR-0140).**
   `benchmarks/stochastic_recovery/` holds six published stochastic models (Shahrezaei and
   Swain 2008, Lin and Doering 2016, McKane and Newman 2005, Hlavacek et al. 2001, Munsky et

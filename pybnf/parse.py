@@ -97,6 +97,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # ADR-0071): the number of independent starts, keeping the global best
                # (1 = a single run).
                'n_starts',
+               # Differential evolution's learned mutation settings (job_type = de / ade,
+               # #667/ADR-0142): the switch (0 = off, the configured pair is used as
+               # written) and how many generations of successes the history remembers.
+               'de_adapt_mutation', 'de_adapt_memory',
                # The end-of-fit stage that confirms which parameter set a stochastic fit
                # really found (#659): how many of the top parameter sets to run again, and
                # how many times to run each of them.
