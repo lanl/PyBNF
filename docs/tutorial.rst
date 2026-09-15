@@ -56,7 +56,8 @@ Optimizers and identifiability
   — six optimizers on one oscillatory fit (``de``/``ade``/``pso``/``cmaes``/``sa``/``ss``).
 - `25. Island DE <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/25_island_de>`__
   — a multi-island differential evolution with migration (``islands``,
-  ``migrate_every``, ``num_to_migrate``).
+  ``migrate_every``, ``num_to_migrate``), on a plasma curve that two different pairs of
+  rates fit almost equally well.
 - `44. Initialization <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/44_initialization>`__
   — where the search starts: seeding the initial population from an informative
   prior, or pinning the start at a point you already have — a previous fit's
