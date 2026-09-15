@@ -496,6 +496,58 @@ What it shows:
 Wall times in this file are not comparable with the baseline's: these runs shared the machine
 with each other, with the test suite and with other measurements.
 
+## Follow-up: crossing with the member a candidate replaces
+
+`de_cross_with_target = 1` (lanl/PyBNF#700, ADR-0144) makes an unmutated parameter keep the value
+of the member the candidate will replace, as published differential evolution crosses, instead
+of the value of the parameter set it was built from. It was measured against `de_force_mutation`
+alone (#698), in two runs. `results/de_cross_target_5seeds.json` holds `de_cross_target` and
+`ade_cross_target` (fixed settings) and `de_adapt_700` and `ade_adapt_700` (learned settings),
+all with the copy guarantee, five seeds on every problem; the #698 rows they are paired with are
+in `results/de_force_mutation_5seeds.json`. `results/de_cross_target_seeds6to20.json` extends the
+fixed-settings comparison to seeds 6 to 20 on the three problems where a method succeeds often
+enough to tell variants apart, with both sides run again.
+
+Five seeds, every problem:
+
+| comparison | successes of 30 | only it / only #698 | final error lower / higher |
+|---|---|---|---|
+| `ade_cross_target` against `ade_force_mutation` | 7 against 12 | 1 / 6 (p = 0.12) | 15 / 15 |
+| `de_cross_target` against `de_force_mutation` | 6 against 8 | 1 / 3 (p = 0.62) | 15 / 15 |
+| `ade_adapt_700` against `ade_adapt_698` | 11 against 9 | 4 / 2 (p = 0.69) | 16 / 14 |
+| `de_adapt_700` against `de_adapt_698` | 10 against 8 | 4 / 2 (p = 0.69) | 20 / 10 (p = 0.10) |
+
+No fit stopped before its budget. Twenty seeds on Hlavacek_PNAS2001, McKane_PhysRevLett2005 and
+Shahrezaei_PNAS2008, fixed settings, successes of 60 (and of 45 on seeds 6 to 20 alone, the seeds
+not used to choose these problems):
+
+| method | crossing with the base (#698) | crossing with the target | only target / only base | final error lower / higher with the target |
+|---|---:|---:|---|---|
+| `ade`, seeds 1-20 | 39 | 31 | 8 / 16 (p = 0.15) | 22 / 38 (p = 0.05) |
+| `ade`, seeds 6-20 | 27 | 25 | 8 / 10 (p = 0.82) | 18 / 27 (p = 0.23) |
+| `de`, seeds 1-20 | 28 | 31 | 12 / 9 (p = 0.66) | 32 / 28 (p = 0.70) |
+| `de`, seeds 6-20 | 20 | 26 | 12 / 6 (p = 0.24) | 25 / 20 (p = 0.55) |
+
+Per problem over the twenty seeds, `ade` succeeded from 18 and 19 seeds on Hlavacek_PNAS2001 and 10
+and 9 on Shahrezaei_PNAS2008 crossed with the base and with the target, and from 11 against 3 on
+McKane_PhysRevLett2005 (p = 0.02, 7 against 3 on the fresh seeds); `de` from 16 and 18, 5 and 9,
+and 7 and 4.
+
+What it shows:
+
+* **With fixed settings, crossing with the target is no better on these stochastic problems.** The
+  five-seed drop under `ade` was mostly the problems' noise: on the fresh seeds the two crossovers
+  are level (25 against 27 under `ade`, 26 against 20 under `de`). What remains is
+  McKane_PhysRevLett2005 under `ade`, where crossing with the base did better over all twenty
+  seeds.
+* **With the learned settings it is somewhat better,** 11 against 9 and 10 against 8, with a lower
+  final error on 20 of 30 seeds under `de`; five seeds do not confirm it.
+* The key stays off by default, under every edition (ADR-0144): on the analytical targets crossing
+  with the target was clearly better, but on these problems it was not, and on two of the
+  tutorial's ODE models it was worse.
+
+Wall times in these files are not comparable with the baseline's; the runs shared the machine.
+
 ## Scoring a change
 
 Run the baseline methods again after the change with the same seeds, summarize, and compare

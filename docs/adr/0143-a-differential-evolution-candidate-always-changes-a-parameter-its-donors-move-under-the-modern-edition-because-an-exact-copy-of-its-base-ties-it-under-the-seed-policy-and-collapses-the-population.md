@@ -129,6 +129,11 @@ evolution does, would end the sharing at its source. It changes the operator und
 strategy and would change what the learned settings should judge a success against
 (ADR-0142), so it is left for its own issue, #700.
 
+> **See ADR-0144 (issue #700):** `de_cross_with_target = 1` crosses the mutant with the member
+> the candidate will replace, and the guarantee above is then stated against both members. It is
+> off by default: it removed the frozen parameters on analytical targets but did no better on the
+> stochastic benchmark, and worse on two of the tutorial's ODE models.
+
 ## The evidence
 
 ### An analytical bowl, with and without seed-derived noise

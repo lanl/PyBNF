@@ -319,10 +319,11 @@ class TestDifferentialEvolutionPlumbing:
         generation."""
         de = algorithms.DifferentialEvolution(_de_config(tmp_path, islands=1, population_size=3,
                                                          de_strategy=strategy))
-        recorded = []
+        recorded, targets = [], []
         orig = de.new_individual
-        de.new_individual = (lambda inds, base_index=None, island=0:
-                             recorded.append(base_index) or orig(inds, base_index, island=island))
+        de.new_individual = (lambda inds, base_index=None, island=0, target_index=None:
+                             recorded.append(base_index) or targets.append(target_index)
+                             or orig(inds, base_index, island=island, target_index=target_index))
         self._run_one_island_generation(de, [5.0, 3.0, 7.0])  # argmin at index 1
         assert len(recorded) == 3
         if expected == 'argmin':
@@ -331,6 +332,7 @@ class TestDifferentialEvolutionPlumbing:
             assert recorded == [0, 1, 2]
         else:
             assert recorded == [None, None, None]
+        assert targets == [0, 1, 2]          # each candidate is told the slot it competes for
 
     def test_convergence_stop(self, tmp_path):
         """Oracle (convergence criterion, #561/ADR-0115): when the absolute range of the
@@ -473,9 +475,11 @@ class TestAsyncDifferentialEvolution:
         start = ade.start_run()
         ade.fitnesses = [5.0, 3.0, 7.0]
         ade.individuals = list(start)
-        recorded = []
+        recorded, targets = [], []
         orig = ade.new_individual
-        ade.new_individual = lambda inds, base_index=None: recorded.append(base_index) or orig(inds, base_index)
+        ade.new_individual = (lambda inds, base_index=None, target_index=None:
+                              recorded.append(base_index) or targets.append(target_index)
+                              or orig(inds, base_index, target_index=target_index))
         res = algorithms.Result(start[0], self.d1s, start[0].name); res.score = 5.0  # index j=0
         ade.got_result(res)
         if expected == 'argmin':
@@ -484,6 +488,7 @@ class TestAsyncDifferentialEvolution:
             assert recorded == [0]
         else:
             assert recorded == [None]
+        assert targets == [0]                # the replacement competes for the finished slot
 
 
 # --------------------------------------------------------------------------- #
@@ -787,12 +792,12 @@ from pybnf.parse import ploop
 class _ScriptedRng:
     """An rng that plays each draw from a script and records every call, so a test can say
     exactly which draws a proposal makes and in what order. A draw the script does not hold
-    fails the test."""
+    fails the test. ``random`` is one value for every coin, or a list played in turn."""
 
     def __init__(self, choice=(), integers=(), random=0.9):
         self._choice = [np.array(c) for c in choice]
         self._integers = list(integers)
-        self._random = random
+        self._random = list(random) if isinstance(random, (list, tuple)) else random
         self.calls = []
 
     def choice(self, n, k, replace=False):
@@ -805,7 +810,7 @@ class _ScriptedRng:
 
     def random(self):
         self.calls.append(('random',))
-        return self._random
+        return self._random.pop(0) if isinstance(self._random, list) else self._random
 
 
 class _CountingRng:
@@ -1068,3 +1073,169 @@ class TestCopyGuaranteeDriven:
         assert ade.force_mutation
         assert self._drive(ade, 2000) is None
         assert len(set(ade.individuals)) > 1
+
+
+# --------------------------------------------------------------------------- #
+# Crossing with the target (#700, ADR-0144): with de_cross_with_target = 1 (off by default)
+# a candidate keeps the values of the member it will replace wherever it is not mutated, as
+# published differential evolution crosses, instead of its base's. The copy guarantee and the
+# learned settings are stated against whichever member it is crossed with.
+# --------------------------------------------------------------------------- #
+class TestCrossWithTargetGate:
+
+    def test_off_unless_asked_for(self, tmp_path):
+        """Oracle (opt-in, ADR-0144): off by default under every edition, on when the key says so."""
+        assert algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path)).cross_with_target is False
+        assert algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1)).cross_with_target is True
+
+    @pytest.mark.parametrize('job_type, cls', [('de', 'DifferentialEvolution'),
+                                               ('ade', 'AsynchronousDifferentialEvolution')])
+    @pytest.mark.parametrize('line, expected', [('', False), ('de_cross_with_target = 1\n', True)])
+    def test_a_modern_conf_has_it_off_unless_it_asks(self, tmp_path, job_type, cls, line, expected):
+        text = ('edition = 2\nobjective = banana, a = 1, b = 100\njob_type = %s\n'
+                'uniform_var = x1 -5 5\nuniform_var = x2 -5 5\npopulation_size = 6\n'
+                'max_iterations = 3\n%soutput_dir = %s/out\nwall_time_sim = 0\n'
+                % (job_type, line, tmp_path))
+        alg = getattr(algorithms, cls)(config.Configuration(ploop(text.splitlines(keepends=True))))
+        assert alg.cross_with_target is expected
+
+
+class TestCrossWithTarget:
+
+    # base, two donors, and the target the candidate competes for, at positions 0 to 3
+    POPULATION = ((1., 2., 3.), (10., 20., 30.), (4., 5., 6.), (7., 8., 9.))
+
+    def _inds(self, rows=POPULATION):
+        return [_wide_pset(row) for row in rows]
+
+    def test_unmutated_parameters_are_the_targets(self, tmp_path):
+        """Oracle (the crossover): the first coin fires and the other two do not, so v1 is the
+        base moved by the donors, 1 + 0.5 * (10 - 4), and v2 and v3 are the target's own."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1, mutation_rate=0.5))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], random=[0.0, 0.9, 0.9])
+        assert _values(ade.new_individual(self._inds(), target_index=3)) == [4., 8., 9.]
+        assert ade.rng.calls == [('choice', 4, 3)] + [('random',)] * 3
+
+    def test_without_a_target_or_with_the_key_off_the_base_is_crossed(self, tmp_path):
+        """Oracle (the fallback and the legacy crossover): with no target index, or with the
+        key off, the unmutated parameters are the base's, 2 and 3, and the draws are the same."""
+        on = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1, mutation_rate=0.5))
+        off = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, mutation_rate=0.5))
+        for alg, target_index in ((on, None), (off, 3)):
+            alg.rng = _ScriptedRng(choice=[[0, 1, 2]], random=[0.0, 0.9, 0.9])
+            assert _values(alg.new_individual(self._inds(), target_index=target_index)) == [4., 2., 3.]
+            assert alg.rng.calls == [('choice', 4, 3)] + [('random',)] * 3
+
+    def test_a_zero_difference_is_no_move_even_where_base_and_target_differ(self, tmp_path):
+        """Oracle (no copy of the base): the donors share v2, so mutating it would leave the
+        base's 2. The target holds 8 there, but a candidate whose every mutated parameter kept
+        its base's value would be an exact copy of its base, so a zero difference is no move:
+        the choice is made again among the parameters the donors do move, [v1, v3], and takes
+        v3: 3 + 0.5 * (30 - 6) = 15."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1, de_force_mutation=1, mutation_rate=0.5))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[1, 1])
+        inds = self._inds(((1., 2., 3.), (10., 5., 30.), (4., 5., 6.), (7., 8., 9.)))
+        assert _values(ade.new_individual(inds, target_index=3)) == [7., 8., 15.]
+        assert ade.rng.calls == ([('choice', 4, 3), ('integers', 3), ('integers', 2)]
+                                 + [('random',)] * 3)
+
+    def test_a_difference_that_lands_exactly_on_the_targets_value_is_no_move(self, tmp_path):
+        """Oracle: v2 is drawn first and 2 + 0.5 * (14 - 2) = 8 is the target's own value, so it
+        is no change. Drawn again among all three it is drawn again and dropped, and the next
+        draw takes v1: 1 + 0.5 * (10 - 4) = 4."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1, de_force_mutation=1, mutation_rate=0.5))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[1, 1, 0])
+        inds = self._inds(((1., 2., 3.), (10., 14., 30.), (4., 2., 6.), (7., 8., 9.)))
+        assert _values(ade.new_individual(inds, target_index=3)) == [4., 8., 9.]
+        assert ade.rng.calls == ([('choice', 4, 3), ('integers', 3), ('integers', 3), ('integers', 2)]
+                                 + [('random',)] * 3)
+
+    def test_the_learned_settings_judge_a_success_against_the_target(self, tmp_path, monkeypatch):
+        """Oracle (SHADE's rule): crossed with the target, the candidate is recorded against the
+        target's fitness, 9, not the base's, 5, so a score of 8 is a success worth 1."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_cross_with_target=1, de_adapt_mutation=1))
+        ade.start_run()
+        inds = self._inds()
+        ade.individuals, ade.fitnesses = inds, [5.0, 3.0, 7.0, 9.0]
+        monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.9, 0.6))
+        ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[0], random=0.0)
+        new = ade.new_individual(inds, target_index=3)
+        assert ade._trial_settings[new] == (0.9, 0.6, 9.0, 0)
+        ade._note_trial_result(new, 8.0)
+        assert ade.histories[0].pending == [(0.9, 0.6, 1.0)]
+
+    @pytest.mark.parametrize('strategy', ['rand1', 'rand2'])
+    def test_no_candidate_is_a_copy_of_its_base_or_its_target(self, tmp_path, strategy):
+        """Oracle (the guarantee under the new crossover): the population of the copy guarantee's
+        own check, members built from the values 1 and 2 with two duplicates, so the donors are
+        now and then one parameter set. Building on every member and competing for every slot in
+        turn with the real generator, no candidate equals its base or its target."""
+        members = [(1, 1, 1), (1, 1, 2), (1, 2, 2), (2, 2, 2), (2, 2, 1), (2, 1, 1), (1, 2, 1),
+                   (2, 1, 2), (1, 1, 1), (2, 2, 2)]
+        inds = [_wide_pset(tuple(float(v) for v in m)) for m in members]
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(
+            tmp_path, de_cross_with_target=1, de_force_mutation=1, mutation_rate=0.5,
+            de_strategy=strategy, random_seed=11))
+        for trial in range(400):
+            base, target = trial % len(inds), (3 * trial + 1) % len(inds)
+            candidate = ade.new_individual(inds, base, target_index=target)
+            assert candidate != inds[base] and candidate != inds[target]
+
+
+class TestCrossWithTargetDriven:
+    """``de`` under ``best1`` driven through ``got_result`` on a noise-free three-parameter
+    bowl. Crossed with the base, every candidate keeps the best member's unmutated values, a
+    parameter every member comes to share can never move again, and the fit stalls short of
+    the optimum; crossed with the target it converges onto it."""
+
+    d1s = TestCopyGuaranteeDriven.d1s
+
+    @staticmethod
+    def _bowl(ps):
+        return float(sum((ps[name] - 1.0) ** 2 for name in ps.keys()))
+
+    def _drive(self, alg, budget):
+        queue = list(alg.start_run())
+        for _ in range(budget):
+            ps = queue.pop(0)
+            res = algorithms.Result(ps, self.d1s, ps.name)
+            res.score = self._bowl(ps)
+            out = alg.got_result(res)
+            if out == 'STOP':
+                break
+            queue.extend(out)
+        members = alg.individuals[0]
+        shared = sum(len({m[name] for m in members}) == 1 for name in members[0].keys())
+        return shared, min(self._bowl(m) for m in members)
+
+    def test_crossed_with_the_base_a_shared_parameter_stalls_the_fit(self, tmp_path):
+        conf = {
+            'population_size': 10, 'max_iterations': 10 ** 6, 'mutation_rate': 0.5,
+            'mutation_factor': 0.5, 'de_strategy': 'best1', 'fit_type': 'de', 'islands': 1,
+            'stop_tolerance': 0, 'output_every': 10 ** 6, 'random_seed': 1, 'de_force_mutation': 1,
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
+            'output_dir': str(tmp_path / 'de_out')}
+        conf.update({('uniform_var', name): [-10, 10] for name in NAMES})
+        de = algorithms.DifferentialEvolution(config.Configuration(conf))
+        assert de.force_mutation and not de.cross_with_target
+        shared, best = self._drive(de, 4000)
+        assert shared >= 1 and best > 0.01
+
+    def test_crossed_with_the_target_it_converges_onto_the_optimum(self, tmp_path):
+        text = ('edition = 2\nobjective = gaussian, mean = 1 1 1, variance = 1 1 1\njob_type = de\n'
+                'uniform_var = x1 -10 10\nuniform_var = x2 -10 10\nuniform_var = x3 -10 10\n'
+                'population_size = 10\nmax_iterations = 1000000\nmutation_rate = 0.5\n'
+                'mutation_factor = 0.5\nde_strategy = best1\nstop_tolerance = 0\n'
+                'de_cross_with_target = 1\noutput_every = 1000000\nrandom_seed = 1\n'
+                'output_dir = %s/out\nwall_time_sim = 0\n' % tmp_path)
+        de = algorithms.DifferentialEvolution(config.Configuration(ploop(text.splitlines(keepends=True))))
+        assert de.force_mutation and de.cross_with_target
+        _, best = self._drive(de, 4000)
+        assert best < 1e-12

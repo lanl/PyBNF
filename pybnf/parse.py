@@ -105,6 +105,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # ADR-0143): a candidate always mutates a parameter its donors move, so it is
                # never an exact copy of its base; unset follows the edition.
                'de_force_mutation',
+               # Crossing the mutant with the member the candidate will replace rather than
+               # with its base (job_type = de / ade, #700/ADR-0144); off by default.
+               'de_cross_with_target',
                # The end-of-fit stage that confirms which parameter set a stochastic fit
                # really found (#659): how many of the top parameter sets to run again, and
                # how many times to run each of them.
