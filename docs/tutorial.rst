@@ -51,7 +51,8 @@ Optimizers and identifiability
   — fit several observables at once, and ask whether each rate is identifiable
   (``de``, profile likelihood).
 - `6. Step input <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/06_step_input>`__
-  — when a gradient fit is refused, and how a smooth (sigmoid) step fixes it.
+  — a discontinuous input: the hard ``if()`` step is gradient-fittable, switch time
+  included, and what is still refused is a stochastic experiment (``trf``, ``method: ssa``).
 - `7. Algorithm bakeoff <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/07_algorithm_bakeoff>`__
   — six optimizers on one oscillatory fit (``de``/``ade``/``pso``/``cmaes``/``sa``/``ss``).
 - `25. Island DE <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/25_island_de>`__
