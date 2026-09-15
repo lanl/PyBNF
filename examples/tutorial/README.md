@@ -48,7 +48,7 @@ Results land in `output/` inside the lesson folder.
 | 22 | [`22_normalization`](22_normalization) | fit data reported **relative to a reference** (init / peak / …) | `normalization <obs> = init\|peak\|zero\|unit` |
 | 23 | [`23_resume`](23_resume) | **stop and resume** a fit, or extend it with more iterations | `--resume` / backups |
 | 24 | [`24_moment_equations`](24_moment_equations) | fit a model whose states are the **mean and variance** | moment-equation observables |
-| 25 | [`25_island_de`](25_island_de) | a **multi-island** differential evolution with migration | `islands`, `migrate_every`, `num_to_migrate` |
+| 25 | [`25_island_de`](25_island_de) | a **multi-island** differential evolution with migration, on a curve that **two different rate pairs** fit almost equally well | `islands`, `migrate_every`, `num_to_migrate` |
 | 26 | [`26_mcmc_samplers`](26_mcmc_samplers) | two more posterior samplers — **Metropolis-Hastings and parallel tempering** | `mh`, `pt` *(slow tier)* |
 | 27 | [`27_priors`](27_priors) | an **informative prior** vs a flat one on a weakly-identified rate | `gamma_var` in a sampler *(slow tier)* |
 | 28 | [`28_cumulative_counts`](28_cumulative_counts) | fit **incident counts** from a cumulative prediction | per-observable `cumulative`, `neg_bin` |

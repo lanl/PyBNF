@@ -223,6 +223,30 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Tutorial lesson 25 no longer promises rates its one curve cannot settle, and its check no
+  longer passes on the luck of one seed (#703).** The lesson fits a transit-compartment model
+  to a single plasma curve, and its README said island DE "recovers all three" rates. The
+  curve's objective has two minima: the true `k_transit` = 12.76 and `k_abs` = 9.11, and 10.09
+  and 14.65, whose absorption delay has the same mean to 0.01% and the same variance to 0.1%,
+  so the second pair's curve never strays more than 0.0002 from the first on a peak of 1.7.
+  The true pair scores lower (1e-9 or less, against 2.2e-8) only because the data are
+  noise-free, and a population settles into one basin while its best objective is still ten
+  to a thousand times that difference: the lesson's fit reached the true pair from 23 of
+  seeds 1 to 60 and 1234. Its check ran from seed 1234 alone, which happens to be one of
+  them, so any change to differential evolution's draws could fail it, and #698 and #700 each
+  did. The README now teaches what one plasma curve can and cannot determine, and what data
+  would separate the rates: with a second experiment whose dose starts in the absorption
+  compartment the objective has a single minimum. The check accepts either minimum, `k_elim`
+  within 3% in both, from seeds 1234, 1 and 2 (the first reaches the true pair and the other
+  two the second), and a new default-tier test holds it to rejecting a fit between the
+  minima, such as the early stop of #648. Tutorial checks can now list other minima and
+  several seeds. The conf now polishes with `refine_method = trf`: DE can stall in the narrow
+  valley the minima lie in, and from 2 of the 61 seeds the Simplex polish stopped 10% and 15%
+  away from both; with `trf` every seed ends within 0.03% of one. No island setup that was
+  measured made the true pair dependable. Islands of ten kept apart stall on their own under
+  the default crossover; crossing with the target (`de_cross_with_target = 1`, #700) lets them
+  converge, and with eight islands and a single migration late in 160 generations, four times
+  the budget, 37 of 39 seeds reached the true pair.
 - **Differential evolution no longer proposes a candidate that is an exact copy of the
   parameter set it was built from, under `edition = 2` (#698, ADR-0143).** A candidate is its
   base with each parameter moved by the donors' difference with probability `mutation_rate`,

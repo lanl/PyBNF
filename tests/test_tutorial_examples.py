@@ -79,14 +79,18 @@ def _mode(cc):
 
 
 def _cases(mode):
-    """(example, confcheck) params for confs in the given mode (recover / refused /
-    profile), each carrying its tier's marks + a readable id."""
+    """(example, confcheck, seed) params for confs in the given mode (recover / refused /
+    profile), one per seed the conf lists, each carrying its tier's marks + a readable id.
+    The id names the seed only for a conf run from more than one."""
     out = []
     for ex in EXAMPLES:
         for cc in ex.confs:
             if _mode(cc) == mode:
-                out.append(pytest.param(ex, cc, marks=_marks(cc),
-                                        id=f'{ex.folder}/{cc.conf}'))
+                for seed in cc.seeds:
+                    name = f'{ex.folder}/{cc.conf}'
+                    if len(cc.seeds) > 1:
+                        name += f'@{seed}'
+                    out.append(pytest.param(ex, cc, seed, marks=_marks(cc), id=name))
     return out
 
 
@@ -123,31 +127,48 @@ def _build(conf, fit_type):
         os.chdir(home)
 
 
+def _assert_recovered(label, confcheck, rec):
+    """The recovered values ``rec`` are within ``tol`` of ``recover``, or of one of the
+    conf's ``other_minima`` where its objective has more than one minimum (#703). A
+    failure names the parameters of whichever accepted minimum the fit came closest to.
+    Needs no backend, so ``test_tutorial_manifest.py`` checks it in the default tier."""
+    minima = (confcheck.recover,) + tuple(confcheck.other_minima)
+    errors = [{p: abs(rec[p] - v) / abs(v) for p, v in m.items()} for m in minima]
+    closest = min(range(len(minima)), key=lambda i: max(errors[i].values()))
+    where = f' (the closest of {len(minima)} accepted minima)' if len(minima) > 1 else ''
+    for p, v in minima[closest].items():
+        rel = errors[closest][p]
+        assert rel < confcheck.tol, (
+            f'{label}: {p} recovered {rec[p]:g}, expected ~{v:g}{where} '
+            f'({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+
+
 @pytest.fixture
 def _fakes(monkeypatch):
     H.install(monkeypatch)
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases('refused'))
-def test_tutorial_conf_is_refused(example, confcheck, tmp_path):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('refused'))
+def test_tutorial_conf_is_refused(example, confcheck, seed, tmp_path):
     """A gradient conf on a model bngsim can't differentiate must be refused (the
     gradient-refusal path) -- the teaching point of the piecewise lessons. bngsim
     rejects the ``if()`` conditional in the rate law at the first evaluation, so
     the refusal surfaces during the run, not at construction."""
     H.require_bng2pl()
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     with pytest.raises(PybnfError, match='(?i)sensitivit'):
         alg = _build(conf, conf.config['fit_type'])
         H.drive(alg)
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases('recover'))
-def test_tutorial_conf_recovers(example, confcheck, tmp_path):
-    """Running a lesson's committed conf recovers its documented parameters."""
+@pytest.mark.parametrize('example, confcheck, seed', _cases('recover'))
+def test_tutorial_conf_recovers(example, confcheck, seed, tmp_path):
+    """Running a lesson's committed conf recovers its documented parameters, or another
+    minimum of its objective that the data barely tell apart from them."""
     H.require_bng2pl()
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     fit_type = conf.config['fit_type']
 
     alg = _build(conf, fit_type)
@@ -155,21 +176,17 @@ def test_tutorial_conf_recovers(example, confcheck, tmp_path):
     if conf.config.get('refine'):
         H.refine(alg, conf)
 
-    rec = H.best_params(alg, tuple(confcheck.recover))
-    for p, true in confcheck.recover.items():
-        rel = abs(rec[p] - true) / abs(true)
-        assert rel < confcheck.tol, (
-            f'{example.folder}/{confcheck.conf}: {p} recovered {rec[p]:g}, '
-            f'expected ~{true:g} ({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+    _assert_recovered(f'{example.folder}/{confcheck.conf} from seed {seed}', confcheck,
+                      H.best_params(alg, tuple(confcheck.recover)))
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases('constraint'))
-def test_tutorial_constraint_fit(example, confcheck, tmp_path):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('constraint'))
+def test_tutorial_constraint_fit(example, confcheck, seed, tmp_path):
     """A fit to qualitative (BPSL .prop) data satisfies every constraint -- the
     constraint-penalty objective floors at ~0."""
     H.require_bng2pl()
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     alg = _build(conf, conf.config['fit_type'])
     H.drive(alg)
     if conf.config.get('refine'):
@@ -247,14 +264,14 @@ def test_tutorial_model_check_discriminates(tmp_path, capsys):
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases('dragged'))
-def test_tutorial_conf_is_dragged_off_truth(example, confcheck, tmp_path):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('dragged'))
+def test_tutorial_conf_is_dragged_off_truth(example, confcheck, seed, tmp_path):
     """A cautionary conf whose (non-robust) objective is *provably* pulled off the
     truth by outliers -- at least one recovered parameter must miss by more than
     ``dragged_min_err``. This is the failure half of a robust-vs-non-robust pair;
     without it the comparison to the robust sibling would be vacuous."""
     H.require_bng2pl()
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     alg = _build(conf, conf.config['fit_type'])
     H.drive(alg)
     if conf.config.get('refine'):
@@ -268,8 +285,8 @@ def test_tutorial_conf_is_dragged_off_truth(example, confcheck, tmp_path):
         f'parameter error was only {worst * 100:.1f}% (recovered {rec})')
 
 
-@pytest.mark.parametrize('example, confcheck', _cases('hazard'))
-def test_tutorial_conf_survives_hazard(example, confcheck, tmp_path, monkeypatch):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('hazard'))
+def test_tutorial_conf_survives_hazard(example, confcheck, seed, tmp_path, monkeypatch):
     """A fit on a model with a numerical hazard (finite-time blowup) completes and
     recovers its parameters even though some simulations FAIL: a failed sim is
     scored +inf (not a crash), and the optimizer routes around the region. The
@@ -281,7 +298,7 @@ def test_tutorial_conf_survives_hazard(example, confcheck, tmp_path, monkeypatch
     sim exception crash the run."""
     H.require_bng2pl()
     H.install(monkeypatch, catch_sim_failures=True)
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     alg = _build(conf, conf.config['fit_type'])
     H.drive(alg)
     if conf.config.get('refine'):
@@ -290,34 +307,30 @@ def test_tutorial_conf_survives_hazard(example, confcheck, tmp_path, monkeypatch
     assert alg.fail_count > 0, (
         f'{example.folder}/{confcheck.conf}: expected some simulations to hit the '
         f'hazard and fail, but none did -- the guard demonstration is vacuous')
-    rec = H.best_params(alg, tuple(confcheck.recover))
-    for p, true in confcheck.recover.items():
-        rel = abs(rec[p] - true) / abs(true)
-        assert rel < confcheck.tol, (
-            f'{example.folder}/{confcheck.conf}: {p} recovered {rec[p]:g}, '
-            f'expected ~{true:g} ({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+    _assert_recovered(f'{example.folder}/{confcheck.conf} from seed {seed}', confcheck,
+                      H.best_params(alg, tuple(confcheck.recover)))
 
 
-@pytest.mark.parametrize('example, confcheck', _cases('hazard_abort'))
-def test_tutorial_conf_aborts_when_all_fail(example, confcheck, tmp_path, monkeypatch):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('hazard_abort'))
+def test_tutorial_conf_aborts_when_all_fail(example, confcheck, seed, tmp_path, monkeypatch):
     """When every candidate hits the hazard (all sims fail, none succeed), the
     max_failed_simulations guard aborts the run with a clear error instead of
     spinning forever proposing unsimulatable parameter sets."""
     H.require_bng2pl()
     H.install(monkeypatch, catch_sim_failures=True)
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     alg = _build(conf, conf.config['fit_type'])
     with pytest.raises(PybnfError, match='(?i)all jobs are failing'):
         H.drive(alg)
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases('profile'))
-def test_tutorial_profile_likelihood(example, confcheck, tmp_path):
+@pytest.mark.parametrize('example, confcheck, seed', _cases('profile'))
+def test_tutorial_profile_likelihood(example, confcheck, seed, tmp_path):
     """A profile_likelihood conf classifies each parameter's identifiability, and
     an identifiable parameter's confidence interval brackets the known truth."""
     H.require_bng2pl()
-    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    conf = _load_conf(example, confcheck, tmp_path, seed=seed)
     alg = _build(conf, conf.config['fit_type'])
     H.drive(alg)
 
