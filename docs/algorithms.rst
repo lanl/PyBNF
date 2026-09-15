@@ -111,7 +111,7 @@ Island-based differential evolution [Penas2015]_ is partially asynchronous algor
 Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
 
-We maintain a list of ``population_size`` current parameter sets, and in each iteration, ``population_size`` new parameter sets are proposed. The method to propose a new parameter set is specified by the config key ``de_strategy``. The default setting ``rand1`` works best for most problems, and runs as follows: We choose 3 random parameter sets p1, p2, and p3 in the current population. For each free parameter P, the new parameter set is assigned the value p1[P] + ``mutation_factor`` * (p2[P]-p3[P]) with probability ``mutation_rate``, or p1[P] with probability 1 - ``mutation_rate``. The new parameter set replaces the parameter set with the same index in the current population if it has a lower objective value. 
+We maintain a list of ``population_size`` current parameter sets, and in each iteration, ``population_size`` new parameter sets are proposed. The method to propose a new parameter set is specified by the config key ``de_strategy``. The default setting ``rand1`` works best for most problems, and runs as follows: We choose 3 random parameter sets p1, p2, and p3 in the current population. For each free parameter P, the new parameter set is assigned the value p1[P] + ``mutation_factor`` * (p2[P]-p3[P]) with probability ``mutation_rate``. Otherwise it keeps p1[P], or, with ``de_cross_with_target = 1``, the value held by the parameter set it will replace, the one with the same index in the current population, as published differential evolution does (see :ref:`alg-de-target`). The new parameter set replaces the parameter set with the same index in the current population if it has a lower objective value. 
 
 With ``de_strategy`` of ``best1`` or ``best2``, we force the above p1 to be the parameter set with the lowest objective value. With ``de_strategy`` of ``all1`` or ``all2``, we force p1 to be the parameter set at the same index we are proposing to replace. The ``best`` strategy results in fast convergence to what is likely only a local optimum. The ``all`` strategy converges more slowly, and prevents the entire population from converging to the same value. However, there is still a risk of each member of the population becoming stuck in its own local minimum. For the ``de_strategy``\ s ending in ``2``, we instead choose a total of 5 parameter sets, p1 through p5, and set the new parameter value as p1[P] + ``mutation_factor`` * (p2[P]-p3[P] + p4[P]-p5[P])
 
@@ -134,7 +134,16 @@ Candidates that copy their base
 
 Nothing in the procedure above guarantees that any parameter is mutated. Each is left as it is with probability 1 - ``mutation_rate``, so the new parameter set is an exact copy of p1 one time in eight at the default rate on a model with three free parameters, and one time in sixty-four on six. Under the default ``stochastic_seed`` policy a simulation's seed comes from the parameter values, so a copy runs the same simulations as p1 and scores exactly the same, and it replaces the member at its index whenever p1 is the better of the two, although nothing was searched. In the asynchronous version the copy can itself be p1 for the very next proposal, so copies build further copies. The population drifts toward a single parameter set, and once every member is that set every difference between members is zero, nothing further can happen, and the convergence test below stops the run.
 
-With ``de_force_mutation`` on, the default under ``edition = 2`` and always the case when the mutation settings are learned, one parameter chosen at random is mutated whatever the coins say, which is the guarantee binomial crossover makes in the published method. That alone is not quite enough here. The new parameter set takes its unmutated values from p1 but, under the ``rand`` and ``best`` strategies, replaces a different member, so after a replacement two members share those values, and p2 and p3 come to agree on many parameters, where their difference is zero. When the parameter chosen is one of those, the choice is made again among the parameters in which p2 and p3 differ, each equally likely. If they differ in none (they are the same parameter set, or under a ``2`` strategy the two differences cancel), other members are drawn in their place, up to as many times as the population has members. A candidate can then copy p1 only when nearly every other member is one parameter set. The legacy edition keeps the original procedure, and ``de_force_mutation`` sets it either way.
+With ``de_force_mutation`` on, the default under ``edition = 2`` and always the case when the mutation settings are learned, one parameter chosen at random is mutated whatever the coins say, which is the guarantee binomial crossover makes in the published method, so that the new parameter set differs from p1 in at least that parameter. That alone is not quite enough when the unmutated values are p1's. Under the ``rand`` and ``best`` strategies a new parameter set replaces a different member, so after a replacement two members share p1's values, and p2 and p3 come to agree on many parameters, where their difference is zero. When the difference does not move the parameter chosen, the choice is made again among the parameters it does move, each equally likely. If it moves none (p2 and p3 are the same parameter set, or under a ``2`` strategy the two differences cancel), other members are drawn in their place, up to as many times as the population has members. A candidate can then be a copy only when nearly every other member is one parameter set. Crossed with the target (below), the value a parameter is moved to must also differ from the target's, so the new parameter set is a copy of neither p1 nor its target. The legacy edition keeps the original procedure, and ``de_force_mutation`` sets it either way.
+
+.. _alg-de-target:
+
+Crossing with the target
+""""""""""""""""""""""""
+
+Published differential evolution builds a new parameter set around the one it will replace, its *target*: a mutated parameter takes p1[P] + ``mutation_factor`` * (p2[P]-p3[P]), and an unmutated one keeps the target's own value. PyBNF's original procedure keeps p1's value instead. Under the ``all`` strategies p1 is the target and the two agree, but under ``rand`` and ``best`` a winning parameter set puts p1's unmutated values into a second member. Values spread through the population, and once every member holds the same value of a parameter no difference between members can move it again: the other parameters converge around it and the fit stalls short of the optimum. Under ``best``, where every new parameter set is built from the best member, it happens quickly.
+
+With ``de_cross_with_target = 1`` unmutated parameters keep the target's values, so a value is copied into another member only where p2 and p3 already share it. On a noise-free three-parameter test objective, every ``best1`` fit crossed with the target converged onto the optimum, where 9 of 10 crossed with p1 ended with a parameter no member could move, and it did as well on a correlated, ill-conditioned one and on a narrow curved valley. It is nevertheless off by default, under every edition, because on real models the measurements did not agree: on the stochastic recovery benchmark it did no better with fixed settings (better with learned ones), and on two of the tutorial's ODE models it did worse, one ending further from the documented values on 17 of 21 seeds and the other converging more often into a second, slightly worse basin.
 
 Convergence
 """""""""""
@@ -178,8 +187,8 @@ The run keeps a memory of ``de_adapt_memory`` (rate, factor) pairs, every entry 
 the configured pair. Each new candidate draws its own pair around one entry chosen at random:
 the rate from a normal distribution of spread 0.1, clipped to [0, 1]; the factor from a
 Cauchy distribution of the same spread, capped at 1 and drawn again while it is not positive.
-A candidate that scores strictly better than the parameter set it was built from (p1 above)
-is a success, and its pair is remembered together with how much it improved. When a
+A candidate that scores strictly better than the parameter set it was crossed with (see
+below) is a success, and its pair is remembered together with how much it improved. When a
 generation ends (for ``ade``, when a population's worth of simulations has completed), the
 successes since the last generation are folded into the next memory entry: the rate as their
 mean weighted by improvement, the factor as the weighted Lehmer mean, which favours the larger
@@ -187,16 +196,16 @@ factors because a small step succeeds more often but by less. A generation with 
 leaves the memory as it was. Settings that have been working recently are therefore drawn
 more often, and the learned values move with the search.
 
-Two details differ from the published method, because PyBNF builds its candidates
-differently. SHADE crosses the mutant with the parameter set the candidate will replace, so
-that set is also the one a success is judged against. Here the mutant is crossed with p1,
-which under the ``rand`` and ``best`` strategies is not the set the candidate competes with,
-so a success is judged against p1: the candidate has to beat the parameter set its settings
-were applied to. Judging it against the slot instead rewards a candidate for merely copying a
-better member, which teaches the run that a rate near zero is best and thins the population
-out into copies of its best members. And when the settings are learned, ``de_force_mutation``
-is always on (see :ref:`alg-de-copies`), since a learned rate can sit near 0, where most
-candidates would otherwise be exact copies of p1. The population-size
+A success is judged against the parameter set the mutant was crossed with, the one whose
+values the candidate keeps where it is not mutated, since that is what the settings were
+applied to. With ``de_cross_with_target = 1`` that is the target, the parameter set the
+candidate will replace (see :ref:`alg-de-target`), which is SHADE's own rule. By default it
+is p1, which under the ``rand`` and ``best`` strategies is not the set the candidate competes
+with; judging such a candidate against the set it competes with would reward it for merely
+copying a better member, which teaches the run that a rate near zero is best and thins the
+population out into copies of its best members. When the settings are learned,
+``de_force_mutation`` is always on (see :ref:`alg-de-copies`), since a learned rate can sit
+near 0, where most candidates would otherwise be exact copies. The population-size
 reduction of [Tanabe2014]_ is not adopted; it is a separate idea, and it interacts with how
 many processors a run keeps busy.
 

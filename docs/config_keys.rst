@@ -2132,7 +2132,7 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
     * ``de_strategy = rand2``
 
 **de_adapt_mutation**
-  Learn ``mutation_rate`` and ``mutation_factor`` during the run instead of using them as written. The run keeps a short history of the settings that recently produced a candidate better than the parameter set it was built from, and draws each new candidate's settings from that history, with some spread, so values that have been working lately are used more often and the settings move with the search as it turns from exploring to refining. This is the success-history adaptation of Tanabe and Fukunaga's SHADE; see :ref:`the algorithm description <alg-de-adapt>` for what is remembered and how. The configured pair is where the learning starts, so a run that never produces a successful candidate keeps drawing around it. With this on, ``de_force_mutation`` is on too, so a candidate always has at least one parameter mutated, whatever rate it drew.
+  Learn ``mutation_rate`` and ``mutation_factor`` during the run instead of using them as written. The run keeps a short history of the settings that recently produced a candidate better than the parameter set it was crossed with (see ``de_cross_with_target``), and draws each new candidate's settings from that history, with some spread, so values that have been working lately are used more often and the settings move with the search as it turns from exploring to refining. This is the success-history adaptation of Tanabe and Fukunaga's SHADE; see :ref:`the algorithm description <alg-de-adapt>` for what is remembered and how. The configured pair is where the learning starts, so a run that never produces a successful candidate keeps drawing around it. With this on, ``de_force_mutation`` is on too, so a candidate always has at least one parameter mutated, whatever rate it drew.
 
   Off, the run uses the configured pair from the first iteration to the last, as it always has.
 
@@ -2152,15 +2152,26 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
     * ``de_adapt_memory = 10``
 
 **de_force_mutation**
-  Whether every candidate changes at least one parameter of the parameter set it was built from. A candidate is that parameter set with each parameter moved, with probability ``mutation_rate``, by the scaled difference between two other members, so with this off nothing guarantees that any parameter moves: at the default rate one candidate in eight on a three-parameter model is an exact copy. Under the default ``stochastic_seed`` policy a copy runs the same simulations as the parameter set it copies and scores exactly the same, so it takes the place of any worse member without having searched anything. In ``ade`` those copies go on to build more copies, until the whole population is one parameter set and the run stops early, reporting convergence.
+  Whether every candidate changes at least one parameter. Each parameter of a candidate is mutated, by the scaled difference between two other members, with probability ``mutation_rate``, and otherwise keeps its value from the parameter set the candidate is crossed with: the one it will replace, under ``de_cross_with_target``, or the one it was built from. So with this off nothing guarantees that any parameter changes, and at the default rate one candidate in eight on a three-parameter model is an exact copy. Under the default ``stochastic_seed`` policy a copy runs the same simulations as the parameter set it copies and scores exactly the same. Crossed with the parameter set it was built from, it then takes the place of any worse member without having searched anything, and in ``ade`` those copies go on to build more copies, until the whole population is one parameter set and the run stops early, reporting convergence. Crossed with the one it will replace, a copy wastes a simulation.
 
-  With this on, one parameter chosen at random is always mutated, the guarantee binomial crossover makes. Where the two other members share that parameter's value their difference cannot move it, so the choice is made again among the parameters they do move, and if they move none, other members are drawn in their place. Only a population whose other members are all but one parameter set can still produce a copy. See :ref:`the algorithm description <alg-de-copies>`. ``de_adapt_mutation = 1`` always turns it on, since a learned rate can sit near 0.
+  With this on, one parameter chosen at random is always moved, the guarantee binomial crossover makes, to a value that neither the parameter set the candidate was built from nor the one it is crossed with holds. Where the two other members share that parameter's value their difference cannot move it, so the choice is made again among the parameters they do move, and if they move none, other members are drawn in their place. Only a population whose other members are all but one parameter set can still produce a copy. See :ref:`the algorithm description <alg-de-copies>`. ``de_adapt_mutation = 1`` always turns it on, since a learned rate can sit near 0.
 
   Default: on under ``edition = 2`` and above, off under the legacy edition, whose unchanged configuration files keep behaving as they always have.
 
   Example:
 
     * ``de_force_mutation = 1``
+
+**de_cross_with_target**
+  Whether a candidate keeps, wherever it is not mutated, the values of the parameter set it will replace, its *target*, as published differential evolution does, instead of those of the parameter set it was built from. Under the ``all`` strategies the two are the same parameter set. Under ``rand`` and ``best`` they are not, and keeping the values of the parameter set a candidate was built from puts those values into a second member each time the candidate wins, so values can spread through the population until a parameter every member shares can never move again; under ``best`` this happens quickly. With this on, the copy guarantee (``de_force_mutation``) moves one parameter to a value neither the candidate's base nor its target holds, and the learned mutation settings (``de_adapt_mutation``) judge a candidate against its target. See :ref:`the algorithm description <alg-de-target>`.
+
+  It is off by default because the measurements did not agree. It removed the frozen parameters and reached the optimum on every noise-free test objective tried, and helped the learned settings, but it did no better on the stochastic recovery benchmark with fixed settings and worse on two of the tutorial's ODE models. Turn it on when a ``best`` strategy, or any fit, ends with parameters that every member of the population shares.
+
+  Default: 0 (off)
+
+  Example:
+
+    * ``de_cross_with_target = 1``
 
 The following options are only available with ``job_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
 

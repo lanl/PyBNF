@@ -6,6 +6,19 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Differential evolution can cross a candidate with the member it will replace
+  (#700, ADR-0144).** Wherever a candidate is not mutated it keeps the values of one parameter
+  set. PyBNF keeps those of the parameter set it was built from, which under the `rand` and
+  `best` strategies stays in the population when the candidate takes another member's place, so
+  values can spread from member to member until a parameter every member shares can never move
+  again. `de_cross_with_target = 1` keeps the values of the member being replaced instead, as
+  published differential evolution does; the copy guarantee (#698) then moves one parameter to a
+  value neither the candidate's base nor that member holds, and the learned mutation settings
+  judge a success against that member, SHADE's own rule. Off by default, under every edition:
+  on noise-free test objectives it removed the frozen parameters and reached the optimum from
+  every seed, and it helped the learned settings on the stochastic recovery benchmark, but with
+  fixed settings it did no better there over twenty seeds, and on two of the tutorial's ODE
+  models it did worse. A configuration that does not set it runs exactly as before.
 - **Differential evolution can learn its mutation settings during a run (#667, ADR-0142).**
   `de_adapt_mutation = 1` makes `de` and `ade` draw each candidate's `mutation_rate` and
   `mutation_factor` from a short history of the pairs that recently produced a candidate better

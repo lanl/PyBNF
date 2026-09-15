@@ -64,6 +64,9 @@ OWNERSHIP_CASES = [
     # so is the copy guarantee (#698)
     ('de', 'de_force_mutation', False), ('ade', 'de_force_mutation', False),
     ('ss', 'de_force_mutation', True),
+    # and crossing with the target (#700)
+    ('de', 'de_cross_with_target', False), ('ade', 'de_cross_with_target', False),
+    ('cmaes', 'de_cross_with_target', True),
     # pso owns its swarm keys + the particle_weight_final runtime key
     ('pso', 'cognitive', False), ('pso', 'particle_weight_final', False),
     ('pso', 'mutation_rate', True),

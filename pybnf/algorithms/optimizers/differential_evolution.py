@@ -24,6 +24,17 @@ for, so an accepted candidate shares its unmutated values with a member that sta
 population, members come to share values, and the donors' difference is often zero in
 the parameter chosen. The guarantee therefore chooses again among the parameters the
 difference does move, and draws other donors when it moves none.
+
+With ``de_cross_with_target = 1`` (off by default, under every edition) the mutant is
+crossed with the member the candidate will replace, its target, as published differential
+evolution does (#700, ADR-0144), instead of with its base: an unmutated parameter keeps the
+target's own value. Crossed with the base, the values a winning candidate kept from its
+base sat in two members, spread through the population, and froze any parameter whose
+value every member came to share, since no donor difference can move it. Under ``all`` the
+base is the target and nothing changes. The copy guarantee then moves one parameter to a
+value neither the base nor the target holds, since a zero donor difference would leave the
+base's value and a candidate made only of those would be a copy of its base; the learned
+settings judge a success against the target.
 """
 
 
@@ -52,7 +63,7 @@ logger = logging.getLogger('pybnf.algorithms')
 class SuccessHistory:
     """The success history of the mutation settings (Tanabe and Fukunaga 2013; #667,
     ADR-0142): a short memory of the ``mutation_rate`` / ``mutation_factor`` pairs that
-    recently produced a candidate better than the parameter set it was built from, and
+    recently produced a candidate better than the member its mutant was crossed with, and
     the draw that turns that memory into the pair for the next candidate.
 
     The memory has ``size`` slots, each a (rate, factor) pair, all starting at the
@@ -64,7 +75,7 @@ class SuccessHistory:
     try a factor near 1 now and then, so the history can move once the search's needs
     change. Successes accumulate as they are reported and are folded into the memory one
     slot at a time when the method says a generation has ended: the rate as the mean of
-    the successful rates weighted by how much each improved on its base, the factor as
+    the successful rates weighted by how much each improved on its reference, the factor as
     the weighted Lehmer mean, which leans toward the larger factors because a small step
     succeeds more often but by less, and would otherwise pull the memory toward ever
     smaller steps. A generation with no success leaves the memory as it was.
@@ -93,8 +104,8 @@ class SuccessHistory:
         return rate, min(1.0, factor)
 
     def record(self, rate, factor, gain):
-        """A success: the pair built a candidate better than its base by ``gain``, which
-        the caller guarantees is positive and finite."""
+        """A success: the pair built a candidate better than its reference by ``gain``,
+        which the caller guarantees is positive and finite."""
         self.pending.append((float(rate), float(factor), float(gain)))
 
     def flush(self):
@@ -155,6 +166,13 @@ class DEFamilyConfig(PyBNFConfigModel):
     # edition 2 and off under the legacy edition, whose contract is that an unchanged conf
     # keeps behaving as it always has; the learned settings above turn it on regardless.
     de_force_mutation: Optional[int] = None
+    # Cross the mutant with the member the candidate will replace, its target, as published
+    # differential evolution does, rather than with its base (#700, ADR-0144): an unmutated
+    # parameter keeps the target's own value, so values stop spreading from the base into
+    # other members. Off under every edition: it removed the frozen parameters of the base
+    # crossover on analytical targets, but did worse on two real tutorial models and no better
+    # on the stochastic recovery benchmark.
+    de_cross_with_target: int = 0
 
 
 class DifferentialEvolutionConfig(MultiStartConfig, DEFamilyConfig):
@@ -224,6 +242,9 @@ class DifferentialEvolutionBase(Algorithm):
         # Whether a candidate always mutates a parameter its donors move, so it is never an
         # exact copy of its base (#698, ADR-0143).
         self.force_mutation = self._resolve_force_mutation()
+        # Whether the mutant is crossed with the member the candidate will replace rather
+        # than with its base (#700, ADR-0144); off unless asked for.
+        self.cross_with_target = bool(config.config['de_cross_with_target'])
 
     def _resolve_force_mutation(self):
         """Whether the copy guarantee is on (#698, ADR-0143). The learned settings always
@@ -246,7 +267,7 @@ class DifferentialEvolutionBase(Algorithm):
             return bool(int(configured))
         return edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
 
-    def new_individual(self, individuals, base_index=None, island=0):
+    def new_individual(self, individuals, base_index=None, island=0, target_index=None):
         """
         Create a new individual for the specified island, according to the set strategy
 
@@ -255,6 +276,9 @@ class DifferentialEvolutionBase(Algorithm):
         :param island: Which island the individual is for. With ``de_adapt_mutation`` on, that
             island's success history supplies the mutation settings and learns from the outcome
             (``ade`` has a single island, 0).
+        :param target_index: The index of the member the new individual will compete with. With
+            ``de_cross_with_target`` on, its unmutated parameters are that member's; without an
+            index, or with the key off, they are the base's.
         :return:
         """
 
@@ -280,20 +304,27 @@ class DifferentialEvolutionBase(Algorithm):
         base = individuals[picks[0]]
         others = [individuals[p] for p in picks[1:]]
 
+        # The member the mutant is crossed with, whose values the unmutated parameters keep:
+        # the target the candidate will replace (#700, ADR-0144), or, as before, the base.
+        crossed = picks[0]
+        if self.cross_with_target and target_index is not None:
+            crossed = target_index
+        target = individuals[crossed]
+
         # The mutation settings for this candidate: the configured pair, or a draw from the
         # island's success history (#667, ADR-0142). Off, nothing here touches the rng.
         rate, factor = self.mutation_rate, self.mutation_factor
         if self.adapt_mutation:
             rate, factor = self.histories[island].draw(self.rng)
 
-        # The copy guarantee (#698, ADR-0143): one parameter the donors move is always
-        # mutated, so the candidate is not an exact copy of its base, which under the default
-        # seed policy would tie its base exactly and could take any worse member's slot. It
-        # can change the donors. Off, nothing here touches the rng.
+        # The copy guarantee (#698, ADR-0143): one parameter is always moved by the donors to a
+        # value that neither the base nor the member it is crossed with holds, so the candidate
+        # is an exact copy of neither, which under the default seed policy would tie it
+        # exactly. It can change the donors. Off, nothing here touches the rng.
         forced, forced_value = None, None
         if self.force_mutation:
             others, forced, forced_value = self._forced_parameter(
-                individuals, picks[0], base, others, factor)
+                individuals, picks[0], base, target, others, factor)
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
@@ -304,16 +335,15 @@ class DifferentialEvolutionBase(Algorithm):
                 else:
                     new_pset_vars.append(p.add(self._difference(p.name, others, factor)))
             else:
-                new_pset_vars.append(p)
+                new_pset_vars.append(target.get_param(p.name))
 
         new_pset = PSet(new_pset_vars)
         if self.adapt_mutation:
-            # What the outcome will be judged against: the base's fitness now, which is
-            # what these settings were applied to (the candidate replaces a slot chosen by
-            # the strategy, which under rand and best is not the base; see
+            # What the outcome will be judged against: the fitness, now, of the member the
+            # mutant was crossed with, which is what these settings were applied to (see
             # _note_trial_result).
-            base_fitness = float(self._island_fitnesses(island)[picks[0]])
-            self._trial_settings[new_pset] = (rate, factor, base_fitness, island)
+            reference_fitness = float(self._island_fitnesses(island)[crossed])
+            self._trial_settings[new_pset] = (rate, factor, reference_fitness, island)
         return new_pset
 
     def _difference(self, name, donors, factor):
@@ -325,42 +355,51 @@ class DifferentialEvolutionBase(Algorithm):
             step = step + factor * donors[2].get_param(name).diff(donors[3].get_param(name))
         return step
 
-    def _moved(self, param, donors, factor):
-        """``param`` moved by the donors' difference, or ``None`` when that does not change
-        its value. The test is on the value, so a difference too small to change it in
-        floating point is not a move; a zero difference, the usual reason for no move, is
-        settled before the moved parameter is built, since building it is the costly part."""
+    def _moved(self, param, kept, donors, factor):
+        """``param`` (the base's) moved by the donors' difference, or ``None`` when that is no
+        move: when the difference does not change the base's value (it is zero, the usual
+        case, settled before the moved parameter is built, since building it is the costly
+        part; or too small to change the value in floating point), or when the moved value is
+        ``kept``, the value the candidate keeps where it is not mutated. Crossed with the base,
+        ``kept`` is the base's own value and the two tests are one. Crossed with the target
+        they are two, and both matter: a zero difference would leave the base's value, so a
+        candidate whose every mutated parameter had one would be an exact copy of its base."""
         step = self._difference(param.name, donors, factor)
         if step == 0.0:
             return None
         moved = param.add(step)
-        return moved if moved.value != param.value else None
+        if moved.value == param.value or moved.value == kept.value:
+            return None
+        return moved
 
-    def _forced_parameter(self, individuals, base_pick, base, donors, factor):
+    def _forced_parameter(self, individuals, base_pick, base, crossed, donors, factor):
         """The parameter a candidate always mutates, with the donors it is mutated by (#698,
-        ADR-0143). ``base_pick`` is the base's position in ``individuals``. Returns
+        ADR-0143). ``base_pick`` is the base's position in ``individuals``, and ``crossed`` is
+        the member the mutant is crossed with: the base, or the target (#700). Returns
         ``(donors, position, moved parameter)``.
 
         One parameter is chosen at random, the draw binomial crossover makes. If the donors'
-        difference does not change it, because the donors share its value, the choice is
-        made again among the parameters the difference does change (drawn at random from
-        those with a nonzero difference, dropping any whose value it still leaves as it
-        was), so each parameter the difference changes is equally likely to be the one the
-        candidate is sure to change. If it changes none (the donors are one parameter set,
-        or their two differences cancel), other donors are drawn from the members other
-        than the base, up to as many times as the population has members. If none of them
-        changes anything either, the position is ``None`` and the candidate is left a copy
-        of its base. That many failures in a row are likely only when all but one or two of
-        the other members are one parameter set, so only a population that has all but
-        collapsed can still propose a copy.
+        difference does not move it (see :meth:`_moved`: the donors share its value, or the
+        moved value is the one the candidate keeps from ``crossed`` anyway), the choice is made
+        again among the parameters it does move (drawn at random from those with a nonzero
+        difference, dropping any the difference still does not move), so each parameter it
+        moves is equally likely to be the one the candidate is sure to change. If it moves none
+        (the donors are one parameter set, or their two differences cancel), other donors are
+        drawn from the members other than the base, up to as many times as the population has
+        members. If none of them moves anything either, the position is ``None`` and the
+        candidate is left a copy of ``crossed``. That many failures in a row are likely only
+        when all but one or two of the other members are one parameter set, so only a
+        population that has all but collapsed can still propose a copy. Otherwise the
+        candidate differs from its base and from ``crossed`` in the parameter moved.
 
         When the first parameter chosen changes, as every parameter does until members share
         values, this is exactly the draw the learned settings made before (#667), so such a
         run is unchanged until the first time the choice is made again.
         """
         params = list(base)
+        kept = [crossed.get_param(p.name) for p in params]
         forced = int(self.rng.integers(len(params)))
-        moved = self._moved(params[forced], donors, factor)
+        moved = self._moved(params[forced], kept[forced], donors, factor)
         if moved is not None:
             return donors, forced, moved
         pool = [k for k in range(len(individuals)) if k != base_pick]
@@ -372,7 +411,7 @@ class DifferentialEvolutionBase(Algorithm):
                        if self._difference(p.name, donors, factor) != 0.0]
             while nonzero:
                 position = nonzero.pop(int(self.rng.integers(len(nonzero))))
-                moved = self._moved(params[position], donors, factor)
+                moved = self._moved(params[position], kept[position], donors, factor)
                 if moved is not None:
                     return donors, position, moved
         return donors, None, None
@@ -406,25 +445,27 @@ class DifferentialEvolutionBase(Algorithm):
     def _note_trial_result(self, pset, score):
         """Report a finished candidate's score to the history that built it.
 
-        A success is a candidate that scored strictly better than the parameter set it was
-        built from, its base, by a finite amount; the improvement is the success's weight
-        when the history folds it in. The base, not the population slot the candidate
-        competes for, is the reference on purpose: under the ``rand`` and ``best``
-        strategies the two differ, and judged against the slot a candidate that copies a
-        better member wins about half its contests by a wide margin without its settings
-        having done anything, which would teach the history that a rate near 0 is best and
-        collapse the population onto copies of its best members. Under ``all`` the base is
-        the slot, and this is the classic rule. A failed simulation on either side is not
-        evidence about the settings, since anything finite beats infinity, so it records
-        nothing. A candidate this history did not build (the initial population, or a
-        duplicate whose record another candidate overwrote) records nothing either.
+        A success is a candidate that scored strictly better, by a finite amount, than the
+        member its mutant was crossed with, the member whose values it keeps where it was
+        not mutated; the improvement is the success's weight when the history folds it in.
+        That member is the reference because it is what the settings were applied to.
+        Crossed with the target (#700, ADR-0144), as published differential evolution
+        crosses, it is the member the candidate competes with, and this is SHADE's own rule.
+        Crossed with the base, under the ``rand`` and ``best`` strategies it is not: judged
+        against the slot, a candidate that copies a better base would win about half its
+        contests by a wide margin without its settings having done anything, teaching the
+        history that a rate near 0 is best (ADR-0142), so it is judged against the base.
+        A failed simulation on either side is not evidence about the settings, since
+        anything finite beats infinity, so it records nothing. A candidate this history did
+        not build (the initial population, or a duplicate whose record another candidate
+        overwrote) records nothing either.
         """
         record = self._trial_settings.pop(pset, None)
         if record is None:
             return
-        rate, factor, base_fitness, island = record
-        if np.isfinite(base_fitness) and np.isfinite(score) and score < base_fitness:
-            self.histories[island].record(rate, factor, base_fitness - score)
+        rate, factor, reference_fitness, island = record
+        if np.isfinite(reference_fitness) and np.isfinite(score) and score < reference_fitness:
+            self.histories[island].record(rate, factor, reference_fitness - score)
 
     def _flush_adaptation(self, island):
         """A generation of ``island`` has ended: fold its successes into the history."""
@@ -786,11 +827,14 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
             best = np.argmin(self.fitnesses[island])
             for jj in range(self.num_per_island):
                 if 'best' in self.strategy:
-                    new_pset = self.new_individual(self.individuals[island], best, island=island)
+                    new_pset = self.new_individual(self.individuals[island], best, island=island,
+                                                   target_index=jj)
                 elif 'all' in self.strategy:
-                    new_pset = self.new_individual(self.individuals[island], jj, island=island)
+                    new_pset = self.new_individual(self.individuals[island], jj, island=island,
+                                                   target_index=jj)
                 else:
-                    new_pset = self.new_individual(self.individuals[island], island=island)
+                    new_pset = self.new_individual(self.individuals[island], island=island,
+                                                   target_index=jj)
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
@@ -965,11 +1009,11 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
 
         if 'best' in self.strategy:
             best = np.argmin(self.fitnesses)
-            new_pset = self.new_individual(self.individuals, best)
+            new_pset = self.new_individual(self.individuals, best, target_index=j)
         elif 'all' in self.strategy:
-            new_pset = self.new_individual(self.individuals, j)
+            new_pset = self.new_individual(self.individuals, j, target_index=j)
         else:
-            new_pset = self.new_individual(self.individuals)
+            new_pset = self.new_individual(self.individuals, target_index=j)
         new_pset.name = 'gen%iind%i' % (gen+1, j)
 
         return [new_pset]
