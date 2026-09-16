@@ -149,6 +149,22 @@ Summarize with
 python benchmarks/stochastic_recovery/run_baseline.py summarize benchmarks/stochastic_recovery/results/my_run.json
 ```
 
+A variant is scored against the method it varies with `compare`, which is what makes a
+difference between two rows a measurement rather than an impression: both methods run from
+the same fit seeds, so their records pair, and the comparison is a sign test on the final
+error, McNemar's exact test on success, and the error of the reported best at checkpoints
+through the budget.
+
+```bash
+python benchmarks/stochastic_recovery/run_baseline.py compare benchmarks/stochastic_recovery/results/my_run.json \
+    --baseline ss_noise --methods ss_noise_opt --out benchmarks/stochastic_recovery/results/my_run.md
+```
+
+Only the (problem, seed) pairs both methods were run from are compared, so a partial run of
+a variant is still scored against the same seeds of its baseline. `--checkpoints` overrides
+the default checkpoints (10, 25, 50, 75 and 100 percent of each problem's budget), and
+`--json-out` writes the same comparison as JSON.
+
 check that the committed data can still be regenerated from the definitions with
 
 ```bash
@@ -378,6 +394,65 @@ whose noise misleads a single draw. Eighty paired seeds cannot separate 2 from 3
 default is 3 since ADR-0141; the baseline rows for `ss_noise` above were measured at 5 and
 stay as they are, labelled by what ran.
 
+### The other two levers
+
+The study named two more ways of paying less for the deferral, and #696 built both as opt-in
+keys (ADR-0145). `ss_noise_optimistic = 1` gives the reference slot to whichever side of an
+undecided contest leads on the mean, right away, so the next round's combinations are built
+from the leading point; the draws continue and hand the slot back if they settle the other
+way. `ss_noise_redraw_budget = N` keeps open only the N-draws-worth of contests whose
+objective gap and rank say a wrong call would cost most, and decides the rest now on their
+means. Both were run on the same four problems and the same twenty seeds, at the deferral of
+3, and their records are in `results/ss_noise_20seeds.json` as `ss_noise_opt`, `ss_noise_b4`
+and `ss_noise_b2`.
+
+Both do what they were built to do. Instrumenting one McKane_PhysRevLett2005 fit (seed 1, 20
+rounds, 2,000 evaluations) and counting how often a reference slot's point changed:
+
+| setting | re-draws | slot changes | open contests |
+|---|---:|---:|---:|
+| `ss_noise` (deferral 3) | 161 | 69 | 95 |
+| `ss_noise_optimistic = 1` | 192 | 113 | 94 |
+| `ss_noise_redraw_budget = 4` | 127 | 97 | 46 |
+| `ss_noise_redraw_budget = 2` | 99 | -- | 25 |
+
+Slot changes are the quantity this study called the cost: plain scatter search accepted 91 and
+105 replacements per run where the noise handling at a deferral of five accepted 60 and 45. At
+three it is 69, and both levers bring it back inside plain scatter search's range, the budget
+while spending a fifth fewer re-draws.
+
+Pooled over the 80 paired seeds, against the deferral of 3 that is now the default
+(`run_baseline.py compare --baseline ss_noise_d3`):
+
+| method | successes of 80 | median final error | mean final error | error better / worse | sign p | only it / only `ss_noise_d3` | McNemar p |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `ss_noise_d3` | 24 | 0.674 | 0.682 | | | | |
+| `ss_noise_opt` | 17 | 0.676 | 0.729 | 39 / 40 | 1.000 | 7 / 14 | 0.189 |
+| `ss_noise_b4` | 15 | 0.597 | 0.708 | 37 / 43 | 0.576 | 3 / 12 | 0.035 |
+| `ss_noise_b2` | 13 | 0.706 | 0.738 | 39 / 41 | 0.911 | 2 / 13 | 0.007 |
+
+And against plain scatter search on the same seeds: 17 successes for `ss_noise_opt`, 15 for
+`ss_noise_b4` and 13 for `ss_noise_b2` against `ss`'s 17, with no test separating any of them
+from it.
+
+The error of the reported best at checkpoints says where it goes wrong. On
+Shahrezaei_PNAS2008, the problem where the deferral of 3 wins:
+
+| method | 2000 | 5000 | 10000 | 15000 | 20000 |
+|---|---:|---:|---:|---:|---:|
+| `ss_noise_d3` | 0.600 | 0.466 | 0.333 | 0.263 | **0.250** |
+| `ss_noise_opt` | 0.592 | 0.409 | 0.306 | 0.295 | 0.367 |
+| `ss_noise_b4` | 0.548 | 0.363 | 0.289 | 0.338 | 0.383 |
+| `ss_noise_b2` | 0.437 | 0.362 | 0.342 | 0.347 | 0.323 |
+
+Both levers lead at every early checkpoint and lose at the last two; Lin_PhysRevE2016 does the
+same. So the conclusion above needs correcting. The slower-moving reference set is not the
+feature's cost sitting beside its benefit: it *is* the benefit. Recover the movement by either
+route and the noise handling becomes indistinguishable from not having it, because a set that
+moves faster is a set following draws it has not earned. The deferral length stays the only
+lever on this feature that has paid. Both keys are off by default and stay in the runner for
+anyone re-running this on more problems or a longer budget.
+
 
 ## Follow-up: differential evolution with learned mutation settings
 
@@ -551,9 +626,13 @@ Wall times in these files are not comparable with the baseline's; the runs share
 ## Scoring a change
 
 Run the baseline methods again after the change with the same seeds, summarize, and compare
-the success rates and median errors against `results/baseline_v1.md`. Five seeds resolve a
-change in success rate of about two fits in five; a smaller effect needs more seeds
-(`--seeds 10 --first-seed 1` reuses the first five).
+the success rates and median errors against `results/baseline_v1.md` -- with `compare`, which
+pairs the seeds and runs the tests, rather than by eye. Five seeds resolve a change in success
+rate of about two fits in five; a smaller effect needs more seeds (`--seeds 10 --first-seed 1`
+reuses the first five). A change that leaves a method's code path byte-identical does not need
+its baseline rows run again: a fit is deterministic in (problem, method, seed), so the
+committed rows pair with new ones. Check that before relying on it, by running one fit of the
+unchanged method and comparing its record with the committed one.
 
 ## Adding a problem
 

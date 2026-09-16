@@ -7,6 +7,9 @@ Subcommands::
                JSON results file (resumable: pairs already in the file are skipped);
                --set key=value --as name scores a variant of a method under its own name
     summarize  aggregate a results file into the per-(problem, method) table
+    compare    score one or more methods against a baseline over the seeds they share:
+               the sign test on the final error, McNemar's test on success, and the
+               progress at simulation checkpoints
     generate   regenerate a problem's data file from its frozen definition
     leverage   how far a factor-of-two change in each parameter moves the objective,
                in units of the objective's noise at the truth
@@ -17,6 +20,8 @@ Examples::
         --seeds 5 --parallel 8 --out benchmarks/stochastic_recovery/results/baseline_v1.json
     python benchmarks/stochastic_recovery/run_baseline.py summarize \\
         benchmarks/stochastic_recovery/results/baseline_v1.json
+    python benchmarks/stochastic_recovery/run_baseline.py compare \\
+        benchmarks/stochastic_recovery/results/ss_noise_20seeds.json --baseline ss
     python benchmarks/stochastic_recovery/run_baseline.py generate --check
 
 Needs bngsim and BNG2.pl (set ``BNGPATH``); the network-free problem also needs
@@ -116,6 +121,31 @@ def cmd_summarize(args):
         Path(args.out).write_text(table + '\n')
 
 
+def cmd_compare(args):
+    records = _load_records(args.results)
+    if not records:
+        sys.exit('no records in %s' % args.results)
+    known = protocol.methods_in(records)
+    if args.baseline not in known:
+        sys.exit('no records for baseline %r (have %s)' % (args.baseline, sorted(known)))
+    methods = args.methods or [m for m in known if m != args.baseline]
+    unknown = [m for m in methods if m not in known]
+    if unknown:
+        sys.exit('no records for method(s): %s (have %s)' % (unknown, sorted(known)))
+    result = protocol.compare(records, args.baseline, methods,
+                              problems=set(args.problems) if args.problems else None,
+                              checkpoints=args.checkpoints or None)
+    if not result['problems']:
+        sys.exit('nothing to compare: %r and %s share no (problem, seed)'
+                 % (args.baseline, methods))
+    text = protocol.format_comparison(result)
+    print(text, end='')
+    if args.out:
+        Path(args.out).write_text(text)
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(result, indent=1) + '\n')
+
+
 def cmd_generate(args):
     from stochastic_recovery.harness import generate_data, read_exp
     import numpy as np
@@ -170,6 +200,19 @@ def main(argv=None):
     s.add_argument('results')
     s.add_argument('--out', help='also write the Markdown table here')
     s.set_defaults(fn=cmd_summarize)
+
+    c = sub.add_parser('compare', help='score methods against a baseline over the seeds they share')
+    c.add_argument('results')
+    c.add_argument('--baseline', required=True, help='the method every other one is paired against')
+    c.add_argument('--methods', nargs='*', help='methods to score (default: every other one in the file)')
+    c.add_argument('--problems', nargs='*', help='restrict to these problem ids')
+    c.add_argument('--checkpoints', nargs='*', type=int,
+                   help='simulation counts for the progress table (default: %s of each '
+                        'problem\'s budget)'
+                        % ', '.join('%g%%' % (100 * f) for f in protocol.DEFAULT_CHECKPOINT_FRACTIONS))
+    c.add_argument('--out', help='also write the Markdown report here')
+    c.add_argument('--json-out', help='also write the comparison as JSON here')
+    c.set_defaults(fn=cmd_compare)
 
     g = sub.add_parser('generate', help='(re)generate data files')
     g.add_argument('--problems', nargs='*')

@@ -70,9 +70,12 @@ OWNERSHIP_CASES = [
     # pso owns its swarm keys + the particle_weight_final runtime key
     ('pso', 'cognitive', False), ('pso', 'particle_weight_final', False),
     ('pso', 'mutation_rate', True),
-    # ss owns local_min_limit + init_size/reserve_size runtime keys
+    # ss owns local_min_limit + init_size/reserve_size runtime keys, and its own
+    # noise-handling keys (#660, #696)
     ('ss', 'local_min_limit', False), ('ss', 'init_size', False),
     ('ss', 'reserve_size', False), ('ss', 'cognitive', True),
+    ('ss', 'ss_noise_optimistic', False), ('ss', 'ss_noise_redraw_budget', False),
+    ('de', 'ss_noise_optimistic', True), ('cmaes', 'ss_noise_redraw_budget', True),
     # sim owns simplex_* + the runtime simplex keys
     ('sim', 'simplex_step', False), ('sim', 'simplex_max_iterations', False),
     ('sim', 'simplex_log_step', False), ('sim', 'cognitive', True),

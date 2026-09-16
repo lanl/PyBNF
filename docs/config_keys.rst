@@ -2266,6 +2266,43 @@ The following options are only available with ``job_type = de``, and serve to ma
 
     * ``ss_noise_max_draws = 10``
 
+**ss_noise_optimistic**
+  What happens to the reference slot while a parent-versus-child contest the noise cannot
+  settle is still being drawn. With this off (the default), the parent keeps the slot and
+  the child waits as a contender, so the parent goes on seeding the next round's
+  combinations until the draws decide; that deferral is the whole measured cost of
+  ``ss_noise_handling`` (ADR-0141). With it on, whichever side leads on the mean of its
+  draws takes the slot at once, as plain scatter search would, the side it displaced
+  becomes its contender, both keep being drawn, and the slot goes back if the draws settle
+  the other way. The slot's stuck counter travels with the slot rather than resetting, since
+  an undecided contest is not yet evidence that the slot improved. Meaningful only with
+  ``ss_noise_handling`` on. Measured on the stochastic recovery benchmark (ADR-0145).
+
+  Default: 0
+
+  Example:
+
+    * ``ss_noise_optimistic = 1``
+
+**ss_noise_redraw_budget**
+  The most re-draws one round may queue for the orderings ``ss_noise_handling`` cannot
+  settle: every open contest and every pair of neighbours in the sorted reference set that
+  the spread cannot order. ``0``, the default, is no cap, which draws again for all of them.
+  With a cap, the round spends its re-draws on the decisions where a wrong call would cost
+  most -- the objective gap between the two estimates, weighted by how near the top of the
+  reference set the decision sits -- and leaves the rest to their means. This round's
+  decisions are served before its neighbour pairs, a contest is drawn for on both sides or
+  not at all, and the draw of a member counted stuck is never rationed, since that is the
+  draw that keeps a lucky value out of the archive of local minima. The draws a processor
+  takes rather than idling (``ss_fill_idle``) are not rationed either: they cost the round
+  no work it could have done instead. Meaningful only with ``ss_noise_handling`` on.
+
+  Default: 0
+
+  Example:
+
+    * ``ss_noise_redraw_budget = 4``
+
 **ss_fill_idle**
   Whether, toward the end of a round, a processor that would otherwise sit idle waiting for
   the round's slowest simulation is given one of the noise handling's draws early (``1``,

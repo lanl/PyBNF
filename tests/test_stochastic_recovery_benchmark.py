@@ -205,6 +205,96 @@ def test_aggregate_rates_and_medians():
 
 
 # --------------------------------------------------------------------------- #
+# Comparing two methods over the seeds they share (lanl/PyBNF#696)
+# --------------------------------------------------------------------------- #
+def _rec(problem, method, seed, error, trace=None):
+    """A record of one fit whose every parameter is off by ``error`` decades."""
+    estimate = {k: v * 10 ** error for k, v in problem.truth.items()}
+    points = [(sims, _errors(problem, e)) for sims, e in (trace or [(1000, error)])]
+    return protocol.score_fit(problem, estimate, 20000, points, method=method, seed=seed)
+
+
+def test_the_two_sided_binomial_is_exact():
+    assert protocol.binomial_p_two_sided(0, 5) == pytest.approx(2 / 32)
+    assert protocol.binomial_p_two_sided(1, 10) == pytest.approx(22 / 1024)
+    assert protocol.binomial_p_two_sided(9, 10) == pytest.approx(22 / 1024)   # symmetric
+    assert protocol.binomial_p_two_sided(5, 10) == 1.0                        # never above one
+    assert protocol.binomial_p_two_sided(0, 0) is None
+
+
+def test_the_sign_test_drops_ties_including_two_failures():
+    out = protocol.sign_test([(1.0, 0.5), (1.0, 2.0), (0.3, 0.3), (math.inf, math.inf)])
+    assert (out['better'], out['worse'], out['ties'], out['n']) == (1, 1, 2, 4)
+    assert out['p'] == 1.0
+    assert protocol.sign_test([(1.0, 0.5)] * 6)['p'] == pytest.approx(2 / 64)
+
+
+def test_mcnemar_counts_only_the_seeds_exactly_one_method_succeeded_at():
+    out = protocol.mcnemar([(True, False), (False, True), (False, True), (True, True),
+                            (False, False)])
+    assert (out['only_b'], out['only_a'], out['both'], out['neither']) == (2, 1, 1, 1)
+    assert out['p'] == 1.0                       # one of three discordant pairs proves nothing
+    assert protocol.mcnemar([(False, True)] * 5 + [(True, True)])['p'] == pytest.approx(2 / 32)
+
+
+def test_pairing_keeps_only_the_seeds_both_methods_were_run_from():
+    problem = _problem()
+    records = ([_rec(problem, 'a', s, 0.5) for s in (1, 2, 3)]
+               + [_rec(problem, 'b', s, 0.4) for s in (2, 3, 4)])
+    pairs = protocol.paired(records, 'a', 'b')
+    assert [(p, s) for p, s, _, _ in pairs] == [(problem.id, 2), (problem.id, 3)]
+    assert protocol.methods_in(records) == ['a', 'b']
+
+
+def test_best_so_far_reads_the_reported_best_at_the_checkpoint():
+    problem = _problem()
+    trace = [(200, _errors(problem, 1.0)), (600, _errors(problem, 0.2)),
+             (1000, _errors(problem, 0.7))]
+    ident = problem.identifiable
+    assert protocol.best_so_far(trace, ident, 100) is None
+    assert protocol.best_so_far(trace, ident, 500) == pytest.approx(1.0)
+    assert protocol.best_so_far(trace, ident, 600) == pytest.approx(0.2)
+    assert protocol.best_so_far(trace, ident, 5000) == pytest.approx(0.7)
+
+
+def test_compare_scores_a_method_against_a_baseline_and_formats_it():
+    problem = _problem()
+    # Ten seeds: the baseline is off by 0.5 decades every time, the method by 0.2, which
+    # is inside the loose tolerance, so it wins every paired seed on both statistics.
+    records = ([_rec(problem, 'base', s, 0.5) for s in range(1, 11)]
+               + [_rec(problem, 'better', s, 0.2,
+                       trace=[(2000, 1.0), (10000, 0.2)]) for s in range(1, 11)])
+    out = protocol.compare(records, 'base', ['better'], problem_defs=[problem])
+    assert out['problems'] == [problem.id]
+    entry = out['methods'][0]
+    assert entry['n_pairs'] == 10
+    assert entry['baseline']['successes'] == 0 and entry['method_summary']['successes'] == 10
+    assert entry['sign'] == {'better': 10, 'worse': 0, 'ties': 0, 'n': 10,
+                             'p': pytest.approx(2 / 1024)}
+    assert entry['mcnemar']['only_b'] == 10 and entry['mcnemar']['p'] == pytest.approx(2 / 1024)
+    assert entry['per_problem'][0]['problem'] == problem.id
+    # The checkpoints default to fractions of the problem's own budget.
+    cp = out['checkpoints'][problem.id]
+    assert cp['points'] == [2000, 5000, 10000, 15000, 20000]
+    assert cp['rows']['better'] == [pytest.approx(1.0)] * 2 + [pytest.approx(0.2)] * 3
+    text = protocol.format_comparison(out)
+    assert '`base` (baseline)' in text and '`better`' in text and '0.002' in text
+    assert text.endswith('\n')
+
+
+def test_compare_takes_explicit_checkpoints_and_a_problem_subset():
+    problem = _problem()
+    other = next(p for p in PROBLEMS if p.id != problem.id)
+    records = ([_rec(p, m, s, 0.5) for p in (problem, other) for m in ('base', 'x')
+                for s in (1, 2)])
+    out = protocol.compare(records, 'base', ['x'], problems={problem.id},
+                           checkpoints=[500, 1500], problem_defs=[problem, other])
+    assert out['problems'] == [problem.id]
+    assert out['checkpoints'][problem.id]['points'] == [500, 1500]
+    assert out['methods'][0]['n_pairs'] == 2
+
+
+# --------------------------------------------------------------------------- #
 # The backend path (recovery tier)
 # --------------------------------------------------------------------------- #
 @pytest.fixture

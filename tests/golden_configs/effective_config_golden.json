@@ -13418,6 +13418,14 @@
     3
    ],
    [
+    "ss_noise_optimistic",
+    0
+   ],
+   [
+    "ss_noise_redraw_budget",
+    0
+   ],
+   [
     "starting_params",
     null
    ],
