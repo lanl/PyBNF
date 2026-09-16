@@ -17,6 +17,12 @@ git commit -s -m "your message"
 which appends a `Signed-off-by:` line using the name and email from your
 `git config`.
 
+## Scope of review
+
+A pull request whose changes are limited to a fix already spelled out in an
+issue may not be reviewed. Confirming such a change costs more maintainer time
+than making it directly, so these are usually handled in-house.
+
 ## Development setup
 
 PyBNF uses [uv](https://docs.astral.sh/uv/) to manage its development
