@@ -34,12 +34,13 @@ tests/sim_1_rerun1/
 tests/full_tests/*/fit/
 tests/full_tests/*.log
 
-# PyBNF run logs written into an example/tutorial dir (a fit launched from inside it)
-examples/**/bnf_*.log
+# PyBNF run logs, wherever a fit was launched from: an example or tutorial directory,
+# a benchmark directory, or the repository root. One rule rather than one per place,
+# since these are runtime logs and none has ever been committed.
+bnf_*.log
 
 # Benchmark run artifacts
 benchmarks/*/runs/
-benchmarks/*/bnf_*.log
 examples/sampler_benchmarking/*/output_*/
 examples/sampler_benchmarking/*/*.out
 examples/sampler_benchmarking/*/*.err
