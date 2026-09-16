@@ -1245,7 +1245,7 @@ class Algorithm(ABC):
                             'is functional. To resume the run please restart PyBNF using the -r flag')
         else:
             self.success_count += 1
-            logger.debug('Job %s complete')
+            logger.debug('Job %s complete', res.name)
 
         self.add_to_trajectory(res)
         if res.score < self.config.config['min_objective']:
