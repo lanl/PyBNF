@@ -86,6 +86,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'cmaes_noise_handling', 'cmaes_noise_max_evals',
                # Scatter search's noise-aware reference set (#660 step 3 / ADR-0136).
                'ss_noise_handling', 'ss_noise_max_draws', 'ss_fill_idle',
+               # How the deferral it costs is paid for (#696 / ADR-0145): the leading side
+               # of an open contest taking the slot, and a cap on a round's re-draws.
+               'ss_noise_optimistic', 'ss_noise_redraw_budget',
                # The diverse half of the first reference set chosen by distance (#660
                # step 2 / ADR-0137); unset follows the edition.
                'ss_diverse_by_distance',

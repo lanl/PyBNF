@@ -18,6 +18,13 @@ spread leaves in doubt is not made: both sides are drawn again, up to
 never counted stuck without being drawn again, so a lucky member's mean regresses to its
 true value and an honest child can beat it. A deterministic fit makes every decision on
 its single draws, as before, and is byte-identical.
+
+Two settings change how that deferral is paid for (#696, ADR-0145), both off by default.
+``ss_noise_optimistic`` hands the reference slot to whichever side of an open contest
+leads on the mean while the draws continue, so the next round's combinations use the
+leading point and the draws can still hand the slot back. ``ss_noise_redraw_budget`` caps
+how many re-draws one round queues for the orderings it cannot settle, spending them on
+the decisions whose objective gap and rank say a wrong call would cost most.
 """
 from ..base import Algorithm
 from ..noise_handling import pooled_sd, separated
@@ -70,6 +77,15 @@ class ScatterSearchConfig(MultiStartConfig):
     # switch, and the cap on draws per parameter set a decision in doubt may spend.
     ss_noise_handling: int = 1
     ss_noise_max_draws: int = Field(default=3, ge=1)
+    # Whether a candidate that leads on the mean takes the reference slot at once while
+    # the draws that would settle the contest continue, and is swapped back only if they
+    # settle the other way (#696 lever 1, ADR-0145). Off: a contest in doubt keeps the
+    # parent in the set, which is the deferral ADR-0136 built and #663 measured the cost of.
+    ss_noise_optimistic: int = 0
+    # A cap on how many re-draws one round may queue for orderings the noise leaves in
+    # doubt (#696 lever 2, ADR-0145); 0 is no cap. When it binds, the round spends its
+    # re-draws on the decisions a wrong call would cost most.
+    ss_noise_redraw_budget: int = Field(default=0, ge=0)
     # Whether a processor that would idle at the end of a round is given one of those
     # draws early (#660 step 4, ADR-0139); meaningful only with noise handling on.
     ss_fill_idle: int = 1
@@ -144,6 +160,8 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # set again would give a different answer, and only when asked for (the default).
         self.max_draws = int(config.config.get('ss_noise_max_draws', 3))
         self.fill_idle = bool(config.config.get('ss_fill_idle', 1))
+        self.optimistic = bool(config.config.get('ss_noise_optimistic', 0))
+        self.redraw_budget = int(config.config.get('ss_noise_redraw_budget', 0))
         self.noise_handling = bool(config.config.get('ss_noise_handling', 1)) \
             and self._replicates_would_differ()
         if self.noise_handling:
@@ -151,6 +169,14 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                         'different objective value every run, so reference members are ranked '
                         'on the mean of their draws and a decision the noise leaves in doubt '
                         'draws again (up to %d draws per parameter set)' % self.max_draws)
+            if self.optimistic:
+                logger.info('Scatter search accepts a candidate that leads on the mean into the '
+                            'reference set while its contest is still being drawn, and swaps the '
+                            'displaced member back if the draws settle the other way')
+            if self.redraw_budget:
+                logger.info('Scatter search queues at most %d re-draw(s) a round for the '
+                            'orderings it cannot settle, spending them where a wrong decision '
+                            'would cost most' % self.redraw_budget)
         # The improvement method (#660 step 1, ADR-0138): Glover's template refines the
         # candidates combination produces with a local search. On by default under a modern
         # edition, off under the legacy one; an explicit ss_local_search wins; and off
@@ -183,6 +209,9 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         # set is still in play, since the pooled spread is a property of the fit and must
         # not forget a member the moment a child replaces it.
         self.repeat_draws = dict()   # {PSet: the same list as in draws}
+        # What is left of this round's re-draw budget (#696 lever 2); meaningless, and
+        # never consulted, without ss_noise_redraw_budget.
+        self._redraw_budget_left = self.redraw_budget
         # The improvement method's bookkeeping (#660 step 1): the refinements in flight and
         # the ones finished but not yet folded into the reference set, each under a tag,
         # the member each started from, the tagged names of their jobs, every start and
@@ -259,6 +288,7 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.contenders = dict()
         self.pending_draws = dict()
         self.repeat_draws = dict()
+        self._redraw_budget_left = self.redraw_budget
         self.local_runners = dict()
         self.local_finished = dict()
         self.local_origins = dict()
@@ -389,6 +419,9 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
 
         # All of this generation done, make the next list of psets
         redraws = []
+        # This round's re-draw budget, which its decisions and then its neighbour pairs
+        # draw on (#696 lever 2); without ss_noise_redraw_budget nothing consults it.
+        self._redraw_budget_left = self.redraw_budget
         if None in self.received:
             # This is the initialization round, special case
             self.round_1_init()
@@ -409,8 +442,9 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.refs = sorted(self.refs, key=lambda x: x[1])
         if self.noise_handling:
             # The rank gap between neighbours sets a combination's step size, so a pair
-            # the noise cannot order is worth another draw each (#660 step 3).
-            redraws += self._redraws(self._unseparated_neighbours())
+            # the noise cannot order is worth another draw each (#660 step 3), after this
+            # round's decisions have taken what they need of the budget (#696 lever 2).
+            redraws += self._select_redraws(self._unseparated_neighbour_pairs())
         logger.debug('Iteration %i' % self.iteration)
         if self.iteration % 10 == 0:
             print1('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
@@ -474,38 +508,55 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         or both have spent ``ss_noise_max_draws`` draws, at which point the means decide.
         A parent counted stuck is drawn again too, so a member that is only stuck because
         its recorded value was a lucky draw regresses to its true value and can be beaten.
+
+        With ``ss_noise_optimistic`` on (#696 lever 1), a contest in doubt whose candidate
+        *leads on the mean* is not deferred: the candidate takes the slot at once, as plain
+        scatter search would, the displaced member becomes its contender, both are drawn
+        again, and the next round's combinations use the leading point. The contest is
+        still running, so the draws can settle it the other way, and then the displaced
+        member -- a candidate of the slot it used to hold -- takes the slot back.
+
+        With ``ss_noise_redraw_budget`` set (#696 lever 2), only the contests the round can
+        afford to keep open are kept open. Every slot is planned first, the contests in
+        doubt are ranked by what a wrong call would cost, and the ones the budget does not
+        reach are decided now on their means, exactly as the cap decides one. Without the
+        key every contest in doubt is kept open, which is what the search did before.
         """
-        redraws = []
         self._round_accepted = []
-        for i in range(len(self.refs)):
-            parent = self.refs[i][0]
-            p_mean, p_n = self._estimate(parent, fallback=self.refs[i][1])
-            children = self.received[parent]
-            contender = self.contenders.pop(parent, None)
-            # A reference whose candidate children all collided with existing pending
-            # psets receives no children -- this happens once the reference set collapses
-            # on a smooth target (the combination step reproduces the parent point, which
-            # is skipped as a duplicate). Treat the childless reference as non-improving so
-            # the stuck-counter machinery eventually perturbs or retires it, rather than
-            # crashing on min() of an empty list.
-            candidates = [(child, [score]) for child, score in children]
-            if contender is not None:
-                candidates.append((contender, list(self.draws.get(contender, []))))
-            best = None
-            for child, child_draws in candidates:
-                mean, n = self._estimate_draws(child_draws)
-                if best is None or mean < best[1]:
-                    best = (child, mean, n, child_draws)
-            if best is None:
+        plans = [self._plan_slot(i) for i in range(len(self.refs))]
+        keep = self._contests_to_keep_open(plans)
+        wants = []
+        for plan in plans:
+            i, parent, p_mean = plan['slot'], plan['parent'], plan['p_mean']
+            self.contenders.pop(parent, None)
+            if plan['child'] is None:
                 self.refs[i] = (parent, p_mean)
-                redraws += self._count_stuck(i)
+                self._count_stuck(i, wants)
                 continue
-            child, c_mean, c_n, child_draws = best
-            better = c_mean < p_mean
-            settled = (not self.noise_handling
-                       or separated(c_mean, c_n, p_mean, p_n, self._noise_sd())
-                       or (c_n >= self.max_draws and p_n >= self.max_draws))
-            if better and settled:
+            child, c_mean, child_draws = plan['child'], plan['c_mean'], plan['child_draws']
+            if plan['open'] and i in keep:
+                # In doubt and worth the draws: keep the contest open and draw both sides
+                # again. The slot goes to whichever side leads on the mean when
+                # ss_noise_optimistic is on, and to the parent otherwise (#696 lever 1).
+                if plan['better'] and self.optimistic:
+                    self.refs[i] = (child, c_mean)
+                    self.contenders[child] = parent
+                    # The slot's point changed, so its stuck count starts again, exactly as
+                    # it would for a settled replacement. Carrying the count instead would
+                    # age the slot for the very round it improved in, and again when the
+                    # contest settles in the new occupant's favour -- which is recorded as
+                    # a round without a replacement, since the winner already holds the
+                    # slot -- so a slot would be archived after a few contests won.
+                    self.stuckcounter.pop(parent, None)
+                    self.stuckcounter[child] = 0
+                else:
+                    self.refs[i] = (parent, p_mean)
+                    self.contenders[parent] = child
+                self.draws[child] = child_draws
+                wants.append((plan['priority'], [child, parent]))
+                continue
+            # Settled, or in doubt and left to the means: the better mean takes the slot.
+            if plan['better']:
                 del self.stuckcounter[parent]
                 self.stuckcounter[child] = 0
                 self.refs[i] = (child, c_mean)
@@ -514,24 +565,76 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
                 self._round_accepted.append((child, c_mean))
                 continue
             self.refs[i] = (parent, p_mean)
-            if not settled:
-                # In doubt: keep the contest open and draw both sides again.
-                self.contenders[parent] = child
-                self.draws[child] = child_draws
-                redraws += self._redraws([child, parent])
-                continue
-            redraws += self._count_stuck(i)
-        return redraws
+            self._count_stuck(i, wants)
+        return self._select_redraws(wants)
 
-    def _count_stuck(self, i):
+    def _plan_slot(self, i):
+        """What reference slot ``i`` would do this round, decided but not yet applied, so
+        that the contests in doubt can be ranked against each other before any of them
+        changes the reference set (#696 lever 2). Reads state; writes none."""
+        parent = self.refs[i][0]
+        p_mean, p_n = self._estimate(parent, fallback=self.refs[i][1])
+        plan = {'slot': i, 'parent': parent, 'p_mean': p_mean, 'child': None,
+                'c_mean': np.inf, 'child_draws': [], 'better': False, 'open': False,
+                'priority': 0.0}
+        # A reference whose candidate children all collided with existing pending psets
+        # receives no children -- this happens once the reference set collapses on a smooth
+        # target (the combination step reproduces the parent point, which is skipped as a
+        # duplicate). Treat the childless reference as non-improving so the stuck-counter
+        # machinery eventually perturbs or retires it, rather than crashing on min() of an
+        # empty list.
+        candidates = [(child, [score]) for child, score in self.received[parent]]
+        contender = self.contenders.get(parent)
+        if contender is not None:
+            candidates.append((contender, list(self.draws.get(contender, []))))
+        best = None
+        for child, child_draws in candidates:
+            mean, n = self._estimate_draws(child_draws)
+            if best is None or mean < best[1]:
+                best = (child, mean, n, child_draws)
+        if best is None:
+            return plan
+        child, c_mean, c_n, child_draws = best
+        settled = (not self.noise_handling
+                   or separated(c_mean, c_n, p_mean, p_n, self._noise_sd())
+                   or (c_n >= self.max_draws and p_n >= self.max_draws))
+        plan.update(child=child, c_mean=c_mean, child_draws=child_draws,
+                    better=c_mean < p_mean, open=not settled,
+                    priority=self._redraw_priority(i, c_mean - p_mean))
+        return plan
+
+    def _contests_to_keep_open(self, plans):
+        """The slots whose contest this round can afford to keep open: all of them without
+        ``ss_noise_redraw_budget``, and otherwise the highest-priority ones the budget
+        reaches, counted in the draws each would actually queue (#696 lever 2)."""
+        contests = [p for p in plans if p['open']]
+        if not self.redraw_budget:
+            return {p['slot'] for p in contests}
+        keep, left = set(), self._redraw_budget_left
+        for plan in sorted(contests, key=lambda p: -p['priority']):
+            if left <= 0:
+                break
+            keep.add(plan['slot'])
+            # Priced in the draws keeping it open would actually queue: the child's draws
+            # are the ones the deferral is about to record for it.
+            left -= sum(self._would_redraw(pset, draws) for pset, draws in
+                        ((plan['child'], plan['child_draws']),
+                         (plan['parent'], self.draws.get(plan['parent'], []))))
+        return keep
+
+    def _count_stuck(self, i, wants):
         """Count reference ``i`` stuck for this round, retiring it into the archive at
         ``local_min_limit`` and refilling its slot from the reserve. With noise handling
         on, a stuck member is drawn again (up to the cap), since a member that keeps
-        beating its children is exactly the one whose recorded value is being trusted."""
+        beating its children is exactly the one whose recorded value is being trusted;
+        that re-draw is appended to ``wants`` as an unrationed one, since it is the draw
+        that keeps a lucky value out of the archive of local minima."""
         parent = self.refs[i][0]
         self.stuckcounter[parent] += 1
         if self.stuckcounter[parent] < self.local_min_limit:
-            return self._redraws([parent]) if self.noise_handling else []
+            if self.noise_handling:
+                wants.append((None, [parent]))
+            return
         del self.stuckcounter[parent]
         self.contenders.pop(parent, None)
         self.draws.pop(parent, None)
@@ -548,7 +651,6 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         self.refs[i] = (new_pset, np.inf)  # For simplicity, assume its score is awful
         self.stuckcounter[new_pset] = 0
         self.draws[new_pset] = []
-        return []
 
     def _estimate(self, pset, fallback):
         """``(mean, n)`` for a reference member from its recorded draws, or from the score
@@ -575,20 +677,79 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         than once, or ``None`` before any parameter set has been."""
         return pooled_sd(self.repeat_draws.values())
 
-    def _unseparated_neighbours(self):
-        """The members of every adjacent pair in the sorted reference set that the noise
-        cannot order, each once."""
+    def _unseparated_neighbour_pairs(self):
+        """``(priority, [a, b])`` for every adjacent pair in the sorted reference set the
+        noise cannot order, in the set's own order (#696 lever 2)."""
         sd = self._noise_sd()
-        wanted = []
+        pairs = []
         for j in range(len(self.refs) - 1):
             a, b = self.refs[j], self.refs[j + 1]
             a_mean, a_n = self._estimate(a[0], fallback=a[1])
             b_mean, b_n = self._estimate(b[0], fallback=b[1])
             if not separated(a_mean, a_n, b_mean, b_n, sd):
-                for member in (a[0], b[0]):
-                    if not any(member is w for w in wanted):
-                        wanted.append(member)
+                pairs.append((self._redraw_priority(j, b_mean - a_mean), [a[0], b[0]]))
+        return pairs
+
+    def _unseparated_neighbours(self):
+        """The members of every adjacent pair in the sorted reference set that the noise
+        cannot order, each once."""
+        wanted = []
+        for _, pair in self._unseparated_neighbour_pairs():
+            for member in pair:
+                if not any(member is w for w in wanted):
+                    wanted.append(member)
         return wanted
+
+    def _redraw_priority(self, rank, gap):
+        """What getting one ordering wrong would cost: the objective gap between the two
+        estimates the noise cannot tell apart, weighted by where in the sorted reference
+        set the decision sits (#696 lever 2).
+
+        The gap is the whole of the cost, because it *is* how much worse the reference set
+        is if the wrong side of the pair wins. How likely that is separates these pairs far
+        less: every one of them is within a standard error of the other side wherever the
+        spread is known, which puts the chance of a wrong call between about one in six and
+        one in two whatever the gap. The rank weight falls linearly from the best member to
+        the worst, since the top of the set is what the fit reports and what seeds the
+        combinations the next round is built from.
+        """
+        gap = abs(float(gap))
+        if not np.isfinite(gap):
+            return np.inf
+        return gap * (self.popsize - min(int(rank), self.popsize - 1)) / self.popsize
+
+    def _would_redraw(self, pset, draws):
+        """Whether :meth:`_redraws` would queue a fresh draw of ``pset``, whose draws are
+        (or are about to be) ``draws``: it must have a name, have been drawn at least once,
+        be short of ``ss_noise_max_draws``, and not already have that draw in flight."""
+        n = len(draws)
+        return (pset.name is not None and 1 <= n < self.max_draws
+                and '%s_d%i' % (pset.name, n) not in self.pending_draws)
+
+    def _select_redraws(self, wants):
+        """Queue the re-draws of ``wants`` -- ``(priority, [psets])`` requests, one per
+        decision, ``None`` for one that is never rationed -- and return the queued copies.
+
+        Without ``ss_noise_redraw_budget`` every request is queued, in the order the
+        decisions were made, which is what the search did before #696. With one, the round
+        spends its re-draws on the unrationed requests and then on the decisions whose
+        priority is highest, and stops once the budget is gone; a request is queued whole
+        or not at all, since drawing one side of a contest settles nothing, so the last one
+        may overshoot the budget by a draw.
+        """
+        if not self.redraw_budget:
+            return [queued for _, psets in wants for queued in self._redraws(psets)]
+        ordered = [w for w in wants if w[0] is None]
+        ordered += sorted((w for w in wants if w[0] is not None), key=lambda w: -w[0])
+        queued = []
+        for priority, psets in ordered:
+            if priority is not None and self._redraw_budget_left <= 0:
+                break
+            fresh = self._redraws(psets)
+            queued += fresh
+            if priority is not None:
+                self._redraw_budget_left -= len(fresh)
+        return queued
 
     def _fill_idle_processors(self):
         """Re-draws for the processors a round would otherwise leave idle (#660 step 4,
@@ -604,7 +765,12 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         of every open contest), each within the same cap as any other re-draw, so a member
         costs no more than ``ss_noise_max_draws`` simulations over its life however the
         draws are timed. Nothing for a deterministic fit, with ``ss_fill_idle = 0``, when
-        the processor count is unknown, or when nothing is idle."""
+        the processor count is unknown, or when nothing is idle.
+
+        ``ss_noise_redraw_budget`` does not ration these: it rations the draws a round
+        queues for itself, which cost it a processor it could have combined with, and a
+        draw taken by a processor that would otherwise wait for the round's slowest
+        simulation costs it nothing."""
         if not self.noise_handling or not self.fill_idle or not self.worker_count:
             return []
         in_flight = len(self.pending) + len(self.pending_draws) + len(self.pending_local)
@@ -629,11 +795,9 @@ class ScatterSearch(MultiStartOptimizer, Algorithm):
         for pset in psets:
             draws = self.draws.get(pset, [])
             n = len(draws)
-            if pset.name is None or n < 1 or n >= self.max_draws:
+            if not self._would_redraw(pset, draws):
                 continue
             name = '%s_d%i' % (pset.name, n)
-            if name in self.pending_draws:
-                continue
             again = copy.copy(pset)
             again.name = name
             again.replicate_offset = n * smoothing

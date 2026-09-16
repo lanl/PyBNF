@@ -6,6 +6,35 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Two opt-in settings for how scatter search pays for its noise handling's deferral, both
+  measured as no better (#696, ADR-0145).** `ss_noise_optimistic = 1` gives the reference slot
+  to whichever side of an undecided parent-versus-child contest leads on the mean, right away,
+  so the next round's combinations are built from the leading point; the draws continue and
+  hand the slot back if they settle the other way. `ss_noise_redraw_budget = N` caps the
+  re-draws a round queues for the orderings it cannot settle, keeping open only the contests
+  whose objective gap and rank in the reference set say a wrong call would cost most and
+  deciding the rest now on their means. Both were built because #663 measured the deferral as
+  the whole cost of the noise handling, and both do what they were built to do: on an
+  instrumented fit they raise how often a reference slot's point changes from 69 to 113 and 97,
+  back into the range of plain scatter search, the budget while spending a fifth fewer
+  re-draws. Neither helps. Over twenty paired seeds on four problems, against the deferral of 3
+  that is the default, optimistic acceptance succeeded from 17 seeds of 80 against 24 and a
+  budget from 15 (at 4) and 13 (at 2), the last two significantly worse on success (McNemar
+  p = 0.035 and p = 0.007); against plain scatter search all three are indistinguishable, so
+  each gives back exactly what the deferral had won. The checkpoint curves show why: both lead
+  early and lose at the end, because a reference set that moves faster is following draws it
+  has not earned. Both keys default to 0 and a configuration that does not set them runs
+  exactly as before.
+- **The stochastic recovery benchmark scores a variant against the method it varies
+  (#696).** `run_baseline.py compare <results> --baseline <method>` pairs every
+  (problem, seed) both methods were run from and reports a two-sided sign test on the final
+  parameter error, McNemar's exact test on success, and the error of the reported best at
+  checkpoints through the budget, pooled and per problem. This is the comparison the #660 and
+  #663 studies did by hand, now in the runner where the next study can run it; it reproduces
+  their published tables from the committed records. The pieces live in `protocol.py`
+  (`sign_test`, `mcnemar`, `paired`, `best_so_far`, `compare`, `format_comparison`), which
+  stays pure Python and is the copy shared with
+  [stochbench](https://github.com/wshlavacek/stochbench).
 - **Differential evolution can cross a candidate with the member it will replace
   (#700, ADR-0144).** Wherever a candidate is not mutated it keeps the values of one parameter
   set. PyBNF keeps those of the parameter set it was built from, which under the `rand` and

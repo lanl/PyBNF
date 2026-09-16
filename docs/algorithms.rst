@@ -289,6 +289,16 @@ idle time is spent where a draw is worth most (``ss_fill_idle`` turns just that 
 ``ss_noise_handling`` turns all of this off.
 A deterministic model makes every decision on single draws, as before.
 
+Two settings change how the deferral is paid for, both off by default, since holding a
+contest open is what this costs: while it is open the parent goes on seeding the next
+round's combinations, and the re-draws come out of the same simulation budget as the
+search. ``ss_noise_optimistic`` gives the slot to whichever side of an open contest leads
+on the mean, right away, so the next round is built from the leading point; the draws
+continue and hand the slot back if they settle the other way. ``ss_noise_redraw_budget``
+caps the re-draws one round queues for the orderings it cannot settle and spends them on
+the decisions whose objective gap and rank in the reference set say a wrong call would cost
+most.
+
 Let :math:`\alpha` = -1 if :math:`h_i>p_i` or 1 if :math:`p_i<h_i`, let :math:`\beta = (|h_i-p_i|-1) / (n-2)`, let :math:`d = \textrm{helper}[P] - \textrm{parent}[P]` for some parameter P. 
 
 Then the in the new parameter set, :math:`P = \textrm{parent}[P] + \textrm{rand\_uniform}(-d * (1 + \alpha * \beta), d * (1 - \alpha * \beta))`
