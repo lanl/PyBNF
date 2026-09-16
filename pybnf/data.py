@@ -57,6 +57,31 @@ class OutputSensitivities:
         return tensor[:, col, :]
 
 
+def observed_mean(values):
+    """The mean of a data column's *observed* values -- the column's scale, which
+    ``ave_norm_sos`` and the ``column_mean`` sigma source normalize by.
+
+    NaN is missing data, not an observation: scoring skips those rows
+    (``SummationObjective.evaluate``) and :class:`Data`'s normalizations reduce past
+    them (#479). A plain ``np.average`` over the raw column returns NaN for any sparse
+    multi-observable column, and because this mean is a *divisor*, that NaN then
+    poisons every **present** point of the column too -- the whole objective goes NaN,
+    which is not a failed simulation, so it reaches the optimizer as a real score and
+    silently rejects every parameter set (#707).
+
+    Values with no observed entry have no mean and give NaN. Harmless in scoring: none
+    of such a column's rows are scored, so the normalizer is never read. Written out
+    rather than ``np.nanmean`` so that case returns quietly instead of warning
+    ("Mean of empty slice") on every evaluate() of the fit.
+
+    :param values: 1D array of column values, possibly containing NaN
+    :return: Mean over the non-NaN entries, or NaN if there are none
+    """
+    values = np.asarray(values, dtype=float)
+    observed = values[~np.isnan(values)]
+    return np.mean(observed) if observed.size else np.nan
+
+
 def stack_scan_sensitivities(per_point):
     """Stack per-dose-point forward-sensitivity tensors into one scan :class:`OutputSensitivities`.
 
@@ -401,6 +426,17 @@ class Data:
         """
         idx = self.cols[key]
         self.data[:, idx] = value
+
+    def column_mean(self, col_header):
+        """
+        The mean of a column's observed (non-NaN) values -- see :func:`observed_mean`
+        for why the NaNs must be excluded (#707).
+
+        :param col_header: Data column name
+        :type col_header: str
+        :return: Mean over the non-NaN entries, or NaN if there are none
+        """
+        return observed_mean(self[col_header])
 
     def get_row(self, col_header, value):
         """

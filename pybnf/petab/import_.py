@@ -82,6 +82,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..data import observed_mean
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
 from .conditions import (
@@ -713,7 +714,11 @@ def _column_mean_resolver(datas, observable_id_to_column):
         col = observable_id_to_column[observable_id]
         values = [data[col] for group in datas.values() for data in group
                   if col in data.cols]
-        return float(np.average(np.concatenate(values)))
+        # Observed values only (#707) -- the same mean the export wrote. A plain average
+        # over a sparse column is NaN, which compares equal to nothing, so the sigma
+        # constant would fail to match and a round-tripped ave_norm_sos would silently
+        # come back as sos.
+        return float(observed_mean(np.concatenate(values)))
     return column_mean_of
 
 

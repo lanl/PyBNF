@@ -88,6 +88,24 @@ def test_objective_ave_norm_sos_uses_column_mean_source():
     assert isinstance(src, noise.ColumnMeanSigma)
 
 
+def test_column_mean_source_skips_missing_experimental_points():
+    """#707: the ``column_mean`` sigma is the mean of the OBSERVED points.
+
+    The desugared path shares the legacy defect because it shares the quantity -- a
+    sigma averaged over the raw column is NaN on any sparse multi-observable column,
+    and a NaN sigma makes every present point's density NaN. Both now read
+    ``Data.column_mean``, so the "the result is identical" claim in ``ColumnMeanSigma``
+    holds structurally. obs1 = [1, NaN, 3] -> sigma = 2; value is the legacy score
+    times the proper 1/2.
+    """
+    exp = _mkdata(['# x  obs1\n', ' 0  1\n', ' 1  nan\n', ' 2  3\n'])
+    sim = _mkdata(['# x  obs1\n', ' 0  1.1\n', ' 1  2.0\n', ' 2  3.1\n'])
+    legacy = objective.AveNormSumOfSquaresObjective().evaluate(sim, exp)
+    modern = _modern({'objective': 'ave_norm_sos'}).evaluate(sim, exp)
+    assert modern == pytest.approx(0.5 * legacy)
+    assert modern == pytest.approx(0.5 * (((1.1 - 1) / 2.) ** 2 + ((3.1 - 3) / 2.) ** 2))
+
+
 def test_chi_sq_desugar_is_value_identical_to_legacy():
     """chi_sq already carried the 1/2, so the desugared form is value-identical, not
     merely argmin-identical."""

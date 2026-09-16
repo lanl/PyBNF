@@ -1,3 +1,5 @@
+import warnings
+
 from .context import data, noise, objective, printing, raises
 import numpy as np
 import numpy.testing as npt
@@ -151,6 +153,42 @@ class TestObjectiveFunctions:
         assert self.sos.evaluate(self.d1s_nan, self.d1e) is None
         assert self.norm_sos.evaluate(self.d1s_nan, self.d1e) is None
         assert self.ave_norm_sos.evaluate(self.d1s_nan, self.d1e) is None
+
+    def test_ave_norm_sos_normalizer_skips_missing_experimental_points(self):
+        """#707: the ``ybar`` normalizer is averaged over the OBSERVED points only.
+
+        A NaN in an experimental column is missing data -- ``evaluate`` already skips
+        those rows. But ``ybar`` is a divisor, so averaging it over the raw column made
+        it NaN and turned every *present* point of that column NaN too, and hence the
+        whole objective. That NaN is not a failed simulation (``evaluate`` returns a
+        float, not None), so it reached the optimizer as a real score; since every NaN
+        comparison is False, no parameter set ever improved on another and the fit
+        silently reported nothing. Sparse multi-observable exp files -- one observable
+        per measurement time -- are the ordinary way to write this data.
+
+        obs1 = [1, NaN, 3] -> ybar = 2, and only rows 0 and 2 are scored.
+        """
+        exp = _mkdata(['# x  obs1\n', ' 0  1\n', ' 1  nan\n', ' 2  3\n'])
+        sim = _mkdata(['# x  obs1\n', ' 0  1.1\n', ' 1  2.0\n', ' 2  3.1\n'])
+        obj = objective.AveNormSumOfSquaresObjective()
+        npt.assert_almost_equal(obj.evaluate(sim, exp),
+                                ((1.1 - 1) / 2.) ** 2 + ((3.1 - 3) / 2.) ** 2)
+        assert obj.aves['obs1'] == 2.0
+
+    def test_ave_norm_sos_tolerates_a_wholly_unmeasured_column(self):
+        """An exp column with no observed point has no mean. Its NaN normalizer is never
+        read (every one of its rows is skipped), so the scored columns are unaffected --
+        and computing it must not warn, since it happens on every evaluate() of the fit."""
+        exp = _mkdata(['# x  obs1  obs3\n',
+                       ' 0  1  nan\n', ' 1  nan  nan\n', ' 2  3  nan\n'])
+        sim = _mkdata(['# x  obs1  obs3\n',
+                       ' 0  1.1  9\n', ' 1  2.0  9\n', ' 2  3.1  9\n'])
+        obj = objective.AveNormSumOfSquaresObjective()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            value = obj.evaluate(sim, exp)
+        npt.assert_almost_equal(value, ((1.1 - 1) / 2.) ** 2 + ((3.1 - 3) / 2.) ** 2)
+        assert np.isnan(obj.aves['obs3'])
 
     def test_obj_inf(self):
         assert self.chi_sq.evaluate(self.d1s_inf, self.d1e_sd) is None
