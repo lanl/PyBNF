@@ -957,7 +957,7 @@ class DreamAlgorithm(BayesianAlgorithm):
                 new_var = x0.get_param(k.name).add(zeta + (1. + lamb) * gamma * total_diff, False)
                 new_vars.append(new_var)
             except OutOfBoundsException:
-                logger.debug("Variable %s is outside of bounds")
+                logger.debug("Variable %s is outside of bounds", k.name)
                 return None, cr_idx
 
         return PSet(new_vars), cr_idx
