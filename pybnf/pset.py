@@ -2416,7 +2416,9 @@ class FreeParameter:
             # the value it wrote (``_reflect`` uses only the bounds and the scale), but the
             # contamination rode into the algorithm's pickle and so survived a checkpoint
             # and a --resume (#583).
-            # reflective number line, can never realize self.lower_bound or self.upper_bound this way
+            # The fold lands inside the box, a wall included: a proposal within a
+            # rounding of one folds onto it rather than a hair past it, which the
+            # constructor's bounds check below would reject.
             adj = self._reflect(new_value)
             logger.debug(f'Assigned value {new_value:f} is out of defined bounds: [{self.lower_bound}, {self.upper_bound}].  '
                            f'Adjusted to {adj:f}')
@@ -2453,6 +2455,28 @@ class FreeParameter:
         Metropolis acceptance the MCMC samplers use still targets the correct
         bound-restricted posterior. Closed form (no per-reflection iteration) makes
         it exact for an arbitrarily large step, with no iteration cap.
+
+        Two roundings can carry the result a hair *outside* the box, and both are
+        guarded, because the caller hands the value to the constructor, whose bounds
+        check raises :class:`OutOfBoundsException` and ends the fit:
+
+        * **The fold's own arithmetic beside the lower wall.** The wave is carried as
+          the distance travelled from ``lo_u``, so a proposal one ulp below it wraps
+          to a distance of 0 and folds to ``lo_u`` itself. Reconstructed from the far
+          wall, as ``hi_u - (q - width)``, the same proposal gave ``hi_u - width``:
+          on ``[0.1, 5]`` that is 0.09999999999999964, below the wall, and on a wide
+          box it misses ``lo_u`` by an ulp of the *larger* number (1e-07 on
+          ``[1e-09, 1e+09]``) -- inside the box, but nowhere near the proposal. Beside
+          the upper wall the sum ``lo_u + width`` can overshoot ``hi_u``, by an ulp of
+          ``hi_u``, and the clip below takes that back.
+        * **The theta<->u round trip on a log scale**, where ``10 ** log10(30)`` is
+          30.000000000000004: above its own wall whatever the fold does with it.
+
+        So the folded value is clipped into the box last. The clip can only move a
+        value that is already within a rounding of a wall, so the fold stays the
+        symmetric map the samplers rely on everywhere it is not exact anyway. It can
+        return a bound exactly, which the reflective number line never realizes on
+        its own.
         """
         if self.lower_bound == self.upper_bound:
             return self.lower_bound
@@ -2465,10 +2489,11 @@ class FreeParameter:
         lo_finite = np.isfinite(lo_u)
         hi_finite = np.isfinite(hi_u)
         if lo_finite and hi_finite:
-            # Two finite walls: the periodic triangle-wave fold.
+            # Two finite walls: the periodic triangle-wave fold, as the distance
+            # travelled from the lower wall along the wave.
             width = hi_u - lo_u
-            q = (new_u - lo_u) % (2.0 * width)
-            folded = lo_u + q if q <= width else hi_u - (q - width)
+            travelled = (new_u - lo_u) % (2.0 * width)
+            folded = lo_u + min(travelled, 2.0 * width - travelled)
         elif lo_finite:
             # Open above: one reflecting wall at lo_u.
             folded = new_u if new_u >= lo_u else 2.0 * lo_u - new_u
@@ -2480,7 +2505,15 @@ class FreeParameter:
             # reaches here; set_value only reflects an out-of-bounds value).
             folded = new_u
 
-        return self._scale.inverse(folded)
+        theta = self._scale.inverse(folded)
+        # The guarantee, after both roundings: never hand the constructor a value its
+        # bounds check would reject. Written as comparisons rather than np.clip so a
+        # NaN (an inf proposal folds to one) still travels to that check, as it did.
+        if theta < self.lower_bound:
+            return self.lower_bound
+        if theta > self.upper_bound:
+            return self.upper_bound
+        return theta
 
     def sample_value(self, rng):
         """

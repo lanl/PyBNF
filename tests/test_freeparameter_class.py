@@ -157,6 +157,99 @@ class TestReflectFold:
         assert -3.0 <= v <= 7.0
 
 
+class TestReflectBesideAWall:
+    """A proposal within floating-point rounding of a wall folds INSIDE the box.
+
+    The fold used to reconstruct the descending leg from the far wall, so a value one
+    ulp below ``lb`` came back as ``ub - width``: on [0.1, 5] that is
+    0.09999999999999964, below the wall, and the constructor's bounds check then raised
+    :class:`OutOfBoundsException` and ended the fit. It did end one: a differential
+    evolution proposal for ``k_elim`` on tutorial lesson 25, through
+    ``new_individual`` -> ``FreeParameter.add`` -> ``set_value``. On a log scale the
+    theta<->u round trip does it without help, since ``10 ** log10(30)`` is
+    30.000000000000004.
+
+    Both walls, both scales, and the half-bounded boxes, since a one-wall fold reflects
+    through its own arithmetic and lands on the same rounding."""
+
+    # (label, parameter, values that sit within a rounding outside a wall)
+    def _cases(self):
+        lin = pset.FreeParameter('k_elim__FREE', 'uniform_var', 0.1, 5.0, 1.0)
+        log = pset.FreeParameter('k__FREE', 'loguniform_var', 0.1, 30.0, 1.0)
+        wide = pset.FreeParameter('w__FREE', 'uniform_var', 1e-9, 1e9, 1.0)
+        open_above = pset.FreeParameter('h__FREE', 'normal_var', 0.0, 1.0, 0.5,
+                                        lb=0.1, ub=np.inf)
+        open_below = pset.FreeParameter('h__FREE', 'normal_var', 0.0, 1.0, 0.5,
+                                        lb=-np.inf, ub=2.0)
+        return [
+            ('linear, lower wall', lin, [np.nextafter(0.1, 0), 0.1 - 1e-17, 0.1 - 1e-16,
+                                         0.1 - 1e-13, 0.1 - 1e-12]),
+            ('linear, upper wall', lin, [np.nextafter(5.0, 10), 5.0 + 1e-15, 5.0 + 1e-12]),
+            ('log, lower wall', log, [np.nextafter(0.1, 0), 0.1 - 1e-17]),
+            ('log, upper wall', log, [np.nextafter(30.0, 40), 30.0 + 1e-13]),
+            ('wide box, lower wall', wide, [np.nextafter(1e-9, 0), 1e-9 - 1e-25]),
+            ('open above, its wall', open_above, [np.nextafter(0.1, 0), 0.1 - 1e-17]),
+            ('open below, its wall', open_below, [np.nextafter(2.0, 10), 2.0 + 1e-15]),
+        ]
+
+    def test_folds_inside_the_box(self):
+        for label, p, values in self._cases():
+            for new in values:
+                folded = p.set_value(new).value       # must not raise
+                assert p.lower_bound <= folded <= p.upper_bound, (
+                    f'{label}: {new!r} folded to {folded!r}, outside '
+                    f'[{p.lower_bound}, {p.upper_bound}]')
+
+    def test_lands_beside_the_wall_it_came_from(self):
+        """Not merely inside: a proposal a rounding outside a wall folds to that wall's
+        own neighbourhood. On the wide box the old fold answered 1e-07 for a proposal at
+        1e-09 -- inside the box, and a hundredfold off."""
+        for label, p, values in self._cases():
+            for new in values:
+                wall = p.lower_bound if new < p.lower_bound else p.upper_bound
+                folded = p.set_value(new).value
+                assert abs(folded - wall) <= 2.0 * abs(new - wall) + 1e-300, (
+                    f'{label}: {new!r} folded to {folded!r}, far from the wall {wall}')
+
+    def test_de_proposal_beside_a_wall_survives(self):
+        """The crash as differential evolution reached it: a member sitting on the wall
+        takes a step that would leave the box by a rounding. ``add`` folds it back."""
+        p = pset.FreeParameter('k_elim__FREE', 'uniform_var', 0.1, 5.0, 0.1)
+        stepped = p.add(-np.finfo(float).eps / 8)     # must not raise
+        assert 0.1 <= stepped.value <= 5.0
+
+    def test_a_wall_is_a_legal_value(self):
+        """The fold may now return a bound itself, so the constructor has to accept one
+        (it always did -- its check is inclusive)."""
+        for value in (0.1, 5.0):
+            assert pset.FreeParameter('k__FREE', 'uniform_var', 0.1, 5.0, value).value == value
+
+    @pytest.mark.parametrize('lb, ub', [(0.1, 5.0), (-3.0, 7.0), (1e-9, 1e9)])
+    def test_every_ulp_around_both_walls(self, lb, ub):
+        """Sweep the first few representable values on each side of each wall."""
+        p = pset.FreeParameter('x__FREE', 'uniform_var', lb, ub)
+        for wall in (lb, ub):
+            for direction in (-np.inf, np.inf):
+                new = wall
+                for _ in range(5):
+                    new = np.nextafter(new, direction)
+                    assert lb <= p.set_value(new).value <= ub
+
+    def test_far_proposals_still_match_the_reference_fold(self):
+        """The rearrangement is the same triangle wave away from the walls."""
+        p = pset.FreeParameter('x__FREE', 'uniform_var', 0, 10)
+        for new in (10.5, 19.0, 20.0, 21.0, -1.0, -11.0, 100.3, 1000000.7):
+            np.testing.assert_allclose(p.set_value(float(new)).value,
+                                       _fold_reference(new, 0, 10), atol=1e-9)
+
+    def test_a_nan_proposal_still_raises(self):
+        """The clip is written so a NaN reaches the constructor's check as before,
+        rather than being silently clipped onto a wall."""
+        p = pset.FreeParameter('x__FREE', 'uniform_var', 0.1, 5.0, 1.0)
+        with pytest.raises(pset.OutOfBoundsException):
+            p.set_value(float('nan'))
+
+
 class TestSamplingSpaceTransform:
     """The public θ↔u transform pair (FreeParameter.to_sampling_space /
     from_sampling_space) the algorithm layer asks for instead of inlining
