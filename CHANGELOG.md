@@ -252,6 +252,37 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A profiled noise scale and a profiled linear coefficient are averaged over the same
+  simulations of the best fit as the log-likelihood, and a simulation that could not be scored
+  no longer contributes the previous one's value a second time (#743, ADR-0131 corrected).**
+  Under `noise_profiling = 1` (ADR-0108) or `linear_profiling = 1` (ADR-0132) the value in
+  `Results/profiled_noise.txt` / `Results/profiled_linear.txt` is the only place the estimate
+  for that parameter appears — it is fitted but never proposed, so it is a coordinate of no
+  parameter set and appears in no `sorted_params_*.txt` row. On a stochastic fit that value is
+  averaged over the replicate runs of the best fit, and it was read from the objective before
+  the guard that drops a run which could not be scored. Two consequences, both of them a wrong
+  reported parameter value rather than a wrong caveat:
+
+  - **A run the objective could not score contributed the *previous* run's values.** The
+    objective assigns its profiled values only once a whole evaluation has succeeded, so a
+    degenerate profile leaves the last successful run's values sitting on it; that run was then
+    counted twice and the failed one contributed a number that was never its own. Over runs
+    worth sigma = 4, unscoreable, and 6, the file reported 4.67 where the two runs that scored
+    give 5. At a single-simulation fit the stale value came from some other parameter set
+    altogether. A stale `at_bound` flag was counted the same way, in a column reported as "how
+    many runs held this coefficient at a bound".
+  - **A run dropped for scoring a different number of points kept contributing its profiled
+    values.** A sum over a different `n` is a different quantity, which is why its
+    log-likelihood is dropped; a scale profiled over a different set of scored points is a
+    different quantity by the same argument. So the two averages were over different sets of
+    runs.
+
+  Each run's profiled values now travel beside its log-likelihood and are read only for a run
+  that produced one, so every rule that drops a run from the reported average drops its
+  profiled values with it. A fit that profiles nothing is untouched, and so is one whose
+  replicate runs all scored. `_resolve_profiled_noise` still leaves its previous values in
+  place when it refuses a degenerate group: every caller bails out on that refusal, and the
+  guard above closes the one path that read them.
 - **`information_criteria.txt` reports how many simulations of the best fit were run beside
   how many produced a usable log-likelihood, so an average over 3 of 10 runs no longer reads
   as an average over 3 of 3 (#741, ADR-0131 amended).** A simulation that fails, scores

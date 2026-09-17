@@ -486,7 +486,9 @@ Required Keys
   They remain estimated quantities, so they keep counting in ``k`` in
   ``Results/information_criteria.txt``, and their fitted values are written to
   ``Results/profiled_noise.txt`` -- they are not coordinates of the best parameter set,
-  so they appear in no ``sorted_params_*.txt`` row.
+  so they appear in no ``sorted_params_*.txt`` row. For a stochastic model that value is the
+  mean over the same simulations of the best fit the reported log-likelihood is averaged over
+  (see :ref:`best_fit_replicates <best_fit_confirmation>`).
 
   Supported by every optimizer, including ``lbfgs`` and ``gntr``. ``job_type = trf``
   refuses a profiled fit (as it already refuses a searched free scale): under profiling
@@ -563,7 +565,9 @@ Required Keys
   in ``k`` in ``Results/information_criteria.txt``, and their fitted values are written to
   ``Results/profiled_linear.txt`` with a column saying whether a bound held them at the
   best fit -- they are not coordinates of the best parameter set, so they appear in no
-  ``sorted_params_*.txt`` row.
+  ``sorted_params_*.txt`` row. For a stochastic model both the value and that column describe
+  the same simulations of the best fit the reported log-likelihood is averaged over (see
+  :ref:`best_fit_replicates <best_fit_confirmation>`).
 
   Example::
 

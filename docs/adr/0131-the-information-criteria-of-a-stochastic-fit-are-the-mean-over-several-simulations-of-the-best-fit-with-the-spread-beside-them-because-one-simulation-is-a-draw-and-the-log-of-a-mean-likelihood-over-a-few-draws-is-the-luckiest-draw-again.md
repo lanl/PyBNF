@@ -10,6 +10,14 @@ Amended by #741 (2026-09-17): the file gained a `replicates_requested` line besi
 example and the sentence about dropped runs below describe the file as this ADR shipped it;
 nothing about the decision changed, only what the file discloses about it. See ADR-0146.
 
+Corrected by #743 (2026-09-17): the last sentence of "What it does" below -- a profiled noise
+scale is averaged over the same runs -- was the decision, and the code did not implement it.
+The profiled values were read from the objective *before* the guard that drops an unscoreable
+run, and no different-`n` filter was ever applied to them, so the two averages were taken over
+different sets of runs and a run that could not be scored contributed its predecessor's value a
+second time. The decision is unchanged; the implementation now matches it. The same now holds
+for a profiled linear coefficient (ADR-0132), which did not exist when this was written.
+
 ## The defect
 
 `Results/information_criteria.txt` reports AIC, BIC and AICc from the full normalized
@@ -76,7 +84,10 @@ through the same normalize, postprocess, pointwise-`log_density` path as before.
 client they run one after another. A run that fails or scores nothing is left out and
 `replicates` reports the number used; runs that scored a different number of points than the
 rest are left out too, since a sum over a different `n` is a different quantity. A profiled
-noise scale (ADR-0108) is averaged over the same runs.
+noise scale (ADR-0108) is averaged over the same runs -- as, since #671, is a profiled linear
+coefficient (ADR-0132). "The same runs" is exact and load-bearing: each run's profiled values
+are carried beside its log-likelihood, so both filters above take them with the run they
+belong to. #743 is the bug that made that sentence a claim rather than a description.
 
 That last rule is the one #741 came back to. Reporting only the number used left an average
 over 3 of 10 runs reading exactly like an average over 3 of 3, in the file whose whole

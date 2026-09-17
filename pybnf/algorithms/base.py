@@ -48,7 +48,7 @@ import re
 from pathlib import Path
 from glob import glob
 from concurrent.futures import CancelledError
-from collections import Counter
+from collections import Counter, namedtuple
 from statistics import fmean
 
 
@@ -102,6 +102,31 @@ def unusable_score(score):
     except (TypeError, ValueError):
         return True
     return np.isnan(value) or value == -np.inf
+
+
+#: One simulation of the best fit that produced a usable log-likelihood, together with what
+#: the objective profiled while scoring it: ``noise`` the analytically profiled noise scales
+#: (ADR-0108), ``linear`` the profiled observable coefficients (ADR-0132), and ``at_bound``
+#: the names the bounded solve held at a declared bound in this run.
+#:
+#: The profiled values ride WITH the log-likelihood they were profiled beside, rather than in
+#: lists of their own, so every rule that drops a run from the reported average drops its
+#: profiled values with it (#743). Two rules do: a run the objective could not score at all,
+#: and a run that scored a different number of points from the rest. Both apply to a profiled
+#: value by the same argument they apply to the log-likelihood -- a scale profiled over a
+#: different set of scored points is a different quantity -- and ``profiled_noise.txt`` /
+#: ``profiled_linear.txt`` are the only place these estimates are reported, so an average
+#: over the wrong runs is a wrong reported parameter value, not a wrong caveat.
+_ScoredReplicate = namedtuple('_ScoredReplicate',
+                              ['log_likelihood', 'n', 'noise', 'linear', 'at_bound'])
+
+
+def _mean_by_name(maps):
+    """``{name: mean}`` over every name any of ``maps`` carries, averaged over just the maps
+    that carry it, in sorted name order. A name a run did not profile is absent from that
+    run's map rather than zero in it, which is the distinction this keeps."""
+    names = sorted(set().union(*maps)) if maps else []
+    return {name: fmean([m[name] for m in maps if name in m]) for name in names}
 
 
 class Algorithm(ABC):
@@ -2124,7 +2149,10 @@ class Algorithm(ABC):
         in-process otherwise. A replicate that fails or scores nothing is left out and
         the count reported is the number that were used, beside the number that were run
         so the report can say how many were lost (#741); a profiled noise scale
-        (ADR-0108) is averaged over the same runs.
+        (ADR-0108) and a profiled linear coefficient (ADR-0132) are averaged over the
+        same runs, and over nothing else -- each run's profiled values are carried beside
+        its log-likelihood, so a run dropped for failing to score or for scoring a
+        different ``n`` takes them with it (#743, :meth:`_record_profiled_values`).
 
         Every failure is logged and swallowed (returns ``None``): the run has
         otherwise completed, and a diagnostics field must never abort it. Split out
@@ -2169,8 +2197,7 @@ class Algorithm(ABC):
             # A profiled linear coefficient is an estimated quantity too (ADR-0132, #671).
             linear = getattr(self.config, 'profiled_linear_params', ()) or ()
             k = len(self.variables) + len(profiled) + len(linear)
-            log_likelihoods, counts, profiled_values, scored = [], [], [], 0
-            linear_values, linear_hits = [], {}
+            replicate_runs = []
             for res in results:
                 if res is None or getattr(res, 'failed', False) or res.simdata is None:
                     continue
@@ -2180,56 +2207,79 @@ class Algorithm(ABC):
                 res.postprocess_data(self.config.postprocessing)
                 ic = likelihood_information_criteria(
                     self.objective, res.simdata, self.exp_data, best_pset, k)
-                scored += 1
-                # The scoring call put every profiled scale at its MLE for this run, so the
-                # objective now holds the values this fit estimated for the removed dimensions.
-                noise = getattr(self.objective, '_profiled_noise', None)
-                if noise:
-                    profiled_values.append(dict(noise))
-                coefficients = getattr(self.objective, '_profiled_linear', None)
-                if coefficients:
-                    linear_values.append(dict(coefficients))
-                    for name in getattr(self.objective, '_profiled_linear_at_bound', None) or {}:
-                        linear_hits[name] = linear_hits.get(name, 0) + 1
                 if ic is None:
+                    # Nothing is read from a run that produced no log-likelihood, because what
+                    # the objective is carrying is not this run's (#743): the profiled values
+                    # are assigned only once a whole evaluation has succeeded, so an
+                    # unscoreable run leaves the PREVIOUS run's values in place, and reading
+                    # them here counted that run twice and gave this one a number that was
+                    # never its own.
                     continue
-                log_likelihoods.append(ic.log_likelihood)
-                counts.append(ic.n)
-            if scored:
-                names_seen = sorted(set().union(*profiled_values)) if profiled_values else []
-                self._profiled_noise = {
-                    name: fmean([d[name] for d in profiled_values if name in d])
-                    for name in names_seen}
-                names_seen = sorted(set().union(*linear_values)) if linear_values else []
-                self._profiled_linear = {
-                    name: fmean([d[name] for d in linear_values if name in d])
-                    for name in names_seen}
-                self._profiled_linear_bound_hits = linear_hits
-            if not log_likelihoods:
-                logger.warning('No simulation of the best fit produced a usable log-likelihood, '
-                               'so no information criteria were computed')
-                return None
-            n = Counter(counts).most_common(1)[0][0]
+                # The scoring call put every profiled scale and coefficient at its MLE for this
+                # run, so the objective now holds the values this fit estimated for the removed
+                # dimensions. They travel with this run's log-likelihood so the filter below
+                # applies to both (ADR-0108, ADR-0132).
+                replicate_runs.append(_ScoredReplicate(
+                    log_likelihood=ic.log_likelihood, n=ic.n,
+                    noise=dict(getattr(self.objective, '_profiled_noise', None) or {}),
+                    linear=dict(getattr(self.objective, '_profiled_linear', None) or {}),
+                    at_bound=tuple(getattr(self.objective, '_profiled_linear_at_bound', None)
+                                   or ())))
+            counts = [rep.n for rep in replicate_runs]
+            n = Counter(counts).most_common(1)[0][0] if counts else None
             if len(set(counts)) > 1:
                 # Sums over different numbers of points are not the same quantity, so keep
-                # the runs that scored the usual number and say so.
+                # the runs that scored the usual number and say so. The whole run goes, not
+                # just its log-likelihood: a scale profiled over a different set of scored
+                # points is a different quantity by the same argument (#743).
                 logger.warning('The replicate runs of the best fit scored different numbers of '
                                'points (%s); the information criteria use the %d run(s) that '
                                'scored %d' % (sorted(set(counts)), counts.count(n), n))
-                log_likelihoods = [ll for ll, c in zip(log_likelihoods, counts) if c == n]
-            if len(log_likelihoods) < len(jobs):
+                replicate_runs = [rep for rep in replicate_runs if rep.n == n]
+            self._record_profiled_values(replicate_runs)
+            if not replicate_runs:
+                logger.warning('No simulation of the best fit produced a usable log-likelihood, '
+                               'so no information criteria were computed')
+                return None
+            if len(replicate_runs) < len(jobs):
                 logger.warning('%d of %d simulation(s) of the best fit produced a usable '
                                'log-likelihood for the information criteria'
-                               % (len(log_likelihoods), len(jobs)))
+                               % (len(replicate_runs), len(jobs)))
             # The count of simulations run travels with the criteria so the report can say
             # that the average is over fewer runs than the fit asked for, rather than
             # leaving a reader to spot that `replicates` is below best_fit_replicates and
             # guess why (#741).
-            return replicated_information_criteria(log_likelihoods, k, n,
-                                                   requested=len(jobs))
+            return replicated_information_criteria(
+                [rep.log_likelihood for rep in replicate_runs], k, n, requested=len(jobs))
         except Exception:
             logger.exception('Failed to compute information criteria for the best fit')
             return None
+
+    def _record_profiled_values(self, replicate_runs):
+        """Average the profiled noise scales (ADR-0108) and linear coefficients (ADR-0132)
+        over ``replicate_runs`` onto the attributes ``_emit_profiled_noise`` and
+        ``_emit_profiled_linear`` report.
+
+        ``replicate_runs`` is exactly the set of :class:`_ScoredReplicate` behind the reported
+        log-likelihood, which is what makes ADR-0131's "averaged over the same runs" true: a
+        profiled value is fitted but never proposed, so ``profiled_noise.txt`` and
+        ``profiled_linear.txt`` are the only place its estimate is reported, and averaging it
+        over a different set of runs than the log-likelihood reports an estimate for a fit that
+        was never scored (#743).
+
+        Each name is averaged over the runs that carry it (:func:`_mean_by_name`).
+        ``_profiled_linear_bound_hits`` counts, per name, how many of these runs held that
+        coefficient at a declared bound, which is what ``profiled_linear.txt``'s ``at_bound``
+        column reports. Empty maps when no run survived -- there is then no estimate to report,
+        and the two files are a no-op.
+        """
+        self._profiled_noise = _mean_by_name([rep.noise for rep in replicate_runs])
+        self._profiled_linear = _mean_by_name([rep.linear for rep in replicate_runs])
+        hits = {}
+        for rep in replicate_runs:
+            for name in rep.at_bound:
+                hits[name] = hits.get(name, 0) + 1
+        self._profiled_linear_bound_hits = hits
 
     def _run_information_criteria_jobs(self, jobs, client):
         """Run the best fit's information-criteria simulations and return one Result per

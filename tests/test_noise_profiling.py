@@ -725,12 +725,31 @@ class TestReporting:
         obj = _profiled(_gaussian_objective())
         obj._profiled_noise = {SIGMA: 1.25}
         monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
-                            lambda *a, **kw: None)
+                            lambda *a, **kw: objective.information_criteria(-4.0, k=2, n=6))
         monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
         monkeypatch.setattr(algorithm_base.core, 'run_job', lambda job: _FakeResult())
         alg = _ICAlgorithm(str(tmp_path), [SIGMA], obj)
         alg._compute_information_criteria(object())
         assert alg._profiled_noise == {SIGMA: 1.25}
+
+    def test_a_scale_is_read_only_from_a_run_that_could_be_scored(self, tmp_path, monkeypatch):
+        """A run the objective cannot score never reaches the assignment that puts its scale on
+        the objective, so what is sitting there belongs to some earlier evaluation -- a
+        different parameter set, at the single-simulation path this exercises. Nothing about
+        the best fit is reported, so neither is a scale (#743)."""
+        obj = _profiled(_gaussian_objective())
+        obj._profiled_noise = {SIGMA: 1.25}         # left behind by an earlier evaluation
+        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
+                            lambda *a, **kw: None)
+        monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
+        monkeypatch.setattr(algorithm_base.core, 'run_job', lambda job: _FakeResult())
+        alg = _ICAlgorithm(str(tmp_path), [SIGMA], obj)
+
+        assert alg._compute_information_criteria(object()) is None
+
+        assert alg._profiled_noise == {}
+        alg._emit_profiled_noise()
+        assert not (tmp_path / 'profiled_noise.txt').exists()
 
     def test_profiled_noise_txt_reports_every_profiled_scale(self, tmp_path):
         alg = _ICAlgorithm(str(tmp_path), [SIGMA], _gaussian_objective())
