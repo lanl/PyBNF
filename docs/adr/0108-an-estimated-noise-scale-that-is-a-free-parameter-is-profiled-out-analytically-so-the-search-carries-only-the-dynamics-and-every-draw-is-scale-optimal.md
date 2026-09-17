@@ -156,8 +156,13 @@ report would put a non-searched value into the search's own bookkeeping.
 Instead the end-of-run tail writes `Results/profiled_noise.txt` — one `name<TAB>value` row per
 profiled scale, at the best fit — from the same best-fit scoring pass that produces
 `information_criteria.txt`, so it costs no extra simulation. The console line states the values
-too. A profiled run therefore reports every quantity it estimated, exactly as an unprofiled one
-does; it reports them in two files instead of one.
+too. Since ADR-0131 that pass is several simulations for a stochastic model, and the reported
+scale is the mean over exactly the runs behind the reported log-likelihood: a run that could
+not be scored, or that scored a different number of points from the rest, contributes to
+neither (#743 — it used to contribute to the scale alone, and an unscoreable run used to
+contribute its predecessor's value a second time). A profiled run therefore reports every
+quantity it estimated, exactly as an unprofiled one does; it reports them in two files instead
+of one.
 
 ## The gradient needs no new sensitivity — but loses the residual form
 

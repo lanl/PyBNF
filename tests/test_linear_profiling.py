@@ -610,7 +610,8 @@ class TestReporting:
         obj = _gaussian_objective()
         obj._profiled_linear = {'a': 2.0, 'b': 0.5}
         obj._profiled_linear_at_bound = {'a': 'upper'}
-        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria', lambda *a, **kw: None)
+        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
+                            lambda *a, **kw: objective.information_criteria(-4.0, k=3, n=6))
         monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
 
         class _FakeResult:
@@ -628,6 +629,38 @@ class TestReporting:
         alg._compute_information_criteria(object())
         assert alg._profiled_linear == {'a': 2.0, 'b': 0.5}
         assert alg._profiled_linear_bound_hits == {'a': 1}
+
+    def test_coefficients_are_read_only_from_a_run_that_could_be_scored(self, tmp_path,
+                                                                        monkeypatch):
+        """The sibling of the noise-scale case (#743): a run the objective could not score left
+        the previous evaluation's coefficients and bound flags on the objective, and reading
+        them reported a coefficient -- and an ``at_bound`` -- that was never this fit's."""
+        obj = _gaussian_objective()
+        obj._profiled_linear = {'a': 2.0, 'b': 0.5}
+        obj._profiled_linear_at_bound = {'a': 'upper'}
+        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
+                            lambda *a, **kw: None)
+        monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
+
+        class _FakeResult:
+            failed = False
+            simdata = {}
+
+            def normalize(self, settings):
+                pass
+
+            def postprocess_data(self, settings):
+                pass
+
+        monkeypatch.setattr(algorithm_base.core, 'run_job', lambda job: _FakeResult())
+        alg = _ICAlgorithm(str(tmp_path), [], obj)
+
+        assert alg._compute_information_criteria(object()) is None
+
+        assert alg._profiled_linear == {}
+        assert alg._profiled_linear_bound_hits == {}
+        alg._emit_profiled_linear()
+        assert not os.path.exists(tmp_path / 'profiled_linear.txt')
 
     def test_profiled_linear_txt_reports_every_coefficient_and_its_bound(self, tmp_path):
         alg = _ICAlgorithm(str(tmp_path), [], _gaussian_objective())

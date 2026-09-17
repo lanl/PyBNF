@@ -16,6 +16,13 @@ matters because the comparison these criteria exist for is made between two such
 The count of runs made now travels beside the count used, and the file and the console say
 what was lost (#741).
 
+The profiled noise scales (ADR-0108) and linear coefficients (ADR-0132) the same pass reports
+are averaged over the runs behind that log-likelihood, and over nothing else. They used to be
+read before the guard that drops an unscoreable run, so a run that could not be scored
+contributed its predecessor's values a second time, and a run dropped for scoring a different
+``n`` kept contributing its own (#743). ``profiled_noise.txt`` and ``profiled_linear.txt`` are
+the only place those estimates are reported, so that was a wrong reported parameter value.
+
 Three layers, in this order.
 
   * ``pybnf.objective.replicated_information_criteria``: the arithmetic.
@@ -27,6 +34,7 @@ Three layers, in this order.
   * The file, the console line, and the end-of-fit wiring that decides how many runs.
 """
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -42,16 +50,29 @@ from .test_best_fit_confirmation import (
 #: a simulation the objective cannot score at all.
 LOGLIK = {}
 
+#: replicate indices whose linear solve is held at a declared bound (ADR-0132), so a test can
+#: say which runs the ``at_bound`` count in ``profiled_linear.txt`` is supposed to be over.
+AT_BOUND = set()
+
 
 class _PointwiseObjective:
     """A likelihood objective whose per-point log densities depend on the replicate index
-    the model reported, through LOGLIK, and which leaves a profiled noise scale equal to
-    that index behind, the way a profiling objective leaves its MLE on itself."""
+    the model reported, through LOGLIK, and which leaves a profiled noise scale and a
+    profiled linear coefficient equal to that index behind, the way a profiling objective
+    leaves its MLEs on itself.
+
+    Crucially it leaves them ALONE on a run it cannot score, exactly as the real one does:
+    ``SummationObjective._resolve_profiled_noise`` returns ``False`` from a degenerate group
+    before it reaches the assignment, so the values on the objective are still the previous
+    run's. That is what made an unscoreable run contribute its predecessor's value a second
+    time (#743)."""
 
     supports_pointwise_log_likelihood = True
 
     def __init__(self):
         self._profiled_noise = {}
+        self._profiled_linear = {}
+        self._profiled_linear_at_bound = {}
 
     def evaluate_pointwise(self, simdata, exp_data, pset):
         replicate = int(simdata['m']['time_course'].data[0][1])
@@ -59,6 +80,8 @@ class _PointwiseObjective:
         if values is None:
             return None
         self._profiled_noise = {'sigma': float(replicate)}
+        self._profiled_linear = {'a': float(replicate)}
+        self._profiled_linear_at_bound = {'a': 'upper'} if replicate in AT_BOUND else {}
         return ['p%d' % i for i in range(len(values))], np.asarray(values, dtype=float)
 
 
@@ -74,11 +97,19 @@ def _kv(path):
     return dict(line.split('\t', 1) for line in text.splitlines() if not line.startswith('#'))
 
 
+def _rows(path):
+    """The tab-separated value rows of a profiled-values file, comments dropped."""
+    return [line.split('\t') for line in open(path).read().splitlines()
+            if not line.startswith('#')]
+
+
 @pytest.fixture(autouse=True)
 def _clean_loglik():
     LOGLIK.clear()
+    AT_BOUND.clear()
     yield
     LOGLIK.clear()
+    AT_BOUND.clear()
 
 
 @pytest.fixture
@@ -281,6 +312,76 @@ def test_a_profiled_noise_scale_is_averaged_over_the_same_runs(tmp_path):
     algo._compute_information_criteria(_ps(1.0), replicates=3)
 
     assert algo._profiled_noise == {'sigma': 5.0}
+
+
+def test_a_run_that_cannot_be_scored_contributes_no_profiled_values(tmp_path):
+    """The objective assigns its profiled values only once a whole evaluation has succeeded,
+    so on a run it cannot score they are still the PREVIOUS run's. Reading them there counted
+    run 4 twice and gave run 5 a scale that was never its own -- 14/3 rather than run 4 and
+    run 6's 5 (#743). These are the only place the estimate for a profiled parameter is
+    reported, so that was a wrong reported parameter value."""
+    LOGLIK.update({4: [-1.0], 5: None, 6: [-3.0]})
+    AT_BOUND.add(4)
+    algo = _ic_algo(tmp_path)
+
+    ic = algo._compute_information_criteria(_ps(1.0), replicates=3)
+
+    assert (ic.replicates, ic.log_likelihood) == (2, -2.0)
+    assert algo._profiled_noise == {'sigma': 5.0}
+    assert algo._profiled_linear == {'a': 5.0}
+    # One of the two runs behind those values held the coefficient at a bound, not both: the
+    # failed run used to be counted a second time on run 4's stale flag.
+    assert algo._profiled_linear_bound_hits == {'a': 1}
+
+
+def test_a_run_dropped_for_scoring_a_different_n_takes_its_profiled_values_with_it(tmp_path):
+    """A scale profiled over a different set of scored points is a different quantity, by the
+    same argument that drops the run's log-likelihood -- so the two averages are over the same
+    runs, not 4 and 5 for one and 4, 5 and 6 for the other (#743)."""
+    LOGLIK.update({4: [-1.0, -1.0], 5: [-2.0, -2.0], 6: [-9.0]})
+    AT_BOUND.add(6)
+    algo = _ic_algo(tmp_path)
+
+    ic = algo._compute_information_criteria(_ps(1.0), replicates=3)
+
+    assert (ic.n, ic.replicates, ic.log_likelihood) == (2, 2, -3.0)
+    assert algo._profiled_noise == {'sigma': 4.5}
+    assert algo._profiled_linear == {'a': 4.5}
+    # The one run that hit a bound is not among the runs reported, so nothing hit a bound.
+    assert algo._profiled_linear_bound_hits == {}
+
+
+def test_no_scoreable_run_reports_no_profiled_values(tmp_path):
+    """Nothing is reported about the best fit, so there is no profiled estimate to report
+    either -- and in particular not one left on the objective by some other parameter set."""
+    LOGLIK.update({4: None, 5: None})
+    algo = _ic_algo(tmp_path)
+    algo.objective._profiled_noise = {'sigma': 99.0}        # left by an earlier evaluation
+    algo.objective._profiled_linear = {'a': 99.0}
+
+    assert algo._compute_information_criteria(_ps(1.0), replicates=2) is None
+
+    assert algo._profiled_noise == {}
+    assert algo._profiled_linear == {}
+    algo._emit_profiled_noise()
+    algo._emit_profiled_linear()
+    assert not (Path(algo.res_dir) / 'profiled_noise.txt').exists()
+    assert not (Path(algo.res_dir) / 'profiled_linear.txt').exists()
+
+
+def test_the_reported_profiled_values_reach_their_files(tmp_path):
+    """End to end over the two files that are the only place these estimates appear: the
+    number in them is the average over the runs behind the log-likelihood (#743)."""
+    LOGLIK.update({4: [-1.0], 5: None, 6: [-3.0]})
+    AT_BOUND.update({4, 6})
+    algo = _ic_algo(tmp_path)
+
+    algo._compute_information_criteria(_ps(1.0), replicates=3)
+    algo._emit_profiled_noise()
+    algo._emit_profiled_linear()
+
+    assert _rows(Path(algo.res_dir) / 'profiled_noise.txt') == [['sigma', '5']]
+    assert _rows(Path(algo.res_dir) / 'profiled_linear.txt') == [['a', '5', 'yes']]
 
 
 # --------------------------------------------------------------------------- #

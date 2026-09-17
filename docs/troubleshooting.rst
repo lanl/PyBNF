@@ -370,6 +370,12 @@ of the run). It is still an estimated parameter, so it is still counted in ``k``
 ``Results/information_criteria.txt``. Drop ``noise_profiling`` if you want the scale searched
 as an ordinary free parameter and reported alongside the model parameters.
 
+For a stochastic model the best fit is scored over several simulations, and the value in that
+file is the mean over exactly the simulations behind the ``log_likelihood`` in
+``Results/information_criteria.txt`` -- the ``replicates`` count there says how many that was.
+A simulation that could not be scored, or that scored a different number of points from the
+rest, contributes to neither number.
+
 
 .. _profiled_coefficient_missing:
 
@@ -390,6 +396,10 @@ names each coefficient that was held at a bound for at least one parameter set. 
 an estimated parameter, so it is still counted in ``k`` in
 ``Results/information_criteria.txt``. Drop ``linear_profiling`` if you want the coefficient
 searched as an ordinary free parameter and reported alongside the model parameters.
+
+As with a profiled noise scale, for a stochastic model the reported value -- and the
+``at_bound`` column -- describe exactly the simulations of the best fit behind the
+``log_likelihood`` in ``Results/information_criteria.txt``, and no others.
 
 
 Could not start the workers on the other machines

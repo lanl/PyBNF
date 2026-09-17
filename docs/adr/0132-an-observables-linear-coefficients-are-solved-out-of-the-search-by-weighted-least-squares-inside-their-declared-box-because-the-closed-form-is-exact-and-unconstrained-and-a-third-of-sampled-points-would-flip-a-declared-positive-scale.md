@@ -118,7 +118,9 @@ below changes.
 
 By ADR-0108's arguments unchanged: a profiled coefficient is an estimated quantity that only
 the search dropped, so `information_criteria.txt` counts it in `k`, and its fitted value is
-reported beside the results rather than synthesized into the best PSet.
+reported beside the results rather than synthesized into the best PSet. On a stochastic fit
+that value, and the `at_bound` column beside it, are over exactly the simulations of the best
+fit behind the reported log-likelihood, by ADR-0108's amendment and ADR-0131's rule (#743).
 
 ## What this does not do
 
