@@ -407,6 +407,47 @@ class TestExportObjectiveFamily:
             assert r['noisePlaceholders'] == ''
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
+    def test_column_mean_noise_formula_skips_unmeasured_points(self, tmp_path_factory):
+        """#707: the exported column-mean sigma averages the OBSERVED points only.
+
+        PEtab's own round-trip writes 'nan' for a point an observable does not have
+        (see the exporter's measurement rows), so a sparse multi-observable data file is
+        exactly what comes back through this path. A plain average over the raw column
+        put 'nan' in noiseFormula -- an unusable PEtab problem, and on reimport a sigma
+        that matches no objective."""
+        import shutil
+        src = tmp_path_factory.mktemp('colmean_sparse_src')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        # par1.exp with x unmeasured on the odd rows -- y keeps its full time course.
+        rows = [r for r in (DEMO_DIR / 'par1.exp').read_text().splitlines() if r.strip()]
+        sparse = [rows[0]]
+        for i, row in enumerate(rows[1:]):
+            fields = row.split()
+            if i % 2:
+                fields[1] = 'nan'          # x unmeasured at this time point
+            sparse.append('\t'.join(fields))
+        (src / 'par1.exp').write_text('\n'.join(sparse) + '\n')
+        (src / 'job.conf').write_text(
+            f'edition = 2\njob_type = de\nobjective = ave_norm_sos\n'
+            f'model: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
+        out = tmp_path_factory.mktemp('colmean_sparse_out')
+        export_job(src / 'job.conf', out)
+
+        data = Data(file_name=str(src / 'par1.exp'))
+        by_id = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        for oid, col in (('obs_x', 'x'), ('func_y', 'y')):
+            column = data[col]
+            expected = np.average(column[~np.isnan(column)])
+            written = float(by_id[oid]['noiseFormula'])
+            assert not np.isnan(written)          # the regression: 'nan' was written here
+            assert written == pytest.approx(expected)
+        # The sparse column really is sparse -- otherwise this test proves nothing.
+        assert np.isnan(data['x']).any()
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
     def test_chi_sq_still_uses_the_sd_placeholder(self, tmp_path_factory):
         # The existing _SD path is unchanged: per-point placeholder + noiseParameters.
         out = self._export(tmp_path_factory, 'chi_sq')

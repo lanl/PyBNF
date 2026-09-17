@@ -644,5 +644,6 @@ class ColumnMeanSigma(SigmaSource):
         # The mean is a per-column constant; recomputing it per point is O(1) amortized
         # over the small data PyBNF fits and keeps the source stateless (no per-exp_data
         # cache to invalidate across models/suffixes). The legacy ave_norm_sos
-        # precomputes it once in evaluate(); the result is identical.
-        return np.average(exp_data[col_name])
+        # precomputes it once in evaluate(); the result is identical -- structurally so,
+        # since both paths go through Data.column_mean (which is nan-aware, #707).
+        return exp_data.column_mean(col_name)

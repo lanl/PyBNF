@@ -1,4 +1,6 @@
 import math
+import warnings
+
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -281,6 +283,34 @@ class TestData:
         du = mk(); du.normalize_to_unit_scale(cols=[1])
         npt.assert_allclose(du.data[[0, 2], 1], np.array([0.0, 1.0]))
         assert np.isnan(du.data[1, 1])
+
+    def test_column_mean_is_nan_aware(self):
+        # #707, the same sparse-column hazard one step later: column_mean is the DIVISOR
+        # ave_norm_sos / the column_mean sigma source normalize by, so a plain np.average
+        # returning NaN poisons every *present* point of the column too. Average the
+        # measured points only. obs1 = [3, NaN, 4] -> 3.5, not NaN.
+        d = data.Data()
+        d.data = d._read_file_lines(['# x    obs1    obs2    obs3\n',
+                                     ' 0 3    4    5\n',
+                                     ' 1 nan  3    6\n',
+                                     ' 2 4    nan  10\n'], r'\s+')
+        assert d.column_mean('obs1') == 3.5
+        assert d.column_mean('obs2') == 3.5
+        npt.assert_allclose(d.column_mean('obs3'), 7.0)   # dense column: plain mean
+        npt.assert_allclose(d.column_mean('x'), 1.0)
+
+    def test_column_mean_of_an_unmeasured_column_is_nan_and_quiet(self):
+        # A column with no observed value has no mean. It returns NaN rather than raising,
+        # and must do so WITHOUT a warning -- np.nanmean would emit "Mean of empty slice"
+        # on every evaluate() call, once per unscored column, for the whole fit. The NaN is
+        # harmless: every row of such a column is skipped in scoring, so it is never read.
+        d = data.Data()
+        d.data = d._read_file_lines(['# x    obs1    obs2\n',
+                                     ' 0 1    nan\n',
+                                     ' 1 2    nan\n'], r'\s+')
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            assert np.isnan(d.column_mean('obs2'))
 
     def test_zero_normalization(self):
         d0 = copy.deepcopy(self.d0)

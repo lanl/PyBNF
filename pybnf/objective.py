@@ -2590,7 +2590,10 @@ class AveNormSumOfSquaresObjective(SummationObjective):
 
     def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         # Precalculate the average of each exp column to use for all points in this call.
-        self.aves = {name: np.average(exp_data[name]) for name in exp_data.cols}
+        # Over the OBSERVED values only (#707): the mean is a divisor, so a NaN in a sparse
+        # multi-observable column would otherwise poison every present point of that column
+        # too -- see Data.column_mean.
+        self.aves = {name: exp_data.column_mean(name) for name in exp_data.cols}
         return super().evaluate(sim_data, exp_data, show_warnings, data_key=data_key)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):

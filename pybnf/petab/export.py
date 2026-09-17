@@ -69,7 +69,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import edition
-from ..data import Data
+from ..data import Data, observed_mean
 from ..objective import _OBJECTIVE_DESUGAR
 from ..parse import ploop
 from ..printing import PybnfError
@@ -1202,7 +1202,10 @@ def _noise_source_for_column(verb, arg, col, datas):
     if verb == 'fix_at':
         return ('constant', float(arg))
     if verb == 'column_mean':
-        return ('constant', float(np.average(np.concatenate([d[col] for d in holders]))))
+        # Over the OBSERVED values only (#707), matching what ColumnMeanSigma computes at
+        # fit time: a sparse multi-observable column carries NaN in its unmeasured rows, and
+        # a plain average would export 'nan' as this observable's noiseFormula constant.
+        return ('constant', float(observed_mean(np.concatenate([d[col] for d in holders]))))
     if verb == 'fit':
         # A free-parameter (estimated) sigma -> a bare-id noiseFormula naming the noise
         # parameter (declared estimated in parameters.tsv; admitted as an observation-layer

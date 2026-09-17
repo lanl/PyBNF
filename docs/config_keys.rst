@@ -602,8 +602,9 @@ Required Keys
    - ``relative [<cv>]`` - constant coefficient of variation: ``sigma = cv * |value|``,
      so the noise scales with the measurement (``cv`` defaults to 1). This is the
      heteroscedastic model the legacy ``norm_sos`` fits.
-   - ``column_mean`` - ``sigma`` is the observable's experimental column mean (one
-     scale per column). This is the model the legacy ``ave_norm_sos`` fits.
+   - ``column_mean`` - ``sigma`` is the mean of the observable's measured experimental
+     values (one scale per column; ``nan`` entries are missing data and do not enter the
+     mean). This is the model the legacy ``ave_norm_sos`` fits.
    - ``formula <expr>`` - an arithmetic expression over free parameters (and constants),
      evaluated per point against the current fit; the PEtab ``noiseFormula`` source.
    - ``prediction_formula <expr>`` - an expression whose ``sigma`` scales with the
