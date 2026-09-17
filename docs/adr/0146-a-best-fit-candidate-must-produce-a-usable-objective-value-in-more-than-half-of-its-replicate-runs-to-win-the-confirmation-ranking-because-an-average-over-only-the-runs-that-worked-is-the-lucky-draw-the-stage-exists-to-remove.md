@@ -3,8 +3,9 @@
 ## Status
 
 Accepted and implemented (2026-09-17), under every edition that runs the stage at all. It
-changes the answer only for a fit in which a candidate failed half of its replicate runs or
-more, and it changes the report for any fit in which a candidate failed one.
+changes which parameter set a run reports only for a fit in which a candidate failed half of
+its replicate runs or more. `best_fit_confirmation.txt` gains columns and lines on every such
+fit, failures or not.
 
 ## The problem
 
@@ -39,11 +40,14 @@ objective value of the winner was effectively infinite; of the loser, 5.1.
 
 It was also silent where it mattered. `console_lines` never mentioned failures, and with a
 single survivor `standard_error` is `None`, so the documented "raise `best_fit_replicates` if
-the standard errors overlap" guidance could not flag it either. What the console did print was
-"the one the search liked best does worse when it is run again", which in this scenario was
-the opposite of the truth: the search's own pick had the better average and lost on nothing
-the reader was told about. The only warning in the stage fires when *no* candidate has a
-usable score.
+the standard errors overlap" guidance could not flag it either. The console's one line about a
+changed answer, "the one the search liked best does worse when it is run again", fires
+whenever the winner is not the search's own top pick, and says nothing about the average it is
+comparing being over one run. Turn the same situation around, so that the *flaky* candidate is
+the search's top pick and a reliable one displaces it, and the sentence is simply false: the
+search's pick had the better average and lost on reliability, which is not what "does worse
+when it is run again" tells the reader. The only warning in the stage fires when *no* candidate
+has a usable score.
 
 PyBNF's other replicate-averaging path takes the opposite line. `JobGroup.job_finished` and
 `average_results` turn a whole smoothing group into a `FailedSimulation` the moment one

@@ -281,11 +281,12 @@ All notable changes to PyBNF are documented below. This project adheres to
   the console said nothing about failures, and with a single survivor `standard_error` was
   `None` so the documented "raise `best_fit_replicates` if the standard errors overlap"
   guidance could not flag it either. The console now says how many of the winner's runs
-  produced nothing, how many candidates were not confirmed, and — where it used to assert
-  flatly that "the one the search liked best does worse when it is run again", which in this
-  scenario was the opposite of the truth — which of the two things actually happened to the
-  search's own pick. `winner_runs` and `winner_failed` put the winner's sample size in the
-  file beside its average.
+  produced nothing and how many candidates were not confirmed. Its one line about a changed
+  answer used to assert flatly that "the one the search liked best does worse when it is run
+  again", which is false when the search's own top pick is the candidate that had the better
+  average and lost on reliability; it now says which of the two things happened.
+  `winner_runs` and `winner_failed` put the winner's sample size in the file beside its
+  average.
 - **A `time_error` fit is refused by the PEtab export instead of being written as an
   exact-time one (#738).** A `time_error` clause on a `noise_model` line says the reported
   measurement times are not exact: the objective integrates each observation's density over a
