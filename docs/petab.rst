@@ -101,7 +101,11 @@ following all survive an import and an export:
   :ref:`start_point <start_point>` line, so the imported fit starts from the problem's own
   published point instead of the box centre; delete the line to start from the centre. A
   ``nominalValue`` outside the row's own ``lowerBound``/``upperBound`` is a configuration
-  error rather than a silently relocated start.
+  error rather than a silently relocated start. The export writes the same fact back: a
+  ``start_point`` line becomes that parameter's ``nominalValue``, and a parameter with no
+  declared start writes an empty cell (the column is omitted entirely when the job
+  declares no start at all). An out-of-box ``start_point``, which PEtab has no way to
+  state, is refused at export rather than written as a bound.
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by
