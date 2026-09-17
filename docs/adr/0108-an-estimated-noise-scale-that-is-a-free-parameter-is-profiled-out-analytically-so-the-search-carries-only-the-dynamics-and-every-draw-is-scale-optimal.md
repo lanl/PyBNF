@@ -164,6 +164,14 @@ contribute its predecessor's value a second time). A profiled run therefore repo
 quantity it estimated, exactly as an unprofiled one does; it reports them in two files instead
 of one.
 
+When *no* run could be scored the file is not written at all, as `information_criteria.txt` is
+not. Neither file states what its value is over, so a value written there could not be told
+apart from one that was scored: the map on the objective is an earlier evaluation's whenever the
+profile was degenerate, and this run's own only when it scored points and merely summed to a
+non-finite likelihood. A number trustworthy only in a case the reader cannot identify is the
+defect #743 is about, one level up. The run logs the reason and names the parameters, because an
+absent file otherwise reads exactly like a fit that profiled nothing.
+
 ## The gradient needs no new sensitivity — but loses the residual form
 
 By the **envelope theorem**, `d/dθ NLL*(θ) = ∂/∂θ NLL(θ, σ)|_{σ=σ̂(θ)}`: σ̂ is the exact

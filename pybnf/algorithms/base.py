@@ -2270,8 +2270,19 @@ class Algorithm(ABC):
         Each name is averaged over the runs that carry it (:func:`_mean_by_name`).
         ``_profiled_linear_bound_hits`` counts, per name, how many of these runs held that
         coefficient at a declared bound, which is what ``profiled_linear.txt``'s ``at_bound``
-        column reports. Empty maps when no run survived -- there is then no estimate to report,
-        and the two files are a no-op.
+        column reports.
+
+        **Empty maps when no run survived**, so the two files are a no-op rather than carrying
+        a number from somewhere else. Neither file states what its value is averaged over --
+        there is no ``replicates`` or ``n`` row in them -- so a value written when nothing
+        scored could not be told apart from one that was: the objective's map is the previous
+        evaluation's whenever the profile was degenerate (a different parameter set, at the
+        single-simulation path), and is this run's own only when the run scored points and
+        merely summed to a non-finite likelihood. A number trustworthy only in a case the
+        reader cannot identify is the same defect as an average over the wrong runs. The files
+        are also the siblings of ``information_criteria.txt``, which is not written either when
+        the pass yields nothing (ADR-0108). Because an absent file otherwise reads exactly like
+        a fit that profiled nothing at all, the reason is logged.
         """
         self._profiled_noise = _mean_by_name([rep.noise for rep in replicate_runs])
         self._profiled_linear = _mean_by_name([rep.linear for rep in replicate_runs])
@@ -2280,6 +2291,16 @@ class Algorithm(ABC):
             for name in rep.at_bound:
                 hits[name] = hits.get(name, 0) + 1
         self._profiled_linear_bound_hits = hits
+        if not replicate_runs:
+            names = sorted(set(getattr(self.config, 'profiled_noise_params', ()) or ())
+                           | set(getattr(self.config, 'profiled_linear_params', ()) or ()))
+            if names:
+                logger.warning('No simulation of the best fit could be scored, so no value is '
+                               'reported for the analytically profiled parameter(s) %s either. '
+                               'The estimate left on the objective belongs to an earlier '
+                               'evaluation rather than to the best fit, so reporting it would '
+                               'state a value this fit never scored'
+                               % ', '.join(names))
 
     def _run_information_criteria_jobs(self, jobs, client):
         """Run the best fit's information-criteria simulations and return one Result per

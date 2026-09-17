@@ -283,6 +283,15 @@ All notable changes to PyBNF are documented below. This project adheres to
   replicate runs all scored. `_resolve_profiled_noise` still leaves its previous values in
   place when it refuses a degenerate group: every caller bails out on that refusal, and the
   guard above closes the one path that read them.
+  Following from that, when *no* simulation of the best fit can be scored the two files are not
+  written at all, where one of them used to be written from whatever the objective was carrying.
+  Neither file states what its value is averaged over — there is no `replicates` or `n` row in
+  them — so a value written when nothing scored could not be told apart from one that was: it is
+  the previous evaluation's whenever the profile was degenerate, and the run's own only when the
+  run scored points and merely summed to a non-finite likelihood. They are also the siblings of
+  `information_criteria.txt`, which is not written either in that case. Because an absent file
+  otherwise reads exactly like a fit that profiled nothing, the run says why in the log and
+  names the profiled parameters it is not reporting.
 - **`information_criteria.txt` reports how many simulations of the best fit were run beside
   how many produced a usable log-likelihood, so an average over 3 of 10 runs no longer reads
   as an average over 3 of 3 (#741, ADR-0131 amended).** A simulation that fails, scores
