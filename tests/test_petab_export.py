@@ -2280,6 +2280,46 @@ class TestBoundaries:
                 "uniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
+    def test_time_error_marginalization_not_implemented(self, tmp_path):
+        # A time_error clause (ADR-0112, #587) says the reported times are not exact: the
+        # objective integrates each observation over a prior on its true sampling time, and
+        # config.py swaps the whole objective for a MarginalizedTimeObjective. A PEtab
+        # measurements row carries one exact time, so there is nothing to write it as --
+        # exporting emitted a problem scored at the nominal times by the ordinary likelihood,
+        # a different statistical model, and said nothing (#738). Its sibling in the same
+        # noise_model grammar, `cumulative`, was guarded here all along.
+        with pytest.raises(NotImplementedError, match='time_error'):
+            export_job(_boundary_conf(
+                tmp_path,
+                "noise_model = gaussian, sigma = fix_at 1, "
+                "time_error = truncated_normal, sigma_t = fix_at 0.5\n"
+                "uniform_var = v1 0 10\n"),
+                tmp_path / 'out')
+
+    def test_per_observable_time_error_is_also_refused(self, tmp_path):
+        # The whole-fit form is the only one a job can currently run (_maybe_marginalize_time
+        # defers per-observable time priors), but the exporter reads the RAW config, so the
+        # refusal keys on the ('time_error', observable) key rather than on the shape that
+        # happens to be reachable today -- and names the observable it found.
+        with pytest.raises(NotImplementedError, match=r"time_error|\['x'\]"):
+            export_job(_boundary_conf(
+                tmp_path,
+                "noise_model = gaussian, sigma = fix_at 1\n"
+                "noise_model x = gaussian, sigma = fix_at 2, "
+                "time_error = uniform, sigma_t = fix_at 0.5\n"
+                "uniform_var = v1 0 10\n"),
+                tmp_path / 'out')
+
+    def test_the_same_job_without_the_time_clause_exports(self, tmp_path):
+        # The control: everything else about the conf is exportable, so the refusal above is
+        # the time clause and not some other property of the fixture.
+        export_job(_boundary_conf(
+            tmp_path,
+            "noise_model = gaussian, sigma = fix_at 1\n"
+            "uniform_var = v1 0 10\n"),
+            tmp_path / 'out')
+        assert (tmp_path / 'out' / 'parameters.tsv').is_file()
+
     def test_cumulative_prediction_transform_not_implemented(self, tmp_path):
         # The cumulative->incident differencing (ADR-0051, #418) is a PyBNF prediction
         # transform with no PEtab v2 representation: refuse rather than silently export a

@@ -55,7 +55,10 @@ the union of every model's ids, and ``problem.yaml`` lists every model in its ow
 (BNGL + SBML may mix). Everything else raises ``NotImplementedError`` (the boundary is in
 code, not silent): an objective PEtab cannot represent (``neg_bin*`` -- removed from v2;
 ``lognormal`` -- log10 vs PEtab natural log; a free-parameter or relative sigma;
-``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a ``.con``/``.prop``
+``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a ``u``-flagged
+Uniform, whose box seeds the draw without constraining the search (#736); a ``time_error``
+measurement-time marginalization, whose latent sampling time a PEtab measurement row's single
+exact ``time`` cannot carry (#738); a ``.con``/``.prop``
 Constraint; an Antimony (``.ant``) model. The
 oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
 ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
@@ -183,6 +186,7 @@ def export_job(conf_path, out_dir, inline_functions=False):
     noise = _resolve_noise(conf)
     per_obs_noise = _resolve_per_observable_noise(conf)
     _reject_cumulative(conf)
+    _reject_time_error(conf)
     _reject_normalization(conf)
     free_params = _free_parameters_from_conf(conf)
     # An estimated (`fit`) sigma exports as a bare-id noiseFormula naming an estimated PEtab
@@ -930,6 +934,41 @@ def _reject_cumulative(conf):
             f"cumulative-counts observable operator. Exporting would silently score the raw "
             f"cumulative columns instead. Remove the 'cumulative' flag (and difference the data "
             f"to per-interval increments yourself) to export to PEtab.")
+
+
+def _reject_time_error(conf):
+    """Fail loud if the job marginalizes the latent measurement time (ADR-0112, #587).
+
+    A ``time_error`` clause on a ``noise_model`` line says the reported times are **not
+    exact**: the objective integrates each observation's density over a prior on its true
+    sampling time, and ``config.py`` swaps the whole per-point objective for a
+    ``MarginalizedTimeObjective`` (a fit that reads ``MarginalizedTimeObjective`` before an
+    export reads ``LikelihoodObjective`` after one). A PEtab ``measurements`` row carries one
+    exact ``time`` and has no field for a distribution over it, so there is nothing to write
+    the clause as: exporting emits a problem scored at the nominal reported times by the
+    ordinary likelihood, which is a different statistical model.
+
+    Refuse instead -- the same stance and the same reason as :func:`_reject_cumulative`, whose
+    clause is a sibling in the very same ``noise_model`` grammar and was already guarded here
+    while this one was not (#738). The ``sigma_t`` scale source rides on the same key, so it
+    goes with it.
+    """
+    keys = [k for k in conf if isinstance(k, tuple) and k[0] == 'time_error']
+    if not keys:
+        return
+    # The observable is None for the whole-fit form, which is the only one a job can
+    # currently run (``_maybe_marginalize_time`` defers per-observable time priors), but the
+    # exporter reads the raw config, so name whichever shape is actually present.
+    observables = sorted(k[1] for k in keys if k[1] is not None)
+    subject = (f"Observable(s) {observables} declare" if observables
+               else "This fit declares")
+    raise NotImplementedError(
+        f"{subject} a 'time_error' measurement-time marginalization (ADR-0112, #587), which "
+        f"PEtab v2 cannot express -- a measurements row carries one exact 'time' and has no "
+        f"field for a distribution over it. Exporting would emit a problem scored at the "
+        f"nominal reported times by the ordinary likelihood, a different objective. Remove "
+        f"the 'time_error' and 'sigma_t' fields from the noise_model line to export to "
+        f"PEtab.")
 
 
 def _reject_normalization(conf):

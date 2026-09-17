@@ -252,6 +252,23 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A `time_error` fit is refused by the PEtab export instead of being written as an
+  exact-time one (#738).** A `time_error` clause on a `noise_model` line says the reported
+  measurement times are not exact: the objective integrates each observation's density over a
+  prior on its true sampling time, and loading the config swaps the whole per-point objective
+  for a `MarginalizedTimeObjective`. The exporter had no awareness of the clause at all, so
+  such a job exported without a warning and the emitted problem carried the measurements at
+  their nominal times as though exact. Round-tripped, the fit came back scored by
+  `LikelihoodObjective` — a different statistical model, silently.
+  Its sibling in the very same `noise_model` grammar was guarded all along: `cumulative` is
+  stored under the same kind of structural key and refused by `_reject_cumulative`, for exactly
+  this reason. That function's twin for `time_error` was never written; it is now, beside it.
+  PEtab cannot express the clause — a measurements row carries one exact `time` and has no
+  field for a distribution over it — so, as with the `U` tag, the fix is a refusal naming the
+  boundary rather than a richer export. Walking the whole noise-model field grammar,
+  `time_error`/`sigma_t` was the last of its shape: `cumulative` and a mean-centred `location`
+  were already refused, and the prediction formula, measurement formula and noise source all
+  export and round-trip under test.
 - **A `U`-tagged free parameter is refused by the PEtab export instead of being written as a
   hard-bounded one (#736, ADR-0025).** `uniform_var = v 0 10 U` and its `loguniform_var` twin
   mean the box is enforced only during initialization: it seeds the first population and the
