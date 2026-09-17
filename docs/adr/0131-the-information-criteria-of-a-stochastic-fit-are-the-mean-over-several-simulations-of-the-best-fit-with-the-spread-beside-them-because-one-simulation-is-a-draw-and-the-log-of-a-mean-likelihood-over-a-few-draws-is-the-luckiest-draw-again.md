@@ -5,6 +5,11 @@
 Accepted. Completes #659, the best-fit confirmation stage, for the one end-of-fit artifact
 that stage left on a single simulation.
 
+Amended by #741 (2026-09-17): the file gained a `replicates_requested` line beside
+`replicates`, and says in words how many runs produced nothing when the two differ. The
+example and the sentence about dropped runs below describe the file as this ADR shipped it;
+nothing about the decision changed, only what the file discloses about it. See ADR-0146.
+
 ## The defect
 
 `Results/information_criteria.txt` reports AIC, BIC and AICc from the full normalized
@@ -72,6 +77,13 @@ client they run one after another. A run that fails or scores nothing is left ou
 `replicates` reports the number used; runs that scored a different number of points than the
 rest are left out too, since a sum over a different `n` is a different quantity. A profiled
 noise scale (ADR-0108) is averaged over the same runs.
+
+That last rule is the one #741 came back to. Reporting only the number used left an average
+over 3 of 10 runs reading exactly like an average over 3 of 3, in the file whose whole
+purpose is a comparison between two such averages; the fix reports the number run beside it
+and says what was lost. The averaging itself is unchanged, and no minimum-success rule was
+added here -- #720's threshold exists because candidate means were ranked against each other,
+and there is no competing candidate in this file.
 
 ## Why the mean of the log-likelihoods, and not the log of the mean likelihood
 

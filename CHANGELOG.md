@@ -252,6 +252,33 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **`information_criteria.txt` reports how many simulations of the best fit were run beside
+  how many produced a usable log-likelihood, so an average over 3 of 10 runs no longer reads
+  as an average over 3 of 3 (#741, ADR-0131 amended).** A simulation that fails, scores
+  nothing, or scores a different number of points from the rest is left out of the mean, and
+  `replicated_information_criteria` set `replicates` to the surviving count. That number was
+  honest, but nothing in the file said a run had been lost, and the header explained
+  `replicates` as though none could be: "the best fit is run `best_fit_replicates` times and
+  log_likelihood is the mean over those runs". The `%d of %d simulation(s)` warning went to
+  the log alone, and the console's only mention of the count rides on a clause that appears
+  once two runs have produced a value — so the case where nine of ten were lost was the case
+  it hid.
+  This matters where the criteria are used. The writer's own docstring says they "rank this
+  fit against competing models"; that comparison is made by a reader holding two of these
+  files side by side. A model whose best fit lost seven of its ten runs is scored on a mean
+  over the three that worked, optimistic in the way #720 described, and could win the AIC
+  comparison on it. The file now carries `replicates_requested` beside `replicates`, says in
+  words how many runs produced nothing and that the mean is optimistic by however much they
+  would have pulled it down, and prints the same on the console — including when a single run
+  survived. `InformationCriteria` carries the count and
+  `replicated_information_criteria(..., requested=N)` sets it; a criteria object built without
+  one is written exactly as before.
+  The averaging is unchanged and no minimum-success threshold was added, unlike #720's
+  confirmation ranking. That bar exists because candidate means were ranked against each
+  other inside one run and a candidate measured over one run could beat one measured over
+  ten; this file holds one parameter set the run has already settled on, so there is nothing
+  for a survivor mean to beat unfairly, and refusing to emit criteria over a low count would
+  remove information rather than add it.
 - **The best-fit confirmation stage ranks a candidate on all of its replicate runs, so one
   that fails most of them can no longer be pinned as the run's answer (#720, ADR-0146).** The
   stage exists to stop a fit reporting whichever parameter set got a lucky simulation: it

@@ -9,6 +9,13 @@ number, and after #659 it disagreed with the averaged objective value in
 simulated ``best_fit_replicates`` times at the end of a stochastic fit, the log-likelihood
 is the mean over those runs, and the file says how many runs and how far they spread.
 
+A run that fails or scores nothing is left out of that mean, and the file used to report
+only the surviving count under a header that explained it as ``best_fit_replicates`` -- so a
+log-likelihood averaged over 3 of 10 runs read exactly like one averaged over 3 of 3, which
+matters because the comparison these criteria exist for is made between two such averages.
+The count of runs made now travels beside the count used, and the file and the console say
+what was lost (#741).
+
 Three layers, in this order.
 
   * ``pybnf.objective.replicated_information_criteria``: the arithmetic.
@@ -111,6 +118,21 @@ def test_a_single_value_is_the_plain_criteria_with_no_spread():
             == objective.information_criteria(-7.5, k=1, n=4))
 
 
+def test_the_requested_count_rides_along_and_defaults_to_the_number_of_values():
+    """An average over three of ten runs and an average over three of three are different
+    measurements, and the criteria have to carry which one they are (#741)."""
+    lost = objective.replicated_information_criteria([-10.0, -12.0, -14.0], k=2, n=10,
+                                                     requested=10)
+    assert (lost.replicates, lost.replicates_requested) == (3, 10)
+
+    whole = objective.replicated_information_criteria([-10.0, -12.0, -14.0], k=2, n=10)
+    assert (whole.replicates, whole.replicates_requested) == (3, 3)
+
+    # Only the bookkeeping differs; the arithmetic is the same average either way.
+    assert lost.log_likelihood == whole.log_likelihood == -12.0
+    assert lost.aic == whole.aic
+
+
 def test_the_plain_criteria_describe_one_exact_simulation():
     ic = objective.information_criteria(-3.0, k=1, n=5)
     assert ic.replicates == 1
@@ -202,6 +224,9 @@ def test_a_run_that_cannot_be_scored_is_left_out_and_the_count_says_so(tmp_path)
     ic = algo._compute_information_criteria(_ps(1.0), replicates=3)
 
     assert (ic.replicates, ic.log_likelihood) == (2, -2.0)
+    # How many were run travels with how many were used, so the report can say what was
+    # lost rather than leaving the reader to notice a count below best_fit_replicates (#741).
+    assert ic.replicates_requested == 3
 
 
 def test_a_run_with_a_non_finite_log_likelihood_is_left_out_too(tmp_path):
@@ -243,6 +268,8 @@ def test_runs_that_scored_a_different_number_of_points_are_left_out(tmp_path):
     algo = _ic_algo(tmp_path)
 
     ic = algo._compute_information_criteria(_ps(1.0), replicates=3)
+    # Dropped for a different reason than a failure, and counted as lost all the same.
+    assert ic.replicates_requested == 3
 
     assert (ic.n, ic.replicates, ic.log_likelihood) == (2, 2, -3.0)
 
@@ -269,8 +296,12 @@ def test_the_file_reports_the_replicate_count_and_the_spread(tmp_path):
     assert kv['replicates'] == '3'
     assert kv['log_likelihood'] == '-12'
     assert float(kv['log_likelihood_standard_error']) == pytest.approx(2.0 / math.sqrt(3))
-    assert list(kv) == ['k', 'n', 'replicates', 'log_likelihood',
+    assert list(kv) == ['k', 'n', 'replicates_requested', 'replicates', 'log_likelihood',
                         'log_likelihood_standard_error', 'AIC', 'BIC', 'AICc']
+    # Nothing was lost, so the file says so by saying nothing (#741).
+    assert kv['replicates_requested'] == '3'
+    assert 'produced no usable log-likelihood' not in open(
+        algo.res_dir + '/information_criteria.txt').read()
 
 
 def test_the_file_for_one_exact_simulation_says_so(tmp_path):
@@ -293,6 +324,93 @@ def test_the_console_line_names_the_runs_and_the_spread(tmp_path, monkeypatch, c
 
     algo._emit_information_criteria(objective.information_criteria(-12.0, k=2, n=10))
     assert 'over' not in capsys.readouterr().out
+
+
+def test_the_file_says_how_many_runs_produced_nothing(tmp_path):
+    """``replicates`` alone reads as the number of runs that were asked for, so an average
+    over 3 of 10 was indistinguishable from one over 3 of 3 (#741)."""
+    algo = _ic_algo(tmp_path)
+
+    algo._emit_information_criteria(objective.replicated_information_criteria(
+        [-10.0, -12.0, -14.0], k=2, n=10, requested=10))
+
+    text = open(algo.res_dir + '/information_criteria.txt').read()
+    kv = _kv(algo.res_dir + '/information_criteria.txt')
+    assert kv['replicates_requested'] == '10'
+    assert kv['replicates'] == '3'
+    assert '7 of the 10 simulations of the best fit produced no usable log-likelihood' in text
+    assert 'log_likelihood below is the mean over the 3 that did' in text
+    # The header stops telling the reader that replicates is best_fit_replicates.
+    assert 'replicates_requested is how many simulations of the best fit were run' in text
+    assert 'replicates is how many of those produced a usable log-likelihood' in text
+
+
+def test_the_console_says_how_many_runs_produced_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(printing, 'verbosity', 1)
+    algo = _ic_algo(tmp_path)
+
+    algo._emit_information_criteria(objective.replicated_information_criteria(
+        [-10.0, -12.0, -14.0], k=2, n=10, requested=10))
+
+    out = capsys.readouterr().out
+    assert '7 of the 10 simulations of the best fit produced no usable log-likelihood' in out
+    assert 'optimistic' in out
+
+
+def test_the_console_still_says_so_when_a_single_run_survived(tmp_path, monkeypatch, capsys):
+    """The standard error is None with one value, so the existing ``over N runs`` clause
+    does not print -- the case where the most was lost is the one it would hide (#741)."""
+    monkeypatch.setattr(printing, 'verbosity', 1)
+    algo = _ic_algo(tmp_path)
+
+    algo._emit_information_criteria(objective.replicated_information_criteria(
+        [-10.0], k=2, n=10, requested=10))
+
+    out = capsys.readouterr().out
+    assert 'over 1 runs' not in out          # the old clause is still absent
+    assert '9 of the 10 simulations of the best fit produced no usable log-likelihood' in out
+
+
+def test_a_run_that_lost_nothing_says_nothing_about_losses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(printing, 'verbosity', 1)
+    algo = _ic_algo(tmp_path)
+
+    algo._emit_information_criteria(objective.replicated_information_criteria(
+        [-10.0, -12.0], k=2, n=10, requested=2))
+
+    assert 'produced no usable log-likelihood' not in capsys.readouterr().out
+    assert 'produced no usable log-likelihood' not in open(
+        algo.res_dir + '/information_criteria.txt').read()
+
+
+def test_a_criteria_object_with_no_request_count_is_written_without_a_loss_note(tmp_path):
+    """A report writer runs at the end of a finished fit, so a partly-filled criteria
+    object must never be the reason it raises."""
+    algo = _ic_algo(tmp_path)
+    ic = objective.information_criteria(-12.0, k=2, n=10)._replace(
+        replicates=3, replicates_requested=None)
+
+    assert algo._emit_information_criteria(ic) is True
+
+    kv = _kv(algo.res_dir + '/information_criteria.txt')
+    assert kv['replicates_requested'] == '3'
+    assert 'produced no usable log-likelihood' not in open(
+        algo.res_dir + '/information_criteria.txt').read()
+
+
+def test_the_end_to_end_stage_reports_what_it_lost(tmp_path, _sync_dask):
+    """Through the real path: four simulations are run, two score nothing, and the file
+    that a model-selection comparison reads says so (#741)."""
+    LOGLIK.update({5: [-1.0, -1.0], 6: None, 7: None, 8: [-3.0, -3.0]})
+    algo = _ic_algo(tmp_path, candidates=1, replicates=4)
+    algo.trajectory.add(_ps(1.0), 1.0, 'best')
+
+    ic = algo._compute_information_criteria(_ps(1.0), replicates=4, client=_FakeClient())
+    algo._emit_information_criteria(ic)
+
+    assert (ic.replicates, ic.replicates_requested) == (2, 4)
+    text = open(algo.res_dir + '/information_criteria.txt').read()
+    assert '2 of the 4 simulations of the best fit produced no usable log-likelihood' in text
 
 
 # --------------------------------------------------------------------------- #

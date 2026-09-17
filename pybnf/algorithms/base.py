@@ -2122,7 +2122,8 @@ class Algorithm(ABC):
         for the same parameter set. The simulations are independent, so they go out
         through ``client`` together when one is given, and run one after another
         in-process otherwise. A replicate that fails or scores nothing is left out and
-        the count reported is the number that were used; a profiled noise scale
+        the count reported is the number that were used, beside the number that were run
+        so the report can say how many were lost (#741); a profiled noise scale
         (ADR-0108) is averaged over the same runs.
 
         Every failure is logged and swallowed (returns ``None``): the run has
@@ -2220,7 +2221,12 @@ class Algorithm(ABC):
                 logger.warning('%d of %d simulation(s) of the best fit produced a usable '
                                'log-likelihood for the information criteria'
                                % (len(log_likelihoods), len(jobs)))
-            return replicated_information_criteria(log_likelihoods, k, n)
+            # The count of simulations run travels with the criteria so the report can say
+            # that the average is over fewer runs than the fit asked for, rather than
+            # leaving a reader to spot that `replicates` is below best_fit_replicates and
+            # guess why (#741).
+            return replicated_information_criteria(log_likelihoods, k, n,
+                                                   requested=len(jobs))
         except Exception:
             logger.exception('Failed to compute information criteria for the best fit')
             return None
@@ -2471,6 +2477,10 @@ class Algorithm(ABC):
         aicc_str = ('%.10g' % ic.aicc) if ic.aicc is not None else 'n/a (n <= k+1)'
         se = ic.log_likelihood_standard_error
         se_str = ('%.10g' % se) if se is not None else 'n/a (one simulation)'
+        # `lost` is clamped, and a missing request count reads as "nothing was lost", so a
+        # partly-filled criteria object can never make the end of a finished run raise (#741).
+        requested = ic.replicates if ic.replicates_requested is None else ic.replicates_requested
+        lost = max(0, requested - ic.replicates)
         lines = list(preamble) + [
             '# Information criteria for the best-fit parameter set (lower is better).',
             '# Valid for a likelihood objective only (normal / lognormal / lnnormal / laplace /',
@@ -2480,15 +2490,38 @@ class Algorithm(ABC):
             '#   AIC  = 2k - 2*lnL',
             '#   BIC  = k*ln(n) - 2*lnL',
             '#   AICc = AIC + 2k(k+1)/(n-k-1)   (undefined when n <= k+1)',
-            '# replicates is how many simulations of the best fit log_likelihood is averaged',
-            '#   over. One for a deterministic model, whose simulation is exact. For a',
+            '# replicates_requested is how many simulations of the best fit were run for',
+            '#   this file. One for a deterministic model, whose simulation is exact. For a',
             '#   stochastic model every simulation is a draw, so at the end of the fit the',
-            '#   best fit is run best_fit_replicates times and log_likelihood is the mean over',
-            '#   those runs; log_likelihood_standard_error is the uncertainty in that mean,',
-            '#   and AIC, BIC and AICc each carry twice it. Two models whose AIC values',
-            '#   differ by less than that have not been told apart by these runs.',
+            '#   best fit is run best_fit_replicates times.',
+            '# replicates is how many of those produced a usable log-likelihood, and so how',
+            '#   many log_likelihood is the mean over. A simulation that fails, that scores',
+            '#   nothing, or that scores a different number of points from the rest is left',
+            '#   out, so this can be lower than replicates_requested; when it is, a line',
+            '#   below says so. Comparing two models means comparing two of these averages,',
+            '#   and one taken over fewer runs than were asked for is worth knowing about',
+            '#   before the comparison is made.',
+            '# log_likelihood_standard_error is the uncertainty in that mean, and AIC, BIC',
+            '#   and AICc each carry twice it. Two models whose AIC values differ by less',
+            '#   than that have not been told apart by these runs.',
+        ]
+        # Above the numbers rather than below them, so it is read before they are.
+        if lost:
+            lines += [
+                '#',
+                '# %d of the %d simulations of the best fit produced no usable log-likelihood,'
+                % (lost, requested),
+                '#   so log_likelihood below is the mean over the %d that did. A run that'
+                % ic.replicates,
+                '#   produces nothing is a bad outcome rather than a missing measurement, so',
+                '#   that mean is optimistic by however much the lost runs would have pulled',
+                '#   it down. Weigh it against another model\'s accordingly, and look into why',
+                '#   the simulations are failing. The log says what went wrong with each.',
+            ]
+        lines += [
             'k\t%d' % ic.k,
             'n\t%d' % ic.n,
+            'replicates_requested\t%d' % requested,
             'replicates\t%d' % ic.replicates,
             'log_likelihood\t%.10g' % ic.log_likelihood,
             'log_likelihood_standard_error\t%s' % se_str,
@@ -2513,6 +2546,13 @@ class Algorithm(ABC):
             print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
                    '(k=%d, n=%d, lnL=%.6g%s)'
                    % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood, spread))
+            if lost:
+                # Not folded into `spread`, which only appears once two runs have produced
+                # a value -- the case where the most was lost is the case it would hide.
+                print1('  %d of the %d simulations of the best fit produced no usable '
+                       'log-likelihood, so that is the mean over the %d that did and is '
+                       'optimistic by however much the rest would have pulled it down.'
+                       % (lost, requested, ic.replicates))
         return True
 
     def multistart_records(self):

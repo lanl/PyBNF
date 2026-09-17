@@ -1019,10 +1019,13 @@ answer, so :math:`\ln L` from a single simulation is a noisy number and an AIC b
 would change from one run to the next for the same parameter set. At the end of such a fit
 the best fit is therefore simulated ``best_fit_replicates`` times, the same number of runs
 the :ref:`best-fit confirmation stage <best_fit_confirmation>` uses, and :math:`\ln L` is
-the mean over those runs. ``Results/information_criteria.txt`` says how many runs went into
-it (``replicates``) and how far they spread (``log_likelihood_standard_error``); AIC, BIC
-and AICc each carry twice that standard error, so two models whose AIC values differ by
-less than it have not been told apart. The mean of the log-likelihoods is the same average
+the mean over those runs. ``Results/information_criteria.txt`` says how many simulations
+were run (``replicates_requested``), how many of them produced a usable log-likelihood and
+so went into the mean (``replicates``), and how far those spread
+(``log_likelihood_standard_error``); AIC, BIC and AICc each carry twice that standard error,
+so two models whose AIC values differ by less than it have not been told apart. When the two
+counts differ the file says how many runs produced nothing, since the mean is then over the
+runs that worked and the comparison between two models is made on those means. The mean of the log-likelihoods is the same average
 the confirmation stage reports for the objective value, so the two files describe the same
 parameter set the same way. It is a lower bound on the log marginal likelihood, and the
 reported spread says how far below it could be.
