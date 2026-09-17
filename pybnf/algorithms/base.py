@@ -1657,8 +1657,17 @@ class Algorithm(ABC):
             res = result_from_completed(f, res, pending[f][0], pending[f][1])
             del pending[f]
             # For smoothing / model-parallel runs, accumulate sub-results into
-            # their group and skip ahead until the group is complete.
-            if self.config.config['smoothing'] > 1 or self.config.config['parallelize_models'] > 1:
+            # their group and skip ahead until the group is complete. Only a real
+            # Result belongs to a group: a cancelled future is not a sub-job's output
+            # but the absence of one, and carries no ``name`` to fold under, so it goes
+            # straight to the fatal-condition check below -- the same one it reaches on
+            # an ungrouped fit, which tells the user to restart with ``-r``. Folding it
+            # first raised ``AttributeError`` out of the run loop instead (#712), losing
+            # that guidance on exactly the long grouped fits worth resuming. The two
+            # other collection loops in this file type-check before folding for the same
+            # reason.
+            if isinstance(res, core.Result) and (self.config.config['smoothing'] > 1
+                                                 or self.config.config['parallelize_models'] > 1):
                 res = self._fold_group_result(res)
                 if res is None:
                     continue
