@@ -3,6 +3,7 @@
 Listed alphabetically by family name. Contributors known only by their GitHub
 handle are listed by handle, in the same sequence.
 
+- Julia Barrios
 - bpiper02
 - Ye Chen
 - Joshua Colvin
