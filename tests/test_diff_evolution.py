@@ -255,13 +255,38 @@ class TestDifferentialEvolutionPlumbing:
     d1s.data = d1s._read_file_lines(
         ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
 
-    def test_population_floored_to_three_per_island(self, tmp_path):
-        """Oracle (minimum population): DE needs >= 3 individuals per island, so a
-        too-small population is bumped to 3 per island, single- or multi-island."""
-        assert algorithms.DifferentialEvolution(_de_config(tmp_path, population_size=2,
-                                                           islands=1)).num_per_island == 3
-        assert algorithms.DifferentialEvolution(_de_config(tmp_path, population_size=2,
-                                                           islands=2)).num_per_island == 3
+    @pytest.mark.parametrize("strategy, floor", [
+        ('rand1', 3), ('best1', 3), ('all1', 3),
+        ('rand2', 5), ('best2', 5), ('all2', 5),
+    ])
+    def test_population_floored_to_strategy_minimum_per_island(self, tmp_path, strategy, floor):
+        """Oracle (minimum population, #708): DE needs the strategy's donor count per
+        island -- 3 for a '1' strategy, 5 for a '2' -- so a too-small population is
+        bumped up to that floor per island, single- or multi-island."""
+        assert algorithms.DifferentialEvolution(
+            _de_config(tmp_path, de_strategy=strategy, population_size=2,
+                       islands=1)).num_per_island == floor
+        assert algorithms.DifferentialEvolution(
+            _de_config(tmp_path, de_strategy=strategy, population_size=2,
+                       islands=2)).num_per_island == floor
+
+    def test_two_strategy_per_island_floor_catches_reasonable_population(self, tmp_path):
+        """Regression (#708, island variant): population_size=24 over 8 islands gives 3
+        per island -- above the old floor of 3, so no clamp fired and the printed
+        message misinformed -- yet a '2' strategy draws 5 donors per island. The 5 floor
+        now bumps it, so an island can complete a generation instead of crashing its
+        first proposal's donor draw."""
+        de = algorithms.DifferentialEvolution(
+            _de_config(tmp_path, de_strategy='rand2', population_size=24, islands=8))
+        assert de.num_per_island == 5
+        start = de.start_run()
+        island0 = [ps for ps in start if de.island_map[ps][0] == 0]
+        assert len(island0) == 5
+        out = None
+        for ps in island0:
+            res = algorithms.Result(ps, self.d1s, ps.name); res.score = 5.0
+            out = de.got_result(res)
+        assert isinstance(out, list) and len(out) == 5   # island 0's next generation
 
     def test_population_reduced_to_divide_islands(self, tmp_path):
         """Oracle (even split): num_per_island = floor(population_size/islands), so
@@ -397,10 +422,33 @@ class TestAsyncDifferentialEvolution:
     d1s.data = d1s._read_file_lines(
         ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
 
-    def test_population_floored_to_three(self, tmp_path):
-        """Oracle (minimum population): a population below 3 is bumped to 3."""
-        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, population_size=2))
-        assert ade.population_size == 3
+    @pytest.mark.parametrize("strategy, floor", [
+        ('rand1', 3), ('best1', 3), ('all1', 3),
+        ('rand2', 5), ('best2', 5), ('all2', 5),
+    ])
+    def test_population_floored_to_strategy_minimum(self, tmp_path, strategy, floor):
+        """Oracle (minimum population, #708): each candidate is built from a base plus
+        one donor pair ('1', 3 members) or two donor pairs ('2', 5 members), so a
+        population below that count is bumped up to it. The '2' floor of 5 is the fix:
+        before it, a '2' strategy with a population of 2, 3 or 4 crashed the first
+        replacement's donor draw (new_individual's rng.choice)."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_strategy=strategy, population_size=2))
+        assert ade.population_size == floor
+
+    def test_two_strategy_below_five_survives_first_result(self, tmp_path):
+        """Regression (#708): a '2' strategy with a population of 4 -- above the old
+        floor of 3, below the 5 donors it draws -- used to raise ValueError from
+        rng.choice on the first result. The clamp to 5 makes the whole population large
+        enough, so driving a result through got_result now spawns a replacement instead
+        of crashing."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, de_strategy='best2', population_size=4))
+        start = ade.start_run()
+        assert len(start) == 5
+        res = algorithms.Result(start[0], self.d1s, start[0].name); res.score = 1.0
+        out = ade.got_result(res)
+        assert isinstance(out, list) and len(out) == 1
 
     def test_reset_clears_state(self, tmp_path):
         """Oracle (reset invariant): reset() empties the population and fitness
