@@ -760,9 +760,17 @@ class TestLearnedMutationSettings:
     def test_ade_flushes_every_population_size_results(self, tmp_path):
         """Oracle (when ade learns): a population's worth of results is ade's generation.
         The initial results fold nothing (no records yet); the next population's worth,
-        all scoring below every base, are successes and are folded at the boundary."""
+        all scoring below every base, are successes and are folded at the boundary.
+
+        The seed is pinned because this oracle needs three DISTINCT candidates (#730):
+        ``_trial_settings`` is keyed by the candidate, and ``ade`` -- unlike island ``de``,
+        which perturbs a duplicate of one already in flight -- lets two candidates that
+        land on identical parameters share a key, which drops one of the records by
+        design (see ``_note_trial_result``). Unseeded, that happened for about one run in
+        two hundred and the generation then held two records rather than three."""
         ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1,
-                                                                       population_size=3))
+                                                                       population_size=3,
+                                                                       random_seed=1))
         start = ade.start_run()
         ade.fitnesses = [5.0, 3.0, 7.0]                      # every base finite from the start
         proposals = []
