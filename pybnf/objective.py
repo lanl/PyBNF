@@ -49,11 +49,15 @@ _PLACEHOLDER_IN_FORMULA = re.compile(r'(?:observable|noise)Parameter\d')
 # measured (#676, ADR-0131): over how many simulations of the best fit it is averaged, and
 # the uncertainty in that average. One and ``None`` for a deterministic model, whose single
 # simulation is exact; :func:`replicated_information_criteria` fills them for a stochastic one.
+# ``replicates_requested`` is how many simulations were run to get there, which is larger
+# than ``replicates`` when some of them produced nothing usable (#741). It defaults to one
+# beside ``replicates``, so the plain criteria of an exact simulation describe one run that
+# was asked for and one that delivered.
 InformationCriteria = namedtuple(
     'InformationCriteria',
     ['k', 'n', 'log_likelihood', 'aic', 'bic', 'aicc',
-     'replicates', 'log_likelihood_standard_error'],
-    defaults=(1, None))
+     'replicates', 'log_likelihood_standard_error', 'replicates_requested'],
+    defaults=(1, None, 1))
 
 
 def information_criteria(log_likelihood, k, n):
@@ -81,7 +85,7 @@ def information_criteria(log_likelihood, k, n):
                                aic=aic, bic=bic, aicc=aicc)
 
 
-def replicated_information_criteria(log_likelihoods, k, n):
+def replicated_information_criteria(log_likelihoods, k, n, requested=None):
     """AIC / BIC / AICc from several log-likelihoods of ONE parameter set, each from its
     own simulation, with the standard error of their mean (#676, ADR-0131).
 
@@ -99,11 +103,16 @@ def replicated_information_criteria(log_likelihoods, k, n):
     :param log_likelihoods: one full normalized log-likelihood per simulation; at least one.
     :param k: free-parameter count, as for :func:`information_criteria`.
     :param n: scored point count, the same for every simulation.
+    :param requested: how many simulations were run to produce those values. Larger than
+        ``len(log_likelihoods)`` when some of them failed, scored nothing, or scored a
+        different number of points; the report says so rather than leaving the reader to
+        notice that the count is below what the fit asked for (#741). Defaults to the number
+        of values, which is the truth whenever nothing was lost.
     :returns: an :class:`InformationCriteria` whose ``log_likelihood`` is the mean,
-        ``replicates`` the number of values, and ``log_likelihood_standard_error`` the
-        standard error of that mean, or ``None`` when there is a single value. AIC, BIC
-        and AICc each carry twice that standard error, since each is ``-2 lnL`` plus a
-        constant.
+        ``replicates`` the number of values, ``replicates_requested`` the number of
+        simulations behind them, and ``log_likelihood_standard_error`` the standard error of
+        that mean, or ``None`` when there is a single value. AIC, BIC and AICc each carry
+        twice that standard error, since each is ``-2 lnL`` plus a constant.
     """
     values = [float(v) for v in log_likelihoods]
     if not values:
@@ -111,7 +120,8 @@ def replicated_information_criteria(log_likelihoods, k, n):
     mean = fmean(values)
     se = stdev(values) / math.sqrt(len(values)) if len(values) >= 2 else None
     return information_criteria(mean, k, n)._replace(
-        replicates=len(values), log_likelihood_standard_error=se)
+        replicates=len(values), log_likelihood_standard_error=se,
+        replicates_requested=len(values) if requested is None else int(requested))
 
 
 def likelihood_information_criteria(objective, sim_data_dict, exp_data_dict, pset, k):

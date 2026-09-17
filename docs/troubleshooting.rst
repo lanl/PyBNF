@@ -276,9 +276,15 @@ to come from one more simulation of the best fit, which for a stochastic model i
 draw, so its ``log_likelihood`` and the AIC built on it moved from run to run and disagreed
 with the averaged objective value above. The best fit is now simulated
 ``best_fit_replicates`` times for it too, at fresh seeds, and ``log_likelihood`` is the mean
-over those runs. The file carries a ``replicates`` line saying how many runs that was and a
-``log_likelihood_standard_error`` line saying how far they spread; AIC, BIC and AICc each
-carry twice that. Two models whose AIC values differ by less than it have not been told
+over those runs. The file carries a ``replicates_requested`` line saying how many
+simulations were run, a ``replicates`` line saying how many of them produced a usable
+log-likelihood and so went into the mean, and a ``log_likelihood_standard_error`` line
+saying how far those spread; AIC, BIC and AICc each carry twice that. The two counts differ
+when a simulation fails, scores nothing, or scores a different number of points from the
+rest, and the file then says how many runs produced nothing and that the mean is optimistic
+by however much they would have pulled it down. That matters most where these criteria are
+used: comparing two models means comparing two averages, and one taken over three runs of
+ten is not the same measurement as one taken over three of three. Two models whose AIC values differ by less than it have not been told
 apart, so raise ``best_fit_replicates`` if you need to separate them. The periodic checkpoint
 ``information_criteria_backup.txt`` stays a single simulation, and says so in the same line.
 

@@ -168,4 +168,8 @@ reported as the first.
   the one pinned parameter set. That is an estimate of a single parameter set rather than a
   ranking, so the selection argument above does not apply to it in the same way; with the
   winner now required to be reliable, the parameter set it describes is one whose runs mostly
-  work. Left as it is.
+  work. The averaging is left as it is. What this ADR missed is that the sibling file did not
+  even *say* it had dropped anything, so the two files stopped reporting the same kind of
+  measurement the same way the moment this change landed; #741 closed that gap by reporting
+  the count of runs made beside the count used. The threshold argument above still does not
+  transfer, and no minimum-success rule was added there.

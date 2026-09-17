@@ -1706,7 +1706,7 @@ Algorithm Options
 
   A candidate has to produce a usable objective value in more than half of those runs to be eligible to win. A failed or non-finite run is a bad outcome rather than a missing measurement, so averaging only the runs that worked would hand the answer back to whichever parameter set got a lucky simulation. The table marks each candidate ``confirmed`` or not and shows how many runs each average came from.
 
-  The same number of runs goes into ``Results/information_criteria.txt``: the winning parameter set is simulated ``best_fit_replicates`` more times at fresh seeds, and the log-likelihood behind its AIC, BIC and AICc is the mean over those runs, with its standard error reported beside it. With this key at 0 or 1 the criteria come from a single simulation, as they always did.
+  The same number of runs goes into ``Results/information_criteria.txt``: the winning parameter set is simulated ``best_fit_replicates`` more times at fresh seeds, and the log-likelihood behind its AIC, BIC and AICc is the mean over those runs, with its standard error reported beside it. That file reports both how many simulations were run and how many produced a usable log-likelihood, and says so when the two differ, since the mean is then over the runs that worked and is optimistic. With this key at 0 or 1 the criteria come from a single simulation, as they always did.
 
   The cost is ``best_fit_candidates`` times ``best_fit_replicates`` simulations after the search has ended, all submitted at once, plus ``best_fit_replicates`` more for the information criteria when the objective is a likelihood, and times ``smoothing`` again when that is also set. Ignored when no model is stochastic.
 
