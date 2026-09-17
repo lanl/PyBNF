@@ -71,9 +71,11 @@ import numpy as np
 from .. import edition
 from ..data import Data, observed_mean
 from ..objective import _OBJECTIVE_DESUGAR
+from ..parameter_record import free_parameter_from_record
 from ..parse import ploop
 from ..printing import PybnfError
-from ..pset import FreeParameter, OutOfBoundsException
+from ..priors import PRIOR_KEYWORD_MAP
+from ..pset import FreeParameter, INITIALIZATION_PRIOR, OutOfBoundsException
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
@@ -116,8 +118,18 @@ _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {
     'laplace': 'laplace'}
 
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
-# emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
+# emits). Only ``uniform_var`` exports in chunk 1; the rest raise. The new-era
+# ``parameter:`` record is the other declaration spelling and keys on 'parameter' instead
+# (ADR-0043); it resolves to one of these same keywords once built (#733).
 _VAR_DECL = re.compile(r'(_var$|^var$|^logvar$)')
+
+# The keywords carrying no prior at all (``var``/``logvar``/``lnvar``) -- a flat improper
+# prior, which is not a PEtab probability family. Derived from the registry rather than
+# listed, so a family added there cannot quietly land in the wrong arm of the refusal
+# message; ``has_prior`` is a class attribute, so the family class answers it directly.
+_NO_PRIOR_KEYWORDS = frozenset(
+    keyword for keyword, (family, _scale) in PRIOR_KEYWORD_MAP.items()
+    if not family.has_prior)
 
 # A legacy ``<name>__FREE`` bind-by-id marker. New-era BNGL binds free parameters by id
 # (ADR-0034), so a model carrying this token was not modernized; the exporter refuses it
@@ -1393,11 +1405,20 @@ def _read_conf_dict(conf_path):
 
 
 def _free_parameters_from_conf(conf):
-    """Build ``FreeParameter`` objects from the config's ``(keyword, name)`` entries.
+    """Build ``FreeParameter`` objects from the config's free-parameter declarations.
 
-    Each one carries the fit's declared start point for that parameter, if it has one, on
-    ``.value`` -- the source :func:`~pybnf.petab.parameters.petab_parameter_row` writes as
-    the row's ``nominalValue``, closing the export half of the #583 round trip (#719).
+    Reads **both** spellings, in declaration order (ADR-0043): the legacy positional
+    ``<family>_var = <id> p1 [p2]`` line and the new-era ``parameter:`` record. Only the
+    first was read until #733, so an edition-2 record was skipped rather than refused and
+    the whole free parameter vanished from the exported problem with no diagnostic --
+    including the truncated priors the *importer* emits as records, the one grammar
+    carrying ``lower``/``upper``.
+
+    Each parameter carries the fit's declared start point, if it has one, on ``.value`` --
+    the source :func:`~pybnf.petab.parameters.petab_parameter_row` writes as the row's
+    ``nominalValue`` (#719). Both spellings of a start point are honoured here, the way
+    ``Configuration._load_start_point`` merges them: a record's ``initial_value:`` field
+    and a ``start_point =`` line beside it.
     """
     start_points = _start_points_from_conf(conf)
     free_params = []
@@ -1406,40 +1427,17 @@ def _free_parameters_from_conf(conf):
                 and isinstance(key[0], str) and isinstance(key[1], str)):
             continue
         keyword, name = key
-        if not _VAR_DECL.search(keyword):
+        if keyword == 'parameter':
+            free_param = _free_parameter_from_conf_record(name, value)
+        elif _VAR_DECL.search(keyword):
+            free_param = _free_parameter_from_var_line(name, keyword, value)
+        else:
             continue
-        if keyword not in EXPORTABLE_PRIOR_KEYWORDS:
-            raise NotImplementedError(
-                f"Free parameter '{name}' is a '{keyword}'; the exporter writes the "
-                f"PEtab prior families {sorted(EXPORTABLE_PRIOR_KEYWORDS)}. The "
-                f"no-prior 'var'/'logvar' point-start keywords have no PEtab prior "
-                f"representation (a flat improper prior is not a PEtab probability "
-                f"family; ADR-0025, #423).")
-        # p1/p2 are the family's governing values (bounds for the Uniform families,
-        # loc/scale or shape/scale for the two-parameter location families); a 3rd token
-        # is the native ``bounded`` flag, inert for the location families. A one-parameter
-        # unbounded family (exponential/chisquare/rayleigh, #417) carries only p1.
-        p2 = float(value[1]) if len(value) >= 2 else None
-        start = start_points.pop(name, None)
-        try:
-            free_params.append(
-                FreeParameter(name, keyword, float(value[0]), p2, value=start))
-        except OutOfBoundsException:
-            # A start point outside the parameter's own box. PEtab cannot express one
-            # either (a nominalValue outside lowerBound/upperBound is what the importer
-            # refuses on the way back in), and the bare OutOfBoundsException subclasses
-            # Exception, so pybnf.main would report it as "an unknown error ... please
-            # report this bug" on a config the user wrote (#583).
-            raise PybnfError(
-                f"start point out of bounds for '{name}'",
-                f"The config starts '{name}' at {start}, which is outside the box "
-                f"[{value[0]}, {p2}] its own declaration gives it. A start point is "
-                f"refused rather than moved.",
-                "Correct the start point, or widen the parameter's bounds.")
+        free_params.append(_with_start_point(free_param, start_points))
     if not free_params:
         raise PybnfError(
-            "No exportable free parameters found in the config (expected one of "
-            f"{sorted(EXPORTABLE_PRIOR_KEYWORDS)}).")
+            "No exportable free parameters found in the config (expected a 'parameter:' "
+            f"record or one of {sorted(EXPORTABLE_PRIOR_KEYWORDS)}).")
     if start_points:
         # A start point for a name no exportable free parameter claims. Silently dropping
         # it is the failure this whole path exists to remove, and config.py refuses the
@@ -1454,13 +1452,113 @@ def _free_parameters_from_conf(conf):
     return free_params
 
 
+def _free_parameter_from_var_line(name, keyword, value):
+    """The legacy positional ``<family>_var = <id> p1 [p2] [b|u]`` declaration."""
+    _require_exportable_prior(name, keyword)
+    # p1/p2 are the family's governing values (bounds for the Uniform families,
+    # loc/scale or shape/scale for the two-parameter location families); a 3rd token
+    # is the native ``bounded`` flag, inert for the location families. A one-parameter
+    # unbounded family (exponential/chisquare/rayleigh, #417) carries only p1.
+    p2 = float(value[1]) if len(value) >= 2 else None
+    return FreeParameter(name, keyword, float(value[0]), p2)
+
+
+def _free_parameter_from_conf_record(name, fields):
+    """A new-era ``parameter:`` record (ADR-0043) -> its ``FreeParameter`` (#733).
+
+    Built through :func:`~pybnf.parameter_record.free_parameter_from_record`, the same
+    mapping the fitter loads a job with, so the exported row describes the parameter the
+    fit would actually search rather than a second reading of the grammar. The record
+    resolves to one of the ordinary ``*_var`` keywords, so the exportability gate below is
+    the one the positional line goes through -- a record's boundaries are the same
+    boundaries, reached by a different spelling.
+
+    ``initialization_distribution`` is fixed at ``prior`` rather than read from the config:
+    it selects where an algorithm draws its start points, which is run recipe rather than
+    problem, has no home in a PEtab table, and is what the positional line above defaults
+    to.
+    """
+    try:
+        free_param = free_parameter_from_record(name, fields, INITIALIZATION_PRIOR)
+    except OutOfBoundsException:
+        # An out-of-box initial_value, as at the Configuration loader's own call site: the
+        # bare OutOfBoundsException subclasses Exception, so pybnf.main reports it as "an
+        # unknown error ... please report this bug" on a config the user wrote (#583).
+        raise PybnfError(
+            f"start point out of bounds for '{name}'",
+            f"Parameter '{name}' declares an initial_value outside its own lower/upper "
+            f"bounds. A start point is refused rather than moved into the box.",
+            "Correct the initial_value, or widen the parameter's bounds.")
+    _require_exportable_prior(name, free_param.type)
+    return free_param
+
+
+def _require_exportable_prior(name, keyword):
+    """Refuse a free parameter whose prior family PEtab v2 cannot state (ADR-0025, #423).
+
+    Keyed on the ``*_var`` keyword, which both declaration spellings resolve to, so a
+    ``parameter:`` record hits the identical boundary as the positional line that builds
+    the same parameter.
+    """
+    if keyword in EXPORTABLE_PRIOR_KEYWORDS:
+        return
+    if keyword in _NO_PRIOR_KEYWORDS:
+        raise NotImplementedError(
+            f"Free parameter '{name}' is a no-prior point start (a '{keyword}' line, or a "
+            f"'parameter:' record with an 'initial_value:' but no 'prior:' and no "
+            f"'lower:'/'upper:' box). A flat improper prior is not a PEtab probability "
+            f"family, and a PEtab estimated parameter needs bounds or a prior. Give it a "
+            f"prior or a box; the exporter writes {sorted(EXPORTABLE_PRIOR_KEYWORDS)} "
+            f"(ADR-0025, #423).")
+    raise NotImplementedError(
+        f"Free parameter '{name}' is a '{keyword}'; the exporter writes the PEtab prior "
+        f"families {sorted(EXPORTABLE_PRIOR_KEYWORDS)}, and PEtab v2 has no "
+        f"priorDistribution spelling for this one -- it defines no log- form for "
+        f"cauchy/gamma/exponential/chisquare/rayleigh, no natural-log ('ln') sampling "
+        f"scale, and no three-parameter family such as student_t (ADR-0025, #423).")
+
+
+def _with_start_point(free_param, start_points):
+    """Attach this parameter's ``start_point =`` line, if the config declares one (#719).
+
+    The merge rule is ``Configuration._load_start_point``'s (ADR-0117): a ``parameter:``
+    record's ``initial_value:`` and a ``start_point`` line are two spellings of one fact,
+    so they may both be present when they agree and are refused when they disagree --
+    silently preferring one would reintroduce the class of failure the start-point work
+    exists to remove.
+    """
+    if free_param.name not in start_points:
+        return free_param
+    start = start_points.pop(free_param.name)
+    if free_param.value is not None:
+        if free_param.value != start:
+            raise PybnfError(
+                f"contradictory start point for '{free_param.name}'",
+                f"Parameter '{free_param.name}' is given two different start points: "
+                f"initial_value: {free_param.value} on its 'parameter:' record, and "
+                f"'start_point = {free_param.name} {start}'. Delete one of them.")
+        return free_param
+    try:
+        return free_param.set_value(start, reflect=False)
+    except OutOfBoundsException:
+        # A start point outside the parameter's own box. PEtab cannot express one either
+        # (a nominalValue outside lowerBound/upperBound is what the importer refuses on
+        # the way back in), and the bare OutOfBoundsException would reach the user as "an
+        # unknown error ... please report this bug" (#583).
+        raise PybnfError(
+            f"start point out of bounds for '{free_param.name}'",
+            f"The config starts '{free_param.name}' at {start}, which is outside the box "
+            f"[{free_param.lower_bound}, {free_param.upper_bound}] its own declaration "
+            f"gives it. A start point is refused rather than moved.",
+            "Correct the start point, or widen the parameter's bounds.")
+
+
 def _start_points_from_conf(conf):
     """``{name: theta}`` for every ``start_point = <parameter> <value>`` line (#583).
 
-    The ``start_point`` half of the two spellings ``Configuration._load_start_point``
-    merges. The other, a ``parameter:`` record's ``initial_value:`` field, is not read
-    here because the exporter does not build free parameters from ``parameter:`` records
-    at all -- a separate gap (#733), not a second place to populate.
+    One of the two spellings ``Configuration._load_start_point`` merges; the other, a
+    ``parameter:`` record's ``initial_value:`` field, arrives on the built
+    ``FreeParameter.value`` and is reconciled with this one in :func:`_with_start_point`.
     """
     return {key[1]: float(value) for key, value in conf.items()
             if isinstance(key, tuple) and len(key) == 2 and key[0] == 'start_point'}

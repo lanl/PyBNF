@@ -64,7 +64,11 @@ model) in ``out_dir``::
   export_job('fit.conf', 'exported/')
 
 The export is fit-preserving: re-importing the emitted problem reproduces the same
-free parameters, priors, noise models, and data.
+free parameters, priors, noise models, and data. Both free-parameter spellings are
+read — the positional ``<family>_var`` line and the edition-2 ``parameter:`` record —
+so a truncated prior, which only the record can state, exports and round-trips like any
+other. Anything PEtab v2 cannot express raises ``NotImplementedError`` naming the
+boundary; nothing is dropped quietly.
 
 .. _petab_bngl_loader:
 

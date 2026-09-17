@@ -75,6 +75,11 @@ FIXEDSIGMA_DIR = FIXTURE_DIR / 'fixedsigma_v2'
 MULTISIGMA_DIR = FIXTURE_DIR / 'multisigma_v2'
 PREDSIGMA_DIR = FIXTURE_DIR / 'predsigma_v2'
 
+# The tutorial's own PEtab priors problem (lesson 15): three parameters whose finite bounds
+# TRUNCATE an unbounded family, which the importer can only write as `parameter:` records --
+# the shape the exporter used to drop on the floor (#733).
+PRIORS_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'tutorial' / '15_petab_priors'
+
 
 def _tsv_rows(path):
     """Read a TSV into a list of dict rows (a tiny stdlib reader for assertions)."""
@@ -772,13 +777,22 @@ class TestExportNewNoiseShapesRoundTrip:
 # nominalValue column -- so a round trip silently moved the fit back to a sampled draw.
 # ---------------------------------------------------------------------------
 
-def _demo_job(tmp_path, extra=''):
-    """A copy of the demo job whose conf has ``extra`` appended (a start_point line)."""
+def _demo_job(tmp_path, extra='', replace=None):
+    """A copy of the demo job whose conf has ``extra`` appended (a start_point line).
+
+    ``replace`` is an optional ``(old, new)`` pair applied to the conf text first, used to
+    swap a positional ``uniform_var`` line for the ``parameter:`` record spelling of it.
+    """
     import shutil
     job = tmp_path / 'job'
     shutil.copytree(DEMO_DIR, job)
     conf = job / DEMO_CONF.name
-    conf.write_text(conf.read_text() + extra)
+    text = conf.read_text()
+    if replace is not None:
+        old_line, new_line = replace
+        assert old_line in text                  # a silent no-op would hollow out the test
+        text = text.replace(old_line, new_line)
+    conf.write_text(text + extra)
     return conf
 
 
@@ -907,6 +921,174 @@ class TestStartPointRoundTrip:
         cfg = config_mod.Configuration(
             ploop((imp2 / 'imported.conf').read_text().splitlines(keepends=True)))
         assert cfg.start_point == {'v1': 0.5, 'v2': 1.0, 'v3': 3.0}
+
+
+
+# ---------------------------------------------------------------------------
+# The edition-2 `parameter:` record is a free-parameter declaration the exporter reads
+# (#733). It used to match no branch of the `(keyword, name)` filter, so it was skipped
+# rather than refused and the whole parameter vanished from the exported problem -- taking
+# every TRUNCATED prior with it, since a record is the only grammar carrying lower/upper
+# and is exactly what the importer emits for one (ADR-0020/0043/0047).
+# ---------------------------------------------------------------------------
+
+_V1_VAR = 'uniform_var = v1 0 10'
+
+
+class TestExportParameterRecord:
+
+    def test_record_exports_the_same_row_as_the_positional_line(self, tmp_path):
+        # The two-adapter proof on the declaration grammars: one parameter written both
+        # ways must reach PEtab as the same row. Before #733 the record's row was simply
+        # absent from the table, with no warning and no exception.
+        export_job(DEMO_CONF, tmp_path / 'positional')
+        export_job(_demo_job(tmp_path, replace=(
+            _V1_VAR, 'parameter: v1, prior: uniform, lower: 0, upper: 10')),
+            tmp_path / 'record')
+        assert (tmp_path / 'record' / 'parameters.tsv').read_text() == \
+            (tmp_path / 'positional' / 'parameters.tsv').read_text()
+
+    def test_record_only_conf_exports_every_parameter(self, tmp_path):
+        # A conf written entirely on the edition-2 surface used to export nothing at all:
+        # every record was skipped, so `free_params` came back empty and the user got
+        # "No exportable free parameters found", naming only the *_var keywords -- pointing
+        # away from the syntax the edition-2 docs teach.
+        conf = _demo_job(tmp_path, replace=(
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10',
+            'parameter: v1, prior: uniform, lower: 0, upper: 10\n'
+            'parameter: v2, prior: uniform, lower: 0, upper: 10\n'
+            'parameter: v3, prior: uniform, lower: 0, upper: 10'))
+        export_job(conf, tmp_path / 'out')
+        rows = _tsv_rows(tmp_path / 'out' / 'parameters.tsv')
+        assert {r['parameterId'] for r in rows} == {'v1', 'v2', 'v3'}
+        assert all((r['lowerBound'], r['upperBound']) == ('0', '10') for r in rows)
+
+    def test_records_and_var_lines_keep_declaration_order(self, tmp_path):
+        # The two spellings may be mixed, and the table follows the conf's own order --
+        # the record is read in the same pass, not appended after.
+        conf = _demo_job(tmp_path, replace=(
+            'uniform_var = v2 0 10',
+            'parameter: v2, prior: uniform, lower: 0, upper: 10'))
+        export_job(conf, tmp_path / 'out')
+        assert [r['parameterId'] for r in _tsv_rows(tmp_path / 'out' / 'parameters.tsv')] == \
+            ['v1', 'v2', 'v3']
+
+    # -- truncated priors, the shape only a record can carry -------------------------
+
+    def test_truncated_priors_survive_import_export_reimport(self, tmp_path):
+        # The tutorial's own PEtab priors problem: kon (log-normal), koff (gamma) and R0
+        # (normal) all carry finite bounds that TRUNCATE an unbounded family, so the
+        # importer writes each as a `parameter:` record. Before #733 the export kept only
+        # L0 -- the one plain uniform_var -- and silently dropped the other three, which is
+        # three quarters of a published problem.
+        from pybnf.petab.import_ import import_job
+        imp1, pet2, imp2 = tmp_path / 'imp1', tmp_path / 'pet2', tmp_path / 'imp2'
+        import_job(PRIORS_DIR / 'problem.yaml', imp1)
+        export_job(imp1 / 'imported.conf', pet2)
+        import_job(pet2 / 'problem.yaml', imp2)
+
+        rows = {r['parameterId']: r for r in _tsv_rows(pet2 / 'parameters.tsv')}
+        assert set(rows) == {'kon', 'koff', 'R0', 'L0'}
+        assert rows['R0']['priorDistribution'] == 'normal'
+        assert (rows['R0']['lowerBound'], rows['R0']['upperBound']) == ('1', '100')
+        assert rows['koff']['priorDistribution'] == 'gamma'
+        assert rows['L0']['priorDistribution'] == ''       # a plain box needs no prior
+
+        # and the declarations come back identical, record grammar included
+        def declarations(conf):
+            return [line.strip() for line in conf.read_text().splitlines()
+                    if line.startswith(('parameter:', 'uniform_var', 'loguniform_var'))]
+        assert declarations(imp2 / 'imported.conf') == declarations(imp1 / 'imported.conf')
+        assert sum(d.startswith('parameter:') for d in declarations(imp1 / 'imported.conf')) == 3
+
+    def test_reexported_truncated_prior_problem_is_petab_valid(self, tmp_path):
+        # The external oracle on a shape the exporter could not previously emit at all.
+        pytest.importorskip('petab.v2')
+        from pybnf.petab.import_ import import_job
+        import_job(PRIORS_DIR / 'problem.yaml', tmp_path / 'imp1')
+        export_job(tmp_path / 'imp1' / 'imported.conf', tmp_path / 'pet2')
+        # the count first: a table that dropped three of the four parameters is still
+        # perfectly valid PEtab, so validity alone is not the guard here
+        assert len(_tsv_rows(tmp_path / 'pet2' / 'parameters.tsv')) == 4
+        assert _petab_validation_errors(tmp_path / 'pet2' / 'problem.yaml') == []
+
+    def test_half_bounded_truncation_writes_an_explicit_infinity(self, tmp_path):
+        # ADR-0047: one finite wall and an open side, the ub->inf limit of the two-sided
+        # fold. It reaches PEtab as a finite lowerBound and an infinite upperBound.
+        export_job(_demo_job(tmp_path, replace=(
+            _V1_VAR, 'parameter: v1, prior: normal, mean: 1, sd: 2, lower: 0, upper: inf')),
+            tmp_path / 'out')
+        row = {r['parameterId']: r for r in _tsv_rows(tmp_path / 'out' / 'parameters.tsv')}['v1']
+        assert (row['lowerBound'], row['upperBound']) == ('0', 'inf')
+        assert (row['priorDistribution'], row['priorParameters']) == ('normal', '1;2')
+
+    # -- the start point, through the record spelling (#719) --------------------------
+
+    def test_record_initial_value_becomes_a_nominal_value(self, tmp_path):
+        # initial_value: is the record's spelling of the start point, so it lands in the
+        # same nominalValue cell a `start_point` line does.
+        export_job(_demo_job(tmp_path, replace=(
+            _V1_VAR,
+            'parameter: v1, prior: uniform, lower: 0, upper: 10, initial_value: 0.7')),
+            tmp_path / 'out')
+        nominal = {r['parameterId']: r['nominalValue']
+                   for r in _tsv_rows(tmp_path / 'out' / 'parameters.tsv')}
+        assert nominal == {'v1': '0.7', 'v2': '', 'v3': ''}
+
+    def test_agreeing_start_point_spellings_are_accepted(self, tmp_path):
+        # Both spellings for one parameter is fine when they say the same thing -- a record
+        # naming its own start plus a start_point line restating it (ADR-0117).
+        export_job(_demo_job(
+            tmp_path, extra='\nstart_point = v1 0.7\n', replace=(
+                _V1_VAR,
+                'parameter: v1, prior: uniform, lower: 0, upper: 10, initial_value: 0.7')),
+            tmp_path / 'out')
+        row = {r['parameterId']: r for r in _tsv_rows(tmp_path / 'out' / 'parameters.tsv')}
+        assert row['v1']['nominalValue'] == '0.7'
+
+    def test_contradictory_start_point_spellings_are_refused(self, tmp_path):
+        # Disagreement has no defensible winner, so it is refused rather than resolved --
+        # the rule Configuration._load_start_point applies when the job is run.
+        conf = _demo_job(tmp_path, extra='\nstart_point = v1 0.9\n', replace=(
+            _V1_VAR,
+            'parameter: v1, prior: uniform, lower: 0, upper: 10, initial_value: 0.7'))
+        with pytest.raises(PybnfError, match='contradictory start point'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_out_of_box_initial_value_is_refused(self, tmp_path):
+        # As a PybnfError, not the bare OutOfBoundsException the FreeParameter constructor
+        # raises -- which pybnf.main reports as "an unknown error ... please report this
+        # bug" on a config the user wrote (#583).
+        conf = _demo_job(tmp_path, replace=(
+            _V1_VAR,
+            'parameter: v1, prior: uniform, lower: 0, upper: 10, initial_value: 42'))
+        with pytest.raises(PybnfError, match='out of bounds'):
+            export_job(conf, tmp_path / 'out')
+
+    # -- the boundaries a record reaches by a different spelling ----------------------
+
+    def test_no_prior_record_is_refused(self, tmp_path):
+        # A record with no prior and no box is the edition-2 spelling of `var` -- a flat
+        # improper prior, which is not a PEtab probability family. Refused in code, which
+        # is the exporter's contract for everything it cannot write.
+        conf = _demo_job(tmp_path, replace=(_V1_VAR, 'parameter: v1, initial_value: 3'))
+        with pytest.raises(NotImplementedError, match='no-prior point start'):
+            export_job(conf, tmp_path / 'out')
+
+    @pytest.mark.parametrize('record,built', [
+        ('parameter: v1, prior: normal, parameter_scale: ln, mean: 0, sd: 1',
+         'lnnormal_var'),                        # PEtab has no natural-log sampling scale
+        ('parameter: v1, prior: student_t, df: 3, location: 1, scale: 2',
+         'student_t_var'),                       # no three-parameter PEtab family
+        ('parameter: v1, prior: cauchy, parameter_scale: log10, location: 0, scale: 1',
+         'logcauchy_var'),                       # PEtab defines no log- form for cauchy
+    ])
+    def test_petab_inexpressible_record_prior_is_refused(self, tmp_path, record, built):
+        # A record resolves to an ordinary *_var keyword, so it meets the same boundary the
+        # positional line does -- and the message names the keyword it actually built.
+        conf = _demo_job(tmp_path, replace=(_V1_VAR, record))
+        with pytest.raises(NotImplementedError, match=built):
+            export_job(conf, tmp_path / 'out')
 
 
 # ---------------------------------------------------------------------------
