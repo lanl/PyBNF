@@ -230,6 +230,14 @@ class DifferentialEvolutionBase(Algorithm):
         if self.strategy not in options:
             raise PybnfError('Invalid differential evolution strategy "{}". Options are: {}'.format(self.strategy, ','.join(options)))
 
+        # How many distinct members each candidate is built from, which is the floor on
+        # the population (per island): the '1' strategies draw a base and one donor pair
+        # (3), the '2' strategies a base and two donor pairs (5). new_individual draws
+        # exactly this many with replace=False, so a smaller population makes that draw
+        # raise (#708); the subclasses clamp population_size up to it and each is the
+        # single source of truth for the other.
+        self.min_population = 3 if '1' in self.strategy else 5
+
         # The learned mutation settings (#667, ADR-0142): whether to learn them, how much
         # to remember, one success history per island (``ade``: one), and the settings of
         # every candidate still in flight, keyed by the candidate, since ``ade`` returns
@@ -283,12 +291,11 @@ class DifferentialEvolutionBase(Algorithm):
         """
 
         # Choose a starting parameter set (either a random one or the base_index specified)
-        # and others to cross over (always random)
-
-        if '1' in self.strategy:
-            pickn = 3
-        else:
-            pickn = 5
+        # and others to cross over (always random). The number of distinct members a
+        # candidate needs -- a base plus one donor pair ('1') or two ('2') -- is the same
+        # count the population is floored at (see min_population), so the subclasses
+        # guarantee this draw has enough to draw from (#708).
+        pickn = self.min_population
 
         # Choose pickn random unique indices, or if base_index was given, choose base_index followed by pickn-1 unique
         # indices
@@ -611,16 +618,18 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
 
         self.num_islands = config.config['islands']
         self.num_per_island = int(config.config['population_size'] / self.num_islands)
-        if self.num_per_island < 3:
-            self.num_per_island = 3
+        if self.num_per_island < self.min_population:
+            self.num_per_island = self.min_population
             if self.num_islands == 1:
-                print1('Differential evolution requires a population size of at least 3. Increased the population size '
-                       'to 3.')
-                logger.warning('Increased population size to minimum allowed value of 3')
+                print1('Differential evolution with de_strategy "%s" requires a population size of at least %i. '
+                       'Increased the population size to %i.'
+                       % (self.strategy, self.min_population, self.min_population))
+                logger.warning('Increased population size to minimum allowed value of %i' % self.min_population)
             else:
-                print1('Island-based differential evolution requires a population size of at least 3 times '
-                       'the number of islands. Increased the population size to %i.' % (3*self.num_islands))
-                logger.warning('Increased population size to minimum allowed value of 3 per island')
+                print1('Island-based differential evolution with de_strategy "%s" requires a population size of at '
+                       'least %i times the number of islands. Increased the population size to %i.'
+                       % (self.strategy, self.min_population, self.min_population * self.num_islands))
+                logger.warning('Increased population size to minimum allowed value of %i per island' % self.min_population)
         if config.config['population_size'] % config.config['islands'] != 0:
             logger.warning('Reduced population_size to %i to evenly distribute it over %i islands' %
                             (self.num_islands * self.num_per_island, self.num_islands))
@@ -901,12 +910,13 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
         super().__init__(config)
 
         self.population_size = config.config['population_size']
-        if self.population_size < 3:
-            self.population_size = 3
-            self.config.config['population_size'] = 3
-            print1('Asynchronous differential evolution requires a population size of at least 3. '
-                   'Increasing the population size to 3.')
-            logger.warning('Increased population_size to the minimum allowed value of 3')
+        if self.population_size < self.min_population:
+            self.population_size = self.min_population
+            self.config.config['population_size'] = self.min_population
+            print1('Asynchronous differential evolution with de_strategy "%s" requires a population size of at least '
+                   '%i. Increasing the population size to %i.'
+                   % (self.strategy, self.min_population, self.min_population))
+            logger.warning('Increased population_size to the minimum allowed value of %i' % self.min_population)
 
         self.sims_completed = 0
         self.individuals = []  # List of individuals
