@@ -450,25 +450,39 @@ def _petab_prior_row(fp, parameter_id, dist, stem, is_log, nominal):
 
 
 _PARAMETER_COLUMNS = ['parameterId', 'estimate', 'lowerBound', 'upperBound']
+_NOMINAL_COLUMN = 'nominalValue'
 _PRIOR_COLUMNS = ['priorDistribution', 'priorParameters']
 
 
 def write_parameter_table(rows, path):
     """Write parameter ``rows`` to ``path`` as a PEtab v2 ``parameters.tsv``.
 
-    Always writes ``parameterId``/``estimate``/``lowerBound``/``upperBound``. The
-    prior columns (``priorDistribution``/``priorParameters``) are appended only when
-    some row carries an explicit prior, so a plain ``uniform_var`` job keeps the
-    four-column chunk-1 shape (PEtab v2 defaults a prior-less estimated parameter to
-    uniform-over-bounds). An unbounded location-scale family writes blank bounds;
-    ``nominalValue`` is optional in PEtab v2 and omitted while unused.
+    Always writes ``parameterId``/``estimate``/``lowerBound``/``upperBound``. The two
+    optional chunks are appended only when some row needs them, so a plain
+    ``uniform_var`` job with no declared start keeps the four-column chunk-1 shape:
+
+    * ``nominalValue`` -- the fit's start point, the reverse of the importer reading it
+      onto ``FreeParameter.value`` and emitting a ``start_point`` line (#583). It was
+      omitted while nothing produced it; since #583 it is the point the job starts from,
+      and dropping it silently moved a re-imported fit back to a sampled draw (#719). A
+      row without one writes a blank cell (PEtab v2 leaves ``nominalValue`` optional for
+      an estimated parameter).
+    * ``priorDistribution``/``priorParameters`` -- an explicit prior (PEtab v2 defaults a
+      prior-less estimated parameter to uniform-over-bounds).
+
+    An unbounded location-scale family writes blank bounds.
     """
+    has_nominal = any(r.nominal_value is not None for r in rows)
     has_prior = any(r.prior_distribution is not None for r in rows)
-    header = _PARAMETER_COLUMNS + (_PRIOR_COLUMNS if has_prior else [])
+    header = (_PARAMETER_COLUMNS
+              + ([_NOMINAL_COLUMN] if has_nominal else [])
+              + (_PRIOR_COLUMNS if has_prior else []))
     records = []
     for r in rows:
         rec = [r.parameter_id, 'true' if r.estimate else 'false',
                num(r.lower_bound), num(r.upper_bound)]
+        if has_nominal:
+            rec.append(num(r.nominal_value))
         if has_prior:
             rec += [r.prior_distribution or '',
                     ';'.join(num(p) for p in r.prior_parameters)]

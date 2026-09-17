@@ -252,6 +252,23 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **The PEtab export writes the fit's start point, so a round trip no longer moves the fit
+  back to a sampled draw (#719).** `nominalValue` is where a PEtab problem states the point
+  a fit starts from, and since #583 PyBNF reads it: an imported problem's nominal becomes a
+  `start_point` line. The export direction dropped it twice over. `write_parameter_table`
+  built each record as four fields and had no `nominalValue` column, so a row that carried
+  one wrote a file that could not reproduce it; and `_free_parameters_from_conf` built its
+  free parameters from the `<family>_var` lines alone, never reading the `start_point` lines
+  beside them, so on the plain "publish my job as PEtab" path there was no value to drop in
+  the first place. Both are fixed. A PEtab problem now survives import -> export -> import
+  with its start point intact, and a native conf's `start_point` line exports as that
+  parameter's `nominalValue`. The column is written only when some parameter declares a
+  start, and a parameter that declares none writes an empty cell, so a job with no start
+  point exports exactly the four-column table it did before. A `start_point` outside the
+  parameter's own box is refused at export, since PEtab has no way to state one and the
+  re-import rejects exactly that; so is a `start_point` naming a parameter no exported
+  declaration claims, which was the other way the value could vanish without a word. This closes the gap between the export and the round-trip identity the PEtab
+  documentation states.
 - **Tutorial lesson 25 no longer promises rates its one curve cannot settle, and its check no
   longer passes on the luck of one seed (#703).** The lesson fits a transit-compartment model
   to a single plasma curve, and its README said island DE "recovers all three" rates. The

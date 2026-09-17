@@ -73,7 +73,7 @@ from ..data import Data, observed_mean
 from ..objective import _OBJECTIVE_DESUGAR
 from ..parse import ploop
 from ..printing import PybnfError
-from ..pset import FreeParameter
+from ..pset import FreeParameter, OutOfBoundsException
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
@@ -1393,7 +1393,13 @@ def _read_conf_dict(conf_path):
 
 
 def _free_parameters_from_conf(conf):
-    """Build ``FreeParameter`` objects from the config's ``(keyword, name)`` entries."""
+    """Build ``FreeParameter`` objects from the config's ``(keyword, name)`` entries.
+
+    Each one carries the fit's declared start point for that parameter, if it has one, on
+    ``.value`` -- the source :func:`~pybnf.petab.parameters.petab_parameter_row` writes as
+    the row's ``nominalValue``, closing the export half of the #583 round trip (#719).
+    """
+    start_points = _start_points_from_conf(conf)
     free_params = []
     for key, value in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2
@@ -1414,12 +1420,50 @@ def _free_parameters_from_conf(conf):
         # is the native ``bounded`` flag, inert for the location families. A one-parameter
         # unbounded family (exponential/chisquare/rayleigh, #417) carries only p1.
         p2 = float(value[1]) if len(value) >= 2 else None
-        free_params.append(FreeParameter(name, keyword, float(value[0]), p2))
+        start = start_points.pop(name, None)
+        try:
+            free_params.append(
+                FreeParameter(name, keyword, float(value[0]), p2, value=start))
+        except OutOfBoundsException:
+            # A start point outside the parameter's own box. PEtab cannot express one
+            # either (a nominalValue outside lowerBound/upperBound is what the importer
+            # refuses on the way back in), and the bare OutOfBoundsException subclasses
+            # Exception, so pybnf.main would report it as "an unknown error ... please
+            # report this bug" on a config the user wrote (#583).
+            raise PybnfError(
+                f"start point out of bounds for '{name}'",
+                f"The config starts '{name}' at {start}, which is outside the box "
+                f"[{value[0]}, {p2}] its own declaration gives it. A start point is "
+                f"refused rather than moved.",
+                "Correct the start point, or widen the parameter's bounds.")
     if not free_params:
         raise PybnfError(
             "No exportable free parameters found in the config (expected one of "
             f"{sorted(EXPORTABLE_PRIOR_KEYWORDS)}).")
+    if start_points:
+        # A start point for a name no exportable free parameter claims. Silently dropping
+        # it is the failure this whole path exists to remove, and config.py refuses the
+        # same thing when the job is run.
+        names = ', '.join(sorted(start_points))
+        known = ', '.join(sorted(fp.name for fp in free_params))
+        raise PybnfError(
+            f"start point for unknown parameter(s) {names}",
+            f"The config declares a start point for {names}, which no exportable free "
+            f"parameter declaration names. The free parameters being exported are: "
+            f"{known}.")
     return free_params
+
+
+def _start_points_from_conf(conf):
+    """``{name: theta}`` for every ``start_point = <parameter> <value>`` line (#583).
+
+    The ``start_point`` half of the two spellings ``Configuration._load_start_point``
+    merges. The other, a ``parameter:`` record's ``initial_value:`` field, is not read
+    here because the exporter does not build free parameters from ``parameter:`` records
+    at all -- a separate gap (#733), not a second place to populate.
+    """
+    return {key[1]: float(value) for key, value in conf.items()
+            if isinstance(key, tuple) and len(key) == 2 and key[0] == 'start_point'}
 
 
 @dataclass(frozen=True)

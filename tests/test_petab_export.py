@@ -48,7 +48,10 @@ from pybnf.petab.parameters import (
     PetabParameterRow,
     free_parameter_from_row,
     petab_parameter_row,
+    read_parameter_table,
+    write_parameter_table,
 )
+from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -760,6 +763,150 @@ class TestExportNewNoiseShapesRoundTrip:
         assert [r['noiseParameters'] for r in rows] == ['', '', '']
         assert 'sigma = prediction_formula sd_abs + sd_rel*y' in \
             (imp2 / 'imported.conf').read_text()
+
+
+# ---------------------------------------------------------------------------
+# The fit's declared start point survives the export (#719). #583 made a PEtab
+# nominalValue the imported fit's start_point; the reverse direction dropped it twice --
+# the conf reader never looked at the start_point lines, and the writer had no
+# nominalValue column -- so a round trip silently moved the fit back to a sampled draw.
+# ---------------------------------------------------------------------------
+
+def _demo_job(tmp_path, extra=''):
+    """A copy of the demo job whose conf has ``extra`` appended (a start_point line)."""
+    import shutil
+    job = tmp_path / 'job'
+    shutil.copytree(DEMO_DIR, job)
+    conf = job / DEMO_CONF.name
+    conf.write_text(conf.read_text() + extra)
+    return conf
+
+
+class TestStartPointRoundTrip:
+
+    # -- the writer, in isolation --------------------------------------------------
+
+    def test_written_nominal_value_reads_back(self, tmp_path):
+        # The unit the loss lived in: a row carrying a nominal must survive the TSV.
+        # write_parameter_table built a four-field record and read_parameter_table found
+        # no nominalValue column, so the value died between them (#719).
+        fp = FreeParameter('v1', 'uniform_var', 0.0, 10.0, value=0.5)
+        row = petab_parameter_row(fp)
+        path = tmp_path / 'parameters.tsv'
+        write_parameter_table([row], path)
+        assert 'nominalValue' in path.read_text().splitlines()[0].split('\t')
+        back = read_parameter_table(path)[0]
+        assert back == row                       # the whole row, not just the nominal
+        assert free_parameter_from_row(back).value == 0.5
+
+    def test_no_nominal_keeps_the_four_column_shape(self, tmp_path):
+        # The column is optional in PEtab v2 and stays absent when nothing declares a
+        # start, so a job with no start point exports byte-for-byte as it did before.
+        row = petab_parameter_row(FreeParameter('v1', 'uniform_var', 0.0, 10.0))
+        path = tmp_path / 'parameters.tsv'
+        write_parameter_table([row], path)
+        assert path.read_text() == 'parameterId\testimate\tlowerBound\tupperBound\nv1\ttrue\t0\t10\n'
+
+    def test_partial_nominals_write_blank_cells(self, tmp_path):
+        # A start point is partial by design (ADR-0117): declaring one parameter's start
+        # must not invent a nominal for the others. The column appears once any row needs
+        # it, and the rows that do not carry one write an empty cell, which reads back None.
+        rows = [PetabParameterRow('a', True, 0., 10., nominal_value=None),
+                PetabParameterRow('b', True, 0., 10., nominal_value=4.),
+                PetabParameterRow('c', True, 0., 10., nominal_value=None)]
+        path = tmp_path / 'parameters.tsv'
+        write_parameter_table(rows, path)
+        assert [r.nominal_value for r in read_parameter_table(path)] == [None, 4.0, None]
+
+    def test_nominal_and_prior_columns_coexist(self, tmp_path):
+        # Both optional chunks at once: nominalValue precedes the prior pair (PEtab v2's
+        # own column order), and neither displaces the other's cells.
+        fp = FreeParameter('k', 'loguniform_var', 1e-3, 1e3, value=1.0)
+        path = tmp_path / 'parameters.tsv'
+        write_parameter_table([petab_parameter_row(fp)], path)
+        header = path.read_text().splitlines()[0].split('\t')
+        assert header == ['parameterId', 'estimate', 'lowerBound', 'upperBound',
+                          'nominalValue', 'priorDistribution', 'priorParameters']
+        (back,) = read_parameter_table(path)
+        assert (back.nominal_value, back.prior_distribution) == (1.0, 'log-uniform')
+        assert back.prior_parameters == pytest.approx((1e-3, 1e3))
+
+    # -- the conf reader ------------------------------------------------------------
+
+    def test_conf_start_point_becomes_a_nominal_value(self, tmp_path):
+        # The plain "publish my job as PEtab" path: a native conf's start_point line is the
+        # fit's declared start, and it exports as that parameter's nominalValue. The
+        # parameters it says nothing about keep an empty cell.
+        export_job(_demo_job(tmp_path, '\nstart_point = v1 0.7\n'), tmp_path / 'out')
+        nominal = {r['parameterId']: r['nominalValue']
+                   for r in _tsv_rows(tmp_path / 'out' / 'parameters.tsv')}
+        assert nominal == {'v1': '0.7', 'v2': '', 'v3': ''}
+
+    def test_conf_without_a_start_point_writes_no_nominal_column(self, tmp_path):
+        # The unchanged path: the demo conf declares no start, so the exported table keeps
+        # its four-column shape rather than gaining a column of blanks.
+        export_job(DEMO_CONF, tmp_path / 'out')
+        assert 'nominalValue' not in (tmp_path / 'out' / 'parameters.tsv').read_text()
+
+    def test_out_of_box_start_point_is_refused(self, tmp_path):
+        # PEtab cannot express a nominalValue outside the row's own bounds either -- the
+        # importer refuses exactly that on the way back in. Refused as a PybnfError, not the
+        # bare OutOfBoundsException, which pybnf.main reports as "an unknown error" (#583).
+        with pytest.raises(PybnfError, match='out of bounds'):
+            export_job(_demo_job(tmp_path, '\nstart_point = v1 42\n'), tmp_path / 'out')
+
+    def test_start_point_for_an_undeclared_parameter_is_refused(self, tmp_path):
+        # Silently dropping it is the failure this path exists to remove; config.py refuses
+        # the same line when the job is run.
+        with pytest.raises(PybnfError, match='unknown parameter'):
+            export_job(_demo_job(tmp_path, '\nstart_point = nope 1\n'), tmp_path / 'out')
+
+    def test_partial_nominal_problem_is_petab_valid(self, tmp_path):
+        # The external oracle on the shape the fixtures never produce: an estimated row with
+        # a blank nominalValue beside rows that carry one.
+        pytest.importorskip('petab.v2')
+        export_job(_demo_job(tmp_path, '\nstart_point = v1 0.7\n'), tmp_path / 'out')
+        assert _petab_validation_errors(tmp_path / 'out' / 'problem.yaml') == []
+
+    # -- the full round trip, the harm as reported ----------------------------------
+
+    def test_petab_nominal_survives_import_export_reimport(self, tmp_path):
+        # fixedsigma_v2 ships nominalValue 0.5/1/3. The first import turns them into
+        # start_point lines (#583); before #719 the export dropped them and the second
+        # import produced a conf with none, so the fit began from a sampled draw instead of
+        # the point the published problem states -- with no warning and no error.
+        from pybnf.petab.import_ import import_job
+        imp1, pet2, imp2 = tmp_path / 'imp1', tmp_path / 'pet2', tmp_path / 'imp2'
+        import_job(FIXEDSIGMA_DIR / 'problem.yaml', imp1)
+        export_job(imp1 / 'imported.conf', pet2)
+        import_job(pet2 / 'problem.yaml', imp2)
+
+        nominal = {r['parameterId']: r['nominalValue']
+                   for r in _tsv_rows(pet2 / 'parameters.tsv')}
+        assert nominal == {'v1': '0.5', 'v2': '1', 'v3': '3'}
+
+        def starts(conf):
+            return sorted(line.strip() for line in conf.read_text().splitlines()
+                          if line.startswith('start_point'))
+        assert starts(imp2 / 'imported.conf') == starts(imp1 / 'imported.conf')
+        assert starts(imp2 / 'imported.conf') == [
+            'start_point = v1 0.5', 'start_point = v2 1', 'start_point = v3 3']
+
+    def test_reimported_conf_starts_the_fit_at_the_published_point(self, tmp_path, monkeypatch):
+        # The user-visible fact behind the tsv cells: the twice-round-tripped conf loads to a
+        # Configuration whose resolved start point is the published one. Configuration is the
+        # consumer every start-point optimizer reads (ADR-0117), so this is the end of the chain.
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        from pybnf.petab.import_ import import_job
+        imp1, pet2, imp2 = tmp_path / 'imp1', tmp_path / 'pet2', tmp_path / 'imp2'
+        import_job(FIXEDSIGMA_DIR / 'problem.yaml', imp1)
+        export_job(imp1 / 'imported.conf', pet2)
+        import_job(pet2 / 'problem.yaml', imp2)
+        monkeypatch.chdir(imp2)
+        cfg = config_mod.Configuration(
+            ploop((imp2 / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert cfg.start_point == {'v1': 0.5, 'v2': 1.0, 'v3': 3.0}
 
 
 # ---------------------------------------------------------------------------
