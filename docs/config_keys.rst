@@ -846,6 +846,11 @@ Parameter and Model Specification
     * ``uniform_var = k__FREE 10 20``
     * ``uniform_var = k__FREE 10 20 U``
 
+  A ``U``-tagged parameter cannot be exported to PEtab: PEtab's ``lowerBound``/``upperBound``
+  are hard box constraints with no "initialization only" reading, so
+  :ref:`export_job <petab>` refuses the job rather than write bounds it does not mean.
+  Drop the tag to export the box as real bounds.
+
 **normal_var**
   A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation. The distribution
   is truncated at 0 to prevent negative values

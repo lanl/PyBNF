@@ -181,6 +181,19 @@ class TestReverseAssets:
         with pytest.raises(NotImplementedError):
             petab_parameter_row(fp)
 
+    @pytest.mark.parametrize('keyword,p1,p2', [
+        ('uniform_var', 0.0, 10.0), ('loguniform_var', 0.1, 10.0)])
+    def test_unbounded_uniform_export_not_implemented(self, keyword, p1, p2):
+        # The native 'u' flag turns the reflecting box OFF: the box seeds the first
+        # population and the search is then free to leave it. PEtab's lowerBound/upperBound
+        # are hard constraints, so writing [p1, p2] into them would export a constraint the
+        # job explicitly declined -- refused rather than written (#736).
+        with pytest.raises(NotImplementedError, match='unbounded'):
+            petab_parameter_row(FreeParameter('k', keyword, p1, p2, bounded=False))
+        # the same declaration with its box ON is untouched
+        row = petab_parameter_row(FreeParameter('k', keyword, p1, p2, bounded=True))
+        assert (row.lower_bound, row.upper_bound) == (p1, p2)
+
     @pytest.mark.parametrize('kind,prefix', [('observable', 'obs_'), ('function', 'func_')])
     def test_observable_row_prefix_formula_and_placeholder(self, kind, prefix):
         # A per-point _SD source -> a declared placeholder bound by noiseParameters.
@@ -2132,6 +2145,26 @@ class TestBoundaries:
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError, match='mix'):
             export_job(conf, tmp_path / 'out')
+
+    @pytest.mark.parametrize('line', [
+        'uniform_var = v1 0 10 u', 'loguniform_var = v1 0.1 10 u'])
+    def test_unbounded_flag_is_refused(self, tmp_path, line):
+        # End to end: the exporter used to read p1/p2 and drop the flag, so this conf --
+        # which declares a search free to leave [0, 10] -- exported to a table byte-identical
+        # to the bounded spelling, silently constraining the fit a re-import would run
+        # (#736). Both flag-bearing families raise.
+        conf = _demo_job(tmp_path, replace=(_V1_VAR, line))
+        with pytest.raises(NotImplementedError, match='unbounded'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_explicit_bounded_flag_exports_as_the_bare_declaration(self, tmp_path):
+        # The other half of the flag is unchanged: 'b' means what leaving it off means, and
+        # passing it through the FreeParameter must not perturb the emitted table.
+        export_job(DEMO_CONF, tmp_path / 'bare')
+        export_job(_demo_job(tmp_path, replace=(_V1_VAR, _V1_VAR + ' b')),
+                   tmp_path / 'flagged')
+        assert (tmp_path / 'flagged' / 'parameters.tsv').read_text() == \
+            (tmp_path / 'bare' / 'parameters.tsv').read_text()
 
     def test_modern_edition_without_objective_is_refused(self, tmp_path):
         # New era has no implicit chi_sq default: an edition-2 job must name its objective.

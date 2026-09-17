@@ -68,7 +68,10 @@ free parameters, priors, noise models, and data. Both free-parameter spellings a
 read — the positional ``<family>_var`` line and the edition-2 ``parameter:`` record —
 so a truncated prior, which only the record can state, exports and round-trips like any
 other. Anything PEtab v2 cannot express raises ``NotImplementedError`` naming the
-boundary; nothing is dropped quietly.
+boundary; nothing is dropped quietly. One boundary worth knowing before you export: a
+``U``-tagged ``uniform_var``/``loguniform_var``, whose box constrains only the initial
+draw, has no PEtab spelling — its bounds are hard — so that job is refused rather than
+silently constrained.
 
 .. _petab_bngl_loader:
 

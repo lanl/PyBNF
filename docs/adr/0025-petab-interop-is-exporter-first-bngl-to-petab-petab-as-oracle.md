@@ -223,3 +223,28 @@ question this resolves as "test oracle"), **0023** (the observables/noise corres
 reversed), **0021** (the noise engine / σ-source kinds), **0004** (PEtab-defaulted, not
 PEtab-bound). Issue: **#407** (umbrella; re-scoped to exporter-first). Follow-ups: the
 `parameter_scan`/dose-response export, conditions/experiments export, then the importer.
+
+## Amendment (2026-09-17, #736)
+
+One more construct joins the "surfaced explicitly rather than silently mis-exported" list:
+a Uniform family carrying the native `u` flag (`uniform_var = v 0 10 u`), which turns the
+reflecting box off so that the box seeds the first population and the search is then free
+to leave it. The exporter read `p1`/`p2` and dropped the flag, so such a job exported to a
+table byte-identical to the bounded spelling — stating `[0, 10]` as PEtab
+`lowerBound`/`upperBound`, which are hard box constraints. A search the config declared
+unconstrained came back constrained, with no warning.
+
+**Refuse rather than warn-and-export.** The alternative — write the box as bounds and warn
+— was rejected: the exporter emits no warnings anywhere, so it would be a new channel for
+one case, and a warning on stderr is exactly the signal the #583/#719 work found people do
+not act on. Refusing costs nothing measurable: no `u`-flagged declaration exists in the
+repo's examples, tests or benchmarks, or in the `BNGL-Models/pybnf-jobs` corpus. If it ever
+does become a real obstacle, warn-and-export is the fallback to revisit, with the warning
+naming what changed.
+
+**It is a true boundary, not an unwritten mapping.** PEtab's nearest shape — blank
+(infinite) bounds plus an explicit `priorDistribution = uniform` over `(0, 10)` — does not
+mean the same thing and does not survive the trip either: PEtab bounds *truncate a prior*
+rather than seed a draw, and `parameters._resolve_prior`'s uniform arm returns
+`bounded=True` unconditionally, so that row re-imports as a bounded parameter. The importer
+is right to do so — a PEtab row's bounds are hard — so nothing changes on the import side.
