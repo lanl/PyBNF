@@ -252,6 +252,32 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **The PEtab export reads edition-2 `parameter:` records, so a free parameter written the
+  new-era way no longer vanishes from the exported problem (#733).** The exporter picked its
+  free parameters out of the config by matching key names against `(_var$|^var$|^logvar$)`.
+  A `parameter:` record is stored under a `('parameter', id)` key, which matches none of the
+  three, so it was skipped rather than refused: no row was written, nothing downstream
+  noticed the id was missing, and the export finished cleanly having dropped the parameter.
+  A conf whose parameters were *all* records reported "No exportable free parameters found",
+  naming only the `*_var` keywords — pointing the user away from the syntax the edition-2
+  documentation teaches. Both contradict the exporter's own contract, that everything it
+  cannot write raises `NotImplementedError` with the boundary named in code.
+  The damage was widest on truncated priors. A record is the only grammar carrying
+  `lower`/`upper`, so it is what the importer emits for a prior truncated to a box
+  (ADR-0020/0047) — meaning a PEtab problem with bounded priors imported fine and then
+  exported to a table missing exactly those parameters. On the tutorial's own PEtab priors
+  problem (lesson 15) that was three of four: a log-normal, a gamma and a normal all
+  disappeared, leaving one plain uniform, and the re-import produced a fit over one
+  parameter instead of four.
+  The exporter now reads both declaration spellings in one pass, in declaration order, and
+  builds each record through the same mapping the fitter loads a job with, which moved to
+  `pybnf/parameter_record.py` so the two cannot drift. A record therefore meets the same
+  boundaries the positional line does, reached by a different spelling: a no-prior point
+  start, a natural-log sampling scale, a three-parameter family such as student_t, and the
+  log forms PEtab defines for no family are each refused with the keyword the record built.
+  `initial_value:` is honoured as the start point it is, alongside a `start_point` line when
+  the two agree and refused when they disagree, and an out-of-box one is a `PybnfError`
+  rather than the bare `OutOfBoundsException` that reaches users as "an unknown error".
 - **The PEtab export writes the fit's start point, so a round trip no longer moves the fit
   back to a sampled draw (#719).** `nominalValue` is where a PEtab problem states the point
   a fit starts from, and since #583 PyBNF reads it: an imported problem's nominal becomes a

@@ -19,6 +19,7 @@ PyBNF Module References
    measurement
    noise
    objective
+   parameter_record
    parse
    petab
    printing

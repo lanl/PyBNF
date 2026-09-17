@@ -209,3 +209,23 @@ prior — the default start when `initial_value` is absent), 0003 (prior in the 
 0031 (edition select-and-freeze), 0038 (which filed the native truncation grammar on #417, and the
 blank-bounds export limitation this lifts). Issue: **#417** (reframed from "truncation grammar" to
 "the new-era `parameter:` record"; truncation is its `lower`/`upper` fields).
+
+## Amendment (2026-09-17, #733)
+
+The loader is no longer config-private. It reads a declaration grammar, and the PEtab v2
+exporter reads the same declarations when it serializes a job, so the mapping moved to
+`pybnf/parameter_record.py` (`free_parameter_from_record`) with two callers:
+`Configuration._load_variables` and `petab.export._free_parameters_from_conf`. The
+`Configuration._free_parameter_from_record` method above remains, delegating, so the
+references in this ADR and in ADR-0047 still name something real.
+
+The move is what fixes #733. Until it, the exporter matched free parameters by config KEY
+name (`_VAR_DECL`, which a `('parameter', id)` key never matches), so every `parameter:`
+record was *skipped* rather than refused: the whole free parameter vanished from the
+exported problem with no diagnostic, and with it every truncated prior — the shape this
+ADR's `lower`/`upper` fields exist to author, and the one the importer emits as a record.
+The failure is the same one #603 found on the coherence gate, in the other direction:
+keying on the config key name instead of on what the declaration builds makes the record
+syntax invisible to a rule the positional line goes through. An exporter that re-derived
+the record grammar for itself would drift from the one the fitter runs, which is why the
+fix is one shared builder rather than a second reading.
