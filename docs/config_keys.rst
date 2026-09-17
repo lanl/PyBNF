@@ -1405,6 +1405,15 @@ Algorithm Options
   ``peak`` / ``init`` / ``zero`` / ``unit`` rescale the **simulated** column only (the data is
   assumed pre-normalized by the user); ``floor`` and ``scale`` are applied symmetrically to
   the model and the data (a floor or an analytic scale is only meaningful applied to both).
+
+  Every transform reads only a column's **measured** rows. A ``nan`` is missing data, not a
+  value: it stays ``nan`` and contributes to no maximum, minimum, mean or standard deviation,
+  and ``init`` / ``unit`` take their baseline from the first row that actually holds a value
+  rather than from row 0. So a simulation that produces ``nan`` at one output time -- a failed
+  integration step, or an observable that is 0/0 at ``t = 0`` -- keeps the rest of its column,
+  and is discarded only if a ``nan`` falls on a time the data actually measures. A column with
+  no measured value at all is left untouched; that simulation is then rejected by scoring, as
+  it would be without any normalization.
   Together with ``objective = lognormal`` the chain ``floor 0.03, scale`` spells the
   "sum of squared log-differences of geometric-mean-normalized trajectories" objective common
   to arbitrary-unit fluorescence / blot fits.

@@ -82,6 +82,49 @@ def observed_mean(values):
     return np.mean(observed) if observed.size else np.nan
 
 
+def has_no_observed_value(column):
+    """True when a column holds no measured entry at all -- every row NaN.
+
+    Such a column has no peak, no minimum, no mean and no baseline, so there is nothing
+    for a normalization to read: ``np.nanargmax`` / ``np.nanargmin`` raise
+    ``ValueError: All-NaN slice encountered`` rather than returning a sentinel (#726).
+    The normalizations treat it as a no-op instead of raising. Normalization is a
+    transform; whether an all-NaN simulated column is a *failure* is scoring's call, and
+    scoring already makes it -- ``SummationObjective.evaluate`` returns ``None`` for a NaN
+    prediction, the failed-simulation path. Raising here instead pre-empts that decision
+    in the two callers that do not wrap ``normalize`` in #388's handler.
+    """
+    return not np.any(~np.isnan(np.asarray(column, dtype=float)))
+
+
+def _no_op_record(method, ddof=0):
+    """The :class:`NormalizationRecord` for a transform that was skipped because its column
+    holds no measured value (#726).
+
+    The column is left exactly as it stands, so this records the identity: divide by 1, add
+    ``rho = 0``, read row 0. Recording rather than skipping keeps "every transform applied
+    leaves one record" true, which is the invariant the chain folding relies on (#539,
+    ADR-0102). The gradient never reads it -- an all-NaN column cannot score, so no gradient
+    is taken through it -- but a chain that puts a real transform after this one still finds
+    a well-formed stage beneath it rather than an empty chain.
+    """
+    return NormalizationRecord(method, 1.0, ref_row=0,
+                               baseline_row=0 if method == 'unit' else None,
+                               rho=0.0, ddof=ddof)
+
+
+def first_observed_row(column):
+    """The index of a column's first measured entry, or ``None`` if it has none.
+
+    The baseline row of ``init`` / ``unit``. Row 0 is the intended baseline only because
+    it is normally the first measured row; when it is NaN -- an observable that is 0/0 at
+    its initial condition, say -- subtracting or dividing by it turns the whole column NaN
+    (#726). The first row that actually holds a value is what "initial value" meant.
+    """
+    observed = np.flatnonzero(~np.isnan(np.asarray(column, dtype=float)))
+    return int(observed[0]) if observed.size else None
+
+
 def stack_scan_sensitivities(per_point):
     """Stack per-dose-point forward-sensitivity tensors into one scan :class:`OutputSensitivities`.
 
@@ -568,6 +611,12 @@ class Data:
                 cols.remove(idx)
             for c in cols:
                 column = self.data[:, c]
+                # A column with no measured point has no peak to divide by (#726): leave it
+                # as it is -- already all-NaN, so any divisor would leave it all-NaN anyway --
+                # and let scoring decide it is a failed simulation. np.nanargmax would raise.
+                if has_no_observed_value(column):
+                    self._record_normalization(c, _no_op_record('peak'), column)
+                    continue
                 # Record N = peak and its row before the in-place divide overwrites them
                 # (#453): the gradient threads d(raw/N)/d theta. Additive, value-preserving.
                 # nan-aware (#479 follow-up): a sparse multi-observable column carries NaN in the
@@ -593,11 +642,21 @@ class Data:
                 cols = list(range(self.data.shape[1]))
                 cols.remove(idx)
             for c in cols:
-                # Record N = initial value before the in-place divide overwrites row 0
-                # (#453): ref_row 0 is the divisor's source row for the gradient chain rule.
+                column = self.data[:, c]
+                # The divisor is the first MEASURED value, not row 0 (#726). Row 0 is the
+                # intended baseline only because it is normally the first measured row; when
+                # it is NaN (an observable that is 0/0 at its initial condition, say) dividing
+                # by it turns every row NaN, and the column is then scored as a failed
+                # simulation even though the NaN row may be one no exp point ever reads.
+                base = first_observed_row(column)
+                if base is None:
+                    self._record_normalization(c, _no_op_record('init'), column)
+                    continue
+                # Record N = initial value before the in-place divide overwrites its row
+                # (#453): ref_row is the divisor's source row for the gradient chain rule.
                 self._record_normalization(c, NormalizationRecord(
-                    'init', float(self.data[0, c]), ref_row=0), self.data[:, c])
-                self.data[:, c] = self.data[:, c] / self.data[0, c]
+                    'init', float(self.data[base, c]), ref_row=base), column)
+                self.data[:, c] = self.data[:, c] / self.data[base, c]
 
     def normalize_to_zero(self, idx=0, bc=True, cols='all'):
         """
@@ -622,22 +681,46 @@ class Data:
                 # previous stage, whose rule reads them -- ADR-0102). The arithmetic is the
                 # same subtract-then-divide as the in-place form it replaces.
                 col = self.data[:, c]
-                centered = col - np.mean(col)
-                std = np.std(centered, ddof=ddof)
+                if has_no_observed_value(col):
+                    self._record_normalization(c, _no_op_record('zero', ddof=ddof), col)
+                    continue
+                # Over the MEASURED points only (#726). The z-score is the one method that
+                # reduces the whole column, so a single NaN row -- one failed integration step,
+                # or a 0/0 observable at t=0 -- made the mean NaN, hence every centered value
+                # NaN, hence the std NaN: the entire column was destroyed and the parameter set
+                # discarded as a failed simulation, even when no exp point reads that row.
+                # nanstd == std on a dense column, so a NaN-free fit is byte-identical.
+                centered = col - observed_mean(col)
+                std = np.nanstd(centered, ddof=ddof)
                 # Record the z-score scale (std; 0 means the column was left un-divided) and
                 # the K - ddof denominator the gradient's d std/d theta uses (#453). z-score
                 # couples every row, so only these scalars are recorded -- the per-row mean of
-                # the sensitivities is recomputed from the tensor at gradient time.
+                # the sensitivities is recomputed from the tensor at gradient time, over the
+                # same measured rows this std used (gradient/assembly.py masks on ``normed``).
                 self._record_normalization(c, NormalizationRecord('zero', float(std), ddof=ddof), col)
                 self.data[:, c] = centered / std if std != 0 else centered
 
     def _subtract_baseline(self, idx=0, cols='all'):
+        """Shift each column so its baseline sits at 0, and return ``{col_index: baseline_row}``.
+
+        The baseline is the first **measured** row rather than row 0 (#726): row 0 is the
+        intended baseline only because it is normally the first measured row, and subtracting
+        a NaN row 0 turns the whole column NaN. The row is returned because the caller records
+        it as ``NormalizationRecord.baseline_row``, which the gradient reads back
+        (``tensor_sens(col_name, record.baseline_row)``), so the recorded row has to be the one
+        actually subtracted. A column with no measured row is left untouched and maps to
+        ``None``.
+        """
         if cols == 'all':
             cols = list(range(self.data.shape[1]))
             cols.remove(idx)
+        baselines = {}
         for c in cols:
             col = self.data[:, c]
-            self.data[:, c] = col - self.data[0, c]
+            baselines[c] = base = first_observed_row(col)
+            if base is not None:
+                self.data[:, c] = col - self.data[base, c]
+        return baselines
 
     def normalize_to_unit_scale(self, idx=0, cols='all'):
         """
@@ -659,8 +742,15 @@ class Data:
         # this transform consumed, not the baseline-subtracted ones (ADR-0102). A no-op (None)
         # unless this column is already normalized, so a single unit-scaling copies nothing.
         consumed = {c: self._chain_stage_input(c) for c in cols}
-        self._subtract_baseline(idx, cols)
+        # The baseline is the first measured row, and which row that was is recorded below --
+        # the gradient reads the baseline back by row index (#726).
+        baselines = self._subtract_baseline(idx, cols)
         for c in cols:
+            # A column with no measured point has no baseline and no max (#726): nothing was
+            # subtracted, nothing is divided, and np.nanargmax/argmin would raise on it.
+            if baselines[c] is None:
+                self._record_normalization(c, _no_op_record('unit'), consumed[c])
+                continue
             # nan-aware (#479 follow-up): skip NaN rows (a sparse column's unmeasured points) so a
             # multi-observable target is not poisoned by np.max/np.min seeing a NaN.
             cmax = np.nanmax(self.data[:, c])
@@ -670,14 +760,15 @@ class Data:
                 # sensitivity enters with a flipped sign (#453); the baseline is still row 0.
                 self._record_normalization(c, NormalizationRecord(
                     'unit', float(np.abs(np.nanmin(self.data[:, c]))),
-                    ref_row=int(np.nanargmin(self.data[:, c])), baseline_row=0, sign=-1.0),
+                    ref_row=int(np.nanargmin(self.data[:, c])),
+                    baseline_row=baselines[c], sign=-1.0),
                     consumed[c])
                 self.data[:, c] = self.data[:, c] / np.abs(np.nanmin(self.data[:, c]))
             else:
                 # N = the max-after-baseline; ref_row is its argmax, baseline is row 0 (#453).
                 self._record_normalization(c, NormalizationRecord(
                     'unit', float(cmax), ref_row=int(np.nanargmax(self.data[:, c])),
-                    baseline_row=0, sign=1.0), consumed[c])
+                    baseline_row=baselines[c], sign=1.0), consumed[c])
                 self.data[:, c] = self.data[:, c] / np.nanmax(self.data[:, c])
 
     def normalize_to_floor(self, rho, idx=0, cols='all'):
@@ -709,6 +800,13 @@ class Data:
             # whole column (every point -> NaN -> silently skipped in scoring -> objective 0.0),
             # so take the max/argmax over the measured (non-NaN) points only. On a dense column
             # (no NaN) nanmax == max, so this is byte-identical for the common case.
+            # No measured point means no max to take a fraction of (#726). The floor is the one
+            # transform applied to the EXPERIMENTAL data too (config.py, ADR-0066), so this is
+            # reached at config load by an exp file carrying a wholly unmeasured observable
+            # column -- a shape #707 supports. np.nanargmax would raise before the fit starts.
+            if has_no_observed_value(column):
+                self._record_normalization(c, _no_op_record('floor'), column)
+                continue
             cmax = float(np.nanmax(column))
             # Record the added amount (rho) and the max its argmax row before the offset -- the
             # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (#533).

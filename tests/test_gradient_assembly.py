@@ -1076,6 +1076,63 @@ def test_normalization_chain_rule_matches_finite_difference(chain):
     np.testing.assert_allclose(res.jacobian[:, 0], fd / sigma, rtol=1e-5, atol=1e-7)
 
 
+@pytest.mark.parametrize('nan_row', [0, 2], ids=['nan-at-baseline-row', 'nan-mid-column'])
+@pytest.mark.parametrize('chain', [['peak'], ['init'], ['zero'], ['unit']],
+                         ids=['peak', 'init', 'zero', 'unit'])
+def test_normalization_chain_rule_matches_finite_difference_with_an_unscored_nan(chain, nan_row):
+    """#726: the threaded derivative still matches the FD oracle when the simulated column
+    carries a NaN at a row no experimental point scores.
+
+    A simulation can legitimately produce NaN at some output rows -- one failed integration
+    step, or an observable that is 0/0 at t=0 -- while the exp file measures only a few of the
+    simulated times, so that row is often never read. ``normalize_to_zero`` used to make the
+    whole column NaN from it (and ``init``/``unit`` did when the NaN sat on the baseline row),
+    so the parameter set was discarded as a failed simulation; now the measured rows normalize
+    and the column scores, which means it reaches the gradient. The z-score's two reductions
+    (``s_bar`` and ``∂σ/∂θ``) therefore have to run over the measured rows only -- over all
+    rows they return NaN and poison the whole Jacobian.
+
+    The NaN is placed on the **baseline** row as well as mid-column, because ``init`` and
+    ``unit`` read that row specifically and now take the first *measured* one instead.
+    """
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    sigma = 1.0
+    raw_nan = raw.copy()
+    raw_nan[nan_row] = np.nan
+    method = chain[0]
+
+    sim = _sim_with_sensitivities(raw_nan.copy(), d_param=dk)
+    sim.normalize(method)
+    # The NaN stays on its own row; every other row carries a real normalized value.
+    normed_col = sim.data[:, 1]
+    assert np.isnan(normed_col[nan_row])
+    assert not np.isnan(np.delete(normed_col, nan_row)).any()
+
+    # That row is unmeasured in the exp file, so scoring skips it (objective.py's row skip).
+    obs = np.zeros(4)
+    obs[nan_row] = np.nan
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute.single('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    def normed_of(column):
+        d = Data.from_columns(np.column_stack([TIMES, column]), ['time', 'Stot'])
+        d.normalize(method)
+        return d.data[:, 1]
+
+    h = 1e-6
+    fd = (normed_of(raw_nan + h * dk) - normed_of(raw_nan - h * dk)) / (2.0 * h)
+    # The Jacobian carries one row per SCORED observation, so the skipped row is absent.
+    scored = [r for r in range(4) if r != nan_row]
+    assert res.jacobian.shape[0] == len(scored)
+    assert not np.isnan(res.jacobian[:, 0]).any()          # the regression: NaN Jacobian
+    np.testing.assert_allclose(res.jacobian[:, 0], fd[scored] / sigma,
+                               rtol=1e-5, atol=1e-7)
+
+
 def test_floor_normalization_closed_form():
     """A floor (ADR-0066, #533) is additive and separable: ``x' = x + rho*max(x)``, so its
     threaded derivative is ``∂x'_i/∂θ = s_i + rho*s_argmax`` -- every row picks up the *same*

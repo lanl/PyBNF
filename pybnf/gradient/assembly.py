@@ -914,13 +914,23 @@ def _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i):
 
     (``n_k = (raw_k - μ)/σ`` is the recorded normalized value, so ``(raw_k - μ) = σ·n_k``
     cancels the σ in ``∂σ/∂θ``). A σ of 0 means ``Data`` left the column un-divided
-    (``n_i = raw_i - μ``), so ``∂n_i/∂θ = s_i - s_bar``."""
-    nrows = len(normed)
-    all_s = np.array([tensor_sens(col_name, k) for k in range(nrows)])   # (K, n_param)
+    (``n_i = raw_i - μ``), so ``∂n_i/∂θ = s_i - s_bar``.
+
+    Both reductions run over the column's **measured** rows -- the same points
+    ``normalize_to_zero`` centred and scaled over (#726) -- so ``K`` is the measured count and
+    ``s_bar`` their mean. A NaN row carries no value for ``n_k`` to weight, and including one
+    would make ``s_bar``, ``∂σ/∂θ`` and hence the whole gradient NaN. A simulated column can
+    reach here with a NaN in a row no exp point scores, which is precisely the case #726 stopped
+    poisoning the rest of the column; ``normed`` marks those rows, so the mask is read off it.
+    On a dense column every row is measured and this is the plain reduction it always was."""
+    normed = np.asarray(normed, dtype=float)
+    measured = np.flatnonzero(~np.isnan(normed))
+    all_s = np.array([tensor_sens(col_name, k) for k in measured])       # (K, n_param)
     s_bar = all_s.mean(axis=0)
     if record.scale == 0.0:
         return s_i - s_bar
-    dsigma = (normed[:, np.newaxis] * (all_s - s_bar)).sum(axis=0) / (nrows - record.ddof)
+    dsigma = ((normed[measured, np.newaxis] * (all_s - s_bar)).sum(axis=0)
+              / (len(measured) - record.ddof))
     return (s_i - s_bar) / record.scale - normed[row] * dsigma / record.scale
 
 

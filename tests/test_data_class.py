@@ -284,6 +284,105 @@ class TestData:
         npt.assert_allclose(du.data[[0, 2], 1], np.array([0.0, 1.0]))
         assert np.isnan(du.data[1, 1])
 
+    def test_zero_init_unit_are_nan_aware_on_sparse_columns(self):
+        # #726, completing the #479 sweep above: a simulated column can carry NaN at a row no
+        # exp point scores (one failed integration step, or a 0/0 observable at t=0). zero
+        # reduces the WHOLE column, so one NaN made the mean NaN -> every centered value NaN ->
+        # the std NaN; init and unit read row 0 specifically, so a NaN there did the same. The
+        # column was then scored as a failed simulation. Reduce over the measured points, and
+        # take the first MEASURED row as the baseline. obs1 = [NaN, 3, 5, 7].
+        lines = ['# x    obs1\n', ' 0 nan\n', ' 1 3\n', ' 2 5\n', ' 3 7\n']
+
+        def mk():
+            d = data.Data()
+            d.data = d._read_file_lines(lines, r'\s+')
+            return d
+
+        # zero: centred on the measured mean (5) and scaled by their std; NaN row stays NaN.
+        dz = mk(); dz.normalize_to_zero(bc=False)
+        npt.assert_allclose(dz.data[1:, 1], np.array([-2., 0., 2.]) / np.std([3., 5., 7.]))
+        assert np.isnan(dz.data[0, 1])
+        npt.assert_allclose(dz.normalization['obs1'][0].scale, np.std([3., 5., 7.]))
+
+        # init: divides by the first MEASURED value (3, row 1), not the NaN row 0.
+        di = mk(); di.normalize_to_init()
+        npt.assert_allclose(di.data[1:, 1], np.array([1., 5. / 3., 7. / 3.]))
+        assert np.isnan(di.data[0, 1])
+        assert di.normalization['obs1'][0].scale == 3.0 and di.normalization['obs1'][0].ref_row == 1
+
+        # unit: baseline is row 1 (the first measured), then /nanmax-after-baseline(=4).
+        du = mk(); du.normalize_to_unit_scale()
+        npt.assert_allclose(du.data[1:, 1], np.array([0., 0.5, 1.]))
+        assert np.isnan(du.data[0, 1])
+        rec = du.normalization['obs1'][0]
+        # The recorded baseline_row must be the row actually subtracted -- the gradient reads
+        # the baseline back by index (gradient/assembly.py), so 0 here would be a wrong row.
+        assert rec.baseline_row == 1 and rec.ref_row == 3 and rec.scale == 4.0
+
+    @pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit', ('floor', 0.03)],
+                             ids=['peak', 'init', 'zero', 'unit', 'floor'])
+    def test_a_sparse_column_normalizes_like_the_dense_column_of_its_measured_values(self, method):
+        # The invariant #479 and #726 together are reaching for, stated once and checked over
+        # random draws rather than hand-computed cases: a NaN is missing data, so normalizing a
+        # column with NaN rows must leave its measured rows exactly where normalizing a dense
+        # column of just those values would put them. Every reduction (max, min, mean, std) and
+        # every reference row (argmax, argmin, the init/unit baseline) has to skip the NaNs for
+        # this to hold -- one that does not shifts or NaNs the whole column and the comparison
+        # fails. This also fixes the degenerate cases in place: a sparse column with a single
+        # measured value behaves like a one-row dense column (it does not acquire some separate
+        # sparse-only behaviour), which is what makes the rule easy to state to a user.
+        rng = np.random.default_rng(20260916)
+        compared = 0
+        for _ in range(40):
+            n = int(rng.integers(3, 9))
+            values = rng.normal(5.0, 3.0, n)
+            missing = rng.random(n) < 0.35
+            if missing.all() or (~missing).sum() < 2:
+                continue
+
+            def mk(vals):
+                d = data.Data()
+                d.data = d._read_file_lines(
+                    ['# x  obs1\n'] + [' %g %r\n' % (i, float(v)) for i, v in enumerate(vals)],
+                    r'\s+')
+                return d
+
+            sparse = values.copy()
+            sparse[missing] = np.nan
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')      # degenerate draws divide by 0 as ever
+                ds, dd = mk(sparse), mk(values[~missing])
+                ds.normalize(method)
+                dd.normalize(method)
+            npt.assert_allclose(ds.data[~missing, 1], dd.data[:, 1], rtol=1e-12, atol=1e-12)
+            assert np.isnan(ds.data[missing, 1]).all()   # and the missing rows stay missing
+            compared += 1
+        assert compared >= 20        # the draws actually exercised the comparison
+
+    def test_an_unmeasured_column_is_left_alone_instead_of_raising(self):
+        # #726: a column with no measured point has no peak, no min, no mean and no baseline.
+        # np.nanargmax/nanargmin raise ValueError('All-NaN slice encountered') rather than
+        # returning a sentinel, so peak/floor/unit crashed outright and zero/init reached the
+        # same state by poisoning. Normalization is a transform; whether an all-NaN simulated
+        # column is a FAILURE is scoring's call, and scoring already makes it (evaluate returns
+        # None). Two callers do not wrap normalize in #388's handler -- model_check.run_check,
+        # which has its own 'Simulation contained NaN or Inf values' message three lines later,
+        # and the config-load floor on EXPERIMENTAL data -- so raising here escaped as a numpy
+        # traceback. Leave the column untouched and record the identity.
+        for method in ('peak', 'init', 'zero', 'unit', ('floor', 0.03)):
+            d = data.Data()
+            d.data = d._read_file_lines(['# x    obs1    obs2\n',
+                                         ' 0 1    nan\n',
+                                         ' 1 2    nan\n'], r'\s+')
+            d.normalize(method)
+            assert np.isnan(d.data[:, 2]).all(), method     # untouched, still all-NaN
+            npt.assert_allclose(d.data[:, 0], np.array([0., 1.]))
+            record = d.normalization['obs2'][0]
+            assert record.scale == 1.0 and record.rho == 0.0, method   # the identity
+            # The measured sibling column is normalized as usual -- one dead column does not
+            # disturb the rest of the file.
+            assert not np.isnan(d.data[:, 1]).any(), method
+
     def test_column_mean_is_nan_aware(self):
         # #707, the same sparse-column hazard one step later: column_mean is the DIVISOR
         # ave_norm_sos / the column_mean sigma source normalize by, so a plain np.average
