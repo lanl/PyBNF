@@ -72,6 +72,38 @@ def _bngsim_unavailable_reason():
     return BNGSIM_ERROR or 'bngsim is not available'
 
 
+def unusable_score(score):
+    """True when an objective value cannot be used to order parameter sets (#713).
+
+    Every optimizer decides by comparing scores, so a value that is not an ordinary
+    number (or ``+inf``) does not merely give a wrong answer -- it gives no answer at
+    all, silently:
+
+    * ``None`` -- the objective declined to score (a NaN or Inf *prediction*, the
+      failed-simulation path).
+    * ``NaN`` -- **inert in every comparison**. ``nan < best`` is False, so it never
+      becomes the new best; ``nan > threshold`` is also False, so it is never rejected
+      as bad either. The parameter set is neither accepted nor discarded, and the fit
+      finishes reporting no error. lanl/PyBNF#707 was one producer of such a score.
+    * ``-inf`` -- the mirror image: it wins every comparison forever, so one degenerate
+      evaluation (a density that overflowed, say) pins itself as the best fit for the
+      rest of the run.
+    * anything not numeric at all -- a user post-processing script assigns
+      ``res.score`` directly and is not obliged to assign a number.
+
+    ``+inf`` is **not** unusable: it is this codebase's established "discard this
+    parameter set" sentinel, written by the #388 handler and by the worker path, and it
+    orders correctly against every real score.
+    """
+    if score is None:
+        return True
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return True
+    return np.isnan(value) or value == -np.inf
+
+
 class Algorithm(ABC):
     """Base class for every PyBNF fit type ("method"); defines the run-loop contract.
 
@@ -850,9 +882,19 @@ class Algorithm(ABC):
         Split out of :meth:`add_to_trajectory` so the end-of-fit confirmation stage
         (#659), which scores results it deliberately does not put in the trajectory, goes
         through exactly the same path the fit did.
+
+        This is also where an unusable objective value is turned into ``+inf`` (#713).
+        Doing it here covers every algorithm: the run loop calls this (through
+        :meth:`add_to_trajectory`) *before* it reads ``res.score`` for the
+        ``min_objective`` check and before it hands the result to the algorithm's own
+        ``got_result``, which is where each optimizer reads the score.
         """
-        # Evaluate objective if it wasn't done on workers.
-        if res.score is None:  # Check if the objective wasn't evaluated on the workers
+        # Evaluate the objective if it wasn't done on workers. This dispatch tests for None
+        # and nothing else on purpose: a NaN is a score that WAS computed, not the absence of
+        # one, so re-scoring it here would re-run normalize() over already-normalized simdata
+        # (the transforms rewrite the column in place) on top of repeating the objective.
+        # Validity is judged below, after both paths have converged.
+        if res.score is None:
             try:
                 res.normalize(self.config.config['normalization'])
                 # Do custom postprocessing, if any
@@ -871,11 +913,19 @@ class Algorithm(ABC):
                 logger.exception(f'Objective evaluation failed for Result {res.name}')
                 res.score = np.inf
                 print1(f'Objective evaluation failed for Result {res.name}; discarding this parameter set')
-            if res.score is None:  # Check if the above evaluation failed
-                res.score = np.inf
-                logger.warning(f'Simulation corresponding to Result {res.name} contained NaNs or Infs')
-                logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
-                print1(f'Simulation data in Result {res.name} has NaN or Inf values.  Discarding this parameter set')
+        # Both paths land here -- the master-scored one above AND a result the workers
+        # already scored, which is the default path and formerly reached no check at all
+        # (the old guard was nested inside the branch above). An unusable score becomes the
+        # +inf that means "discard this parameter set", so the optimizers only ever compare
+        # orderable values. See unusable_score for why NaN and -inf are as bad as None.
+        if unusable_score(res.score):
+            unusable = res.score
+            res.score = np.inf
+            logger.warning(f'Result {res.name} has an unusable objective value ({unusable!r}), '
+                           f'which cannot be ordered against other parameter sets')
+            logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
+            print1(f'Result {res.name} has an unusable objective value ({unusable!r}).  '
+                   f'Discarding this parameter set')
         return res.score
 
     def add_to_trajectory(self, res):

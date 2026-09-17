@@ -543,6 +543,105 @@ def test_cluster_run_reports_parallelism_end_to_end(tmp_path, monkeypatch, caplo
     assert 'will sit idle' in caplog.text
 
 
+class TestUnusableScoreGuard:
+    """``score_result`` turns an objective value that cannot be ordered into ``+inf`` (#713).
+
+    A NaN is the dangerous one because it is **inert**, not wrong: every comparison against
+    it is False, so ``nan < best`` never promotes it and ``nan > threshold`` never rejects
+    it. The parameter set is neither accepted nor discarded and the fit ends reporting
+    nothing. The guard used to test ``is None`` only, and -- more importantly -- it sat
+    *inside* the "score it here on the master" branch, so a result the workers had already
+    scored (the default path) reached no check whatsoever.
+    """
+
+    # None is deliberately absent here: it does not mean "an unusable score", it means "not
+    # scored yet", and the branch above the guard exists to score it (see the master-scored
+    # cases below). The worker path never emits None -- core.py converts it to inf already.
+    @pytest.mark.parametrize('bad', [float('nan'), -np.inf, 'not a number'],
+                             ids=['nan', 'neg-inf', 'non-numeric'])
+    def test_a_worker_scored_unusable_value_becomes_inf(self, bad):
+        """The default path: the workers scored it, so the master does not re-score. This is
+        the case the old guard could not see at all, being nested in the other branch."""
+        algo = _bare_algo()
+        res = _scored('s1', 1.0)
+        res.score = bad                     # what a worker (or a postprocess script) left
+        assert algo.score_result(res) == np.inf
+        assert res.score == np.inf
+
+    def test_a_master_scored_none_becomes_inf(self):
+        """The case the old guard did catch, unchanged: the objective declines to score
+        (a NaN or Inf prediction) and returns None."""
+        algo = _bare_algo()
+        algo.objective = type('NoneObj', (), {
+            'evaluate_multiple': lambda self, *a, **k: None})()
+        res = _scored('s1', 1.0)
+        res.score = None
+        assert algo.score_result(res) == np.inf
+
+    def test_a_master_scored_nan_becomes_inf(self):
+        """The master-scoring path: score is None on arrival, the objective returns NaN.
+        This is lanl/PyBNF#707's shape -- ave_norm_sos over a column whose mean was NaN."""
+        algo = _bare_algo()
+        algo.objective = type('NanObj', (), {
+            'evaluate_multiple': lambda self, *a, **k: float('nan')})()
+        res = _scored('s1', 1.0)
+        res.score = None
+        assert algo.score_result(res) == np.inf
+
+    def test_a_usable_score_is_returned_untouched(self):
+        """Including +inf, which is this codebase's own "discard this parameter set"
+        sentinel (written by the #388 handler and the worker path) and orders correctly --
+        so it must not be rewritten, nor warned about on every failed simulation."""
+        algo = _bare_algo()
+        for good in (5.0, 0.0, -5.0, np.inf, 1e300):
+            res = _scored('s1', 1.0)
+            res.score = good
+            assert algo.score_result(res) == good
+
+    def test_the_unusable_value_is_named_in_the_log(self, caplog, capsys):
+        algo = _bare_algo()
+        res = _scored('s1', 1.0)
+        res.score = float('nan')
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo.score_result(res)
+        assert 'unusable objective value' in caplog.text
+        assert 'nan' in caplog.text.lower()
+        assert 'unusable objective value' in capsys.readouterr().out
+
+    def test_a_worker_scored_result_is_not_rescored(self, monkeypatch):
+        """The dispatch above the guard still tests ``is None`` alone. Re-scoring a result
+        that already has a value would re-run ``normalize`` over simdata the workers already
+        normalized -- the transforms rewrite the column in place, so a second pass corrupts
+        it -- on top of repeating the objective. A NaN is a score that was computed, not the
+        absence of one, so it must be sanitized without being recomputed."""
+        algo = _bare_algo()
+        normalized, scored = [], []
+        algo.objective = type('SpyObj', (), {
+            'evaluate_multiple': lambda self, *a, **k: scored.append(1) or 1.0})()
+        res = _scored('s1', 1.0)
+        res.score = float('nan')
+        monkeypatch.setattr(type(res), 'normalize',
+                            lambda self, settings: normalized.append(settings), raising=False)
+
+        assert algo.score_result(res) == np.inf
+        assert normalized == [] and scored == []     # neither was re-run
+
+    def test_nan_never_reaches_the_algorithms_got_result(self):
+        """The end the guard exists for: an optimizer's ``got_result`` is where every
+        algorithm reads ``res.score``, and the run loop reaches it only after
+        ``add_to_trajectory`` -> ``score_result``. So the score an algorithm sees is
+        orderable even when the objective produced a NaN."""
+        seen = []
+        algo = _bare_algo(got_result=lambda res: seen.append(res.score) or [])
+        res = _scored('s1', 1.0)
+        res.score = float('nan')
+
+        algo._record_result_and_decide(res)
+
+        assert seen == [np.inf]
+        np.testing.assert_allclose(algo.trajectory.best_score(), np.inf)
+
+
 class TestRecordResultAndDecide:
 
     def test_success_records_and_returns_next_psets(self):
