@@ -376,6 +376,17 @@ file is the mean over exactly the simulations behind the ``log_likelihood`` in
 A simulation that could not be scored, or that scored a different number of points from the
 rest, contributes to neither number.
 
+If **no** simulation of the best fit could be scored, neither file is written: there is no
+scored best fit for either number to be about, and the last value the fit happened to solve for
+belongs to an earlier evaluation rather than to the best fit. The log says so by name, so an
+absent ``profiled_noise.txt`` can be told apart from a fit that profiled nothing::
+
+    WARNING No simulation of the best fit could be scored, so no value is reported for the
+    analytically profiled parameter(s) sd_all either.
+
+The usual cause is the one above it in the log: a **degenerate profile** (a group whose scored
+residual is zero or not finite), which also leaves the run with no information criteria.
+
 
 .. _profiled_coefficient_missing:
 
@@ -399,7 +410,8 @@ searched as an ordinary free parameter and reported alongside the model paramete
 
 As with a profiled noise scale, for a stochastic model the reported value -- and the
 ``at_bound`` column -- describe exactly the simulations of the best fit behind the
-``log_likelihood`` in ``Results/information_criteria.txt``, and no others.
+``log_likelihood`` in ``Results/information_criteria.txt``, and no others; and if no simulation
+of the best fit could be scored the file is not written at all, with the reason in the log.
 
 
 Could not start the workers on the other machines

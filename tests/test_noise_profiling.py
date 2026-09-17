@@ -751,6 +751,40 @@ class TestReporting:
         alg._emit_profiled_noise()
         assert not (tmp_path / 'profiled_noise.txt').exists()
 
+    def test_the_run_says_why_no_scale_was_reported(self, tmp_path, monkeypatch, caplog):
+        """An absent profiled_noise.txt otherwise reads exactly like a fit that profiled
+        nothing at all, and the file carries no row saying what it is over -- so the reason it
+        is empty goes in the log, beside the sibling warning about the criteria (#743)."""
+        obj = _profiled(_gaussian_objective())
+        obj._profiled_noise = {SIGMA: 1.25}
+        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
+                            lambda *a, **kw: None)
+        monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
+        monkeypatch.setattr(algorithm_base.core, 'run_job', lambda job: _FakeResult())
+        alg = _ICAlgorithm(str(tmp_path), [SIGMA], obj)
+
+        with caplog.at_level('WARNING', logger='pybnf.algorithms'):
+            alg._compute_information_criteria(object())
+
+        assert 'no value is reported for the analytically profiled parameter(s) %s' % SIGMA \
+            in caplog.text
+        assert 'belongs to an earlier evaluation' in caplog.text
+
+    def test_a_fit_that_profiles_nothing_says_nothing_about_profiled_values(
+            self, tmp_path, monkeypatch, caplog):
+        """The warning above is for a fit that asked for profiling; the default fit has no
+        profiled parameter to report and must stay silent about them."""
+        monkeypatch.setattr(algorithm_base, 'likelihood_information_criteria',
+                            lambda *a, **kw: None)
+        monkeypatch.setattr(algorithm_base.core, 'Job', lambda *a, **kw: object())
+        monkeypatch.setattr(algorithm_base.core, 'run_job', lambda job: _FakeResult())
+        alg = _ICAlgorithm(str(tmp_path), [], _gaussian_objective())
+
+        with caplog.at_level('WARNING', logger='pybnf.algorithms'):
+            alg._compute_information_criteria(object())
+
+        assert 'analytically profiled parameter' not in caplog.text
+
     def test_profiled_noise_txt_reports_every_profiled_scale(self, tmp_path):
         alg = _ICAlgorithm(str(tmp_path), [SIGMA], _gaussian_objective())
         alg._profiled_noise = {'sd_b': 0.25, 'sd_a': 1.5}
