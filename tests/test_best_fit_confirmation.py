@@ -5,6 +5,12 @@ picks its answer by taking the best value it ever saw usually picks the paramete
 got a lucky simulation. The fix runs the top parameter sets again several times each and
 ranks them by their average.
 
+A run can also produce no value at all, by failing or by scoring something that is not a
+finite number, and averaging only the runs that did produce one is the same lucky draw in a
+different disguise (#720). So a candidate has to have survived more than half of its runs to
+win the ranking, and the tests below pin both halves of that: which candidate is pinned as
+the run's best fit, and what the report says about the ones that were not confirmed.
+
 Three layers are covered here, in this order.
 
   * ``pybnf.algorithms.best_fit_confirmation``: the arithmetic and the report text. It
@@ -59,6 +65,46 @@ def test_no_winner_when_nothing_could_be_run_again():
     assert bfc.winner([]) is None
 
 
+def test_the_bar_for_being_confirmed_is_more_than_half_the_runs_that_came_back():
+    """A failed run is a bad outcome, not a missing measurement, so a candidate has to
+    survive most of its runs before its average over the survivors means anything (#720)."""
+    assert bfc.attempts(_candidate('a', 1.0, [1.0, 2.0], failures=3)) == 5
+
+    assert bfc.confirmed(_candidate('a', 1.0, [1.0] * 10))              # 10 of 10
+    assert bfc.confirmed(_candidate('a', 1.0, [1.0] * 6, failures=4))   # 6 of 10
+    assert not bfc.confirmed(_candidate('a', 1.0, [1.0] * 5, failures=5))   # 5 of 10
+    assert not bfc.confirmed(_candidate('a', 1.0, [1.0], failures=9))       # 1 of 10
+
+    assert bfc.confirmed(_candidate('a', 1.0, [1.0, 2.0], failures=1))  # 2 of 3
+    assert not bfc.confirmed(_candidate('a', 1.0, [1.0], failures=2))   # 1 of 3
+    assert bfc.confirmed(_candidate('a', 1.0, [1.0]))                   # 1 of 1
+    # Nothing came back at all, which is not a measurement either.
+    assert not bfc.confirmed(_candidate('a', 1.0, []))
+
+
+def test_a_candidate_that_failed_most_of_its_runs_loses_to_one_that_failed_none():
+    """The issue: a parameter set scored on the one simulation of ten that worked is the
+    max-of-lucky-draws estimate again, with the unlucky draws deleted rather than averaged
+    in, and it must not beat a parameter set measured over all ten (#720)."""
+    flaky = _candidate('flaky', 5.2, [5.0], failures=9)
+    reliable = _candidate('reliable', 5.05, [5.1] * 10)
+
+    # Its average really is the better number; that is the whole trap.
+    assert bfc.mean_objective(flaky) < bfc.mean_objective(reliable)
+
+    assert bfc.ranked([flaky, reliable]) == [1, 0]
+    assert bfc.winner([flaky, reliable]).name == 'reliable'
+
+
+def test_an_unconfirmed_candidate_never_wins_even_against_a_worse_unconfirmed_one():
+    """Unconfirmed candidates keep a sensible order among themselves, but ordering them is
+    not the same as trusting one of them with the run's answer."""
+    worse = _candidate('worse', 1.0, [90.0], failures=9)
+    better = _candidate('better', 1.0, [5.0], failures=9)
+    assert bfc.ranked([worse, better]) == [1, 0]
+    assert bfc.winner([worse, better]) is None
+
+
 def test_ties_keep_the_order_the_search_ranked_them_in():
     a = _candidate('a', 1.0, [5.0])
     b = _candidate('b', 2.0, [5.0])
@@ -104,6 +150,93 @@ def test_console_lines_name_the_file_and_flag_a_changed_answer():
     text = '\n'.join(lines)
     assert '/tmp/x.txt' in text
     assert 'not the parameter set the search would have reported' in text
+
+
+def test_the_table_marks_every_candidate_as_confirmed_or_not_and_names_the_demoted():
+    flaky = _candidate('flaky', 5.2, [5.0], failures=9)
+    reliable = _candidate('reliable', 5.05, [5.1] * 10)
+    text = '\n'.join(bfc.summary_lines([flaky, reliable], replicates=10))
+
+    assert 'winner\treliable' in text
+    assert 'winner_runs\t10' in text
+    assert 'winner_failed\t0' in text
+    assert 'unconfirmed\tflaky' in text
+    rows = [l for l in text.splitlines() if l and not l.startswith('#') and l[0].isdigit()]
+    assert rows[0].split('\t')[:2] == ['1', 'reliable']
+    assert rows[0].split('\t')[7] == 'yes'
+    assert rows[1].split('\t')[:2] == ['2', 'flaky']
+    assert rows[1].split('\t')[5:8] == ['1', '9', 'no']
+
+
+def test_the_report_says_the_winner_lost_runs_when_it_did():
+    """A winner measured over 6 of its 10 runs is still the answer, but the reader has to be
+    told that four of them produced nothing."""
+    text = '\n'.join(bfc.summary_lines(
+        [_candidate('a', 1.0, [4.0] * 6, failures=4)], replicates=10))
+    assert 'winner_runs\t6' in text
+    assert 'winner_failed\t4' in text
+    assert 'The winner failed 4 of its 10 runs' in text
+
+    console = '\n'.join(bfc.console_lines(
+        [_candidate('a', 1.0, [4.0] * 6, failures=4)], replicates=10, path='/tmp/x.txt'))
+    assert '4 of its 10 runs produced no usable value' in console
+
+
+def test_no_winner_when_every_candidate_failed_too_many_of_its_runs():
+    """A run where the simulations themselves are unreliable has no confirmed answer to
+    offer, so the search's own pick stands and the report says why rather than pinning the
+    best of a bad lot."""
+    candidates = [_candidate('a', 1.0, [5.0], failures=9),
+                  _candidate('b', 2.0, [6.0, 7.0], failures=8)]
+    assert bfc.winner(candidates) is None
+
+    text = '\n'.join(bfc.summary_lines(candidates, replicates=10))
+    assert 'winner\tnone' in text
+    assert 'Every candidate failed half of its runs or more' in text
+    assert 'the best fit is the one the search picked' in text
+    assert 'unconfirmed\ta, b' in text
+    # Both are still in the table with their numbers, ranked but not trusted.
+    rows = [l for l in text.splitlines() if l and not l.startswith('#') and l[0].isdigit()]
+    assert [r.split('\t')[1] for r in rows] == ['a', 'b']
+    assert all(r.split('\t')[7] == 'no' for r in rows)
+
+    console = '\n'.join(bfc.console_lines(candidates, replicates=10, path='/tmp/x.txt'))
+    assert 'none of them was confirmed' in console
+    assert 'find out why the simulations are failing' in console
+
+
+def test_the_two_reasons_a_candidate_could_not_be_run_again_read_differently():
+    nothing_ran = [_candidate('a', 1.0, [], failures=10)]
+    console = '\n'.join(bfc.console_lines(nothing_ran, replicates=10, path='/tmp/x.txt'))
+    assert 'none of the 1 candidate parameter sets could be run again' in console
+    assert 'half of its runs' not in console
+
+
+def test_the_report_does_not_claim_a_demoted_search_pick_ran_worse():
+    """``the one the search liked best does worse when it is run again`` was printed even
+    when the search's pick had the better average and lost only on reliability, which is the
+    opposite of what happened (#720)."""
+    flaky = _candidate('flaky', 5.2, [5.0], failures=9)       # the search's own number 1
+    reliable = _candidate('reliable', 5.05, [5.1] * 10)
+    console = '\n'.join(bfc.console_lines([flaky, reliable], replicates=10, path='/tmp/x.txt'))
+
+    assert 'not the parameter set the search would have reported' in console
+    assert 'the one the search liked best was not confirmed' in console
+    assert 'does worse when it is run again' not in console
+    assert 'This stage confirmed 1 of the 2 candidates' in console
+
+    text = '\n'.join(bfc.summary_lines([flaky, reliable], replicates=10))
+    assert 'search_rank\t2' in text
+    assert 'failed half of its runs or' in text
+    assert 'does worse when it is run' not in text
+
+
+def test_the_report_still_says_a_search_pick_ran_worse_when_that_is_what_happened():
+    lucky = _candidate('lucky', 1.0, [10.0, 10.0])
+    real = _candidate('real', 3.0, [4.0, 4.0])
+    console = '\n'.join(bfc.console_lines([lucky, real], replicates=2, path='/tmp/x.txt'))
+    assert 'the one the search liked best does worse when it is run again' in console
+    assert 'not confirmed' not in console
 
 
 # --------------------------------------------------------------------------- #
@@ -505,6 +638,60 @@ def test_a_failed_replicate_is_counted_and_the_rest_still_decide(tmp_path, _sync
            if l.startswith('1\t')][0]
     fields = row.split('\t')
     assert fields[5] == '2' and fields[6] == '1'  # 2 runs, 1 failed
+
+
+def test_a_parameter_set_that_fails_most_of_its_runs_is_not_pinned_as_the_best_fit(
+        tmp_path, _sync_dask, capsys):
+    """The whole of the issue, end to end (#720). ``flaky`` scores a non-finite objective
+    value on nine of its ten runs and 5.0 on the tenth; ``reliable`` scores 5.1 on all ten.
+    Averaging only the runs that worked made ``flaky`` win on 5.0 < 5.1 and pinned it as the
+    run's answer, which is the max-of-lucky-draws estimate this stage exists to remove."""
+    for r in range(1, 11):
+        NOISE[(1.0, r)] = float('inf')
+    NOISE[(1.0, 7)] = 5.0
+    for r in range(1, 11):
+        NOISE[(2.0, r)] = 5.1
+
+    algo = _algo(tmp_path, candidates=2, replicates=10)
+    algo.trajectory.add(_ps(2.0), 5.05, 'reliable')
+    algo.trajectory.add(_ps(1.0), 5.20, 'flaky')     # the search's own number 1
+
+    algo._confirm_best_fit(_FakeClient())
+
+    assert algo.trajectory.best_fit_name() == 'reliable'
+    assert algo.trajectory.best_score() == 5.1
+    assert algo.trajectory.best_fit()['v1__FREE'] == 2.0
+
+    text = open(algo.res_dir + '/best_fit_confirmation.txt').read()
+    assert 'winner\treliable' in text
+    assert 'unconfirmed\tflaky' in text
+    rows = [l for l in text.splitlines() if l and not l.startswith('#') and l[0].isdigit()]
+    # flaky is still shown, with the average it would have won on and why it did not.
+    assert rows[1].split('\t')[1:8] == ['flaky', '5', 'n/a', 'n/a', '1', '9', 'no']
+    assert 'This stage confirmed 1 of the 2 candidates' in capsys.readouterr().out
+
+
+def test_the_search_answer_stands_when_every_candidate_is_too_unreliable(
+        tmp_path, _sync_dask):
+    """Every candidate surviving one run of three is not a ranking, so the stage pins
+    nothing rather than handing the answer to the least unlucky of them (#720)."""
+    for value in (1.0, 2.0):
+        for r in (1, 2):
+            NOISE[(value, r)] = float('inf')
+    NOISE[(1.0, 3)] = 5.0
+    NOISE[(2.0, 3)] = 9.0
+
+    algo = _algo(tmp_path, candidates=2, replicates=3)
+    algo.trajectory.add(_ps(1.0), 1.0, 'a')
+    algo.trajectory.add(_ps(2.0), 2.0, 'b')
+
+    algo._confirm_best_fit(_FakeClient())
+
+    assert algo.trajectory.pinned_best() is None
+    assert algo.trajectory.best_score() == 1.0
+    text = open(algo.res_dir + '/best_fit_confirmation.txt').read()
+    assert 'winner\tnone' in text
+    assert 'Every candidate failed half of its runs or more' in text
 
 
 def test_the_search_answer_stands_when_no_replicate_can_be_run(tmp_path, _sync_dask):

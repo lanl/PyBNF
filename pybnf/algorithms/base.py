@@ -1769,6 +1769,14 @@ class Algorithm(ABC):
         and writes ``Results/best_fit_confirmation.txt``. All of the simulations go out at
         once, which uses processors that would otherwise sit idle at the end of a run.
 
+        Only a candidate that produced a usable objective value in more than half of its
+        runs can win. A failed or non-finite run is a bad outcome rather than a missing
+        measurement, so averaging over the runs that worked would hand the answer to
+        whichever parameter set got a lucky simulation, which is the thing this stage is
+        here to stop (:func:`~pybnf.algorithms.best_fit_confirmation.confirmed`, #720).
+        When no candidate clears that bar the search's own pick stands and the report says
+        why.
+
         A no-op unless at least one model is stochastic, and a no-op without a dask client
         to submit the work to. Deliberately scoped to the final answer: the same noise also
         biases the search while it runs, which is a much larger piece of work.
@@ -1910,15 +1918,21 @@ class Algorithm(ABC):
         """
         best = best_fit_confirmation.winner(candidates)
         if best is None:
-            logger.warning('No candidate parameter set produced a usable objective value '
-                           'when it was run again, so the best fit the search picked stands')
+            if any(c.scores for c in candidates):
+                logger.warning('Every candidate parameter set failed half of its replicate '
+                               'runs or more, so none of them was confirmed and the best fit '
+                               'the search picked stands')
+            else:
+                logger.warning('No candidate parameter set produced a usable objective value '
+                               'when it was run again, so the best fit the search picked stands')
         else:
             self.trajectory.pin_best(best.pset,
                                      best_fit_confirmation.mean_objective(best), best.name)
             logger.info('Best-fit confirmation: %s wins with an average objective of %.10g '
-                        'over %d run(s); the search had recorded %.10g for it'
+                        'over %d of %d run(s); the search had recorded %.10g for it'
                         % (best.name, best_fit_confirmation.mean_objective(best),
-                           len(best.scores), best.search_objective))
+                           len(best.scores), best_fit_confirmation.attempts(best),
+                           best.search_objective))
 
         name = 'best_fit_confirmation_refine.txt' if self.refine else 'best_fit_confirmation.txt'
         path = str(Path(self.res_dir) / name)

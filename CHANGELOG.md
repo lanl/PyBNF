@@ -252,6 +252,41 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **The best-fit confirmation stage ranks a candidate on all of its replicate runs, so one
+  that fails most of them can no longer be pinned as the run's answer (#720, ADR-0146).** The
+  stage exists to stop a fit reporting whichever parameter set got a lucky simulation: it
+  runs the search's top `best_fit_candidates` parameter sets `best_fit_replicates` more times
+  each and reports the one with the best average. But a replicate that fails, or that returns
+  a non-finite objective value, produced no number to average, and `mean_objective` averaged
+  only the runs that did — a survivor-only mean over a sample size that varied per candidate
+  from 1 to `best_fit_replicates`. `failures` was carried on the row and printed in a column,
+  but it entered no comparison: the ranking keyed on that mean alone and disqualified a
+  candidate only when every one of its runs had failed. A parameter set that failed nine runs
+  of ten and survived one was therefore scored on a single simulation again, the unlucky
+  draws deleted rather than averaged in, and it beat a parameter set that returned a slightly
+  worse value in ten runs of ten. `_emit_best_fit_confirmation` pins the winner on the
+  trajectory by design, so the saved simulations, the best-fit model file, the information
+  criteria, a refine's start point and a bootstrap replicate's answer all then described the
+  failure-prone set.
+  A candidate is now **confirmed**, and eligible to win, only when more than half of the runs
+  that came back produced a usable value — exactly the condition for the middle of all its
+  runs to be a real number, since a failure is known to be worse than every value. The
+  unconfirmed ones are ranked below every confirmed one whatever their averages say and are
+  shown in the table with a `confirmed` column, their failure counts and an `unconfirmed`
+  line naming them; nothing is hidden, and a candidate that loses a minority of its runs
+  still competes as it did. When no candidate clears the bar the stage pins nothing, the
+  search's own pick stands, and the report and the log say that the simulations are failing
+  rather than offering the best of a bad lot.
+  It was also silent at the point of decision, which is the half a reader would have caught:
+  the console said nothing about failures, and with a single survivor `standard_error` was
+  `None` so the documented "raise `best_fit_replicates` if the standard errors overlap"
+  guidance could not flag it either. The console now says how many of the winner's runs
+  produced nothing and how many candidates were not confirmed. Its one line about a changed
+  answer used to assert flatly that "the one the search liked best does worse when it is run
+  again", which is false when the search's own top pick is the candidate that had the better
+  average and lost on reliability; it now says which of the two things happened.
+  `winner_runs` and `winner_failed` put the winner's sample size in the file beside its
+  average.
 - **A `time_error` fit is refused by the PEtab export instead of being written as an
   exact-time one (#738).** A `time_error` clause on a `noise_model` line says the reported
   measurement times are not exact: the objective integrates each observation's density over a

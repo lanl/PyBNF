@@ -214,11 +214,13 @@ processors that would otherwise sit idle at the end of a run. The stage writes
     winner_mean_objective	72838.74908
     winner_standard_error	5521.750431
     winner_search_objective	54877.73818
+    winner_runs	4
+    winner_failed	0
     optimism	17961.0109
-    # rank	name	mean_objective	standard_error	std_deviation	runs	failed	search_objective
-    1	iter2p0h4	72838.74908	5521.750431	11043.50086	4	0	54877.73818
-    2	init4	87262.13928	3134.119241	6268.238482	4	0	99030.06578
-    3	iter2p5h3	100953.6321	3221.85557	6443.71114	4	0	101437.2518
+    # rank	name	mean_objective	standard_error	std_deviation	runs	failed	confirmed	search_objective
+    1	iter2p0h4	72838.74908	5521.750431	11043.50086	4	0	yes	54877.73818
+    2	init4	87262.13928	3134.119241	6268.238482	4	0	yes	99030.06578
+    3	iter2p5h3	100953.6321	3221.85557	6443.71114	4	0	yes	101437.2518
 
 ``mean_objective`` is the number to quote. Compare it against ``search_objective`` in the
 same row to see how much of the search's answer was luck; the ``optimism`` line does that
@@ -226,6 +228,35 @@ subtraction for the winner. ``standard_error`` says how well this stage told the
 apart, so two rows whose averages differ by less than their standard errors have not really
 been separated and need more replicates. A ``search_rank`` line appears when the winner is
 not the parameter set the search itself would have reported.
+
+A replicate run can fail outright, or come back with an objective value that is not a
+finite number — a crashed or timed-out simulation, or a stochastic trajectory that hits
+zero counts under a log-based objective. The ``failed`` column counts those runs and
+``runs`` counts the ones that produced a value, so ``mean_objective`` is an average over
+``runs``, not over ``replicates_requested``.
+
+A failed run is a bad outcome and not a missing measurement: the parameter set could not be
+simulated, or it was simulated and scored worse than any number. Averaging only the runs
+that worked would therefore score a parameter set on whichever of its simulations happened
+to succeed, which is the lucky draw this whole stage exists to remove — a parameter set that
+fails nine runs of ten and survives one would be back to being judged on a single
+simulation, now with the unlucky draws deleted rather than averaged in, and it would beat a
+parameter set measured honestly over all ten.
+
+So a candidate is **confirmed**, and eligible to win, only when more than half of its runs
+produced a value. That is the condition for the middle of all its runs to be a real number:
+a failure is known to be worse than every value, so a candidate that fails half of its runs
+or more has no finite median at all. The ``confirmed`` column says which candidates cleared
+the bar. An unconfirmed one keeps its row, with the average it reached over the few runs
+that worked, but is ranked below every confirmed candidate whatever that average says and
+cannot be the winner; an ``unconfirmed`` line names them. The winner's own ``winner_runs``
+and ``winner_failed`` lines say how many runs its average came from, and a note appears
+above them when it lost any.
+
+When no candidate clears the bar the file says ``winner none``, the best fit stays the one
+the search picked, and the run prints a warning. That is a sign to look at why the
+simulations are failing rather than to trust any row in the table: every average in it is
+over a minority of runs and so is optimistic.
 
 The stage runs under ``edition = 2`` and above, where it defaults to ten candidates at ten
 replicates each. Under the legacy edition it is off, because an unchanged configuration file
