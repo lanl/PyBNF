@@ -1456,11 +1456,17 @@ def _free_parameter_from_var_line(name, keyword, value):
     """The legacy positional ``<family>_var = <id> p1 [p2] [b|u]`` declaration."""
     _require_exportable_prior(name, keyword)
     # p1/p2 are the family's governing values (bounds for the Uniform families,
-    # loc/scale or shape/scale for the two-parameter location families); a 3rd token
-    # is the native ``bounded`` flag, inert for the location families. A one-parameter
+    # loc/scale or shape/scale for the two-parameter location families). A one-parameter
     # unbounded family (exponential/chisquare/rayleigh, #417) carries only p1.
     p2 = float(value[1]) if len(value) >= 2 else None
-    return FreeParameter(name, keyword, float(value[0]), p2)
+    # The 3rd token is the native reflecting-bounds flag, which only the Uniform families
+    # take ('u' -> False, 'b'/absent -> True). It used to be read as inert and dropped, so
+    # the exporter built a BOUNDED parameter from a conf that declared an unbounded search
+    # and wrote the box into PEtab's hard bounds without a word (#736). Passed through, so
+    # the parameter matches the one the fitter builds and petab_parameter_row can refuse
+    # the shape PEtab has no field for.
+    bounded = value[2] if len(value) >= 3 else True
+    return FreeParameter(name, keyword, float(value[0]), p2, bounded=bounded)
 
 
 def _free_parameter_from_conf_record(name, fields):

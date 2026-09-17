@@ -382,7 +382,9 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     infinity (half-bounded, ADR-0047). An unbounded one writes blank bounds. The no-prior
     ``var`` / ``logvar`` point-start keywords and the log forms of the five catalog
     families (no PEtab ``log-`` spelling) raise ``NotImplementedError`` -- surfaced in
-    code, not mis-exported.
+    code, not mis-exported. So does a Uniform family carrying the native ``u`` flag, whose
+    box seeds the first population without constraining the search: PEtab's bounds are hard,
+    so there is nothing to write it as (#736, see :func:`_petab_uniform_row`).
     """
     if parameter_id is None:
         parameter_id = free_parameter.name
@@ -406,12 +408,31 @@ def petab_parameter_row(free_parameter, parameter_id=None):
 
 
 def _petab_uniform_row(fp, parameter_id, dist, is_log, nominal):
-    """A bounded Uniform family -> a PEtab estimated parameter over ``[p1, p2]``.
+    """A **bounded** Uniform family -> a PEtab estimated parameter over ``[p1, p2]``.
 
     The linear ``uniform_var`` needs no ``priorDistribution`` (it *is* PEtab's
     default for an estimated, prior-less parameter); ``log-uniform`` is not that
     default, so it states its family and its ``(a, b)`` = the same linear bounds.
+
+    Bounded is the precondition, not a description. The Uniform families are the only
+    ones carrying the native ``u`` flag (``uniform_var = v 0 10 u``), which turns the
+    reflecting box *off*: the box seeds the first population and the search is then free
+    to leave it. That is a statement about where a run starts, and PEtab has no field for
+    it -- ``lowerBound``/``upperBound`` are hard box constraints -- so writing ``[p1, p2]``
+    into them would state a constraint the config explicitly declined (#736).
     """
+    if not fp.bounded:
+        raise NotImplementedError(
+            f"Free parameter '{fp.name}' is declared unbounded (the 'u' flag, e.g. "
+            f"'{fp.type} = {fp.name} {num(fp.p1)} {num(fp.p2)} u'): the box seeds the "
+            f"first population and the search may then leave it. PEtab v2 cannot say that "
+            f"-- its lowerBound/upperBound are hard box constraints, and stating the box "
+            f"as a uniform priorDistribution with blank bounds does not mean it either "
+            f"(PEtab bounds truncate a prior rather than seeding a draw, and such a row "
+            f"re-imports as a bounded parameter). Writing [{num(fp.p1)}, {num(fp.p2)}] as "
+            f"the bounds would export a constraint this job declined, so it is refused "
+            f"rather than written. Drop the 'u' flag to export the box as real bounds "
+            f"(ADR-0025, #736).")
     lb, ub = float(fp.p1), float(fp.p2)
     prior_distribution = dist if is_log else None
     prior_parameters = (lb, ub) if is_log else ()

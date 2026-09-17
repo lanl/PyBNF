@@ -252,6 +252,26 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A `U`-tagged free parameter is refused by the PEtab export instead of being written as a
+  hard-bounded one (#736, ADR-0025).** `uniform_var = v 0 10 U` and its `loguniform_var` twin
+  mean the box is enforced only during initialization: it seeds the first population and the
+  search is then free to leave it, so the parameter's box is `(-inf, inf)`. The exporter read
+  the two numbers and dropped the tag, and `lowerBound`/`upperBound` in PEtab are hard box
+  constraints — so the job exported to a table byte-identical to the bounded spelling, and a
+  re-import produced a fit constrained to `[0, 10]` where the original was not. No warning, no
+  exception. It is the third of the same shape as #719 and #733: the export read part of a
+  declaration and discarded the rest without saying so.
+  This one has no mapping waiting to be written. PEtab's nearest shape, blank bounds plus an
+  explicit uniform `priorDistribution` over the box, says something else — PEtab bounds
+  truncate a prior rather than seed a draw — and does not survive the trip either, since the
+  importer resolves a uniform prior to a bounded parameter whatever the bounds say. That is
+  correct for a PEtab row, so nothing changed on the import side. The export now refuses, in
+  code and naming the boundary, which is the contract it already holds itself to for every
+  other construct PEtab cannot state; the message says to drop the tag to export the box as
+  real bounds. Exporting the box with a warning was considered and rejected: the exporter
+  emits no warnings anywhere, and a warning is the signal the start-point work found people do
+  not act on. Nothing measurable is lost — no `U`-tagged declaration exists in the examples,
+  tests or benchmarks. The untagged and `B`-tagged spellings export exactly as before.
 - **The PEtab export reads edition-2 `parameter:` records, so a free parameter written the
   new-era way no longer vanishes from the exported problem (#733).** The exporter picked its
   free parameters out of the config by matching key names against `(_var$|^var$|^logvar$)`.
