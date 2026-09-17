@@ -39,7 +39,7 @@ import sys
 
 import pytest
 
-from .context import algorithms, printing, pset
+from .context import algorithms, data, printing, pset
 
 import pybnf.pybnf as pybnf_main
 
@@ -392,6 +392,45 @@ def test_none_score_prints_nan_message_and_skips_constraints(monkeypatch, capsys
     assert 'NaN or Inf' in out
     assert 'Objective value' not in out  # never reached the print
     assert 'inst' not in holder           # constraint block skipped
+
+
+# 'peak'/'unit' are the whole-fit string form; the floor is spelled as the per-data-key dict
+# Configuration emits ({data_key: [(transform, [cols])]}), which is the only shape
+# Result.normalize forwards a parameterized transform through -- a bare ('floor', 0.03) tuple
+# matches neither of its branches and would silently normalize nothing.
+@pytest.mark.parametrize('method', ['peak', 'unit', {'s': [(('floor', 0.03), ['obs1'])]}],
+                         ids=['peak', 'unit', 'floor'])
+def test_all_nan_column_reaches_the_nan_message_instead_of_a_traceback(monkeypatch, capsys,
+                                                                      method):
+    """#726: an all-NaN simulated column must not raise out of ``normalize``.
+
+    ``run_check`` calls ``result.normalize(...)`` *outside* the ``try`` that follows it (that
+    one covers only ``postprocess_data``), and neither ``run_check`` nor its caller in
+    ``pybnf.py`` has a handler -- unlike the two fit scoring paths, which wrap normalize in
+    #388's blanket except. A column with no measured point has no peak, min or baseline, so
+    ``np.nanargmax`` / ``np.nanargmin`` raised ``ValueError('All-NaN slice encountered')`` and
+    ``--check-simulation`` on a broken model died with a numpy traceback -- bypassing the
+    diagnostic three lines further down that the command exists to print.
+
+    This uses the **real** ``Result.normalize`` over a real ``Data`` (not ``_SpyResult``'s
+    recorder), because the defect is in the normalization itself.
+    """
+    sim = data.Data()
+    sim.data = sim._read_file_lines(['# t  obs1\n', ' 0 nan\n', ' 1 nan\n'], r'\s+')
+    result = algorithms.core.Result(pset.PSet([]), {'m': {'s': sim}}, 'check')
+    _patch_job(monkeypatch)
+    _patch_run_job(monkeypatch, result)
+    holder = _patch_counter(monkeypatch, fail_count=0)
+    # score=None is what evaluate_multiple returns for a NaN prediction -- the failed-simulation
+    # path run_check already handles. Reaching it is the whole point.
+    mc = _make_check(objective=_SpyObjective(score=None), constraints=(_FakeCset(2),),
+                     normalization=method)
+
+    mc.run_check()      # must not raise
+
+    out = capsys.readouterr().out
+    assert 'NaN or Inf' in out
+    assert 'inst' not in holder          # returned before the constraint block, as designed
 
 
 # =========================================================================== #
