@@ -617,6 +617,57 @@ def test_initialize_models_bionetgen_backend_skips_bngsim(monkeypatch, tmp_path)
     assert isinstance(models[0], pset.NetModel)
 
 
+class TestNetworkGenerationErrorHandling:
+    """``_initialize_models``'s catch-all around network generation must not swallow
+    a Ctrl-C.
+
+    The principle -- cleanup and catch-all handlers report failures, they do not
+    intercept the user asking to stop -- already landed for ``main()``'s post-run
+    path, which ``tests/test_pybnf_cleanup.py`` covers. Network generation was the
+    last site left: it kept a bare ``except:``, so a Ctrl-C during it was reported as
+    "Unknown error occurred during network generation... Please report this bug" and
+    turned into ``SystemExit(1)``. Network generation is often the longest
+    unattended part of a fit's startup, which is exactly when a user interrupts.
+    """
+
+    def _algo(self, tmp_path):
+        model = _make_tfun_bngl_model(tmp_path)
+        output_dir = tmp_path / 'pybnf_output'
+        output_dir.mkdir()
+        return _make_dummy_algorithm(model, output_dir, bngl_backend='bionetgen')
+
+    def test_keyboard_interrupt_propagates(self, monkeypatch, tmp_path):
+        """Mutation-distinguishing: with a bare ``except:`` here this raised
+        ``SystemExit(1)`` instead."""
+        algo = self._algo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        with patch.object(algorithms.base, 'run_subprocess', side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                algorithms.Algorithm._initialize_models(algo)
+
+    def test_ordinary_exception_still_reports_and_exits(self, monkeypatch, tmp_path, capsys):
+        """The narrowing must not cost the reporting it narrows: an actual failure
+        is still logged, explained, and exits non-zero."""
+        algo = self._algo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        with patch.object(algorithms.base, 'run_subprocess', side_effect=RuntimeError('boom')):
+            with pytest.raises(SystemExit) as exc_info:
+                algorithms.Algorithm._initialize_models(algo)
+        assert exc_info.value.code == 1
+        assert 'Unknown error occurred during network generation' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('raised', [KeyboardInterrupt, RuntimeError])
+    def test_working_directory_is_restored_either_way(self, monkeypatch, tmp_path, raised):
+        """``_initialize_models`` chdir-s into the Initialize directory; the
+        ``finally`` that chdir-s back has to run whichever exception leaves."""
+        algo = self._algo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        with patch.object(algorithms.base, 'run_subprocess', side_effect=raised):
+            with pytest.raises((KeyboardInterrupt, SystemExit)):
+                algorithms.Algorithm._initialize_models(algo)
+        assert Path(os.getcwd()).resolve() == Path(tmp_path).resolve()
+
+
 def test_initialize_models_nf_bionetgen_backend_skips_bngsim(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf')
     output_dir = tmp_path / 'pybnf_output'

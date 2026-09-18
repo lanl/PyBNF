@@ -184,15 +184,29 @@ extend-select = ["UP032"]
 
 # Pre-existing legacy style that PyBNF does not enforce. Each is either purely
 # cosmetic or a behavioral change to "fix", so it is out of scope for the lint
-# gate (which must stay mechanical). Items tied to dev/PUNCHLIST.md are tracked
-# and fixed there, not here.
+# gate (which must stay mechanical). Every reason has to stand on its own here:
+# an ignore whose justification lives somewhere the reader cannot open is
+# indistinguishable from an ignore with no justification (#716).
+#
+# E722 (bare except) used to be on this list, deferred to a document outside the
+# repository. It had exactly one site left, so it was fixed instead and the rule
+# is now enforced.
 ignore = [
     "E402",  # module-import-not-at-top: intentional (lazy backend guards, test bootstrap)
     "E712",  # ==True/False: legacy; rewriting can change truthiness semantics (e.g. numpy bools)
     "E721",  # type(x) == T comparisons: legacy, semantically fine in context
-    "E722",  # bare except: tracked as ROB-4 in dev/PUNCHLIST.md (behavioral fix)
     "E741",  # ambiguous variable names (l/I/O): legacy
-    "F841",  # unused locals: several are CQ-5 dead code (tracked); common bind-then-assert in tests
+    # unused locals. Most sites are in the test suite, where the call is made for
+    # its effect -- usually the exception a `pytest.raises` block is asserting on --
+    # and the name exists to say what was called. One is a fixture script that must
+    # stay broken (`tests/bngl_files/.../bugscript.py` raises on purpose). Outside
+    # tests there are two, both deliberate: config.py binds an attribute lookup
+    # performed for its own sake, guarding a user-supplied postprocessing script,
+    # and benchmarks/run_benchmark.py binds the `d` of the Laloy & Vrugt distance
+    # metric so the code reads like the formula quoted beside it. Ruff's fix in
+    # every case is to delete the binding, so the rule is off repo-wide rather than
+    # per-file ignored.
+    "F841",
 ]
 
 [tool.ruff.lint.per-file-ignores]

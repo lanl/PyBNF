@@ -542,7 +542,14 @@ class Algorithm(ABC):
                                   self.config.config['wall_time_gen'])
                     print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
                     exit(1)
-                except:
+                except Exception:
+                    # Deliberately not a bare `except:`. A Ctrl-C during network
+                    # generation is the user asking to stop, not an unknown error to
+                    # report as a bug, and a bare clause caught it here and reported it
+                    # as one -- the same masking already removed from main()'s post-run
+                    # cleanup (tests/test_pybnf_cleanup.py). KeyboardInterrupt and
+                    # SystemExit now propagate; the `finally` below still restores the
+                    # working directory on the way out.
                     tb = traceback.format_exc()
                     logger.debug(f"Other exception occurred:\n{tb}")
                     print0("Unknown error occurred during network generation, see log... exiting")
