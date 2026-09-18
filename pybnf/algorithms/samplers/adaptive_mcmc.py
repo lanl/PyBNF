@@ -522,26 +522,60 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 file_append = file_append[self.adaptive:]
                 np.savetxt(f, file_append)   
         shutil.copyfile(combined_file, out / 'adaptive_files' / 'combined_params.txt')      
+    def _combine_chain_files(self, runs_dir, columns, buffers, per_chain, combined, missing):
+        """Concatenate each key's per-chain files into one, chain by chain.
+
+        A source file that was never written is skipped and recorded in ``missing``
+        rather than loaded. It used to be loaded unconditionally, so the absence of an
+        output the run itself declined to write ended the run in ``FileNotFoundError``
+        on the last step before ``'STOP'``, after all the sampling work was done (#760).
+        The combined file is opened only once there is something to put in it, so a key
+        with no source files leaves no empty file behind either."""
+        for j in range(self.num_parallel):
+            for l in columns:
+                for i in buffers:
+                    if l not in i:
+                        continue
+                    source = runs_dir / per_chain.format(key=i, chain=j)
+                    if not source.is_file():
+                        missing.append((i, j))
+                        continue
+                    # atleast_2d: loadtxt drops a one-row file to 1-D, and savetxt then
+                    # writes that single sample down the combined file as one value per
+                    # line instead of across one row -- a run with exactly one sampling
+                    # iteration past valid_range wrote its trajectory transposed.
+                    with open(runs_dir / combined.format(key=i), 'a') as f:
+                        np.savetxt(f, np.atleast_2d(np.loadtxt(source)))
+
     def combine_chains_traj(self):
         # combine the trains for the file output file
         if self.num_parallel != 1:
             runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+            missing = []
             if self.config.config['output_trajectory']:
-                for j in range(self.num_parallel):
-                    for l in self.output_columns:     
-                        for i in self.output_run_current.keys():
-                            if l in i:
-                                with open(runs_dir / f'combined_traj_{i}.txt', 'a') as f:
-                                    file_append = np.loadtxt(runs_dir / f'traj_{i}_chain_{j}.txt')
-                                    np.savetxt(f, file_append)
+                self._combine_chain_files(
+                    runs_dir, self.output_columns, self.output_run_current,
+                    'traj_{key}_chain_{chain}.txt', 'combined_traj_{key}.txt', missing)
             if self.config.config['output_noise_trajectory']:
-                for j in range(self.num_parallel):
-                    for l in self.output_noise_columns:     
-                        for i in self.output_run_noise_current.keys():
-                            if l in i:
-                                with open(runs_dir / f'combined_traj_noise_{i}.txt', 'a') as f:
-                                    file_append = np.loadtxt(runs_dir / f'traj_noise_{i}_chain_{j}.txt')
-                                    np.savetxt(f, file_append)                                     
+                self._combine_chain_files(
+                    runs_dir, self.output_noise_columns, self.output_run_noise_current,
+                    'traj_noise_{key}_chain_{chain}.txt', 'combined_traj_noise_{key}.txt',
+                    missing)
+            if missing:
+                # Something the conf asked for is not in the combined output, and both ways
+                # of getting here are worth naming: the run may have stopped inside the
+                # adaptive window, before any trajectory is written, or a name may be one no
+                # simulation ever produced a column for (#755). Chains can differ, since a
+                # convergence stop fires on one chain's iteration count while the others are
+                # still behind it.
+                print1("Warning: the combined trajectory output is missing %d per-chain "
+                       "file%s the run never wrote: %s. A trajectory is written only from "
+                       "iteration %d (burn_in + adaptive), so a run that stopped before then "
+                       "has none, and a name no simulation produced a column for has none "
+                       "either."
+                       % (len(missing), '' if len(missing) == 1 else 's',
+                          ', '.join(f'{key} chain {chain}' for key, chain in missing),
+                          self.valid_range))
 
     def pick_new_pset(self, idx):
         """

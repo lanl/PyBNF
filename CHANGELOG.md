@@ -252,6 +252,31 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **An adaptive-MCMC run no longer ends in `FileNotFoundError` when the combine step meets a
+  per-chain trajectory file it never wrote (#760).** `combine_chains_traj` concatenates each
+  key's per-chain files by loading every one of them by name, with no check that it exists. Both
+  call sites are run terminations, so the failure landed after all the sampling work was done,
+  on the last step before the run reported `'STOP'`. Two configurations reach it, both needing
+  `population_size > 1` and `output_trajectory`: a name no simulation produced a column for is
+  never written for any chain (#755), and a run that converges inside the adaptive window stops
+  before `valid_range`, which is the first iteration at which any trajectory is written --
+  `check_convergence` needs only `iteration > burn_in`, while the writers need
+  `iteration >= burn_in + adaptive`. The second requires no mistake by the user, and turns a
+  successful early convergence into a crash; it can also leave the chains in different states,
+  since it fires on one chain's iteration count while the others are behind it. (A run too short
+  to reach `valid_range` is not a third way in: the constructor already refuses `max_iterations`
+  below `burn_in + adaptive + 2`.)
+
+  A source file that was never written is now skipped, and the run says once which keys and
+  chains are missing from the combined output and what the two causes are, rather than either
+  crashing or quietly producing less than the conf asked for. A key with no source files at all
+  leaves no empty combined file behind either, because the combined file is opened only once
+  there is something to put in it.
+
+  Fixed in the same place, because the rewrite turned it up: `np.loadtxt` drops a one-row file
+  to one dimension and `np.savetxt` then writes that sample down the page as one value per line.
+  A chain with exactly one sampling iteration past `valid_range` had its trajectory transposed
+  in the combined file, mixing a column into a table of rows.
 - **A recorded adaptive-MCMC sample is written whatever its values, so a trajectory that sits at
   zero is no longer dropped from the output file (#758).** `write_out_trajactorys` chose what to
   write by discarding every all-zero row of its buffer. Each buffer holds one slot per chain --
