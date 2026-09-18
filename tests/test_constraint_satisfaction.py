@@ -180,9 +180,10 @@ class TestReportConstraintSatisfaction:
     @classmethod
     def teardown_class(cls):
         shutil.rmtree(cls.tmpdir)
-        nocstr = cls.tmpdir + '_nocstr'
-        if os.path.exists(nocstr):
-            shutil.rmtree(nocstr)
+        for suffix in ('_nocstr', '_one', '_onesample'):
+            extra = cls.tmpdir + suffix
+            if os.path.exists(extra):
+                shutil.rmtree(extra)
 
     def test_report_output(self):
         c1 = constraint.AlwaysConstraint('A', '<', 10.0, 'parabola', 'par1', 1.0)
@@ -222,6 +223,79 @@ class TestReportConstraintSatisfaction:
         # c2: 1 satisfied out of 4 = 25.0%
         assert '25.0%' in lines[2]
         assert '1' in lines[2]
+
+    def test_report_output_with_a_single_constraint(self):
+        """A fit with exactly one constraint used to get no report at all
+        (lanl/PyBNF#769). The samples file is then a single column, `np.loadtxt`
+        drops the length-one axis and returns a 1-D array, and the `ndim < 2` guard
+        read that as nothing having been recorded -- so the report was skipped
+        silently, for every checkpoint, however many samples had been written.
+        One constraint is the ordinary case, not a corner: the multi-constraint
+        test above is the one that happened to be covered.
+        """
+        c1 = constraint.AlwaysConstraint('A', '<', 10.0, 'parabola', 'par1', 1.0)
+        c1.source_line = 'A < 10 always'
+        cs = constraint.ConstraintSet('parabola', 'par1')
+        cs.constraints = [c1]
+
+        out = self.tmpdir + '_one'
+        os.makedirs(out + '/Results/Histograms', exist_ok=True)
+        cfg_dict = dict(_BASE_CFG, output_dir=out)
+        with _no_bng, _no_init:
+            cfg = config.Configuration(cfg_dict)
+            cfg.constraints = {cs}
+            ba = algorithms.BasicBayesMCMCAlgorithm(cfg)
+            ba.start_run()
+
+        # 5 samples, 1 constraint -> a single column.
+        with open(ba.constraint_samples_file, 'w') as f:
+            f.write('# A < 10 always\n')
+            for satisfied in (1, 1, 0, 1, 0):
+                f.write('%d\n' % satisfied)
+
+        ba.report_constraint_satisfaction('_test')
+
+        report_path = os.path.join(out, 'Results', 'constraint_satisfaction_test.txt')
+        assert os.path.exists(report_path), 'no report written for a single constraint'
+        with open(report_path) as f:
+            lines = f.readlines()
+        assert lines[0].startswith('#')
+        # 3 satisfied out of 5 -- the column really was read, not just counted.
+        assert lines[1].split('\t')[1:] == ['60.0%', '3', '5\n']
+
+    def test_report_with_a_single_sample(self):
+        """The other axis `loadtxt` collapses: one recorded sample over several
+        constraints also came back 1-D and was skipped (lanl/PyBNF#769). A run hits
+        this at its first checkpoint.
+        """
+        c1 = constraint.AlwaysConstraint('A', '<', 10.0, 'parabola', 'par1', 1.0)
+        c1.source_line = 'A < 10 always'
+        c2 = constraint.AlwaysConstraint('A', '>', 5.0, 'parabola', 'par1', 1.0)
+        c2.source_line = 'A > 5 always'
+        cs = constraint.ConstraintSet('parabola', 'par1')
+        cs.constraints = [c1, c2]
+
+        out = self.tmpdir + '_onesample'
+        os.makedirs(out + '/Results/Histograms', exist_ok=True)
+        cfg_dict = dict(_BASE_CFG, output_dir=out)
+        with _no_bng, _no_init:
+            cfg = config.Configuration(cfg_dict)
+            cfg.constraints = {cs}
+            ba = algorithms.BasicBayesMCMCAlgorithm(cfg)
+            ba.start_run()
+
+        with open(ba.constraint_samples_file, 'w') as f:
+            f.write('# A < 10 always\tA > 5 always\n')
+            f.write('1\t0\n')
+
+        ba.report_constraint_satisfaction('_test')
+
+        report_path = os.path.join(out, 'Results', 'constraint_satisfaction_test.txt')
+        assert os.path.exists(report_path), 'no report written for a single sample'
+        with open(report_path) as f:
+            lines = f.readlines()
+        assert lines[1].split('\t')[1:] == ['100.0%', '1', '1\n']
+        assert lines[2].split('\t')[1:] == ['0.0%', '0', '1\n']
 
     def test_report_no_constraints(self):
         cfg_dict = dict(_BASE_CFG, output_dir=self.tmpdir + '_nocstr')

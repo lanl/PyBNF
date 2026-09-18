@@ -426,10 +426,15 @@ class BayesianAlgorithm(Algorithm):
         if not self.all_constraints:
             return
         try:
-            dat = np.loadtxt(self.constraint_samples_file)
+            # ndmin=2 for the same reason as update_histograms below: loadtxt drops any
+            # axis of length one, so a fit with exactly one constraint -- or one that has
+            # recorded exactly one sample -- read back flat and was skipped as though
+            # nothing had been recorded, writing no report at all (lanl/PyBNF#769). The
+            # shape is now always (n_samples, n_constraints) and the row count decides.
+            dat = np.loadtxt(self.constraint_samples_file, ndmin=2)
         except (OSError, ValueError):
             return
-        if dat.ndim < 2 or dat.shape[0] == 0:
+        if dat.shape[0] == 0:
             return
         n_samples = dat.shape[0]
         filepath = self.config.config['output_dir'] + f'/Results/constraint_satisfaction{file_ext}.txt'
@@ -449,11 +454,19 @@ class BayesianAlgorithm(Algorithm):
         :return:
         """
         # Read the samples file into an array, ignoring the first row (header)
-        # and first 2 columns (pset names, probabilities)
+        # and first 2 columns (pset names, probabilities).
+        #
+        # ndmin=2 because genfromtxt drops any axis of length one: one free parameter
+        # reads back as a 1-D array of samples, a lone sample as a 1-D array of
+        # parameters, and one of each as a 0-d scalar. The old guard tested ndim and
+        # so read every one of those as an empty sample set, skipping the histograms
+        # and the credible intervals for the whole run while the samples file filled
+        # up as normal (lanl/PyBNF#769). With ndmin the shape is always
+        # (n_samples, n_variables) and the row count alone decides.
         dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
-                                  usecols=range(2, len(self.variables)+2))
+                                  usecols=range(2, len(self.variables)+2), ndmin=2)
 
-        if dat_array.ndim < 2 or dat_array.shape[0] == 0:
+        if dat_array.shape[0] == 0:
             logger.warning('No samples collected — skipping histogram generation')
             return
 
