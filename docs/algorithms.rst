@@ -458,7 +458,9 @@ Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
 The implementation algorithm can be found in Andrieu and Thoms, Stat Comput 18: 343–373 (2008). The algorithm uses a random walk like MCMC during the training period. While in the training period data is collected to determine the covariance of the posterior. Once the training phase is completed real time on the fly calculation of the diffusivity and covariance is performed for the remaining iterations.
 Note: as stated in the Metropolis-Hastings description if a uniform or loguniform prior is used, the prior does not affect the result other than to confine the distribution within the specified range. If a normal or lognormal prior is used, the prior does affect the probability of accepting each proposed move, and therefore the choice of prior affects the final sampled probability distribution.
- 
+
+A proposed move that would take a ``uniform_var`` or ``loguniform_var`` outside its box is rejected, not reflected back inside as the optimizers and Metropolis-Hastings do. The posterior is zero outside the box, so such a move is rejected with certainty: the chain stays where it is for that iteration, and no simulation is run for it. Reflection is not used here because it keeps the sampled distribution exact only for a proposal without correlations between parameters, and the proposal this algorithm adapts to is a correlated one. These rejections count as iterations toward ``max_iterations`` and as rejections in the acceptance rate that the step size is tuned against, so when the posterior presses against a bound the run performs fewer simulations than iterations, and the step shortens until 23.4% of all proposals, those leaving the box included, are accepted (the rate the adaptation aims for). At ``verbosity = 2`` the acceptance rate is printed together with the number of proposals that left the box.
+
 
 .. _alg-dream:
 

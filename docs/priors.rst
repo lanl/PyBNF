@@ -59,6 +59,12 @@ search leave the initial range::
 
     uniform_var = x__FREE 10 30 u    # sample in [10, 30], but allow moves outside
 
+Two samplers keep a bounded parameter inside the box by another route: adaptive MCMC
+(:ref:`alg-am`) and DREAM (:ref:`alg-dream`) **reject** a proposal that would leave it, and the
+chain stays where it is for that iteration. Both propose along directions that correlate the
+parameters, and folding such a proposal back into the box, one parameter at a time, would
+distort the distribution they sample.
+
 The other finite-support families (for example Beta on ``[0, 1]``) draw from
 their own density rather than a reflecting box, so they take no such flag.
 

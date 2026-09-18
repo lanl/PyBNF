@@ -32,6 +32,11 @@ class AdaptiveMCMCConfig(MCMCFamilyConfig):
 @register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
                    schema=AdaptiveMCMCConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
+    #: How many proposals left the box and were rejected without a simulation (#709). Also
+    #: a class attribute, so that a run resumed from a backup made before the counter
+    #: existed reads it as 0 rather than failing at its first wall.
+    boundary_rejections = 0
+
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super().__init__(config)
         # set the params decleared in the configuaration file
@@ -51,6 +56,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.acceptances = 0
         self.acceptance_rates = 0
         self.attempts = 0
+        self.boundary_rejections = 0   # how many of those attempts left the box (#709)
         self.factor = [0] * self.num_parallel
         self.staged = []
         self.alpha = [0] * self.num_parallel
@@ -282,7 +288,22 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                         self.output_run_noise_current[js+la][index]= self.list_trajactory
                                     self.list_trajactory = []
                                     self.output_run_noise_recorded.add((js + la, index))   # (#758)
-                                              
+
+        self._record_iteration(index)
+        return self._run_barrier(index)
+
+    def _record_iteration(self, index):
+        """Record chain ``index``'s current point for the iteration that just ended, and
+        advance the chain by one.
+
+        This is everything that follows the accept/reject decision and is the same
+        whichever way it went: the current point goes into the adaptive history, the
+        trajectory and score buffers, the diagnostic history and -- on a sampling
+        iteration -- the samples file. It is its own method because an iteration can end
+        without a result to decide on: a proposal that leaves the box is rejected before
+        it is simulated (:meth:`_reject_at_boundary`, #709), and that iteration is
+        recorded exactly as any other rejection is, as the current point once more.
+        """
         # After the burn in period start to record the accepted params for the adaptive feature.
         if self.iteration[index] >= self.burn_in:
             self.parameter_index[index][self.factor[index]] = self.current_param_set[index]
@@ -321,8 +342,39 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.update_histograms('_%i' % self.iteration[index])
 
         self.wait_for_sync[index] = True
+
+    def _reject_at_boundary(self, index):
+        """Spend chain ``index``'s iteration on a proposal that left the box (#709).
+
+        The posterior is zero outside the box, so the Metropolis ratio of such a proposal
+        is zero and it is rejected with certainty. The chain stays where it is, and no
+        simulation is run, because nothing a simulation could return would change that.
+        ``alpha`` is that zero, so the scale adaptation in :meth:`pick_new_pset`, which
+        steers the acceptance rate to 0.234, counts this rejection like any other and
+        shortens the step of a chain that keeps walking into a wall. ``total_evaluations``
+        is left alone: it counts simulations, and ESS per evaluation is reported from it.
+        """
+        self.attempts += 1
+        self.boundary_rejections += 1
+        self.alpha[index] = 0
+        self._record_iteration(index)
+
+    def _run_barrier(self, index):
+        """Once every chain has finished its iteration, write the generation out, check
+        the stopping conditions and propose the next one. Returns the PSets to run,
+        ``'STOP'``, or ``[]`` while chains are still outstanding.
+
+        A chain whose proposal leaves the box finishes its next iteration here, without a
+        simulation (:meth:`_reject_at_boundary`), so it is already waiting when the others
+        report. When that is every chain there is nothing to submit and no result will
+        arrive to reach this barrier again -- the scheduler would find its job pool empty
+        and end the run -- so the loop goes around and handles the generation that just
+        ended the same way. Each pass either returns proposals or advances every chain by
+        one iteration, so ``max_iterations`` bounds it. DREAM's barrier has the same loop
+        for the same reason (``DreamAlgorithm._run_barrier``).
+        """
         # Wait for entire generation to finish
-        if np.all(self.wait_for_sync):
+        while np.all(self.wait_for_sync):
             self.acceptance_rates = self.acceptances / self.attempts
             #self.wait_for_sync = [False] * self.num_parallel
             # Increase or reset the factor number and see if it's time to write things out
@@ -370,20 +422,27 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
-                print2(f'Acceptance rates: {str(self.acceptance_rates)}\n')
+                # The rate counts a proposal that left the box as the rejection it is, so
+                # the share of attempts that went that way is reported next to it: those
+                # cost no simulation, and a large share says the step is long for the box.
+                print2(f'Acceptance rates: {str(self.acceptance_rates)} '
+                       f'({self.boundary_rejections} of {self.attempts} proposals left the box)\n')
                 print2(f'Current -Ln Posteriors: {str(self.ln_current_P)}')
             print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
 
-            
             # Propose next Pset
             next_generation = []
-            for i, p in enumerate(self.current_pset):
+            for i in range(self.num_parallel):
                 new_pset = self.pick_new_pset(i)
-                if new_pset:
-                    new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
-                    next_generation.append(new_pset)
-                self.wait_for_sync[i] = False        
-            return next_generation
+                if new_pset is None:
+                    # Left the box: rejected here and now. The chain stays synced.
+                    self._reject_at_boundary(i)
+                    continue
+                new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
+                next_generation.append(new_pset)
+                self.wait_for_sync[i] = False
+            if next_generation:
+                return next_generation
         return []
 
     def _check_trajectory_names(self, out):
@@ -615,25 +674,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.diffVector = np.reshape(params - self.mu[idx], [1, len_params])
             self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]-self.burn_in))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
             self.diff[idx] = np.exp( np.log(self.diff[idx]) + (1./(1 + self.iteration[idx]- self.adaptive - self.burn_in))*(self.alpha[idx]-0.234))
-            oldpset = self.current_pset[idx]
-            num = 0
-            while num != 10000*len_params:
-                new_vars = []
-                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
-                delta_vector_add = {k: self.diff[idx]*delta_vector[i] for i,k in enumerate(oldpset.keys())}
-                try:
-                    for i, p in enumerate(oldpset):
-                        k = self.variables[i]
-                        if num < 10000:
-                            new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], False)
-                        else:
-                            new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], True) 
-                        new_vars.append(new_var)
-                        if len(new_vars) == len_params:
-                            return PSet(new_vars)
-                except OutOfBoundsException:
-                    num += 1
-                    pass       
+            return self._propose(idx, self.diffMatrix[idx], self.diff[idx])
         elif self.config.config['continue_run'] == 1:
             if self.config.config['calculate_covari']:
                 start_end = self.config.config['calculate_covari']
@@ -652,48 +693,48 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
                     self.diffMatrix[idx] = (np.matmul(self.parameter_index_file.T, self.parameter_index_file)-np.matmul(self.mu[idx].T, self.mu[idx]))/(len(self.parameter_index_file_input)*0.75)
                     self.diff[idx] = self.config.config['step_size']
-            oldpset = self.current_pset[idx]
-            num = 0
-            while num != 10000*len_params:
-                new_vars = []
-                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
-                delta_vector_add = {k: self.diff[idx] * delta_vector[i] for i,k in enumerate(oldpset.keys())}
-                try:
-                    for i, p in enumerate(oldpset):
-                        k = self.variables[i]
-                        if num < 10000:
-                            new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], False)
-                        else:
-                            new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], True)      
-                        new_vars.append(new_var)
-                        if len(new_vars) == len_params:
-                            return PSet(new_vars)
-                except OutOfBoundsException:
-                    num += 1
-                    pass       
+            return self._propose(idx, self.diffMatrix[idx], self.diff[idx])
         else:
-            diffMatrix = np.eye(len_params)
-            oldpset = self.current_pset[idx]
-            num = 0
-            while num != 10000*len_params:
-                new_vars = []
-                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=diffMatrix)
-                delta_vector_add = {k: self.step_size * delta_vector[i] for i,k in enumerate(oldpset.keys())}
-                #delta_vector_multiply_log = {k: self.step_size*delta_vector_log[i] for i,k in enumerate(oldpset.keys())}
-                try:
-                    for i, p in enumerate(oldpset):
-                        k = self.variables[i]
-                        # reflect=False during the first 10000 attempts, then True;
-                        # FreeParameter.add already applies the proposal in the
-                        # parameter's own scale, so there is no log/linear branch.
-                        reflect = num >= 10000
-                        new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], reflect)
-                        new_vars.append(new_var)
-                        if len(new_vars) == len_params:
-                            return PSet(new_vars)
-                except OutOfBoundsException:
-                    num += 1
-                    pass        
-    
+            return self._propose(idx, np.eye(len_params), self.step_size)
+
+    def _propose(self, idx, cov, scale):
+        """One Gaussian random-walk proposal from chain ``idx``'s current point:
+        ``current + scale * N(0, cov)`` in sampling space. Returns the proposed PSet, or
+        ``None`` if any component leaves its parameter's box.
+
+        ``None`` is a rejection, which the caller spends the iteration on
+        (:meth:`_reject_at_boundary`). The draw is made once. This used to redraw until a
+        proposal landed in the box, and ``got_result`` then accepted it with the plain
+        Metropolis ratio, which is only right for a symmetric proposal -- and that one is
+        not. Redrawing makes the proposal density the Gaussian renormalized over the box,
+        ``q(x -> y) = phi(y - x) / Z(x)`` with ``Z(x)`` the share of the Gaussian at ``x``
+        that lies inside, and ``Z`` falls toward a wall. Detailed balance with the plain
+        ratio then holds for ``pi(x) Z(x)``, not ``pi(x)``: the chain under-sampled a shell
+        a few proposal widths deep along every wall, which is where the edge of a credible
+        interval sits whenever a parameter presses against its bound (#709). A single draw
+        from the untruncated Gaussian is symmetric, and rejecting the part of it that
+        falls outside is the Metropolis rule applied to a posterior that is zero there.
+
+        The fold that ``mh`` and ``pt`` use (``reflect=True``) is not an alternative here.
+        A fold is applied to each coordinate separately, and the folded proposal is
+        symmetric only if the Gaussian is unchanged by flipping the sign of one coordinate:
+        true of their isotropic step, false of a covariance with off-diagonal terms, which
+        is what this sampler adapts to. Folding a correlated proposal keeps every marginal
+        right and gets the joint wrong, piling the chain into the corners the correlation
+        points at.
+
+        The component for ``self.variables[i]`` is ``delta[i]``, the order the adapted
+        mean and covariance are kept in.
+        """
+        oldpset = self.current_pset[idx]
+        delta = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len(self.variables),)), cov=cov)
+        try:
+            # FreeParameter.add applies the step in the parameter's own scale, so there is
+            # no log/linear branch; reflect=False makes a step out of the box raise.
+            return PSet([oldpset.get_param(v.name).add(scale * delta[i], False)
+                         for i, v in enumerate(self.variables)])
+        except OutOfBoundsException:
+            return None
+
     def update_histograms(self, file_ext):
             pass   

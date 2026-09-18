@@ -252,6 +252,67 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Adaptive MCMC no longer under-samples along the walls of the box: a proposal that leaves it
+  is rejected, not redrawn (#709).** `pick_new_pset` drew its Gaussian step again and again until
+  one landed inside the box, and `got_result` accepted the survivor with the plain Metropolis
+  ratio. That ratio is right only for a symmetric proposal, and a redrawn one is not: its density
+  is the Gaussian renormalized over the box, `q(x -> y) = phi(y - x) / Z(x)`, where `Z(x)` is the
+  share of the Gaussian centred on `x` that lies inside, and `Z` is smallest at a wall. Detailed
+  balance with the plain ratio then holds for `pi(x) Z(x)`, not `pi(x)`, so the chain thinned out
+  in a shell a few proposal widths deep along every wall -- where the edge of a credible interval
+  sits whenever a parameter presses against its bound. Each half was tested and correct on its
+  own, the Gaussian step and the Metropolis ratio; nothing held the two to one target.
+
+  Measured through the real run loop, 100,000 iterations each way. On a flat posterior over
+  `[0, 1]` with the default `step_size` of 0.2, the density came out at 0.71 of what it should be
+  in the outermost tenth at either end of the box and 1.17 in the middle, and the 68% interval
+  `[0.199, 0.805]` where `[0.16, 0.84]` is exact; it is now flat to within 3% and
+  `[0.161, 0.843]`. That is the
+  fixed-step phase, which every run passes through. In the adaptive phase, on a posterior whose
+  mode sits on a wall (a Gaussian of sd 0.05 at the lower bound), the mass within 0.2 sd of the
+  wall was 8-11% low and the median 5-10% high; both are now within 2%.
+
+  The proposal is drawn once. If any component leaves its parameter's box the move is rejected
+  then and there: the posterior is zero outside, so no simulation could change the outcome, and
+  none is run. The iteration is spent like any other rejection -- the current point is recorded
+  again in the history, the samples and the trajectory files -- and the chain waits for the
+  others at the generation barrier. A generation in which every chain's proposal leaves the box
+  has nothing to submit, which the scheduler would read as a job pool run dry and end the run
+  on, so the barrier goes around instead, as DREAM's already did.
+
+  Folding the proposal back inside, which `mh` and `pt` do, is not an alternative here. The fold
+  acts on each coordinate separately, and the folded proposal is symmetric only if the Gaussian
+  is unchanged by flipping the sign of one coordinate: true of their isotropic step, false of the
+  correlated covariance this sampler adapts to. On a flat posterior over the unit square with a
+  proposal correlation of 0.9, folding keeps both marginals flat and gets the joint badly wrong
+  -- 0.209 of the mass in the two corner squares of side 0.2 that the correlation points at and
+  0.003 in the other two, where each pair should hold 0.080. Rejection gives 0.080 and 0.083.
+
+  What a user will see change:
+
+  - The **acceptance rate** reads lower where a wall is in reach, because a proposal that left
+    the box used to be redrawn out of sight and is now counted as the rejection it is. At
+    `verbosity = 2` the rate is printed with the number of proposals that left the box.
+  - The **adapted step is shorter** there, and settles. The scale is steered to an acceptance
+    rate of 0.234, and it never saw a wall rejection, so against a posterior that is broad for
+    its box it grew without limit: on a correlated Gaussian cut off by the unit square the
+    proposal sd passed 11 box-widths by iteration 30,000 and was still climbing, at a cost of 590
+    Gaussian draws per iteration and rising (the loop allowed 10,000 per parameter). It now
+    settles at 0.58 box-widths, at one draw per iteration. A 150,000-iteration run of that
+    example takes 96 seconds; before, two such runs were a third and two-thirds done after 17
+    minutes.
+  - A run performs **fewer simulations than iterations**: 16% fewer on the flat example above,
+    60% fewer on the correlated one. `max_iterations` counts iterations, as before.
+  - A run that never proposes outside the box is unchanged to the bit. One that does follows a
+    different chain from the same `random_seed`, since the redraws are no longer made.
+
+  Gone with the loop: with exactly one free parameter its fallback could not run (`while num !=
+  10000 * len_params` ends at the 10,000th failure, which is where the fallback began), so a
+  chain that failed 10,000 draws returned no proposal, was dropped from its generation without a
+  word, and left the run waiting on it until the job pool emptied.
+
+  `mh`, `pt`, `dream` and `p_dream` were held to the same flat-box target and sample it evenly;
+  the defect was `am`'s alone.
 - **An adaptive-MCMC run no longer ends in `FileNotFoundError` when the combine step meets a
   per-chain trajectory file it never wrote (#760).** `combine_chains_traj` concatenates each
   key's per-chain files by loading every one of them by name, with no check that it exists. Both
