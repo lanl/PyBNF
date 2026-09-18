@@ -19,6 +19,8 @@ NOTE on per-tier runtime: the samplers stream per-step output to disk, so full
 posterior recovery is inherently slow (seconds–minutes). That is why recovery
 lives in the slow tier and the fast tier asserts only directional invariants.
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -239,6 +241,82 @@ def test_whitened_proposal_runs_with_one_parameter(tmp_path, fit_type, extra):
     assert abs(x.var() - 1 / 12) < 0.012, 'variance %.4f, uniform is 0.0833' % x.var()
     assert near_a_wall > 0.16, \
         '%.3f of the samples within 0.1 of a wall, uniform is 0.200' % near_a_wall
+
+
+@pytest.mark.parametrize('fit_type', list(SAMPLERS))
+def test_sampler_writes_final_histograms_and_credible_intervals(tmp_path, fit_type):
+    """Every sampler ends its run by writing the marginal histogram and the credible
+    intervals for each free parameter — the posterior summaries a Bayesian fit is run
+    for, and what the docs present as its output (#771).
+
+    ``am`` did neither. It overrode ``update_histograms`` with a bare ``pass``, so the
+    stride call it already made was a no-op and the ``Results/Histograms`` directory it
+    already created stayed empty, while it accepted ``credible_intervals``,
+    ``hist_bins`` and ``output_hist_every`` without a word — they sit on the shared
+    MCMC config, so nothing reported them as unused. Its stop path was also missing the
+    ``update_histograms('_final')`` that sits next to ``report_constraint_satisfaction``
+    in every other sampler, so removing the override alone would still have left no
+    ``*_final`` files. This runs to ``max_iterations``, which is the path that needed
+    that call.
+
+    Stated over every sampler rather than for ``am`` alone, because it is a shared
+    contract and a per-sampler test is exactly what was missing: nothing asserted that a
+    given fit_type reaches this output path at all.
+
+    The oracles are structural rather than statistical, so this stays a fast test: the
+    bin counts must account for every recorded sample, and the 68% interval must nest
+    inside the 95% one. Both fail on an empty or misread sample matrix.
+    """
+    n_params = 2
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.5] * n_params, [0.04] * n_params))
+    common = dict(burn_in=100, sample_every=2, rhat_threshold=0, max_iterations=400,
+                  output_hist_every=5, hist_bins=10, credible_intervals=[68, 95],
+                  diagnostics_every=10 ** 9, backup_every=10 ** 9, output_every=10 ** 9)
+    if fit_type == 'am':
+        kw = dict(common, population_size=3, adaptive=100, num_bins=10, step_size=0.3)
+    else:
+        kw = dict(common, population_size=5)
+    conf = H.make_config(tmp_path, fit_type, tgt, exp, n_params, bounds=(0.0, 1.0), **kw)
+    alg = SAMPLERS[fit_type](conf)
+    H.drive(alg)
+
+    results = Path(conf.config['output_dir']) / 'Results'
+    samples = H.read_samples(conf.config['output_dir'], n_params)
+    assert len(samples) > 0, 'no samples written'
+
+    for i in range(n_params):
+        hist_file = results / 'Histograms' / ('p%d_final.txt' % (i + 1))
+        assert hist_file.is_file(), '%s wrote no final histogram for p%d' % (fit_type, i + 1)
+        hist = np.genfromtxt(hist_file)
+        assert hist.shape == (10, 3)                       # lower edge, upper edge, count
+        # Every recorded sample is accounted for -- so the summary describes the run's
+        # own samples, not a truncated or empty read of them.
+        assert hist[:, 2].sum() == len(samples)
+
+    bounds = {}
+    for interval in (68, 95):
+        cred_file = results / ('credible%d_final.txt' % interval)
+        assert cred_file.is_file(), \
+            '%s wrote no final credible%d file' % (fit_type, interval)
+        lines = cred_file.read_text().splitlines()
+        assert lines[0] == '# param\tlower_bound\tupper_bound'
+        assert len(lines) == n_params + 1
+        bounds[interval] = {}
+        for line in lines[1:]:
+            name, lo, hi = line.split('\t')
+            bounds[interval][name] = (float(lo), float(hi))
+
+    for i in range(n_params):
+        name = 'p%d' % (i + 1)
+        lo68, hi68 = bounds[68][name]
+        lo95, hi95 = bounds[95][name]
+        assert lo68 < hi68 and lo95 < hi95
+        # The wider interval contains the narrower one: both are order statistics of the
+        # same sorted column, so this fails if the two were built from different data.
+        assert lo95 <= lo68 and hi68 <= hi95, \
+            '%s %s: 68%% [%g, %g] not inside 95%% [%g, %g]' % (fit_type, name, lo68, hi68, lo95, hi95)
+        # And they bracket the column they summarize.
+        assert lo68 >= samples[:, i].min() and hi68 <= samples[:, i].max()
 
 
 # --------------------------------------------------------------------------- #
