@@ -702,6 +702,76 @@ class TestFoldGroupResult:
         assert combined.name == 'g'  # carries the group's job_id
 
 
+class TestCancelledFutureInTheGroupedLoop:
+    """A cancelled future must reach the fatal-condition check with the same
+    user-facing outcome whether or not the fit groups its jobs (#712).
+
+    ``result_from_completed`` deliberately passes a ``CancelledError`` through
+    unchanged for the run loop to treat as fatal, and
+    ``_record_result_and_decide`` is what turns it into the ``PybnfError`` telling
+    the user to restart with ``-r``. But on a ``smoothing``/``parallelize_models``
+    fit the loop folded group results *first*, and ``_fold_group_result`` opens on
+    ``res.name`` -- which a ``CancelledError`` has not got. The user of a grouped
+    fit therefore got "an unknown error occurred: AttributeError" in place of the
+    restart guidance: the same fatal run, minus the one instruction that recovers
+    it. Driven through ``_drain_job_pool`` rather than ``_fold_group_result``
+    because the missing guard was in the loop, not in the fold.
+    """
+
+    def _algo(self, smoothing=1, parallelize_models=1, got_result=lambda res: []):
+        algo = _bare_algo(got_result=got_result)
+        algo.config.config.update({'smoothing': smoothing,
+                                   'parallelize_models': parallelize_models})
+        algo.budget = None
+        return algo
+
+    def _cancelled_pool(self):
+        f = _FakeFuture(algorithms.CancelledError('sim_1'), status='cancelled')
+        pool = _FakeAsCompleted([f], with_results=True, raise_errors=False)
+        return pool, {f: (_pset('sim_1', 1.0), 'sim_1')}
+
+    @pytest.mark.parametrize('smoothing, parallelize_models', [(1, 1), (3, 1), (1, 2)])
+    def test_restart_guidance_reaches_the_user_grouped_or_not(self, smoothing,
+                                                              parallelize_models):
+        algo = self._algo(smoothing=smoothing, parallelize_models=parallelize_models)
+        pool, pending = self._cancelled_pool()
+        with pytest.raises(printing.PybnfError, match='-r flag'):
+            algo._drain_job_pool(None, pool, pending, 10 ** 9, False)
+
+    def test_a_cancelled_future_is_never_folded(self):
+        """The guard is what keeps it out of the fold, not luck: an empty
+        ``job_group_dir`` would also have raised ``KeyError`` from ``pop``."""
+        algo = self._algo(smoothing=3)
+        folded = []
+        algo._fold_group_result = lambda res: folded.append(res)
+        pool, pending = self._cancelled_pool()
+        with pytest.raises(printing.PybnfError):
+            algo._drain_job_pool(None, pool, pending, 10 ** 9, False)
+        assert folded == []
+
+    def test_real_results_still_fold_through_the_loop(self):
+        """The type guard must not cost the grouping it stands in front of: two
+        sub-results of one group still arrive at the algorithm as a single
+        averaged result."""
+        seen = []
+        algo = self._algo(smoothing=2, got_result=lambda res: seen.append(res) or [])
+        group = algorithms.JobGroup('g', ['g_rep0', 'g_rep1'])
+        algo.job_group_dir = {'g_rep0': group, 'g_rep1': group}
+
+        futures, pending = [], {}
+        for name in ('g_rep0', 'g_rep1'):
+            res = algorithms.Result(_pset(name, 4.0), {'m': {'time_course': _data()}}, name)
+            f = _FakeFuture(res)
+            futures.append(f)
+            pending[f] = (res.pset, name)
+        pool = _FakeAsCompleted(futures, with_results=True, raise_errors=False)
+
+        sim_count = algo._drain_job_pool(None, pool, pending, 10 ** 9, False)
+        assert sim_count == 1                     # one group, not two sub-jobs
+        assert [r.name for r in seen] == ['g']    # the averaged result, under the group's id
+        assert algo.job_group_dir == {}           # both sub-jobs popped
+
+
 def test_pending_jobs_cancelled_on_stop(tmp_path, monkeypatch):
     """When the loop stops, any still-pending futures are cancelled (clean dask
     teardown)."""
