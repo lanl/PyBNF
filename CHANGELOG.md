@@ -252,6 +252,38 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **An `output_trajectory` name that no simulation produces a column for is named once, instead
+  of silently producing no file (#755).** Neither `output_trajectory` nor
+  `output_noise_trajectory` (`fit_type = am`) was validated against anything. A name that
+  matches no column is filled by nothing -- the accumulating loop runs only when the name is a
+  column of the result -- so its buffer stays as allocated, all zeros, and the write step skips
+  it, because it writes only the rows that are not all zero. What the user saw was a
+  `Results/A_MCMC/Runs/` directory with fewer `traj_*.txt` files than the conf asked for, and
+  nothing saying which name was dropped or why: a typo looked exactly like a fit that never
+  asked for that trajectory. The first completed simulation of a run now reports every
+  configured name it carries no column for, once, and lists the columns it does carry.
+
+  The check is against a real result rather than at config load, where the rest of the codebase
+  refuses an undeclared name (`profile_likelihood_params`, `design_target`), for two reasons: no
+  model class exposes its observable names -- `BNGLModel` records only whether an observables
+  block exists -- and a column need not come from the model file at all, since the measurement
+  layer contributes its own. A completed result is authoritative and carries every model in the
+  fit at once, so a name valid for one model is not reported against another. It is a warning
+  and not a refusal because the fit itself is sound; only an output file is missing, and by the
+  time this can be known the simulations are already running.
+
+  #751 is why this went unnoticed for so long. The parser used to leave list separators inside
+  the value, and the sampler stripped a comma out of each name it was handed, so
+  `output_trajectory = A,B,C` -- one token to the parser -- reached the write step as the single
+  name `ABC`, which no model has. Had a name that matched
+  nothing ever said so, that would have surfaced the parsing defect years earlier;
+  instead each defect hid the other, and the only symptom of either was output that was not
+  there.
+
+  Not addressed here: the same write step cannot tell a buffer that was never filled from one
+  filled with zeros, so a trajectory that is legitimately zero across the recorded window is
+  also dropped without a word. That one is data-dependent rather than a property of the conf,
+  and unpicking it means giving the buffers a fill marker instead of reading zero as one.
 - **A key that takes several values accepts commas between them, and no longer takes a trailing
   comment as one of the values (#751).** The items of a multi-string value
   (`profile_likelihood_params`, `output_trajectory`, `output_noise_trajectory`, `design_target`,

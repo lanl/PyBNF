@@ -797,3 +797,102 @@ class TestAdaptiveSeedFileHeader:
         assert len(lines) == 2
         arr = np.genfromtxt(seed, names=True)
         assert arr.dtype.names == tuple(names)
+
+
+# --------------------------------------------------------------------------- #
+# A configured trajectory name that no simulation produces (lanl/PyBNF#755)
+# --------------------------------------------------------------------------- #
+class TestAnUnmatchedTrajectoryNameIsReported:
+    """``output_trajectory`` / ``output_noise_trajectory`` name columns of the simulation
+    result, and nothing validated them. A name that matches no column is filled by
+    nothing -- the accumulate loop runs only ``if l in cols`` -- so its buffer stays as
+    allocated, all zeros, and the write step skips it, writing only rows that are not all
+    zero. The user got a ``Runs/`` directory with fewer ``traj_*.txt`` files than the conf
+    asked for, and no indication of which name was dropped or why: a typo looked exactly
+    like a fit that never asked for it (#755).
+
+    The check runs against the first completed simulation rather than at config load,
+    where the rest of the codebase refuses an undeclared name: no model class exposes its
+    observable names (``BNGLModel`` records only the boolean ``has_observables``), and a
+    column need not come from the model file at all, since the measurement layer
+    contributes its own."""
+
+    OBS = 'MEK_pRDS'
+    TYPO = 'MEK_pRDZ'          # deliberately not a prefix of OBS, so assertions can tell
+    REPORT = 'of any simulation in this fit'
+
+    @staticmethod
+    def _am_wanting(tmp_path, wanted, noise_wanted=()):
+        """An ``am`` asking for ``wanted`` trajectories, primed with one scored key."""
+        overrides = {'output_trajectory': list(wanted)}
+        if noise_wanted:
+            overrides['output_noise_trajectory'] = list(noise_wanted)
+        cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        am.time = {'WT': 2}
+        am.output_columns = list(wanted)
+        am.output_noise_columns = list(noise_wanted)
+        for names, cur, allr in ((wanted, 'output_run_current', 'output_run_all'),
+                                 (noise_wanted, 'output_run_noise_current',
+                                  'output_run_noise_all')):
+            buffers = {'WT' + n: np.zeros((am.num_parallel, 1, 3)) for n in names}
+            setattr(am, cur, dict(buffers))
+            setattr(am, allr, dict(buffers))
+        return am
+
+    def _result(self, am):
+        """One accepted worker-path Result whose model emitted only ``OBS``."""
+        start_name = am.current_pset[0].name if am.current_pset[0] else 'iter0run0'
+        ps = _uniform_pset(start_name)
+        res = algorithms.Result(ps, None, ps.name)
+        res.out = {'m': {'WT': _data(self.OBS, [(0, 1), (1, 2), (2, 3)])}}
+        res.score = 5.0
+        return res
+
+    def _warning(self, capsys):
+        lines = [l for l in capsys.readouterr().out.splitlines() if self.REPORT in l]
+        assert len(lines) == 1, f'expected one report, got {lines}'
+        return lines[0]
+
+    def test_a_name_no_simulation_produces_is_named(self, tmp_path, capsys):
+        am = self._am_wanting(tmp_path, [self.OBS, self.TYPO])
+        am.got_result(self._result(am))
+        line = self._warning(capsys)
+        assert line.startswith(f'Warning: output_trajectory names {self.TYPO}, which is not')
+        assert line.endswith(f'The simulations produce: {self.OBS}, time.')
+
+    def test_the_name_that_matched_is_not_named(self, tmp_path, capsys):
+        """Only the unmatched name is rolled off; the one that worked appears solely in
+        the list of what is available."""
+        am = self._am_wanting(tmp_path, [self.OBS, self.TYPO])
+        am.got_result(self._result(am))
+        roll_call, _, produced = self._warning(capsys).partition('The simulations produce:')
+        assert self.TYPO in roll_call and self.OBS not in roll_call
+        assert self.OBS in produced
+
+    def test_a_fit_whose_names_all_match_says_nothing(self, tmp_path, capsys):
+        am = self._am_wanting(tmp_path, [self.OBS])
+        am.got_result(self._result(am))
+        assert self.REPORT not in capsys.readouterr().out
+
+    def test_the_warning_is_emitted_once(self, tmp_path, capsys):
+        """It is a property of the conf, not of the sample -- one line, not one per
+        accepted move for the rest of the run."""
+        am = self._am_wanting(tmp_path, [self.TYPO])
+        for _ in range(3):
+            am.got_result(self._result(am))
+        assert capsys.readouterr().out.count(self.REPORT) == 1
+
+    def test_the_noise_key_is_checked_under_its_own_name(self, tmp_path, capsys):
+        am = self._am_wanting(tmp_path, [self.OBS], noise_wanted=[self.TYPO])
+        am.got_result(self._result(am))
+        line = self._warning(capsys)
+        assert line.startswith(f'Warning: output_noise_trajectory names {self.TYPO},')
+
+    def test_several_unmatched_names_are_reported_together(self, tmp_path, capsys):
+        am = self._am_wanting(tmp_path, [self.TYPO, 'scaled_pSOS1'])
+        am.got_result(self._result(am))
+        line = self._warning(capsys)
+        assert f'names {self.TYPO}, scaled_pSOS1, which are not columns' in line
+        assert 'written for them' in line          # plural agreement throughout
