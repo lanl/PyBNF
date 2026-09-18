@@ -22,6 +22,14 @@ def _fold_reference(new, lb, ub):
     return lb + q if q <= w else ub - (q - w)
 
 
+# Bounds as they are written in a conf: a short mantissa times a power of ten. Spelled as
+# decimal literals, since that is what a parser hands the box -- 1.2e-06 is not 1.2 * 1e-06.
+_ORDINARY_BOUNDS = [float(f'{m}e{e}')
+                    for m in ('1', '1.2', '1.5', '2', '2.5', '3', '4', '5', '6', '7.5',
+                              '8', '9')
+                    for e in range(-6, 4)]
+
+
 class TestFreeParameter:
     @classmethod
     def setup_class(cls):
@@ -248,6 +256,73 @@ class TestReflectBesideAWall:
         p = pset.FreeParameter('x__FREE', 'uniform_var', 0.1, 5.0, 1.0)
         with pytest.raises(pset.OutOfBoundsException):
             p.set_value(float('nan'))
+
+
+class TestADeclaredBoundSurvivesItsOwnRoundTrip:
+    """A parameter resting ON a declared bound materializes back inside its box (#750).
+
+    The bounded optimizers work in sampling space ``u`` over
+    ``[to_sampling_space(lb), to_sampling_space(ub)]`` (``GradientOptimizer._u_bounds``)
+    and project every iterate into it, so a bound that is *active at the optimum* reaches
+    the PSet bridge as exactly that wall in ``u``. ``Algorithm._pset_from_u`` maps it back
+    with ``10 ** u``, which lands on the far side of the wall it came from for 91 of the
+    240 walls swept here: ``10 ** log10(20)`` is 20.000000000000004 and
+    ``10 ** log10(5000)`` is 4999.999999999999. So the fold has to absorb the image of the
+    box's own corner, and before #706 it did not -- ``job_type = profile_likelihood`` on
+    ``loguniform_var Vm2 1.2 20`` ended at the first grid point whose re-optimization
+    pressed ``Vm2`` against its bound, with "Free parameter Vm2 cannot be assigned the
+    value 20.000000000000004" (#750). 86 of these 240 walls raise against the old fold.
+    Both counts are from one platform: ``log10`` and ``pow`` are not required to be
+    correctly rounded, so *which* walls overshoot is libm's business, which is why the
+    assertions below are over the sweep rather than over named bounds.
+
+    Distinct from :class:`TestReflectBesideAWall` above, which folds proposals *chosen* to
+    sit a rounding outside a wall: a bounded gradient optimizer returning an iterate on an
+    active bound is ordinary behaviour rather than a near-miss, so this sweeps the bounds
+    people write instead of the walls of one box.
+    """
+
+    def _walls(self):
+        """Each bound twice: as the upper wall of one box, as the lower wall of another."""
+        for b in _ORDINARY_BOUNDS:
+            yield b / 100.0, b, b
+            yield b, b * 100.0, b
+
+    def test_a_parameter_on_a_declared_bound_stays_in_its_box(self):
+        for lo, hi, wall in self._walls():
+            p = pset.FreeParameter('x__FREE', 'loguniform_var', lo, hi)
+            # Exactly the value the bridge assigns when this wall is the active bound:
+            # the optimizer's iterate is the wall in u, and 10 ** u brings it back.
+            theta = p.from_sampling_space(p.to_sampling_space(wall))
+            value = p.set_value(theta).value          # must not raise
+            assert lo <= value <= hi, (
+                f'box [{lo}, {hi}]: the wall {wall} came back as {value!r}, outside it')
+            assert value == pytest.approx(wall, rel=1e-12), (
+                f'box [{lo}, {hi}]: the wall {wall} came back as {value!r}')
+
+    def test_the_round_trip_really_does_leave_the_box(self):
+        """Without this the sweep above could pass vacuously -- a round trip that never
+        left the box would exercise no fold at all."""
+        outside = 0
+        for lo, hi, wall in self._walls():
+            p = pset.FreeParameter('x__FREE', 'loguniform_var', lo, hi)
+            theta = p.from_sampling_space(p.to_sampling_space(wall))
+            outside += not lo <= theta <= hi
+        assert outside >= 40, (
+            f'only {outside} of 240 walls came back outside their box, so the sweep above '
+            f'is not reaching the fold (91 did where this was written)')
+
+    def test_the_reported_values_fold_onto_their_wall(self):
+        """The two values #750 reported, as literals rather than as libm's output: the
+        first from its original box, the second from the widened one it tried next, which
+        moved the abort rather than removing it."""
+        for lo, hi, image in ((1.2, 20.0, 20.000000000000004),
+                              (1.176, 20.4, 20.400000000000002)):
+            p = pset.FreeParameter('Vm2__FREE', 'loguniform_var', lo, hi)
+            assert image > hi                          # outside the box it was built from
+            value = p.set_value(image).value           # must not raise
+            assert lo <= value <= hi
+            assert value == pytest.approx(hi, rel=1e-12)   # and back onto the wall
 
 
 class TestSamplingSpaceTransform:
