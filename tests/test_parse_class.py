@@ -476,3 +476,54 @@ class TestDataKeyFormatHint:
     def test_a_well_formed_data_line_still_parses(self):
         # The hint is reached only on failure -- the happy path is untouched.
         assert parse.ploop(['data = d.exp, e.exp\n'])['data'] == ['d.exp', 'e.exp']
+
+
+class TestMultiStringListSeparators:
+    """A multi-string value's items are separated by whitespace, by commas, or by both,
+    and a trailing comment is not one of them (#751).
+
+    The generic ``string`` accepts every punctuation character, so both separators used to
+    travel into the value: ``profile_likelihood_params = K_par, Kf`` gave
+    ``['K_par,', 'Kf']`` and the fit was refused for naming a parameter ``K_par,`` -- with
+    a hint that rendered the declared parameters as a comma-separated list, modelling the
+    form that had just failed. The comma form is what the documentation publishes for these
+    keys (``output_trajectory = ObservableA, ObservableB, FunctionA`` in config_keys.rst,
+    whose text says "multiple values can be defined separated by a comma", and
+    ``profile_likelihood_params = k1, k2`` in gradient_fitting.rst), and four shipped
+    example configs use it.
+    """
+
+    @pytest.mark.parametrize('line', [
+        'profile_likelihood_params = k1, k2, k3',       # the documented form
+        'profile_likelihood_params = k1 k2 k3',         # whitespace
+        'profile_likelihood_params = k1,k2,k3',         # commas, no spaces
+        'profile_likelihood_params = k1 , k2 , k3',     # spaces on both sides
+        'profile_likelihood_params = k1, k2 k3',        # mixed
+    ])
+    def test_every_separator_spelling_gives_the_same_list(self, line):
+        assert parse.parse(line) == ['profile_likelihood_params', 'k1', 'k2', 'k3']
+
+    def test_a_trailing_comment_is_not_an_item(self):
+        # Every other value grammar ends with `- comment`; this one did not, and `string`
+        # matches '#', so the marker and the words after it became parameter names.
+        assert parse.parse('profile_likelihood_params = k1 k2 # profile these') == [
+            'profile_likelihood_params', 'k1', 'k2']
+        assert parse.parse('design_target = k_deg     # the parameter the design is aimed at') == [
+            'design_target', 'k_deg']
+
+    def test_the_documented_examples_parse_as_documented(self):
+        assert parse.parse('output_trajectory = ObservableA, ObservableB, FunctionA') == [
+            'output_trajectory', 'ObservableA', 'ObservableB', 'FunctionA']
+        assert parse.parse('output_noise_trajectory = ObservableA') == [
+            'output_noise_trajectory', 'ObservableA']
+        # docs/cluster.rst documents these as space-delimited, which still holds.
+        assert parse.parse('worker_nodes = cn102 cn104 cn10511') == [
+            'worker_nodes', 'cn102', 'cn104', 'cn10511']
+
+    def test_the_non_list_shapes_of_these_keys_are_untouched(self):
+        # postprocess's first item is a path, and qualitative_scale is a two-token verb
+        # form -- neither is a list, and both share this grammar.
+        assert parse.parse('postprocess = ./scripts/pp.py suffix1 suffix2') == [
+            'postprocess', './scripts/pp.py', 'suffix1', 'suffix2']
+        assert parse.parse('qualitative_scale = fit s_qual') == [
+            'qualitative_scale', 'fit', 's_qual']

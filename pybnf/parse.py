@@ -217,6 +217,9 @@ multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise
                'qualitative_scale']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
+# The characters a single item of a multi-string value may not contain: ``,`` separates
+# items and ``#`` opens a comment, so neither belongs to a name (#751).
+punctuation_listitem = re.sub('[,#]', '', punctuation)
 
 
 def parse(s):
@@ -258,9 +261,21 @@ def parse(s):
     strnumgram = ((two_param_keys - equals - two_param_nums)
                   | (one_param_keys - equals - one_param_nums)) - comment
 
-    # multiple string value grammar
+    # multiple string value grammar. Items are separated by whitespace, by commas, or by
+    # both, and a trailing comment is a comment rather than an item (#751).
+    #
+    # The generic ``string`` accepts every punctuation character, so it used to swallow both
+    # separators into the value: ``a, b, c`` tokenized as ``a,`` ``b,`` ``c``, ``a,b,c`` as a
+    # single item, and ``a b # note`` as five. Each consumer then had a name that does not
+    # exist -- and the diagnostic printed the name with its comma still attached, so the user
+    # was told that ``k1,`` is not a declared parameter and advised to list parameter ids,
+    # which is what they had done. ``output_trajectory`` / ``output_noise_trajectory``, whose
+    # documented examples are comma-separated, were the two keys that worked, via a
+    # ``replace(',', '')`` in the sampler that fixed ``a, b`` and silently glued ``a,b`` into
+    # one name ``ab``; that hand-strip is gone now that the separator is handled here.
+    multstr_item = pp.Word(pp.alphanums + punctuation_listitem)
     multstrkey = _one_of(' '.join(multstrkeys), caseless=True)
-    multstrgram = multstrkey - equals - pp.OneOrMore(string)
+    multstrgram = multstrkey - equals - pp.OneOrMore(multstr_item | pp.Suppress(',')) - comment
 
     # var and logvar alt grammar (only one number given)
     varkeys = _one_of(' '.join(var_def_keys_1or2nums), caseless=True)
