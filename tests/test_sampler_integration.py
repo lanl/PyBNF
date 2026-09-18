@@ -191,6 +191,56 @@ def test_am_samples_a_flat_posterior_evenly_up_to_the_walls(tmp_path):
     assert alg.total_evaluations == 2 * iterations - alg.boundary_rejections
 
 
+@pytest.mark.parametrize('fit_type,extra', [
+    ('p_dream', {}),
+    ('dream', {'proposal': 'whitened'}),
+], ids=['p_dream', 'dream+whitened'])
+def test_whitened_proposal_runs_with_one_parameter(tmp_path, fit_type, extra):
+    """A one-parameter fit with the whitened proposal, run to completion (#767).
+
+    ``np.cov`` of a single column returns a 0-d array rather than a 1x1 matrix, and
+    ``_update_covariance`` took its trace, so the run died with ``ValueError: diag
+    requires an array of at least two dimensions``. Not at startup: the covariance
+    refresh first fires at ``precondition_adapt``, which defaults to ``burn_in // 2``
+    -- always before ``burn_in``, so the crash landed before the first sample was
+    recorded and the whole run was lost. Both entry points to the proposal are
+    covered, since ``dream`` can opt into it as well as ``p_dream`` defaulting to it.
+
+    Running to completion is most of the point, but on its own it would also pass for
+    a fix that skipped one-parameter preconditioning altogether, so ``_preconditioned``
+    is asserted: the whitened path must actually be on. The target is #766's flat-box
+    oracle -- a flat likelihood over ``uniform_var [0, 1]`` makes the posterior exactly
+    Uniform(0, 1), variance 1/12 with a fifth of the mass within 0.1 of a wall -- which
+    holds this sampler to the same bound handling as its siblings and fails if the 1x1
+    preconditioner is built wrong rather than merely built.
+
+    Thresholds are sized from a 20-seed sweep of this config, which gave variance
+    0.0812-0.0896 and near-wall fraction 0.188-0.226; the bands below clear those and
+    still exclude the pi(x)Z(x) signature #766 measured on this oracle (0.0707-0.0723
+    and 0.145-0.156), so the pinned seed is not what passes them.
+    """
+    iterations, burn_in, chains = 1500, 200, 5
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.5], [1e12]))
+    conf = H.make_config(
+        tmp_path, fit_type, tgt, exp, 1, bounds=(0.0, 1.0), population_size=chains,
+        max_iterations=iterations, burn_in=burn_in, sample_every=1, rhat_threshold=0,
+        output_hist_every=10 ** 9, hist_bins=10,
+        # The run loop's per-result pickle and O(n^2) trajectory rewrite cost several
+        # times the sampler itself; off, as in the am flat-box test above.
+        diagnostics_every=10 ** 9, backup_every=10 ** 9, output_every=10 ** 9, **extra)
+    alg = SAMPLERS[fit_type](conf)
+    H.drive(alg)
+
+    assert alg._preconditioned, 'the whitened proposal never activated'
+    x = H.read_samples(conf.config['output_dir'], 1)[:, 0]
+    # Every post-burn-in iteration of every chain left a row: the run went the distance.
+    assert len(x) == chains * (iterations - burn_in)
+    near_a_wall = np.mean((x < 0.1) | (x > 0.9))
+    assert abs(x.var() - 1 / 12) < 0.012, 'variance %.4f, uniform is 0.0833' % x.var()
+    assert near_a_wall > 0.16, \
+        '%.3f of the samples within 0.1 of a wall, uniform is 0.200' % near_a_wall
+
+
 # --------------------------------------------------------------------------- #
 # SLOW: full posterior-moment recovery against the analytical truth
 # --------------------------------------------------------------------------- #

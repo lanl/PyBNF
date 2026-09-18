@@ -1097,8 +1097,14 @@ class DreamAlgorithm(BayesianAlgorithm):
         n = X.shape[0]
         d = X.shape[1]
 
-        # Sample covariance with Haario-style regularization: C = Cov(X) + eps*I
-        cov = np.cov(X, rowvar=False)
+        # Sample covariance with Haario-style regularization: C = Cov(X) + eps*I.
+        # np.atleast_2d because np.cov of a *single* column returns that column's
+        # variance as a 0-d array rather than the 1x1 matrix the rest of this method
+        # needs: np.trace then raises "diag requires an array of at least two
+        # dimensions", and the += eps*I below would raise next (lanl/PyBNF#767). The
+        # 1x1 covariance of one parameter is a perfectly good preconditioner -- a
+        # scale -- so this is a shape repair, not a special case to skip.
+        cov = np.atleast_2d(np.cov(X, rowvar=False))
         eps = 1e-6 * np.trace(cov) / d if np.trace(cov) > 0 else 1e-6
         cov += eps * np.eye(d)
 
