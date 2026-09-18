@@ -434,6 +434,34 @@ All notable changes to PyBNF are documented below. This project adheres to
   re-import rejects exactly that; so is a `start_point` naming a parameter no exported
   declaration claims, which was the other way the value could vanish without a word. This closes the gap between the export and the round-trip identity the PEtab
   documentation states.
+- **A proposal within a rounding of a parameter's bound no longer ends the fit (#706, #750).**
+  `FreeParameter._reflect` folds an out-of-box proposal back between a parameter's walls, and
+  every optimizer and sampler proposal reaches it through `set_value`. It could return a value
+  a hair outside the box, and the constructor's bounds check then raised an
+  `OutOfBoundsException` that nothing on the proposal path catches, so the run stopped with
+  "Sorry, an unknown error occurred". Two roundings did it. With two finite walls the fold
+  reconstructed the descending leg of its triangle wave from the far wall, so a proposal one
+  ulp below the lower wall came back below it -- 0.09999999999999964 on `[0.1, 5]` -- and on
+  `[1e-09, 1e+09]` it came back as 1e-07, inside the box but a hundredfold from where it was
+  proposed, because the ulp being dropped belonged to the larger wall. The wave is now carried
+  as the distance travelled from the lower wall, and the folded value is clipped into the box
+  last, which is what the second rounding needs: on a log scale the theta-to-u round trip
+  leaves the box on its own, since `10 ** log10(20)` is 20.000000000000004. The fold may now
+  return a bound exactly, which the constructor has always accepted; a NaN still raises there,
+  as before.
+
+  Differential evolution met the first rounding, on `k_elim` against its lower bound of 0.1 in
+  tutorial lesson 25 (#703), where a mid-run step left the box by an ulp. The second is worse,
+  because on a log scale a bound only has to be *reached*, not overshot: a bounded optimizer
+  works in sampling space over `[to_sampling_space(lb), to_sampling_space(ub)]` and projects
+  every iterate into that box, so a bound that is active at the optimum arrives back at the
+  parameter as the image of the box's own corner -- which lands outside the box for 91 of the
+  240 walls the tests now sweep, 86 of them then refused. That is how
+  `job_type = profile_likelihood` met it (#750): the inner re-optimization of the nuisance
+  parameters at a grid point lands on an active bound as a matter of course, so the job could
+  not finish on any problem where some parameter pressed its box -- and reaching a bound is a
+  documented profile outcome (a practically non-identifiable parameter), which was raising
+  instead of being recorded.
 - **Tutorial lesson 25 no longer promises rates its one curve cannot settle, and its check no
   longer passes on the luck of one seed (#703).** The lesson fits a transit-compartment model
   to a single plasma curve, and its README said island DE "recovers all three" rates. The
