@@ -70,10 +70,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
         (out / 'Results' / 'Histograms').mkdir(parents=True, exist_ok=True)
         
         if self.config.config['output_trajectory']:
-            self.output_columns = []
-            for i in self.config.config['output_trajectory']:
-                new = i.replace(',', '')
-                self.output_columns.append(new)
+            # The comma is a list separator that the parser removes (#751). This used to
+            # strip one out of each name here, which fixed `A, B` and silently joined
+            # `A,B` -- a single token to the parser -- into one name `AB`.
+            self.output_columns = list(self.config.config['output_trajectory'])
             self.output_run_current = {}
             self.output_run_all = {}
             for i in self.output_columns:
@@ -87,10 +87,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                      
         
         if self.config.config['output_noise_trajectory']:
-            self.output_noise_columns = []
-            for i in self.config.config['output_noise_trajectory']:
-                new = i.replace(',', '')
-                self.output_noise_columns.append(new)
+            # Same as above: the separator is the parser's business now (#751).
+            self.output_noise_columns = list(self.config.config['output_noise_trajectory'])
             self.output_run_noise_current = {}
             self.output_run_noise_all = {}
             for i in self.output_noise_columns:

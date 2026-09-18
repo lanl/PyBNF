@@ -252,6 +252,31 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A key that takes several values accepts commas between them, and no longer takes a trailing
+  comment as one of the values (#751).** The items of a multi-string value
+  (`profile_likelihood_params`, `output_trajectory`, `output_noise_trajectory`, `design_target`,
+  `design_observables`, `worker_nodes`, `postprocess`, `qualitative_scale`) were split on
+  whitespace by a grammar whose item pattern accepts every punctuation character, so both
+  separators travelled into the value. `profile_likelihood_params = K_par, Kf` parsed as
+  `['K_par,', 'Kf']` and the fit was refused for naming a parameter `K_par,` -- in a message
+  that printed the name with its comma still attached and then advised listing parameter ids,
+  rendering the declared parameters as a comma-separated list, which is the form that had just
+  failed.
+
+  The comma form is not a guess at what a user might try. `config_keys.rst` documents
+  `output_trajectory = ObservableA, ObservableB, FunctionA` and says in as many words that
+  "multiple values can be defined separated by a comma"; `gradient_fitting.rst` documents
+  `profile_likelihood_params = k1, k2`; four shipped example configs use it. Those two
+  `output_*` keys worked only because the adaptive MCMC sampler stripped a comma out of each
+  name as it read them, which repaired `A, B` and silently joined `A,B` -- a single token to
+  the parser -- into one observable name `AB`, which no model has, whereupon that trajectory
+  was skipped without a word. The hand-strip is gone: the separator is the parser's business
+  now, for every key and every spelling, so `A, B`, `A,B`, `A , B` and `A B` are the same list.
+
+  Separately, this grammar ran to the end of its value list with no comment rule, and `#` is
+  one of the punctuation characters its item pattern matched, so
+  `profile_likelihood_params = k1 k2 # profile these` parsed as five parameter names and
+  reported `#`, `profile` and `these` as undeclared parameters.
 - **A profiled noise scale and a profiled linear coefficient are averaged over the same
   simulations of the best fit as the log-likelihood, and a simulation that could not be scored
   no longer contributes the previous one's value a second time (#743, ADR-0131 corrected).**

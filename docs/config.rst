@@ -12,6 +12,8 @@ Several examples of .conf files are included in the examples/ folder.
 
 Each line of a conf file has the general format config_key=value, which assigns the configuration key “config_key” to the value “value”.
 
+Some keys take several values — ``profile_likelihood_params``, ``output_trajectory``, ``design_target`` and ``worker_nodes`` among them. Their values may be separated by whitespace, by commas, or by both, so ``output_trajectory = A, B, C`` and ``output_trajectory = A B C`` name the same three observables, and a trailing ``#`` comment is not one of the values.
+
 The available configuration keys to be specified are detailed in :ref:`config_keys`.
 
 
