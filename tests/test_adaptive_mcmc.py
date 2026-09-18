@@ -17,8 +17,10 @@ The two sampler contracts under test:
 
 Uniform priors are used so that ``ln_prior`` is constant inside the box and the
 acceptance ratio reduces to a function of the scores alone; unbounded
-``normal_var`` parameters are used for the proposal so reflection at the bounds
-does not distort the Gaussian.
+``normal_var`` parameters are used for the proposal so no box cuts the Gaussian
+off. What happens at the box -- a proposal that leaves it is a rejection, which
+is the rule that makes the two contracts fit together -- has its own section
+below (#709).
 """
 from pathlib import Path
 
@@ -574,6 +576,297 @@ class TestAdaptiveProposalDraw:
         # The draw sampled from the adapted (post-update) covariance, once.
         np.testing.assert_allclose(rec['cov'], am.diffMatrix[0], rtol=1e-12)
         assert rec['calls'] == 1
+
+
+# --------------------------------------------------------------------------- #
+# A proposal that leaves the box is rejected, not redrawn (#709)
+#
+# pick_new_pset used to redraw the Gaussian step until it landed inside the box, and
+# got_result then accepted it with the plain Metropolis ratio. That ratio is right only
+# for a symmetric proposal, and a redrawn one is not: its density is the Gaussian
+# renormalized over the box, q(x -> y) = phi(y - x) / Z(x), where Z(x) is the share of
+# the Gaussian centred on x that lies inside, and Z is smallest at a wall. The chain
+# then samples pi(x) Z(x) rather than pi(x), thin along every wall -- on a flat
+# posterior over [0, 1] with the default step of 0.2, 0.71 of the right density in the
+# outermost tenth and 1.17 in the middle.
+#
+# The acceptance tests above and the proposal tests above each pinned their half in
+# isolation and both passed throughout; nothing held the two together. What is pinned
+# here is the rule that makes them fit: one draw, and a draw that leaves the box is a
+# rejection that spends the iteration without a simulation. The stationary distribution
+# itself is checked end to end in test_sampler_integration.py.
+# --------------------------------------------------------------------------- #
+class _ScriptedMvnRng(_FixedMvnRng):
+    """Hands out the scripted steps in order, then keeps repeating the last, and counts
+    the draws it was asked for."""
+
+    def __init__(self, steps, seed=0):
+        self.calls = 0
+        steps = [np.asarray(s, dtype=float) for s in steps]
+
+        def mvn(mean, cov):
+            self.calls += 1
+            return steps[min(self.calls, len(steps)) - 1]
+        super().__init__(mvn, seed)
+
+
+# In units of the draw, before the sampler's scale multiplies it. OUT carries v1 far past
+# its upper bound from anywhere in [0, 100] at any scale these tests use; IN is a short
+# step from the middle of the box.
+OUT = [1e9, 0.0, 0.0]
+IN = [1.0, -2.0, 3.0]
+
+
+def _write_continue_run_files(tmp_path, d=3):
+    """The files continue_run = 1 reads from a completed prior run."""
+    adaptive_dir = tmp_path / 'adaptive_files'
+    adaptive_dir.mkdir(parents=True, exist_ok=True)
+    np.savetxt(adaptive_dir / 'diff.txt', [0.5])
+    np.savetxt(adaptive_dir / 'MLE_params.txt', np.full(d, 50.0))
+    np.savetxt(adaptive_dir / 'diffMatrix.txt', np.eye(d))
+
+
+def _am_in_branch(tmp_path, branch):
+    """An am whose next pick_new_pset(0) takes the named branch, from the middle of the
+    box. Returns (am, the scale that branch multiplies its draw by)."""
+    burn_in, adaptive = 2, 5
+    if branch == 'continue_run':
+        _write_continue_run_files(tmp_path)
+        cfg = _make_config(tmp_path, 2, UNIFORM_VARS, burn_in=burn_in, adaptive=adaptive,
+                           continue_run=1)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+    else:
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive)
+    d = len(am.variables)
+    base_vals = np.full(d, 50.0)
+    am.current_pset[0] = _pset_from_values(am, base_vals)
+    if branch == 'adaptive':
+        am.iteration[0] = burn_in + adaptive + 1     # past the seeding step
+        am.mu[0] = base_vals.reshape(1, d)
+        am.diffMatrix[0] = np.eye(d)
+        am.diff[0] = 0.5
+        am.alpha[0] = OPTIMAL_ACCEPT                 # leaves the scale where it is
+        return am, 0.5
+    am.iteration[0] = 1                              # before burn_in + adaptive
+    return am, (float(am.diff[0]) if branch == 'continue_run' else am.step_size)
+
+
+BRANCHES = ['fixed_step', 'adaptive', 'continue_run']
+
+
+class TestAProposalThatLeavesTheBoxIsRejected:
+
+    @pytest.mark.parametrize('branch', BRANCHES)
+    def test_it_is_not_redrawn(self, tmp_path, branch):
+        """Every branch of pick_new_pset draws once and answers None for a step that
+        leaves the box. The redraw loop was written out three times, once per branch, so
+        each is checked: a second draw here is the bug coming back."""
+        am, _ = _am_in_branch(tmp_path, branch)
+        rng = _ScriptedMvnRng([OUT])
+        am.chain_rngs = [rng, rng]
+
+        assert am.pick_new_pset(0) is None
+        assert rng.calls == 1
+
+    @pytest.mark.parametrize('branch', BRANCHES)
+    def test_a_step_that_stays_inside_is_the_gaussian_step_unchanged(self, tmp_path, branch):
+        """Inside the box nothing changed: the proposal is current + scale * draw, to the
+        bit, so a run that never meets a wall reproduces what it did before."""
+        am, scale = _am_in_branch(tmp_path, branch)
+        am.chain_rngs = [_ScriptedMvnRng([IN])] * 2
+
+        prop = am.pick_new_pset(0)
+
+        for i, v in enumerate(am.variables):
+            assert prop[v.name] == 50.0 + scale * IN[i]
+
+    def test_one_coordinate_outside_rejects_the_whole_vector(self, tmp_path):
+        """The proposal is one point. If any coordinate of it is outside the box the
+        posterior there is zero, however the others landed."""
+        am, _ = _am_in_branch(tmp_path, 'fixed_step')
+        am.chain_rngs = [_ScriptedMvnRng([[1.0, -2.0, 1e9]])] * 2   # only the last leaves
+        assert am.pick_new_pset(0) is None
+
+    def test_the_box_of_a_log_parameter_is_met_in_log_space(self, tmp_path):
+        """A loguniform_var steps in log10, so the wall at 1e4 is 0.1 above a chain
+        sitting at 10**3.9: a step of +0.2 leaves the box and one of -0.2 does not."""
+        cfg = _make_config(tmp_path, 2, LOGUNIFORM_VARS, step_size=1.0)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        am.current_pset[0] = _pset_from_values(am, np.full(3, 10 ** 3.9),
+                                               vartype='loguniform_var', lo=1.0, hi=1.0e4)
+        am.iteration[0] = 1
+
+        am.chain_rngs = [_ScriptedMvnRng([[0.2, 0.0, 0.0]])] * 2
+        assert am.pick_new_pset(0) is None
+
+        am.chain_rngs = [_ScriptedMvnRng([[-0.2, 0.0, 0.0]])] * 2
+        prop = am.pick_new_pset(0)
+        np.testing.assert_allclose(prop['v1__FREE'], 10 ** 3.7, rtol=1e-12)
+
+
+def _two_chains(tmp_path, scripts, **overrides):
+    """A two-chain am on the box-uniform parameters, started, with each chain's Gaussian
+    draws scripted. Returns (am, the two starting psets).
+
+    The starting psets are the middle of the box, not the ones start_run drew: the config
+    pins no seed, so those land anywhere, and from beside a wall a scripted IN step is an
+    OUT step."""
+    kw = dict(burn_in=1000, adaptive=1000)
+    kw.update(overrides)
+    cfg = _make_config(tmp_path, 2, UNIFORM_VARS, **kw)
+    am = algorithms.Adaptive_MCMC(cfg)
+    am.start_run()
+    am.chain_rngs = [_ScriptedMvnRng(s) for s in scripts]
+    return am, [_uniform_pset('iter0run0'), _uniform_pset('iter0run1')]
+
+
+def _vec(am, ps):
+    return [ps[v.name] for v in am.variables]
+
+
+class TestARejectionAtTheBoundarySpendsTheIteration:
+    """What the barrier does with the None. The score is held constant throughout, so
+    every simulated proposal is accepted (ratio 1) and the only rejections are the ones
+    at the boundary."""
+
+    def test_the_chain_stays_put_and_nothing_is_submitted_for_it(self, tmp_path):
+        am, start = _two_chains(tmp_path, [[OUT], [IN]])
+        assert am.got_result(_fake_result(start[0], 5.0)) == []
+
+        generation = am.got_result(_fake_result(start[1], 5.0))
+
+        # Only chain 1 has something to simulate.
+        assert [ps.name for ps in generation] == ['iter1run1']
+        # Chain 0 is where it was, one iteration further on, and already waiting.
+        assert am.current_pset[0] is start[0]
+        assert am.iteration == [2, 1]
+        assert am.wait_for_sync == [True, False]
+
+    def test_the_rejected_iteration_is_recorded_as_the_current_point_again(self, tmp_path):
+        """As for any rejected move: the chain's history gains the point it is standing
+        on, with the posterior it already had."""
+        am, start = _two_chains(tmp_path, [[OUT], [IN]])
+        am.got_result(_fake_result(start[0], 5.0))
+        am.got_result(_fake_result(start[1], 5.0))
+
+        here = _vec(am, start[0])
+        assert [list(row) for row in am.chain_history[0]] == [here, here]
+        assert am.ln_posterior_history[0] == [am.ln_current_P[0]] * 2
+        assert len(am.chain_history[1]) == 1
+
+    def test_it_counts_as_an_attempt_with_alpha_zero_and_as_no_evaluation(self, tmp_path):
+        """alpha is what the scale adaptation steers to 0.234
+        (test_robbins_monro_adapts_toward_optimal_acceptance), so a zero here is what
+        shortens the step of a chain that keeps walking into a wall. total_evaluations
+        counts simulations, and none was run."""
+        am, start = _two_chains(tmp_path, [[OUT], [IN]])
+        am.got_result(_fake_result(start[0], 5.0))
+        am.got_result(_fake_result(start[1], 5.0))
+
+        assert am.alpha[0] == 0
+        assert am.attempts == 3                  # two results and the rejection
+        assert am.boundary_rejections == 1
+        assert am.acceptances == 2
+        assert am.total_evaluations == 2
+
+    def test_the_generation_completes_when_the_other_chain_reports(self, tmp_path):
+        """The rejected chain is not left behind or waited on: the next result closes the
+        generation and both chains propose again, from the same iteration."""
+        am, start = _two_chains(tmp_path, [[OUT, IN], [IN]])
+        am.got_result(_fake_result(start[0], 5.0))
+        generation = am.got_result(_fake_result(start[1], 5.0))
+
+        generation = am.got_result(_fake_result(generation[0], 5.0))
+
+        assert sorted(ps.name for ps in generation) == ['iter2run0', 'iter2run1']
+        assert am.iteration == [2, 2]
+        assert am.wait_for_sync == [False, False]
+
+    def test_the_history_file_carries_a_row_for_the_rejected_iteration(self, tmp_path):
+        """params_<chain>.txt seeds the adaptive covariance and is what the posterior is
+        read from, one row per iteration from burn_in on. A rejected iteration is one of
+        them, as the point the chain stayed on; dropping it would thin the record exactly
+        where the chain presses against a wall, which is the bias over again."""
+        burn_in = 2
+        am, generation = _two_chains(tmp_path, [[IN, IN, OUT, IN, IN], [IN]],
+                                     burn_in=burn_in, adaptive=50)
+        for _ in range(6):
+            nxt = []
+            for ps in generation:
+                nxt += am.got_result(_fake_result(ps, 5.0))
+            generation = nxt
+
+        rows = np.loadtxt(str(tmp_path / 'Results' / 'A_MCMC' / 'Runs' / 'params_0.txt'),
+                          skiprows=1)
+        history = np.array(am.chain_history[0])
+        # Every iteration from burn_in on is in the file, in order.
+        np.testing.assert_array_equal(rows, history[burn_in:])
+        # And the rejection is among them: the chain stood still for exactly one row.
+        stood_still = [i for i in range(1, len(rows)) if np.array_equal(rows[i], rows[i - 1])]
+        assert len(stood_still) == 1
+
+    def test_the_covariance_seed_reads_a_row_for_every_iteration(self, tmp_path):
+        """The seed covariance divides by iteration - burn_in, taking it for granted that
+        the history file holds that many rows when it is read. Rejections on the iterations
+        just before the read are what could break that: a rejected iteration's row is
+        written at the next barrier, so the barrier has to write before it proposes."""
+        burn_in, adaptive = 2, 5
+        # Chain 1 is the one rejected, from its fifth proposal on, because it is the last
+        # to seed and so the one whose history is left on the sampler to look at.
+        am, generation = _two_chains(tmp_path, [[IN], [IN, IN, IN, IN, OUT]],
+                                     burn_in=burn_in, adaptive=adaptive)
+        while min(am.iteration) <= burn_in + adaptive:
+            generation = [ps for done in generation
+                          for ps in am.got_result(_fake_result(done, 5.0))]
+
+        assert am.boundary_rejections >= 2
+        assert am.parameter_index_file.shape == (adaptive, len(am.variables))
+
+    def test_a_run_resumed_from_an_older_backup_counts_from_zero(self, tmp_path):
+        """A backup pickled before the counter existed restores a sampler without it. The
+        counter is a class attribute as well, so that run meets its first wall and carries
+        on rather than ending in AttributeError."""
+        am, start = _two_chains(tmp_path, [[OUT], [IN]])
+        del am.__dict__['boundary_rejections']
+        am.got_result(_fake_result(start[0], 5.0))
+
+        am.got_result(_fake_result(start[1], 5.0))
+
+        assert am.boundary_rejections == 1
+
+
+class TestAGenerationInWhichEveryProposalLeavesTheBox:
+    """With nothing to submit, no result would arrive to reach the barrier again: the
+    scheduler finds its job pool empty and ends the run, silently short. One chain
+    makes this every boundary rejection, not a coincidence of several."""
+
+    def test_the_barrier_goes_around_until_there_is_something_to_run(self, tmp_path):
+        am, start = _two_chains(tmp_path, [[OUT, OUT, IN], [OUT, OUT, IN]])
+        am.got_result(_fake_result(start[0], 5.0))
+
+        generation = am.got_result(_fake_result(start[1], 5.0))
+
+        # Two generations went by without a simulation, and the third is returned.
+        assert sorted(ps.name for ps in generation) == ['iter3run0', 'iter3run1']
+        assert am.boundary_rejections == 4
+        assert [len(h) for h in am.chain_history] == [3, 3]
+
+    def test_a_chain_that_never_gets_back_inside_ends_the_run_properly(self, tmp_path):
+        """Each pass advances every chain by one iteration, so max_iterations bounds the
+        loop, and the run ends through the same door as any other: 'STOP', with the final
+        files written -- not an empty list, which the scheduler reads as a job pool that
+        ran dry."""
+        am, start = _two_chains(tmp_path, [[OUT], [OUT]],
+                                burn_in=1, adaptive=4, max_iterations=12)
+        am.got_result(_fake_result(start[0], 5.0))
+
+        assert am.got_result(_fake_result(start[1], 5.0)) == 'STOP'
+
+        assert am.iteration == [12, 12]
+        assert am.total_evaluations == 2
+        assert (tmp_path / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt').is_file()
 
 
 # --------------------------------------------------------------------------- #

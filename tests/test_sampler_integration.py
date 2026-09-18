@@ -138,6 +138,59 @@ def test_output_inference_data_with_non_likelihood_records_no_sidecar(tmp_path):
     assert not os.path.exists(os.path.join(conf.config['output_dir'], 'Results', 'log_likelihood.txt'))
 
 
+def test_am_samples_a_flat_posterior_evenly_up_to_the_walls(tmp_path):
+    """The proposal and the acceptance rule held to one target together (#709).
+
+    A flat likelihood over ``uniform_var [0, 1]`` makes the posterior exactly
+    Uniform(0, 1), so nothing here is a tolerance on a fit: the variance is 1/12 and a
+    fifth of the mass lies within 0.1 of a wall. The step is 0.3, long enough for a wall
+    to be in reach from most of the box.
+
+    am used to redraw a proposal until it landed in the box and then accept it with the
+    plain Metropolis ratio. The redrawn proposal is not symmetric -- its density is the
+    Gaussian renormalized by the share of it inside the box, Z(x), which falls toward a
+    wall -- so the chain sampled Z(x) instead of a constant: variance 0.0712 and 0.149
+    near the walls on this target, by quadrature, and 0.0707-0.0723 and 0.145-0.156 over
+    eight seeds of this test. Rejecting the proposal that leaves the box gives
+    0.0819-0.0844 and 0.191-0.214 over the same seeds. Each threshold sits between its
+    two values, about five standard errors or more from both, so the pinned seed is not
+    what passes it.
+
+    The acceptance tests and the proposal tests in test_adaptive_mcmc.py each pin their
+    half exactly, and both passed while this was wrong; only a known target sees whether
+    the two fit together. Run through the real loop, with two chains, so both shapes of a
+    rejected generation come up thousands of times: one chain rejected at the boundary
+    while the other simulates, and both rejected with nothing to submit -- which, returned
+    as an empty generation, the scheduler reads as a job pool run dry and ends the run on.
+    """
+    iterations = 5000
+    # variance 1e12 on a unit box: the NLL moves by less than 1e-12 across it.
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.5], [1e12]))
+    conf = H.make_config(
+        tmp_path, 'am', tgt, exp, 1, bounds=(0.0, 1.0), population_size=2, step_size=0.3,
+        max_iterations=iterations,
+        # The fixed-step branch for the whole run: on a flat target the adaptive scale has
+        # nothing to settle on, and the bias is the same kernel's either way.
+        burn_in=1, adaptive=iterations - 3, sample_every=1, rhat_threshold=0,
+        output_hist_every=10 ** 9, hist_bins=10, credible_intervals=[68, 95],
+        # Off, because they are the run loop's cost and not the sampler's: the trajectory
+        # rewrite and the pickle are each per result, and together several times the fit.
+        diagnostics_every=10 ** 9, backup_every=10 ** 9, output_every=10 ** 9)
+    alg = SAMPLERS['am'](conf)
+    H.drive(alg)
+
+    x = H.read_samples(conf.config['output_dir'], 1)[:, 0]
+    near_a_wall = np.mean((x < 0.1) | (x > 0.9))
+    assert abs(x.var() - 1 / 12) < 0.006, 'variance %.4f, uniform is 0.0833' % x.var()
+    assert near_a_wall > 0.167, '%.3f of the samples within 0.1 of a wall, uniform is 0.200' % near_a_wall
+
+    # The run went the distance: every iteration of both chains left its row, the ones
+    # spent on a boundary rejection included, and those cost no simulation.
+    assert len(x) == 2 * (iterations - 1)
+    assert alg.boundary_rejections > 1000
+    assert alg.total_evaluations == 2 * iterations - alg.boundary_rejections
+
+
 # --------------------------------------------------------------------------- #
 # SLOW: full posterior-moment recovery against the analytical truth
 # --------------------------------------------------------------------------- #
