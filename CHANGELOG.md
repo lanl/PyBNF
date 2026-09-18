@@ -313,6 +313,21 @@ All notable changes to PyBNF are documented below. This project adheres to
 
   `mh`, `pt`, `dream` and `p_dream` were held to the same flat-box target and sample it evenly;
   the defect was `am`'s alone.
+- **A Bayesian fit with one free parameter, or one constraint, now gets its histograms,
+  credible intervals and constraint report instead of silently getting none (#769).** Both
+  summaries are built by reading a results file back with numpy and checking the array's shape,
+  and numpy drops any axis of length one. A single free parameter made the samples file read
+  back as a flat list of numbers rather than a column, a single constraint did the same to the
+  constraint samples, and a run that had recorded exactly one sample did it along the other
+  axis; each was then taken for a file with nothing in it. The fit itself ran and wrote its
+  samples normally, so what a user saw was a completed run whose `Results` directory was missing
+  the credible intervals -- with only a `No samples collected` line in the log, next to a samples
+  file that plainly had samples in it. Both readers now ask numpy for a two-dimensional array
+  outright, so the number of rows is what decides whether there is anything to summarize. The
+  guard still does its real job: a file holding only its header is still skipped, which matters
+  because these run on a stride from the fit loop and fire before the first sample exists.
+  Affects `mh`, `pt`, `dream` and `p_dream`; `am` writes its own per-chain output and was never
+  affected. Two or more parameters, and two or more constraints, always worked.
 - **An adaptive-MCMC run no longer ends in `FileNotFoundError` when the combine step meets a
   per-chain trajectory file it never wrote (#760).** `combine_chains_traj` concatenates each
   key's per-chain files by loading every one of them by name, with no check that it exists. Both
