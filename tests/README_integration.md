@@ -37,10 +37,13 @@ lists every marker, including `slow` and `recovery`, with a one-line reminder.)
   convergence check, or output path). Tolerances are loose because short chains
   are noisy.
 - **slow** (`@pytest.mark.slow`) — full moment recovery with tight tolerances.
-  This is the **gold-standard before/after check for the algorithm patches in
-  `dev/PUNCHLIST.md`**: an efficiency/diagnostic fix must leave recovered
-  moments unchanged (and improve ESS/sec); a correctness fix must move them
-  toward the analytical truth.
+  This is the **gold-standard before/after check for any change to a sampler or
+  optimizer itself**, and which way it has to come out depends on what the change
+  claims to be. An efficiency or diagnostic change must leave the recovered
+  moments unchanged (and improve ESS/sec) — moving them means it changed the
+  answer, not just the cost. A correctness change must move them *toward* the
+  analytical truth. Run the tier before and after, and say in the PR which of the
+  two you are claiming; that is what makes the numbers readable to a reviewer.
 
 ## Recovery tier — real bngsim backend (`-m recovery`)
 

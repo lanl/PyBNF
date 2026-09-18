@@ -44,8 +44,10 @@ The `bngsim` dependency is available from the package index and is resolved by
 `uv` as part of the normal sync. A manually supplied `bngsim` wheel and the
 `UV_FROZEN` / `UV_NO_SYNC` workaround are no longer required.
 
-The project uses a populated `uv.lock`, so normal `uv` dependency resolution and
-synchronization should remain enabled.
+`uv.lock` is not committed (`.gitignore` excludes it), so the `uv sync` above
+resolves from `pyproject.toml` and writes a lock file of its own in your clone.
+Normal `uv` resolution and synchronization should stay enabled — nothing in this
+repository needs `UV_FROZEN` or `UV_NO_SYNC`.
 
 ## Testing multi-machine functionality
 

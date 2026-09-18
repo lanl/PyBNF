@@ -27,8 +27,8 @@
 # when a change touches the fitting loop.
 #
 # `uv run --no-sync` uses the project's interpreter without touching the
-# environment -- the .venv is already populated and uv.lock isn't fully
-# resolved in this repo, so syncing would fail.
+# environment: the .venv is already populated, and a hook that fires on every
+# push is not the place to re-resolve dependencies or rewrite the .venv.
 
 repos:
   - repo: local
