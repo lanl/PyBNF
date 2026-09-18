@@ -367,15 +367,57 @@ class TestBngsimSbmlSeedPolicy:
             r1['time_course'].data, r2['time_course'].data
         )
 
-    def test_random_policy_varies_across_calls(self, raf_xml, tmp_path):
+    def _fresh_seeds_drawn(self, model, tmp_path, monkeypatch, runs=2):
+        """The seeds ``_run_simulation`` drew for itself over ``runs`` executions.
+
+        Under ``random`` the policy returns no seed, and the SBML path fills that in
+        with ``secrets.randbits(31)`` immediately before handing it to the simulator;
+        under ``auto`` the policy supplies one and nothing is drawn. Counting the draws
+        is what distinguishes the two, and it does not depend on what SSA then does with
+        the number -- which is the whole point (#762). The simulator's own ``run`` is
+        read-only on the compiled object, so this is the closest observable seam."""
+        drawn = []
+        real_randbits = bngsim_sbml_model.secrets.randbits
+
+        def spy(k):
+            value = real_randbits(k)
+            drawn.append(value)
+            return value
+
+        monkeypatch.setattr(bngsim_sbml_model.secrets, 'randbits', spy)
+        for i in range(runs):
+            model.execute(str(tmp_path), f'r{i}', 1000)
+        return drawn
+
+    def test_random_leaves_the_seed_to_a_fresh_draw_per_run(self, raf_xml, tmp_path,
+                                                            monkeypatch):
+        """This used to compare two trajectories and assert they differ, on a comment
+        that conceded they only "very likely" would. They are five time points by seven
+        columns of a model whose reversible non-mass-action reactions bngsim downgrades
+        to a net-rate channel that "locks at the fixed point instead of fluctuating", so
+        two draws agreeing was rare rather than impossible -- rare enough to survive
+        every local run and then fail one leg of one post-merge run on main (#762).
+
+        What the policy promises is that it supplies no seed, so each run draws its own.
+        That is what is asserted here, and it is a fact about the seed, not about SSA."""
         m = self._make_model(raf_xml)
         m._pybnf_stochastic_seed_policy = 'random'
-        # Two calls under random should very likely produce different trajectories.
-        r1 = m.execute(str(tmp_path), 'r1', 1000)
-        r2 = m.execute(str(tmp_path), 'r2', 1000)
-        assert not np.array_equal(
-            r1['time_course'].data, r2['time_course'].data
-        )
+        assert m._resolve_action_seed(explicit_seed=None, action_index=0,
+                                      suffix='tc', method='ssa') is None
+        drawn = self._fresh_seeds_drawn(m, tmp_path, monkeypatch)
+        assert len(drawn) == 2                       # one fresh seed per run
+        assert len(set(drawn)) == 2                  # and not the same one twice
+
+    def test_auto_draws_no_seed_of_its_own(self, raf_xml, tmp_path, monkeypatch):
+        """The other half of the same contract, and the reason
+        ``test_auto_same_eval_reproduces_trajectory`` above can compare trajectories
+        safely: under ``auto`` the seed is derived, so nothing is drawn at run time."""
+        m = self._make_model(raf_xml)
+        m._pybnf_stochastic_seed_policy = 'auto'
+        derived = m._resolve_action_seed(explicit_seed=None, action_index=0,
+                                         suffix='tc', method='ssa')
+        assert isinstance(derived, int)
+        assert self._fresh_seeds_drawn(m, tmp_path, monkeypatch) == []
 
 
 # ── Smoothing-error mode-awareness ─────────────────────────────────────────────
