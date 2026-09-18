@@ -196,16 +196,16 @@ ignore = [
     "E712",  # ==True/False: legacy; rewriting can change truthiness semantics (e.g. numpy bools)
     "E721",  # type(x) == T comparisons: legacy, semantically fine in context
     "E741",  # ambiguous variable names (l/I/O): legacy
-    # unused locals. Most sites are in the test suite, where the call is made for
-    # its effect -- usually the exception a `pytest.raises` block is asserting on --
-    # and the name exists to say what was called. One is a fixture script that must
-    # stay broken (`tests/bngl_files/.../bugscript.py` raises on purpose). Outside
-    # tests there are two, both deliberate: config.py binds an attribute lookup
-    # performed for its own sake, guarding a user-supplied postprocessing script,
-    # and benchmarks/run_benchmark.py binds the `d` of the Laloy & Vrugt distance
+    # unused locals. `pybnf/` is clean; every site is in tests or benchmarks. Most
+    # are the test suite's style, where the call is made for its effect -- usually
+    # the exception a `pytest.raises` block is asserting on -- and the name exists
+    # to say what was called. One is a fixture script that must stay broken
+    # (`tests/bngl_files/.../bugscript.py` raises on purpose). The one outside tests
+    # is benchmarks/run_benchmark.py binding the `d` of the Laloy & Vrugt distance
     # metric so the code reads like the formula quoted beside it. Ruff's fix in
     # every case is to delete the binding, so the rule is off repo-wide rather than
-    # per-file ignored.
+    # per-file ignored -- not because `pybnf/` needs the exemption today, but
+    # because the fix ruff would apply to the sites that remain is the wrong one.
     "F841",
 ]
 
