@@ -1,5 +1,7 @@
 from .context import pset, raises
 
+import logging
+
 import numpy as np
 import pytest
 from scipy import stats
@@ -511,3 +513,64 @@ class TestInitializationDistribution:
             pset.FreeParameter(
                 'x__FREE', 'normal_var', 0.0, 1.0,
                 initialization_distribution=pset.INITIALIZATION_BOUNDS)
+
+
+class TestTheOutOfBoundsDebugLineIsReadable:
+    """The fold's debug line prints its two values at a precision that can tell them
+    apart (#753).
+
+    It used to format both with ``%f``. The two routinely differ only in their last bits --
+    the common case being a proposal a rounding past a wall, folded onto it -- so at six
+    decimals the line printed the same number twice and refuted itself: "Assigned value
+    20.000000 is out of defined bounds: [1.2, 20.0].  Adjusted to 20.000000". Below 1e-6
+    both printed as 0.000000. The reader most likely to meet it is someone at DEBUG level
+    working out why a bounded fit is behaving oddly, and it is emitted on every evaluation
+    for as long as a log-scaled parameter rests on a bound whose corner leaves the box (see
+    :class:`TestADeclaredBoundSurvivesItsOwnRoundTrip`)."""
+
+    @staticmethod
+    def _fold_at_the_upper_corner(caplog, lo, hi):
+        """Fold the image of a log box's upper corner -- what an active bound hands
+        ``set_value`` -- and return the emitted records."""
+        p = pset.FreeParameter('Vm2__FREE', 'loguniform_var', lo, hi)
+        theta = p.from_sampling_space(p.to_sampling_space(hi))
+        assert theta > hi, 'this box does not exercise the fold; pick another'
+        with caplog.at_level(logging.DEBUG, logger='pybnf.pset'):
+            p.set_value(theta)
+        return [r.getMessage() for r in caplog.records]
+
+    def test_the_two_values_are_distinguishable(self, caplog):
+        line = next(m for m in self._fold_at_the_upper_corner(caplog, 1.2, 20.0)
+                    if 'out of defined bounds' in m)
+        assert '20.000000000000004' in line      # the value that was assigned
+        assert 'Adjusted to 20.0' in line        # the wall it was folded onto
+        assert '20.000000 ' not in line          # the %f rendering of both
+
+    def test_a_small_magnitude_value_is_not_printed_as_zero(self, caplog):
+        line = next(m for m in self._fold_at_the_upper_corner(caplog, 1.2e-11, 1.2e-09)
+                    if 'out of defined bounds' in m)
+        assert '0.000000' not in line
+        assert '1.2000000000000008e-09' in line and 'Adjusted to 1.2e-09' in line
+
+    def test_a_numpy_scalar_prints_as_its_value(self, caplog):
+        """``from_sampling_space`` returns np.float64, whose repr under numpy 2 is
+        ``np.float64(...)`` -- the line converts to float first."""
+        for line in self._fold_at_the_upper_corner(caplog, 1.2, 20.0):
+            assert 'np.float64' not in line
+
+    def test_the_log_space_line_carries_theta(self, caplog):
+        """``log10`` rounds a proposal a rounding past the wall back onto the wall, so
+        ``new`` equals ``ub`` and u alone cannot explain why a fold is happening."""
+        line = next(m for m in self._fold_at_the_upper_corner(caplog, 1.2, 20.0)
+                    if 'Reflecting in log space' in m)
+        assert 'theta=20.000000000000004' in line
+
+    def test_a_genuine_fold_still_reports_both_ends(self, caplog):
+        """The ordinary case -- a proposal well outside a linear box -- is unchanged apart
+        from the formatting."""
+        p = pset.FreeParameter('x__FREE', 'uniform_var', 0.0, 10.0)
+        with caplog.at_level(logging.DEBUG, logger='pybnf.pset'):
+            assert p.set_value(25.0).value == 5.0
+        line = next(m for m in (r.getMessage() for r in caplog.records)
+                    if 'out of defined bounds' in m)
+        assert 'Assigned value 25.0 is' in line and line.endswith('Adjusted to 5.0')

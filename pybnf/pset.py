@@ -2420,8 +2420,17 @@ class FreeParameter:
             # rounding of one folds onto it rather than a hair past it, which the
             # constructor's bounds check below would reject.
             adj = self._reflect(new_value)
-            logger.debug(f'Assigned value {new_value:f} is out of defined bounds: [{self.lower_bound}, {self.upper_bound}].  '
-                           f'Adjusted to {adj:f}')
+            # `!r` on a plain float rather than `:f`. These two values routinely differ
+            # only in their last bits -- the common case is a proposal a rounding past a
+            # wall, folded onto it -- so at %f's six decimals the line printed the same
+            # number twice and refuted itself: "Assigned value 20.000000 is out of defined
+            # bounds: [1.2, 20.0].  Adjusted to 20.000000". Below 1e-6 both printed as
+            # 0.000000 (#753). `repr` of a float is the shortest string that round-trips,
+            # so it shows what is needed and no more; `float()` first so a numpy scalar
+            # prints as its value rather than np.float64(...). The bounds already print at
+            # full precision, str of a float being its repr.
+            logger.debug(f'Assigned value {float(new_value)!r} is out of defined bounds: '
+                         f'[{self.lower_bound}, {self.upper_bound}].  Adjusted to {float(adj)!r}')
             new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value,
                              bounded=self.bounded, lb=self.trunc_lb, ub=self.trunc_ub,
@@ -2484,7 +2493,12 @@ class FreeParameter:
         hi_u = self._bound_to_u(self.upper_bound)
         new_u = self._scale.forward(new)
         if self._scale.is_log:
-            logger.debug(f"Reflecting in log space: new={new_u} lb={lo_u} ub={hi_u}")
+            # theta as well as u. The common fold on a log scale is a proposal a rounding
+            # past a wall in theta, and log10 rounds that back onto the wall, so u alone
+            # cannot explain the line: it would report a reflection of a value whose
+            # ``new`` is printed as exactly equal to ``ub`` (#753).
+            logger.debug(f"Reflecting in log space: theta={float(new)!r} new={new_u} "
+                         f"lb={lo_u} ub={hi_u}")
 
         lo_finite = np.isfinite(lo_u)
         hi_finite = np.isfinite(hi_u)
