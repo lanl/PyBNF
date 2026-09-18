@@ -762,6 +762,9 @@ class TestAdaptiveSeedFileHeader:
         am.start_run()
         names = [v.name for v in am.variables]
         am.parameter_index[0] = np.arange(1.0, len(names) + 1.0).reshape(1, len(names))
+        # Populating the buffer by hand stands in for got_result's record step, which also
+        # marks the slot as recorded -- what the write reads instead of the values (#758).
+        am.parameter_index_recorded[0] = True
 
         am.iteration[0] = 1
         am.write_out_params(0)
@@ -784,6 +787,9 @@ class TestAdaptiveSeedFileHeader:
         am.start_run()
         names = [v.name for v in am.variables]
         am.parameter_index[0] = np.arange(1.0, len(names) + 1.0).reshape(1, len(names))
+        # Populating the buffer by hand stands in for got_result's record step, which also
+        # marks the slot as recorded -- what the write reads instead of the values (#758).
+        am.parameter_index_recorded[0] = True
         seed = self._seed_file(am)
 
         am.iteration[0] = 2  # burn_in - 1: header initialized, no data row
@@ -896,3 +902,104 @@ class TestAnUnmatchedTrajectoryNameIsReported:
         line = self._warning(capsys)
         assert f'names {self.TYPO}, scaled_pSOS1, which are not columns' in line
         assert 'written for them' in line          # plural agreement throughout
+
+
+# --------------------------------------------------------------------------- #
+# A recorded sample is written whatever its values (lanl/PyBNF#758)
+# --------------------------------------------------------------------------- #
+class TestARecordedSampleIsWrittenWhateverItsValues:
+    """The writers used to decide what to write by dropping every all-zero row.
+
+    Each buffer holds one slot per chain (``arr_length`` is the constant 1 and ``factor``
+    is never incremented), rewritten with the chain's current state each sampling
+    iteration and appended to the file, so the filter ran per sample. It was standing in
+    for "was this slot recorded", which it cannot distinguish from a recorded trajectory
+    whose observable sits at zero across the window -- an absent species under a knockout,
+    a ``_Cum`` counter over a quiet window. Those samples were dropped, leaving a file
+    with fewer rows than the run sampled and nothing marking the gap, so a band or a mean
+    taken from it covered only the samples where the observable was switched on (#758).
+
+    The slot now records whether a result column supplied it, which also keeps a name that
+    matched no column (#755) writing no file at all rather than a file of zeros."""
+
+    OBS = 'OBS'
+
+    @staticmethod
+    def _am(tmp_path, wanted=(OBS,), buffer_keys=('WTOBS',)):
+        """An ``am`` past burn-in that samples on every iteration, with one scored key."""
+        cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_trajectory=list(wanted),
+                           burn_in=1, adaptive=0, sample_every=1, output_hist_every=10**9)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        am.time = {'WT': 2}
+        am.output_columns = list(wanted)
+        am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in buffer_keys}
+        am.output_run_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in buffer_keys}
+        am.iteration[0] = 1
+        return am
+
+    def _feed(self, am, values):
+        """One result whose model emitted ``OBS`` with these values, driven through the
+        real accept -> record -> write path."""
+        ps = _uniform_pset(f'iter{am.iteration[0]}run0')
+        res = algorithms.Result(ps, None, ps.name)
+        res.out = {'m': {'WT': _data(self.OBS, list(enumerate(values)))}}
+        res.score = 5.0
+        am.got_result(res)
+
+    @staticmethod
+    def _rows(am, name='traj_WTOBS_chain_0.txt'):
+        f = Path(am.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs' / name
+        return f.read_text().splitlines() if f.exists() else []
+
+    def test_a_trajectory_of_zeros_is_recorded_like_any_other(self, tmp_path):
+        am = self._am(tmp_path)
+        self._feed(am, [0.0, 0.0, 0.0])
+        assert self._rows(am) == ['0.000000000000000000e+00 0.000000000000000000e+00 '
+                                  '0.000000000000000000e+00']
+
+    def test_the_row_count_matches_the_sampling_iterations(self, tmp_path):
+        """The part that biases an ensemble: the zero samples were the ones dropped, so
+        the file covered only the samples where the observable was switched on."""
+        am = self._am(tmp_path)
+        samples = [[1., 2., 3.], [0., 0., 0.], [4., 5., 6.], [0., 0., 0.]]
+        for values in samples:
+            self._feed(am, values)
+        rows = self._rows(am)
+        assert len(rows) == len(samples)
+        assert [float(r.split()[0]) for r in rows] == [1.0, 0.0, 4.0, 0.0]
+
+    def test_a_name_no_column_supplied_still_writes_no_file(self, tmp_path):
+        """#755's case must not turn into a file of zeros now that zeros are written: the
+        slot is never recorded, because no result column ever supplied it."""
+        am = self._am(tmp_path, wanted=('TYPO',), buffer_keys=('WTTYPO',))
+        self._feed(am, [1.0, 2.0, 3.0])
+        assert am.output_run_recorded == set()
+        assert self._rows(am, 'traj_WTTYPO_chain_0.txt') == []
+
+    def test_the_noise_writer_follows_the_same_rule(self, tmp_path):
+        """``output_run_noise_all`` is only copied under a neg_bin objective, so the rule
+        is exercised on the writer directly."""
+        am = self._am(tmp_path)
+        am.output_noise_columns = [self.OBS]
+        am.output_run_noise_current = {'WTOBS': np.zeros((am.num_parallel, 1, 3))}
+        am.output_run_noise_all = {'WTOBS': np.zeros((am.num_parallel, 1, 3))}
+        am.write_out_trajactorys_noise(0)
+        assert self._rows(am, 'traj_noise_WTOBS_chain_0.txt') == []   # never recorded
+        am.output_run_noise_recorded.add(('WTOBS', 0))
+        am.write_out_trajactorys_noise(0)
+        assert len(self._rows(am, 'traj_noise_WTOBS_chain_0.txt')) == 1
+
+    def test_an_all_zero_parameter_vector_is_written_once_recorded(self, tmp_path):
+        """The same sentinel in ``write_out_params``: a vector of all zeros is a legal
+        point of a box whose lower bound is zero, which the reflecting fold can return."""
+        am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, burn_in=1))
+        am.start_run()
+        am.iteration[0] = 1
+        am.parameter_index[0] = np.zeros((1, len(am.variables)))
+        am.write_out_params(0)
+        seed = Path(am.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs' / 'params_0.txt'
+        assert len(seed.read_text().splitlines()) == 1        # header only, not recorded
+        am.parameter_index_recorded[0] = True
+        am.write_out_params(0)
+        assert len(seed.read_text().splitlines()) == 2        # the all-zero row is written

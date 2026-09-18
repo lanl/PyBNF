@@ -252,6 +252,32 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A recorded adaptive-MCMC sample is written whatever its values, so a trajectory that sits at
+  zero is no longer dropped from the output file (#758).** `write_out_trajactorys` chose what to
+  write by discarding every all-zero row of its buffer. Each buffer holds one slot per chain --
+  `arr_length` is the constant 1 and nothing increments `factor` -- rewritten with the chain's
+  current state on each sampling iteration and appended to the file, so that filter ran once per
+  sample. It was standing in for "was this slot recorded", which is not what it measures: a
+  recorded trajectory whose observable is zero at every recorded time point looks exactly like a
+  slot nothing was written into. An absent species under a knockout, a perturbation that removes
+  the entity being observed, a `_Cum` counter over a window in which nothing fired -- these are
+  ordinary, and they are often the conditions a fit exists to compare against.
+
+  The consequence was not a missing file but a quietly incomplete one. `traj_<key>_chain_<n>.txt`
+  carries one row per sampling iteration and nothing in it marks a gap, so the row count stopped
+  matching the sample count with no way to tell from the file which samples were absent, and the
+  samples that went missing were exactly those at which the observable was switched off. A
+  posterior predictive band, a mean trajectory or a credible envelope taken from that file was
+  computed over a biased subset. Where every sampling iteration was zero no file appeared at all,
+  which is how this was found.
+
+  Each slot now records whether a result column supplied it, at the point the accumulating loop
+  fills it, and the writers read that instead of the values. A name that matched no column is
+  therefore still never written (#755) rather than producing a file of zeros. The same
+  substitution of a sentinel for a fill marker is fixed in `write_out_params`, where the
+  discarded row is a parameter vector of all zeros: out of reach for a continuous proposal over
+  several parameters, but a box whose lower bound is zero can be hit exactly by the reflecting
+  fold, and the flag costs one line. `write_out_scores`, which never filtered, was the precedent.
 - **An `output_trajectory` name that no simulation produces a column for is named once, instead
   of silently producing no file (#755).** Neither `output_trajectory` nor
   `output_noise_trajectory` (`fit_type = am`) was validated against anything. A name that

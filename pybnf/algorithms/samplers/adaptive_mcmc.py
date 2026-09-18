@@ -75,6 +75,18 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.output_noise_columns = []
         self._trajectory_names_checked = False
 
+        # Which (buffer key, chain) slots a real result column has ever supplied. The write
+        # step used to infer this from the values, treating an all-zero row as "nothing was
+        # recorded here" -- which is also what a recorded trajectory of an observable that
+        # sits at zero looks like, so those samples were dropped from the file (#758).
+        self.output_run_recorded = set()
+        self.output_run_noise_recorded = set()
+        # Likewise for the accepted-parameter history, where the sentinel is a whole
+        # parameter vector of zeros. Out of reach for a continuous proposal on more than one
+        # parameter, but the fold can return a bound of exactly zero, so it is not a
+        # guarantee -- and it costs one flag to stop relying on it.
+        self.parameter_index_recorded = [False] * self.num_parallel
+
         if self.config.config['output_trajectory']:
             # The comma is a list separator that the parser removes (#751). This used to
             # strip one out of each name here, which fixed `A, B` and silently joined
@@ -243,6 +255,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     else:
                                         self.output_run_current[j+l][index]= self.list_trajactory
                                     self.list_trajactory = []
+                                    # A real result column supplied this slot, which is what
+                                    # the write step needs to know -- not whether the values
+                                    # happen to be zero (#758).
+                                    self.output_run_recorded.add((j + l, index))
                 if self.config.config['output_noise_trajectory']:
                     for la in self.output_noise_columns:
                         for ib in res.out:
@@ -265,10 +281,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     else:
                                         self.output_run_noise_current[js+la][index]= self.list_trajactory
                                     self.list_trajactory = []
+                                    self.output_run_noise_recorded.add((js + la, index))   # (#758)
                                               
         # After the burn in period start to record the accepted params for the adaptive feature.
         if self.iteration[index] >= self.burn_in:
             self.parameter_index[index][self.factor[index]] = self.current_param_set[index]
+            self.parameter_index_recorded[index] = True                                # (#758)
         
         # record the trajactorys for the graphs
         if self.iteration[index] >= self.valid_range and self.iteration[index] % self.config.config['sample_every'] == 0:
@@ -440,7 +458,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
         # Write out the accepted-parameter history that seeds the adaptive covariance.
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         params_file = runs_dir / f'params_{idx}.txt'
-        self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+        # Written when the slot has been recorded, not when some parameter is non-zero
+        # (#758): a vector of all zeros is a legal point of a box whose lower bound is
+        # zero, which the reflecting fold can return exactly.
+        self.write_out_p = (self.parameter_index[idx] if self.parameter_index_recorded[idx]
+                            else self.parameter_index[idx][:0])
         # Emit the column-name header exactly once, when the seed file is first created.
         # Keying this on file creation rather than `iteration == burn_in - 1` keeps the
         # header present even when burn_in == 1 makes that iteration unreachable: iteration
@@ -461,24 +483,28 @@ class Adaptive_MCMC(BayesianAlgorithm):
 
     def write_out_trajactorys(self, idx):
         # write out trajectories need more practical method
+        #
+        # A slot is written when a result column has supplied it, not when its values are
+        # non-zero. Reading an all-zero row as "nothing recorded here" also dropped a
+        # recorded trajectory of an observable that sits at zero across the window -- an
+        # absent species under a knockout, a _Cum counter over a quiet window -- so the
+        # file silently carried fewer rows than the run sampled, with nothing marking the
+        # gap, and a band or mean computed from it was over the samples where the
+        # observable happened to be switched on (#758). `write_out_scores` never filtered.
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
-        for l in self.output_columns:     
+        for l in self.output_columns:
             for i in self.output_run_current.keys():
-                if l in i:
-                    self.write_out_t = self.output_run_all[i][idx][~(self.output_run_all[i][idx]==0).all(1)]
-                    if len(self.write_out_t) != 0:
-                        with open(runs_dir / f'traj_{i}_chain_{idx}.txt', 'a') as f:
-                            np.savetxt(f, self.write_out_t)
+                if l in i and (i, idx) in self.output_run_recorded:
+                    with open(runs_dir / f'traj_{i}_chain_{idx}.txt', 'a') as f:
+                        np.savetxt(f, self.output_run_all[i][idx])
     def write_out_trajactorys_noise(self, idx):
         # Basically this IO on every iter is to expensice timewise
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
-        for l in self.output_noise_columns:     
+        for l in self.output_noise_columns:
             for i in self.output_run_noise_current.keys():
-                if l in i: 
-                    self.write_out_t = self.output_run_noise_all[i][idx][~(self.output_run_noise_all[i][idx]==0).all(1)]
-                    if len(self.write_out_t) != 0:
-                        with open(runs_dir / f'traj_noise_{i}_chain_{idx}.txt', 'a') as f:
-                            np.savetxt(f, self.write_out_t)
+                if l in i and (i, idx) in self.output_run_noise_recorded:   # (#758, as above)
+                    with open(runs_dir / f'traj_noise_{i}_chain_{idx}.txt', 'a') as f:
+                        np.savetxt(f, self.output_run_noise_all[i][idx])
     def combine_chains_params(self):
         #combine the chains for the final output file
         # if self.num_parallel != 1:
