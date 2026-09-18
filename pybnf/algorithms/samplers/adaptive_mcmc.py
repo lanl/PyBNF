@@ -69,6 +69,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
         (out / 'Results' / 'A_MCMC' / 'Runs').mkdir(parents=True, exist_ok=True)
         (out / 'Results' / 'Histograms').mkdir(parents=True, exist_ok=True)
         
+        # Defined whether or not either key is set, so the names can be checked against a
+        # completed simulation in one place (_check_trajectory_names, #755).
+        self.output_columns = []
+        self.output_noise_columns = []
+        self._trajectory_names_checked = False
+
         if self.config.config['output_trajectory']:
             # The comma is a list separator that the parser removes (#751). This used to
             # strip one out of each name here, which fixed `A, B` and silently joined
@@ -210,6 +216,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             if isinstance(res.out, FailedSimulation):
                 pass
             else:
+                self._check_trajectory_names(res.out)
                 if self.config.config['output_trajectory']:
                     for l in self.output_columns:
                         for i in res.out:
@@ -360,6 +367,51 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.wait_for_sync[i] = False        
             return next_generation
         return []
+
+    def _check_trajectory_names(self, out):
+        """Warn once for an ``output_trajectory`` / ``output_noise_trajectory`` name that
+        no simulation produced a column for (#755).
+
+        Neither key was validated against anything. A name that matches no column is
+        filled by nothing (the accumulate loop below runs only ``if l in cols``), so its
+        array stays as allocated -- all zeros -- and the write step skips it, because it
+        writes only the rows that are not all zero. The result was a `Runs/` directory
+        with fewer ``traj_*.txt`` files than the conf asked for and nothing saying which
+        name was dropped or why, so a typo looked exactly like a fit that never asked.
+
+        Checked here rather than at config load, where the rest of the codebase refuses an
+        undeclared name (``_resolve_profile_idxs``, ``design.greedy.resolve_targets``), for
+        two reasons: no model class exposes its observable names -- ``BNGLModel`` records
+        only the boolean ``has_observables`` -- and a column need not come from the model
+        file at all, since the measurement layer contributes its own. A completed result
+        carries the authoritative list, and carries it for every model in the fit at once
+        (``res.out`` is the whole multi-model dict on both the worker-scoring and the
+        master-scoring path), so a name valid for one model is not reported against
+        another.
+
+        A warning rather than an error: the fit itself is sound, only an output file is
+        missing, and by the time this can be known simulations are already running.
+        """
+        if self._trajectory_names_checked:
+            return
+        self._trajectory_names_checked = True
+        if not self.output_columns and not self.output_noise_columns:
+            return
+        available = set()
+        for model in out:
+            for suffix in out[model]:
+                available.update(out[model][suffix].cols)
+        for key, wanted in (('output_trajectory', self.output_columns),
+                            ('output_noise_trajectory', self.output_noise_columns)):
+            missing = [name for name in wanted if name not in available]
+            if not missing:
+                continue
+            one = len(missing) == 1
+            print1("Warning: %s names %s, which %s of any simulation in this fit, so no "
+                   "trajectory will be written for %s. The simulations produce: %s."
+                   % (key, ', '.join(missing),
+                      'is not a column' if one else 'are not columns',
+                      'it' if one else 'them', ', '.join(sorted(available))))
 
     def generateBinomialNoise(self, timeseries, pset, rng):
         # Generate the binomial noise for the results (rng = the chain's own Generator)
