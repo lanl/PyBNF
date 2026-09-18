@@ -1003,3 +1003,87 @@ class TestARecordedSampleIsWrittenWhateverItsValues:
         am.parameter_index_recorded[0] = True
         am.write_out_params(0)
         assert len(seed.read_text().splitlines()) == 2        # the all-zero row is written
+
+
+# --------------------------------------------------------------------------- #
+# The combine step tolerates a per-chain file the run never wrote (lanl/PyBNF#760)
+# --------------------------------------------------------------------------- #
+class TestCombiningChainsWithAFileTheRunNeverWrote:
+    """``combine_chains_traj`` loaded every per-chain file by name with no check that it
+    exists, so the absence of an output the run itself declined to write ended the run in
+    ``FileNotFoundError`` -- at one of the two run terminations, after all the sampling
+    work was done and on the last step before ``'STOP'`` (#760).
+
+    Two ways to get there, both needing ``population_size > 1`` and ``output_trajectory``:
+    a name no simulation produced a column for is never written for any chain (#755), and
+    a run that converges inside the adaptive window stops before ``valid_range``, which is
+    the first iteration any trajectory is written at -- ``check_convergence`` needs only
+    ``iteration > burn_in``. The second can leave chains in different states, since it
+    fires on one chain's iteration count while the others are still behind it."""
+
+    @staticmethod
+    def _am(tmp_path, keys=('WTOBS',), wanted=('OBS',), noise=False):
+        overrides = {'output_trajectory': list(wanted)}
+        if noise:
+            overrides['output_noise_trajectory'] = list(wanted)
+        cfg = _make_config(tmp_path, 2, UNIFORM_VARS, burn_in=2, adaptive=2,
+                           max_iterations=10, **overrides)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        am.output_columns = list(wanted)
+        am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in keys}
+        if noise:
+            am.output_noise_columns = list(wanted)
+            am.output_run_noise_current = dict(am.output_run_current)
+        runs = Path(cfg.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+        return am, runs
+
+    def test_no_per_chain_file_at_all_does_not_end_the_run(self, tmp_path, capsys):
+        am, runs = self._am(tmp_path, keys=('WTTYPO',), wanted=('TYPO',))
+        am.combine_chains_traj()                      # must not raise
+        out = capsys.readouterr().out
+        assert 'WTTYPO chain 0, WTTYPO chain 1' in out
+        assert 'missing 2 per-chain files' in out
+        # and no empty combined file is left behind for a key with nothing in it
+        assert list(runs.glob('combined_*')) == []
+
+    def test_a_chain_that_wrote_is_still_combined(self, tmp_path, capsys):
+        """A convergence stop can leave one chain with a file and another without."""
+        am, runs = self._am(tmp_path)
+        np.savetxt(runs / 'traj_WTOBS_chain_0.txt', np.array([[1., 2., 3.], [4., 5., 6.]]))
+        am.combine_chains_traj()
+        out = capsys.readouterr().out
+        assert 'missing 1 per-chain file ' in out          # singular
+        assert 'WTOBS chain 1' in out and 'WTOBS chain 0' not in out
+        rows = [line.split() for line in (runs / 'combined_traj_WTOBS.txt').read_text().splitlines()]
+        assert [[float(x) for x in r] for r in rows] == [[1., 2., 3.], [4., 5., 6.]]
+
+    def test_both_chains_present_is_unchanged_and_silent(self, tmp_path, capsys):
+        am, runs = self._am(tmp_path)
+        np.savetxt(runs / 'traj_WTOBS_chain_0.txt', np.array([[1., 2., 3.], [4., 5., 6.]]))
+        np.savetxt(runs / 'traj_WTOBS_chain_1.txt', np.array([[7., 8., 9.]]))
+        am.combine_chains_traj()
+        assert 'missing' not in capsys.readouterr().out
+        rows = [line.split() for line in (runs / 'combined_traj_WTOBS.txt').read_text().splitlines()]
+        assert [[float(x) for x in r] for r in rows] == [[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]]
+
+    def test_a_single_sample_file_is_not_written_down_the_page(self, tmp_path):
+        """``loadtxt`` drops a one-row file to 1-D and ``savetxt`` then writes that sample
+        as one value per line. A run with exactly one sampling iteration past
+        ``valid_range`` had its combined trajectory transposed."""
+        am, runs = self._am(tmp_path)
+        np.savetxt(runs / 'traj_WTOBS_chain_0.txt', np.array([[1., 2., 3.]]))
+        np.savetxt(runs / 'traj_WTOBS_chain_1.txt', np.array([[4., 5., 6.]]))
+        am.combine_chains_traj()
+        rows = [line.split() for line in (runs / 'combined_traj_WTOBS.txt').read_text().splitlines()]
+        assert [[float(x) for x in r] for r in rows] == [[1., 2., 3.], [4., 5., 6.]]
+
+    def test_the_noise_trajectories_take_the_same_path(self, tmp_path, capsys):
+        am, runs = self._am(tmp_path, noise=True)
+        np.savetxt(runs / 'traj_WTOBS_chain_0.txt', np.array([[1., 2., 3.]]))
+        np.savetxt(runs / 'traj_WTOBS_chain_1.txt', np.array([[4., 5., 6.]]))
+        am.combine_chains_traj()                      # noise files absent -> must not raise
+        out = capsys.readouterr().out
+        assert 'missing 2 per-chain files' in out
+        assert 'combined_traj_WTOBS.txt' in ' '.join(p.name for p in runs.glob('combined_*'))
+        assert not (runs / 'combined_traj_noise_WTOBS.txt').exists()
