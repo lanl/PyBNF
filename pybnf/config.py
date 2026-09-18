@@ -4249,11 +4249,23 @@ class Configuration:
                 # Now postproc is the user-defined Python module
             except OSError:
                 raise PybnfError(f'Could not load the postprocessing script {script}')
+            # AttributeError, not NameError: `postproc` is a module object, and a
+            # missing attribute on one raises AttributeError. NameError is what an
+            # unbound local or global raises, which this expression is not -- so the
+            # message below was unreachable and the user got a raw traceback from the
+            # catch-all in pybnf.main() instead (#748). Mirrors the same check in
+            # analytical_model._resolve_callable_entry_point, written later against the
+            # same loader: the script is validated here, at config load, rather than
+            # failing mid-run on a dask worker in Result.postprocess_data.
             try:
-                func = postproc.postprocess
-            except NameError:
+                func = getattr(postproc, 'postprocess')
+            except AttributeError:
                 raise PybnfError(f'The postprocessing script {script} should contain a definition of the function '
                                  'postprocess(data). This function was not found.')
+            if not callable(func):
+                raise PybnfError(f'The postprocessing script {script} defines postprocess as a non-callable '
+                                 f'{type(func).__name__}. It should define the function postprocess(data), which '
+                                 'takes a Data object and returns one.')
 
             for suff in suffixes:
 

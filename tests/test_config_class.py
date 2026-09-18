@@ -1027,3 +1027,63 @@ class TestRaggedReplicates:
         stacked = config.Configuration._stack_replicates([full, xonly])
         expected = obj.evaluate(sim, full) + obj.evaluate(sim, xonly)
         assert obj.evaluate(sim, stacked) == pytest.approx(expected)
+
+
+class TestPostprocessingScriptGuard:
+    """``_load_postprocessing`` validates a user's postprocessing script at config
+    load, so a bad script is reported before a fit starts rather than failing mid-run
+    on a dask worker in ``Result.postprocess_data`` (algorithms/core.py, which calls
+    ``postproc.postprocess(rawdata)`` per simulation).
+
+    The missing-function guard used to catch ``NameError``. ``postproc`` is a module
+    object, and a missing attribute on one raises ``AttributeError`` -- ``NameError``
+    is what an unbound local or global raises -- so the guard never fired and its
+    message was unreachable from the day it was written (#748). The user got the
+    catch-all in ``pybnf.main()`` instead: "Sorry, an unknown error occurred...
+    Please report this bug", for a typo in their own script.
+    """
+
+    def _config(self, script):
+        cfg = object.__new__(config.Configuration)
+        # A spec of (script,) carries no suffixes, so the suffix-to-model backsolve
+        # below the guard is a no-op and the guard is all that runs.
+        cfg.config = {'postprocess': {(str(script),)}}
+        cfg.models = {}
+        cfg._absolute = lambda path: path
+        return cfg
+
+    def _script(self, tmp_path, body):
+        path = tmp_path / 'user_postprocess.py'
+        path.write_text(body)
+        return path
+
+    def test_misspelled_postprocess_is_reported_to_the_user(self, tmp_path):
+        """Mutation-distinguishing: under ``except NameError`` this raised a raw
+        ``AttributeError`` out of config parsing instead."""
+        script = self._script(tmp_path, 'def postprocesss(data):\n    return data\n')
+        with pytest.raises(printing.PybnfError,
+                           match='should contain a definition of the function'):
+            self._config(script)._load_postprocessing()
+
+    def test_a_script_defining_nothing_is_reported_the_same_way(self, tmp_path):
+        script = self._script(tmp_path, '# the user forgot to write it\n')
+        with pytest.raises(printing.PybnfError,
+                           match='should contain a definition of the function'):
+            self._config(script)._load_postprocessing()
+
+    def test_a_non_callable_postprocess_is_named_for_what_it_is(self, tmp_path):
+        """Binding the name to something uncallable passed config load and failed
+        later, on a worker, at the point of call. Same guard, same reason it exists."""
+        script = self._script(tmp_path, 'postprocess = 5\n')
+        with pytest.raises(printing.PybnfError, match='non-callable int'):
+            self._config(script)._load_postprocessing()
+
+    def test_a_valid_script_passes_the_guard(self, tmp_path):
+        """The guard must not reject the scripts it exists to admit."""
+        script = self._script(tmp_path, 'def postprocess(data):\n    return data\n')
+        self._config(script)._load_postprocessing()  # must not raise
+
+    def test_an_unreadable_script_still_reports_the_load_failure(self, tmp_path):
+        """The OSError branch above the guard is untouched by the fix."""
+        with pytest.raises(printing.PybnfError, match='Could not load the postprocessing script'):
+            self._config(tmp_path / 'does_not_exist.py')._load_postprocessing()
