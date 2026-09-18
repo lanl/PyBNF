@@ -252,6 +252,33 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A fit with exactly one free parameter and the whitened DREAM proposal no longer dies
+  halfway through burn-in (#767).** `p_dream`, and `dream` with `proposal = whitened`, ended
+  with `ValueError: diag requires an array of at least two dimensions`. The preconditioner
+  estimates the covariance of the pooled chain history, and `numpy.cov` of a *single* column
+  returns that column's variance as a 0-d array rather than a 1x1 matrix, so taking its trace
+  raised; regularizing the diagonal would have raised next.
+
+  It was not a startup failure, which is what made it expensive. The covariance is first
+  refreshed at `precondition_adapt` iterations, and that key defaults to `burn_in // 2` --
+  always before `burn_in`, so the crash always landed before the first sample was recorded.
+  Half the burn-in was simulated, `Results/samples.txt` held its header line and nothing else,
+  and the run was a total loss with nothing in the message to act on.
+
+  The covariance is now shaped to 1x1 before it is used. One parameter is a shape to repair,
+  not a case to skip: its 1x1 covariance is a perfectly good preconditioner -- a scale -- and
+  the rest of the whitened path, the Cholesky factor and the transforms built from it, already
+  handled it. A one-parameter fit now runs to completion with preconditioning active, and on
+  the flat-box target #709 was measured against it samples what it should: over a flat
+  posterior on `[0, 1]` the variance comes back 0.0843 where uniform is 0.0833, with 0.210 of
+  the mass within 0.1 of a wall where uniform is 0.200.
+
+  Only the whitened proposal was affected, and only at one parameter. Plain `dream`
+  (`proposal = de`) never estimates a covariance, `proposal = kalman` builds its gain from
+  explicit matrix products rather than `numpy.cov` and was checked at one parameter as well,
+  and two or more parameters were always fine. Nothing in the suite had run the whitened
+  proposal with one parameter; a one-parameter fit driven to completion through both of its
+  entry points now runs in the default tier.
 - **Adaptive MCMC no longer under-samples along the walls of the box: a proposal that leaves it
   is rejected, not redrawn (#709).** `pick_new_pset` drew its Gaussian step again and again until
   one landed inside the box, and `got_result` accepted the survivor with the plain Metropolis

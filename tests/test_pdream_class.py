@@ -253,6 +253,37 @@ class TestUpdateCovariance:
         np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T, cov + eps * np.eye(d),
                                    rtol=1e-8, atol=1e-12)
 
+    def test_single_parameter_covariance_is_one_by_one(self):
+        """One free parameter (lanl/PyBNF#767). ``np.cov`` of a single column returns
+        that column's variance as a **0-d** array, not the 1x1 matrix the rest of the
+        method needs, so the un-repaired code raised ``ValueError: diag requires an
+        array of at least two dimensions`` at ``np.trace`` -- and would have raised
+        again on ``cov += eps*np.eye(d)`` had only the trace been patched.
+
+        The d=3 oracle applies here unchanged, which is the point: d = 1 is a shape to
+        repair, not a case to skip. ``L Lt = cov + eps*I`` with ``eps = 1e-6*trace/d``
+        reduces at d = 1 to the scalar identity ``L**2 = var * (1 + 1e-6)``, and
+        ``_preconditioned`` must flip -- a "fix" that returned early for one parameter
+        would stop the crash while silently leaving the whitened proposal off forever.
+        """
+        rng = np.random.default_rng(13)
+        X = rng.standard_normal((200, 1)) * 3.0 + 1.0
+        hist = [list(X)]
+        pd = _pd_for_cov(hist, 1)
+        pd._update_covariance()
+
+        Xp = _pool(hist, 1)                       # the post-warmup pool the method used
+        var = np.var(Xp[:, 0], ddof=1)            # oracle: np.cov's unbiased estimate
+        assert pd._cov_L.shape == (1, 1)
+        np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T,
+                                   np.array([[var * (1 + 1e-6)]]), rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(pd._cov_L_inv @ pd._cov_L, np.eye(1),
+                                   rtol=1e-12, atol=1e-14)
+        assert pd._preconditioned is True
+        # The shape repair is load-bearing, not cosmetic: the raw estimate really is 0-d,
+        # so this test fails on the pre-fix method rather than passing vacuously.
+        assert np.ndim(np.cov(Xp, rowvar=False)) == 0
+
     def test_no_update_below_sample_threshold(self):
         """Gate: with fewer than 2*n_dim pooled samples there is no covariance
         update — _cov_L stays None and _preconditioned stays False. (The pool is
@@ -340,11 +371,13 @@ class TestUpdateCovariance:
 # --------------------------------------------------------------------------- #
 class TestWhitenRoundTrip:
 
-    @pytest.mark.parametrize("d,seed", [(2, 0), (3, 1), (4, 2)])
+    @pytest.mark.parametrize("d,seed", [(1, 3), (2, 0), (3, 1), (4, 2)])
     def test_unwhiten_of_whiten_is_identity(self, d, seed):
         """unwhiten_diff(whiten(x)) = L (L⁻¹ x) = x. This pins that _whiten uses
         L⁻¹ and _unwhiten_diff uses L (the matched factor), not the same matrix
-        twice: L L⁻¹ = I but L L ≠ I and L⁻¹ L⁻¹ ≠ I for a non-orthogonal L."""
+        twice: L L⁻¹ = I but L L ≠ I and L⁻¹ L⁻¹ ≠ I for a non-orthogonal L.
+        d = 1 is included because the one-parameter whitened path is reachable
+        (lanl/PyBNF#767); there L is a 1x1 scale s and the round trip is s·(x/s)."""
         L, L_inv = _spd_cholesky(d, seed)
         pd = _bare_pd(_cov_L=L, _cov_L_inv=L_inv)
         rng = np.random.default_rng(seed + 100)
