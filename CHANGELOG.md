@@ -252,6 +252,22 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **`fit_type = am` now writes the marginal histograms and the credible intervals it had been
+  silently skipping (#771).** Adaptive MCMC overrode the method that writes them with a bare
+  `pass`, so every run of it produced neither, at any number of parameters. Nothing else in the
+  sampler agreed with that: it called the method on the usual stride, it created the
+  `Results/Histograms` directory the files belong in, and it wrote the standard samples file the
+  method reads. It also accepted `credible_intervals`, `hist_bins` and `output_hist_every`
+  without comment -- those keys are shared across the MCMC fit types, so nothing reported them as
+  doing nothing -- and the documentation presents these files as what a Bayesian fit produces,
+  with no exception for `am`. What a user got was a completed run, an empty histogram directory,
+  and no credible interval for any parameter, from a sampler whose samples were fine all along.
+  The override is gone, and the final pair of files is now written at the end of a run that
+  reaches `max_iterations`, next to the constraint report that was already written there; a run
+  that stops early on convergence already had that call. On a Gaussian target of standard
+  deviation 0.2 the recovered 68% intervals are [0.276, 0.674] and [0.275, 0.706] against an
+  exact [0.30, 0.70]. Every other sampler was unaffected, and now a test says so for all of them
+  rather than for each in isolation.
 - **A fit with exactly one free parameter and the whitened DREAM proposal no longer dies
   halfway through burn-in (#767).** `p_dream`, and `dream` with `proposal = whitened`, ended
   with `ValueError: diag requires an array of at least two dimensions`. The preconditioner

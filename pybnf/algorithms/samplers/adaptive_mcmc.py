@@ -333,7 +333,14 @@ class Adaptive_MCMC(BayesianAlgorithm):
 
         self.iteration[index] += 1
 
-        # Standard BayesianAlgorithm sampling
+        # Standard BayesianAlgorithm sampling. Note the window: the samples file, and
+        # so the histograms and credible intervals built from it, starts after burn_in,
+        # while the trajectory block above and combine_chains_params start at
+        # valid_range (burn_in + adaptive). That is deliberate, not an oversight of
+        # #771 -- during the adaptive window the chain runs a fixed-step Metropolis
+        # kernel against the same posterior, so those draws are valid, just taken
+        # before the covariance adapted. The two windows differing is still a wart
+        # worth its own look (lanl/PyBNF#772).
         if (self.iteration[index] > self.burn_in
                 and self.iteration[index] % self.sample_every == 0):
             self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
@@ -417,8 +424,16 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 np.savetxt(adaptive_dir / 'diff.txt', self.diff_best)
                 self.combine_chains_params()
                 self.combine_chains_traj()
-                self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
+                # The final histograms and credible intervals, the pair every other
+                # sampler writes at its stop point (dream's barrier, the shared
+                # check_convergence). Both calls must come BEFORE samples_file is
+                # repointed below: update_histograms reads that attribute, and
+                # combined_params.txt is a different format -- variable columns only,
+                # space separated, no '# Name  Ln_probability' prefix -- so reading it
+                # with this method's usecols would not give the sampled values back.
+                self.update_histograms('_final')
                 self.report_constraint_satisfaction('_final')
+                self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
@@ -735,6 +750,3 @@ class Adaptive_MCMC(BayesianAlgorithm):
                          for i, v in enumerate(self.variables)])
         except OutOfBoundsException:
             return None
-
-    def update_histograms(self, file_ext):
-            pass   

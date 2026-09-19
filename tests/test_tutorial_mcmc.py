@@ -2,9 +2,16 @@
 
 The two Markov-chain Monte Carlo samplers PyBNF ships besides DREAM (lesson 17):
 Metropolis-Hastings (``job_type = mh``) and Parallel Tempering (``job_type = pt``).
-Both sample the same well-identified Bateman posterior and -- unlike Adaptive_MCMC,
-whose histogram step is a no-op -- write real credible intervals. As in lesson 17
-the assertion is the robust one: the 95% credible interval brackets the known truth.
+Both sample the same well-identified Bateman posterior and write real credible
+intervals. As in lesson 17 the assertion is the robust one: the 95% credible interval
+brackets the known truth.
+
+(This used to say Adaptive_MCMC was the exception, "whose histogram step is a no-op".
+That was true and is no longer: ``am`` overrode the histogram step with a bare ``pass``
+and so wrote neither histograms nor credible intervals, which was an oversight, not a
+design -- lanl/PyBNF#771. The lesson has no ``am`` conf to parametrize over here; the
+shared contract is asserted for every sampler in
+``test_sampler_integration.test_sampler_writes_final_histograms_and_credible_intervals``.)
 
 Driven through the faked-dask recovery harness (bngsim real, dask faked, seed
 pinned), inline and deterministic, but ``slow``-marked -- each sampler is ~1000
