@@ -236,10 +236,19 @@ class TestNewIndividual:
 # termination/migration bookkeeping that only shows up when got_result is driven.
 # --------------------------------------------------------------------------- #
 def _de_config(tmp_path, **over):
+    # random_seed is pinned so every de oracle in this file is replayable from its own
+    # output: unseeded, Algorithm._init_rng builds the stream from SeedSequence(None), which
+    # draws fresh OS entropy per construction, and a failure cannot be reproduced (#730's
+    # analysis, applied to the de fixture as #732 applied it to the ade one). It is NOT what
+    # keeps the flush oracle below at three records -- de de-duplicates a candidate before
+    # registering it (#775), so that count holds for every draw, seeded or not; see
+    # test_every_candidate_of_a_generation_carries_a_record_even_when_they_coincide, which
+    # forces the coincidence instead of hoping for it. Override it in a test wanting another
+    # draw.
     base = {
         'population_size': 3, 'max_iterations': 100, 'islands': 1, 'migrate_every': 20,
         'num_to_migrate': 1, 'mutation_rate': 1.0, 'mutation_factor': 0.5, 'fit_type': 'de',
-        'de_strategy': 'rand1',
+        'de_strategy': 'rand1', 'random_seed': 1,
         ('uniform_var', 'v1__FREE'): [-100, 100], ('uniform_var', 'v2__FREE'): [-100, 100],
         ('uniform_var', 'v3__FREE'): [-100, 100],
         'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
@@ -746,16 +755,78 @@ class TestLearnedMutationSettings:
         assert history.next_slot == 1 and history.pending == []
         assert len(de._trial_settings) == 3                  # generation 2 registered
 
-    def test_de_keeps_the_record_of_a_perturbed_duplicate(self, tmp_path):
-        """Oracle (the record follows the candidate): de moves a candidate that duplicates
-        one in flight by up to 1e-6 per parameter; the moved candidate keeps the record."""
+    def test_de_moves_a_duplicate_before_its_record_is_registered(self, tmp_path):
+        """Oracle (#775): de resolves a duplicate candidate BEFORE registering its settings,
+        so the earlier candidate's record is not overwritten at the shared key.
+
+        ``_deduplicate`` is called inside ``new_individual``, between building the PSet and
+        writing ``_trial_settings``. Here the first candidate is already in flight, exactly
+        as the generation loop leaves it, and a second candidate lands on its parameters: the
+        second must come out moved, and registering it must leave the first's record alone.
+        Registering first and moving afterwards -- the old order -- made these one key, so
+        the second write destroyed the first record and the move carried the survivor."""
+        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
+        de.start_run()
+        first = _wide_pset((1., 2., 3.))
+        de.island_map[first] = (0, 0)
+        de._trial_settings[first] = (0.5, 0.5, 2.0, 0)
+        moved = de._deduplicate(_wide_pset((1., 2., 3.)))
+        assert moved != first
+        de._trial_settings[moved] = (0.4, 0.6, 3.0, 0)
+        assert de._trial_settings == {first: (0.5, 0.5, 2.0, 0), moved: (0.4, 0.6, 3.0, 0)}
+
+    def test_perturb_duplicate_moves_only_the_pset(self, tmp_path):
+        """Oracle (the helper is now pure): ``_perturb_duplicate`` moves the parameters by up
+        to 1e-6 each and touches no record, because it runs before any record exists."""
         de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
         de.start_run()
         p = _wide_pset((1., 2., 3.))
-        de._trial_settings[p] = (0.5, 0.5, 2.0, 0)
         moved = de._perturb_duplicate(p)
-        assert moved != p
-        assert de._trial_settings == {moved: (0.5, 0.5, 2.0, 0)}
+        assert moved != p and de._trial_settings == {}
+        for name, before in zip(NAMES, (1., 2., 3.)):
+            assert abs(moved[name] - before) <= 1e-6
+
+    def test_ade_does_not_deduplicate(self, tmp_path):
+        """Oracle (the hook is de-only): ``ade`` keeps the base identity, because it has no
+        in-flight register keyed by the candidate and tolerates two candidates sharing a
+        ``_trial_settings`` key by design (#730, ``_note_trial_result``)."""
+        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
+        ade.start_run()
+        p = _wide_pset((1., 2., 3.))
+        assert ade._deduplicate(p) is p
+
+    def test_every_candidate_of_a_generation_carries_a_record_even_when_they_coincide(self, tmp_path):
+        """Oracle (#775, end to end): a generation whose three candidates all land on the
+        same parameters still registers three records -- one per candidate.
+
+        The rng is scripted so every draw is fixed, which makes ``new_individual`` a pure
+        function of the population: the same donor picks, the same settings draw, and the
+        same forced parameter and value, so all three candidates of the generation come out
+        identical. Each is then moved off the previous one by ``_deduplicate``, and each must
+        own a record. On the old order this generation held ONE record instead of three, and
+        the two lost candidates' outcomes never reached the success history.
+
+        The copy guarantee stays ON here -- ``de_adapt_mutation`` forces it on whatever
+        ``de_force_mutation`` says -- so this is not a coincidence that needed the guarantee
+        off. The guarantee keeps a candidate from copying the member it was built FROM; it
+        says nothing about two candidates coinciding with EACH OTHER, which is what this
+        exercises. In an ordinary run that is rare (it reached CI once, as a flake); scripting
+        the rng makes it certain, so the invariant is tested rather than sampled.
+        """
+        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
+        start = de.start_run()
+        de.rng = _fake_rng(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2]),
+            integers=lambda n: 0, random=lambda: 0.0,
+            normal=lambda loc, scale: loc, standard_cauchy=lambda: 0.0,
+            uniform=lambda lo, hi: hi)
+        gen1 = None
+        for ps, sc in zip(start, [5.0, 3.0, 7.0]):
+            gen1 = de.got_result(self._result(ps, sc))
+        assert len(gen1) == 3
+        assert len(set(gen1)) == 3                      # moved off one another
+        assert len(de._trial_settings) == 3             # and every one of them recorded
+        assert set(de._trial_settings) == set(gen1)
 
     def test_ade_flushes_every_population_size_results(self, tmp_path):
         """Oracle (when ade learns): a population's worth of results is ade's generation.
