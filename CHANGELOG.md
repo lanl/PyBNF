@@ -275,9 +275,18 @@ All notable changes to PyBNF are documented below. This project adheres to
   -- verified against the all-replica computation for each. Only `pt` changes.
 
   With the default `reps_per_beta = 1` there is exactly one max-beta replica, so R-hat is now a
-  split-R-hat over that one chain. That is a real diagnostic (halving the chain is what the
-  split is for) but weaker than a between-chain comparison, and the remedy is to raise
-  `reps_per_beta`; `diagnostics_every` and `reps_per_beta` say so in the config-key docs.
+  split-R-hat over that one chain. That is a real diagnostic -- halving the chain is what the
+  split is for -- but it cannot see a chain that never left one mode, which is the failure pt is
+  usually run to avoid. `pt` now prints a warning at the start of such a run saying so.
+
+  The remedy is not simply to raise `reps_per_beta`. The number of temperatures is
+  `population_size // reps_per_beta`, so raising it alone shortens the ladder and weakens the
+  exchange the method exists for: at `population_size = 8` over `beta_range = 0.01 1`, going
+  from 1 to 2 takes the largest ratio between adjacent betas from 1.93 to 4.64, and 4 collapses
+  the ladder to `[0.01, 1.0]`. Since exchanges are accepted with probability
+  `min(1, exp(dbeta * dF))`, that suppresses them. A between-chain R-hat costs twice the
+  replicas -- `reps_per_beta = 2` with `population_size = 16` -- and the `diagnostics_every`
+  and `reps_per_beta` entries in the config-key docs now carry the numbers.
 - **Parallel tempering records each iteration of a chain once, instead of recording the
   iteration after a replica exchange twice (#710).** At an exchange barrier `replica_exchange`
   resumed each chain by calling `try_to_choose_new_pset`, then rewound the iteration counter by

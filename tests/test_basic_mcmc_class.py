@@ -216,6 +216,51 @@ class TestReplicaExchange:
 
 
 # --------------------------------------------------------------------------- #
+# The single-posterior-chain warning (#782)
+# --------------------------------------------------------------------------- #
+class TestSingleMaxBetaReplicaWarning:
+    """Only max-beta replicas carry the posterior, so the R-hat / ESS diagnostics
+    compare ``reps_per_beta`` chains. At the default of 1 that is a single chain
+    and R-hat degrades to a split of it, which cannot detect a chain that never
+    left one mode -- the failure pt is usually run to avoid. The run says so up
+    front, and points at the remedy that does not cost the ladder.
+    """
+
+    def _run(self, tmp_path, capsys, **overrides):
+        kwargs = dict(fit_type='pt', population_size=4, beta=[0.25, 0.5, 0.75, 1.0],
+                      reps_per_beta=1, exchange_every=10, max_iterations=100,
+                      burn_in=0, sample_every=10)
+        kwargs.update(overrides)
+        algo = algorithms.BasicBayesMCMCAlgorithm(_make_config(tmp_path, NORMAL_VARS, **kwargs))
+        algo.start_run()
+        n_sampled = sum(algo.should_sample(i) for i in range(algo.num_parallel))
+        return n_sampled, capsys.readouterr().out
+
+    def test_warns_when_one_replica_sits_at_the_max_beta(self, tmp_path, capsys):
+        n_sampled, out = self._run(tmp_path, capsys)
+        assert n_sampled == 1
+        assert '1 replica at the maximum beta' in out
+        # The remedy must name both keys: reps_per_beta alone shortens the ladder.
+        assert 'reps_per_beta = 2' in out and 'double population_size' in out
+
+    def test_silent_when_several_replicas_share_the_max_beta(self, tmp_path, capsys):
+        """reps_per_beta=2 over 4 replicas gives a 2-rung ladder with 2 replicas
+        each, so the diagnostics have two chains to compare and there is nothing
+        to warn about."""
+        n_sampled, out = self._run(tmp_path, capsys, reps_per_beta=2,
+                                   beta=[0.5, 1.0], population_size=4)
+        assert n_sampled == 2
+        assert 'maximum beta' not in out
+
+    def test_silent_for_mh(self, tmp_path, capsys):
+        """mh is not tempered -- every replica samples the posterior -- so the
+        warning must not fire there however many replicas it runs."""
+        n_sampled, out = self._run(tmp_path, capsys, fit_type='mh', beta=[1.0])
+        assert n_sampled == 4
+        assert 'maximum beta' not in out
+
+
+# --------------------------------------------------------------------------- #
 # Iteration accounting across a replica exchange (#710)
 # --------------------------------------------------------------------------- #
 class TestReplicaExchangeIterationAccounting:

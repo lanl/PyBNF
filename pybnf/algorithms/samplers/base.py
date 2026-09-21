@@ -547,11 +547,14 @@ class BayesianAlgorithm(Algorithm):
         pure math. Returns an ``(n_dim,)`` array, or ``None`` if there is
         insufficient history.
 
-        A pt ladder with ``reps_per_beta = 1`` leaves exactly one such replica. That
-        is still a diagnostic -- split-R-hat halves the chain, which is what the
-        split in "split-R-hat" is for -- but a weaker one than the same number over
-        several replicas, so raise ``reps_per_beta`` to get a between-chain
-        comparison at the max beta.
+        A pt ladder with ``reps_per_beta = 1`` (the default) leaves exactly one such
+        replica. That is still a diagnostic -- split-R-hat halves the chain, which is
+        what the split in "split-R-hat" is for -- but it cannot see a chain that never
+        left one mode, which is the failure pt is usually run to avoid. A between-chain
+        comparison at the max beta costs twice the replicas: ``reps_per_beta = 2`` *and*
+        a doubled ``population_size``, because the number of temperatures is
+        ``population_size // reps_per_beta`` and a shorter ladder weakens the exchange.
+        :meth:`BasicBayesMCMCAlgorithm.start_run` warns when a run hits this.
         """
         history = self._posterior_chain_history()
         if not history:
