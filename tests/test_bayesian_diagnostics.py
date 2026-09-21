@@ -397,6 +397,114 @@ class TestComputeEss:
 
 
 # --------------------------------------------------------------------------- #
+# Which replicas the diagnostics describe (#782)
+# --------------------------------------------------------------------------- #
+def _bare_pt(chain_history, betas_per_group, pt=True):
+    """A BasicBayesMCMCAlgorithm with only what ``should_sample`` and the
+    diagnostics read. Its ``should_sample`` is ``(index + 1) % betas_per_group == 0``
+    under pt, so with betas_per_group=2 and 4 replicas the reported posterior is
+    replicas 1 and 3."""
+    algo = object.__new__(algorithms.BasicBayesMCMCAlgorithm)
+    algo.pt = pt
+    algo.betas_per_group = betas_per_group
+    algo.chain_history = chain_history
+    algo.num_parallel = len(chain_history)
+    return algo
+
+
+class TestDiagnosticsFollowTheReportedPosterior:
+    """R-hat and ESS must describe the draws the run actually reports.
+
+    ``should_sample`` gates ``sample_pset``, so under pt only the max-beta
+    replicas reach samples.txt. The diagnostics read the same predicate. Pooling
+    a tempered replica in mixes a chain targeting p(x)**beta into a statistic
+    about p(x): R-hat picks up the spread of the beta ladder, a floor that does
+    not shrink as the run converges, and ESS counts draws that were never
+    reported (#782).
+    """
+
+    def _ladder(self, seed=0, n=400, d=3):
+        """Four replicas on a two-rung ladder. The two max-beta replicas (1 and 3)
+        draw from the *same* N(0, 1) target, so a correct R-hat over them is ~1;
+        the two hot replicas draw from the flatter N(0, 3**2) their beta < 1
+        implies."""
+        rng = np.random.default_rng(seed)
+        return [[rng.normal(0.0, 1.0 if i in (1, 3) else 3.0, d) for _ in range(n)]
+                for i in range(4)]
+
+    def test_base_describes_every_replica(self):
+        """Every sampler but pt runs num_parallel copies of one target, so the
+        base ``should_sample`` is True throughout and the diagnostics are the
+        all-replica ones, unchanged."""
+        rng = np.random.default_rng(11)
+        ba = _bare_ba(_make_chain_history(rng, 4, 300, 2), num_parallel=4)
+        assert [ba.should_sample(i) for i in range(4)] == [True] * 4
+        assert ba._posterior_chain_history() == ba.chain_history
+        assert np.array_equal(ba.compute_rhat(),
+                              diagnostics.rhat(ba.chain_history, 4))
+        assert np.array_equal(ba.compute_ess()[0],
+                              diagnostics.ess(ba.chain_history, 4)[0])
+
+    def test_pt_selects_only_the_max_beta_replicas(self):
+        algo = _bare_pt(self._ladder(), betas_per_group=2)
+        assert [i for i in range(4) if algo.should_sample(i)] == [1, 3]
+        selected = algo._posterior_chain_history()
+        assert len(selected) == 2
+        assert selected[0] is algo.chain_history[1]
+        assert selected[1] is algo.chain_history[3]
+
+    def test_pt_rhat_is_not_inflated_by_the_beta_ladder(self):
+        """The two reported replicas share a target, so R-hat over them is ~1.
+        Pooling the hot replicas in lifts it well above that -- and it would stay
+        lifted however long the run went, because the gap it measures is the
+        ladder, not a failure to mix."""
+        algo = _bare_pt(self._ladder(), betas_per_group=2)
+        reported = algo.compute_rhat()
+        pooled = diagnostics.rhat(algo.chain_history, algo.num_parallel)
+
+        assert np.array_equal(
+            reported, diagnostics.rhat([algo.chain_history[1], algo.chain_history[3]], 2))
+        assert np.nanmax(reported) < 1.01     # measured 1.0017
+        assert np.nanmax(pooled) > 1.1        # measured 1.2057
+
+    def test_pt_ess_counts_only_reported_draws(self):
+        """Bulk ESS over the two reported replicas, not four. The hot replicas'
+        draws never reach samples.txt, so counting them overstates how much
+        posterior information the run actually has."""
+        algo = _bare_pt(self._ladder(), betas_per_group=2)
+        bulk, tail = algo.compute_ess()
+        ref_bulk, ref_tail = diagnostics.ess(
+            [algo.chain_history[1], algo.chain_history[3]], 2)
+        pooled_bulk, _ = diagnostics.ess(algo.chain_history, algo.num_parallel)
+
+        assert np.array_equal(bulk, ref_bulk) and np.array_equal(tail, ref_tail)
+        # 400 draws per replica, last half split in two -> at most 400 over two
+        # replicas. Pooling four replicas roughly doubles the claim.
+        assert np.max(bulk) <= 400.0
+        assert np.max(pooled_bulk) > 1.4 * np.max(bulk)
+
+    def test_single_max_beta_replica_still_yields_a_diagnostic(self):
+        """``reps_per_beta = 1`` (the default) leaves exactly one max-beta
+        replica. Split-R-hat halves that chain -- which is what the split is for --
+        so a number is still reported rather than the diagnostic going silently
+        missing."""
+        algo = _bare_pt(self._ladder(), betas_per_group=4)
+        assert [i for i in range(4) if algo.should_sample(i)] == [3]
+        rhat_val = algo.compute_rhat()
+        bulk, tail = algo.compute_ess()
+        assert rhat_val is not None and np.all(np.isfinite(rhat_val))
+        assert bulk is not None and np.all(bulk > 0)
+
+    def test_no_reported_replica_yields_no_diagnostic(self):
+        """Guard: an empty selection returns None rather than raising out of
+        ``min()`` on an empty sequence."""
+        algo = _bare_pt(self._ladder(), betas_per_group=2)
+        algo.should_sample = lambda index: False
+        assert algo.compute_rhat() is None
+        assert algo.compute_ess() == (None, None)
+
+
+# --------------------------------------------------------------------------- #
 # _param_vec: extract parameters into the sampling space
 # --------------------------------------------------------------------------- #
 class TestParamVec:

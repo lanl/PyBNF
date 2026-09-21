@@ -505,23 +505,74 @@ class BayesianAlgorithm(Algorithm):
         for file in cred_files:
             file.close()
 
+    def should_sample(self, index):
+        """Whether replica ``index`` is one whose draws form the reported posterior.
+
+        True for every replica here, which is right for any sampler that runs
+        ``num_parallel`` copies of the same target. Parallel tempering overrides it:
+        its replicas sit on a beta ladder, and only the max-beta ones target the
+        posterior (see :meth:`BasicBayesMCMCAlgorithm.should_sample`).
+
+        It gates ``sample_pset``, and so decides what reaches samples.txt,
+        log_likelihood.txt, the histograms and the credible intervals. The
+        convergence diagnostics read the same predicate, so they describe the draws
+        the run actually reports (#782).
+
+        :param index: The chain index
+        :type index: int
+        :rtype: bool
+        """
+        return True
+
+    def _posterior_chain_history(self):
+        """The per-chain histories the convergence diagnostics run on.
+
+        The replicas :meth:`should_sample` selects, in index order. For every sampler
+        but pt that is all of them; under pt it is the max-beta replicas alone.
+        Pooling a tempered replica in would mix a chain targeting p(x)**beta into a
+        statistic about p(x): it inflates R-hat by the spread of the beta ladder
+        (a floor that does not shrink as the run converges) and inflates ESS with
+        draws that never reach samples.txt (#782).
+
+        :return: A list of per-chain histories, possibly empty.
+        :rtype: list
+        """
+        return [h for i, h in enumerate(self.chain_history) if self.should_sample(i)]
+
     def compute_rhat(self):
         """Rank-normalized split-R-hat per parameter (Vehtari et al. 2021).
 
-        Thin glue over :func:`pybnf.diagnostics.rhat` (ADR-0009): reads this
-        instance's chain history and delegates the pure math. Returns an
-        ``(n_dim,)`` array, or ``None`` if there is insufficient history.
+        Thin glue over :func:`pybnf.diagnostics.rhat` (ADR-0009): reads the
+        posterior-bearing part of this instance's chain history and delegates the
+        pure math. Returns an ``(n_dim,)`` array, or ``None`` if there is
+        insufficient history.
+
+        A pt ladder with ``reps_per_beta = 1`` (the default) leaves exactly one such
+        replica. That is still a diagnostic -- split-R-hat halves the chain, which is
+        what the split in "split-R-hat" is for -- but it cannot see a chain that never
+        left one mode, which is the failure pt is usually run to avoid. A between-chain
+        comparison at the max beta costs twice the replicas: ``reps_per_beta = 2`` *and*
+        a doubled ``population_size``, because the number of temperatures is
+        ``population_size // reps_per_beta`` and a shorter ladder weakens the exchange.
+        :meth:`BasicBayesMCMCAlgorithm.start_run` warns when a run hits this.
         """
-        return diagnostics.rhat(self.chain_history, self.num_parallel)
+        history = self._posterior_chain_history()
+        if not history:
+            return None
+        return diagnostics.rhat(history, len(history))
 
     def compute_ess(self):
         """Bulk and tail effective sample size per parameter (Vehtari et al. 2021).
 
-        Thin glue over :func:`pybnf.diagnostics.ess` (ADR-0009): reads this
-        instance's chain history and delegates the pure math. Returns
-        ``(bulk_ess, tail_ess)`` arrays of shape ``(n_dim,)``, or ``(None, None)``.
+        Thin glue over :func:`pybnf.diagnostics.ess` (ADR-0009): reads the
+        posterior-bearing part of this instance's chain history and delegates the
+        pure math. Returns ``(bulk_ess, tail_ess)`` arrays of shape ``(n_dim,)``, or
+        ``(None, None)``.
         """
-        return diagnostics.ess(self.chain_history, self.num_parallel)
+        history = self._posterior_chain_history()
+        if not history:
+            return None, None
+        return diagnostics.ess(history, len(history))
 
     def report_convergence_diagnostics(self, iteration):
         """

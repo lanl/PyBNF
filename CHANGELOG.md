@@ -252,6 +252,41 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Parallel tempering's R-hat and ESS describe the replicas that carry the posterior, not
+  every replica on the beta ladder (#782).** `should_sample` gates `sample_pset`, so under `pt`
+  only the max-beta replicas reach `samples.txt`, `log_likelihood.txt`, the histograms and the
+  credible intervals. `compute_rhat` and `compute_ess` ignored it and passed
+  `self.chain_history` with `self.num_parallel` -- every replica, including the tempered ones.
+  A replica at beta < 1 is sampling p(x)^beta, so the diagnostics were mixing chains with
+  different targets into one statistic about the posterior.
+
+  Both directions were wrong. R-hat picked up the spread of the beta ladder, which does not
+  shrink as the run converges: a user tightening `rhat_threshold` toward 1.05 under `pt` was
+  chasing a floor set by `beta_range`, not a convergence criterion. ESS counted draws that were
+  never reported, overstating how much posterior information the run had -- and `ess_per_eval`
+  inherited that. On a constructed ladder whose two max-beta replicas share one target and
+  whose two hot replicas sample the flatter distribution their beta = 0.5 implies, PyBNF
+  reported max R-hat 1.21 where the truth is 1.00, and bulk ESS 800 where the posterior carries
+  400 draws.
+
+  `should_sample` now has a default on `BayesianAlgorithm` returning True, and the two
+  diagnostics read it through a new `_posterior_chain_history`. `mh`, `am`, `dream`, `p_dream`
+  and `hmc` run `population_size` copies of one target, take the default, and are byte-identical
+  -- verified against the all-replica computation for each. Only `pt` changes.
+
+  With the default `reps_per_beta = 1` there is exactly one max-beta replica, so R-hat is now a
+  split-R-hat over that one chain. That is a real diagnostic -- halving the chain is what the
+  split is for -- but it cannot see a chain that never left one mode, which is the failure pt is
+  usually run to avoid. `pt` now prints a warning at the start of such a run saying so.
+
+  The remedy is not simply to raise `reps_per_beta`. The number of temperatures is
+  `population_size // reps_per_beta`, so raising it alone shortens the ladder and weakens the
+  exchange the method exists for: at `population_size = 8` over `beta_range = 0.01 1`, going
+  from 1 to 2 takes the largest ratio between adjacent betas from 1.93 to 4.64, and 4 collapses
+  the ladder to `[0.01, 1.0]`. Since exchanges are accepted with probability
+  `min(1, exp(dbeta * dF))`, that suppresses them. A between-chain R-hat costs twice the
+  replicas -- `reps_per_beta = 2` with `population_size = 16` -- and the `diagnostics_every`
+  and `reps_per_beta` entries in the config-key docs now carry the numbers.
 - **Parallel tempering records each iteration of a chain once, instead of recording the
   iteration after a replica exchange twice (#710).** At an exchange barrier `replica_exchange`
   resumed each chain by calling `try_to_choose_new_pset`, then rewound the iteration counter by

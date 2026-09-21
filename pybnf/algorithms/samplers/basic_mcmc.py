@@ -121,6 +121,21 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 'otherwise no samples will be collected.'
                 % (self.max_iterations, self.burn_in))
 
+        # R-hat is a between-chain statistic, and under pt only the max-beta replicas
+        # carry the posterior (#782). reps_per_beta = 1 -- the default -- leaves one of
+        # them, so R-hat falls back to a split of that single chain. Say so at the top of
+        # the run, because the cheap-looking remedy is the wrong one: the number of
+        # temperatures is population_size // reps_per_beta, so raising reps_per_beta alone
+        # shortens the ladder and weakens the very exchange pt is run for.
+        if self.pt and sum(self.should_sample(i) for i in range(self.num_parallel)) == 1:
+            print1('Warning: This parallel tempering run has 1 replica at the maximum beta, so it '
+                   'produces a single chain of statistical samples. R-hat is then a split-R-hat over '
+                   'that one chain: it detects a chain whose two halves disagree, but not one that '
+                   'stayed in a single mode for the whole run -- the failure parallel tempering is '
+                   'usually chosen to avoid. For a between-chain R-hat, set reps_per_beta = 2 AND '
+                   'double population_size; raising reps_per_beta alone halves the number of '
+                   'temperatures, which weakens the replica exchange.')
+
         return super().start_run(setup_samples=True)
 
     def got_result(self, res):
