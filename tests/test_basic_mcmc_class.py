@@ -216,6 +216,147 @@ class TestReplicaExchange:
 
 
 # --------------------------------------------------------------------------- #
+# Iteration accounting across a replica exchange (#710)
+# --------------------------------------------------------------------------- #
+class TestReplicaExchangeIterationAccounting:
+    """A chain's per-iteration bookkeeping -- above all ``sample_pset``, which
+    appends one row to samples.txt -- must run exactly once per iteration.
+
+    The exchange resumes each chain from the barrier iteration it is already on,
+    so it must not open a new iteration: it used to call
+    ``try_to_choose_new_pset`` (which advances the counter and records) and then
+    rewind the counter by one, so iteration E+1 was recorded twice -- once
+    post-exchange and again post accept/reject -- giving one chain iteration two
+    rows in samples.txt, two rows in log_likelihood.txt, and double weight in the
+    histograms and credible intervals (#710).
+
+    The configurations that hit it are those where (k*exchange_every + 1) %
+    sample_every == 0, so these use sample_every=1, which hits it at every
+    exchange. The shipped defaults (exchange_every=20, sample_every=100) never
+    do, which is why it went unnoticed.
+    """
+
+    EXCHANGE_EVERY = 4
+
+    def _pt_config(self, tmp_path, **overrides):
+        # A pt run with two replicas at betas 0.5 / 1.0 and one rep per beta, so
+        # betas_per_group = 2 and should_sample() is True for chain 1 only.
+        # output_hist_every / output_every / diagnostics_every are pushed past
+        # max_iterations: those paths are base-class plumbing (and early
+        # convergence stopping), out of scope here.
+        kwargs = dict(fit_type='pt', population_size=2, beta=[0.5, 1.0],
+                      reps_per_beta=1, exchange_every=self.EXCHANGE_EVERY,
+                      max_iterations=20, sample_every=1, burn_in=0,
+                      output_hist_every=100000, output_every=100000,
+                      diagnostics_every=100000, step_size=0.2)
+        kwargs.update(overrides)
+        return _make_config(tmp_path, NORMAL_VARS, **kwargs)
+
+    @staticmethod
+    def _sample_rows(algo):
+        """The data rows of samples.txt (the first line is the header)."""
+        with open(algo.samples_file) as f:
+            return [line for line in f.read().splitlines()[1:] if line]
+
+    def test_exchange_records_no_sample_for_the_barrier_iteration(self, tmp_path):
+        """Both chains sit at the barrier iteration E=4, which has already been
+        counted and recorded. The exchange swaps their states and proposes the
+        moves out of E; it must write no samples.txt row and leave both counters
+        on E. (Before the fix it advanced to E+1, recorded a draw there, then
+        rewound to E -- so the row count rose by one while the counter looked
+        unchanged.)"""
+        algo = algorithms.BasicBayesMCMCAlgorithm(self._pt_config(tmp_path))
+        algo.start_run()
+        hot, cold = _normal_pset((1., 2., 3.)), _normal_pset((4., 5., 6.))
+        hot.name, cold.name = 'iter4run0', 'iter4run1'
+        algo.current_pset = [hot, cold]
+        algo.ln_current_P = [0.0, 1.0]
+        algo.iteration = [self.EXCHANGE_EVERY] * 2
+
+        before = self._sample_rows(algo)
+        proposed = algo.replica_exchange()
+
+        assert self._sample_rows(algo) == before
+        assert algo.iteration == [self.EXCHANGE_EVERY] * 2
+        # The resumed psets are still named for the iteration they move out of,
+        # which is what the rewind used to be there to arrange.
+        assert sorted(p.name for p in proposed) == ['iter4run0', 'iter4run1']
+
+    def test_driven_pt_run_records_each_sampled_iteration_once(self, tmp_path):
+        """Drive a full pt run to STOP and watch every ``sample_pset`` call.
+        Chain 1 is the only sampled replica and it runs iterations 1..20 with
+        sample_every=1, so the draws must be exactly one per iteration, 1 through
+        20, and samples.txt must hold 20 rows. With the rewind in place the run
+        crosses barriers at 4, 8, 12 and 16 and records iterations 5, 9, 13 and
+        17 twice -- 24 draws for 20 iterations."""
+        cfg = self._pt_config(tmp_path)
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        queue = list(algo.start_run())
+
+        drawn = []
+        inner = algo.sample_pset
+
+        def spy(pset_, ln_prob, chain_index=None):
+            drawn.append((chain_index, algo.iteration[chain_index]))
+            return inner(pset_, ln_prob, chain_index)
+
+        algo.sample_pset = spy
+
+        rng = np.random.default_rng(0)
+        stopped = False
+        guard = 0
+        while queue and guard < 10000:
+            guard += 1
+            ps = queue.pop(0)
+            res = algorithms.Result(ps, {}, ps.name)
+            res.score = float(rng.uniform(5, 15))
+            out = algo.got_result(res)
+            if out == 'STOP':
+                stopped = True
+                break
+            queue.extend(out)
+
+        assert stopped
+        assert drawn == [(1, i) for i in range(1, algo.max_iterations + 1)]
+        assert len(self._sample_rows(algo)) == algo.max_iterations
+
+    def test_exchange_every_one_runs_to_completion(self, tmp_path):
+        """``exchange_every = 1`` exchanges at every iteration, and the rewind
+        made it impossible: the resume advanced to E+1, which is a barrier under
+        this setting, so every chain parked itself again without proposing a
+        move and the run aborted at the first exchange with 'I seem to have gone
+        from one replica exchange to the next ... without proposing a single
+        valid move'. Resuming on the barrier iteration skips that check -- the
+        exchange for it has just happened -- so the run reaches max_iterations
+        and samples each one once."""
+        cfg = self._pt_config(tmp_path, exchange_every=1)
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        queue = list(algo.start_run())
+
+        rng = np.random.default_rng(0)
+        stopped = False
+        guard = 0
+        while queue and guard < 10000:
+            guard += 1
+            ps = queue.pop(0)
+            res = algorithms.Result(ps, {}, ps.name)
+            res.score = float(rng.uniform(5, 15))
+            out = algo.got_result(res)
+            if out == 'STOP':
+                stopped = True
+                break
+            queue.extend(out)
+
+        assert stopped
+        assert min(algo.iteration) >= algo.max_iterations
+        # One exchange per iteration except the last, which ends the run before
+        # it reaches the barrier check; two replicas one beta apart make each
+        # exchange exactly one swap attempt.
+        assert algo.exchange_attempts == algo.max_iterations - 1
+        assert len(self._sample_rows(algo)) == algo.max_iterations
+
+
+# --------------------------------------------------------------------------- #
 # Driven MCMC run: the got_result / try_to_choose_new_pset loop to completion
 # --------------------------------------------------------------------------- #
 class TestDrivenMcmcRun:
