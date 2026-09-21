@@ -252,6 +252,35 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A constraint on a normalized observable is differentiated on the column its penalty is
+  actually scored on (#718).** `normalization` rescales a predicted column in place before
+  scoring and leaves the forward-sensitivity tensor in raw units, which is why the objective's
+  gradient threads the normalizer's own derivative through a quotient/chain rule
+  (ADR-0053/0066). The constraint gradient did not. It read the raw tensor and returned the
+  penalty slope times `d(raw q)/d theta`, while the penalty itself was read out of the rescaled
+  column. A fit under `job_type = lbfgs`, `trf` or `gntr` with both a `normalization` on a
+  measured observable and a `.con`/`.prop` constraint reading it -- one experiment may list
+  `.exp` and `.prop` files together, and a constraint reaches any other suffix through
+  `suffix.Observable` -- was stepping on a gradient whose constraint term was wrong, with
+  nothing to say so: the fit ran to completion and reported a converged result.
+
+  The error is not a uniform scale a line search absorbs. The chain rule's reference term was
+  dropped entirely, so the gradient's columns came back wrong by *different* factors, and the
+  sum with the objective gradient weighted the constraint by the normalizer instead of by its
+  own weight. On an exactly-known decay column the rate component was too large by 20x under
+  `init`, 28.9x under `peak`, 16.1x under `unit`, 5.25x under `zero`, 1.20x under `floor 0.3`
+  and 37.6x under the `floor, peak` chain; and an initial-condition scale, whose true
+  normalized-column derivative is exactly 0 because it cancels against its own divisor, came
+  back at -0.878 under every divisive method. The Gauss-Newton constraint Hessian `gntr` adds
+  shares the same accessor, so its curvature block carried that error squared.
+
+  The constraint accessor now threads the same fold the objective's does, keyed by the
+  `(model, suffix, observable)` the readout names -- so a cross-suffix readout reads the records
+  of the `Data` it indexes, a chain folds stage by stage rather than being refused, and the
+  z-score's reductions inherit the measured-row masking added in #726/#727. A column that was
+  never normalized keeps the bare tensor accessor and is byte-identical. Central differences of
+  the real normalize-then-score path now agree with the assembled gradient for every method and
+  for a chain, and a test pins the two accessors to one value for one column.
 - **`fit_type = am` now writes the marginal histograms and the credible intervals it had been
   silently skipping (#771).** Adaptive MCMC overrode the method that writes them with a bare
   `pass`, so every run of it produced neither, at any number of parameters. Nothing else in the

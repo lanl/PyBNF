@@ -4333,3 +4333,185 @@ def test_constraint_hessian_refuses_estimated_scale():
                  ('s_q', 'uniform_var', 0.1, 1000.0, 12.0))
     with pytest.raises(GradientNotSupported):
         assemble_constraint_hessian([cset], sdd, routings, free)
+
+
+# ================ constraint readouts on a NORMALIZED column (layer F x layer I, #718) ===
+
+_N_TIMES = np.arange(6, dtype=float)
+
+
+def _norm_sim(k, s0, methods):
+    """``{model: {suffix: Data}}`` for ``Stot(t) = S0 (0.2 + k t) e^{-k t}`` on t = 0..5, carrying
+    its exact tensor and put through ``methods`` (each a ``Data.normalize`` argument) in order.
+
+    A rise-then-fall column, so ``peak``/``unit`` read an **interior** reference row (3),
+    distinct from ``init``'s row 0 and from the scored row -- the reference term the
+    normalizer's chain rule contributes is then neither zero nor the scored row's own."""
+    shape = (0.2 + k * _N_TIMES) * np.exp(-k * _N_TIMES)
+    d_shape = _N_TIMES * np.exp(-k * _N_TIMES) * (0.8 - k * _N_TIMES)
+    sim = Data.from_columns(np.column_stack([_N_TIMES, s0 * shape]), ['time', 'Stot'])
+    sim.indvar = 'time'
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:Stot'], param_names=['k'], ic_species=['S()'],
+        d_param=(s0 * d_shape).reshape(-1, 1, 1), d_ic=shape.reshape(-1, 1, 1))
+    for method in methods:
+        sim.normalize(method)
+    return {'m': {'tc': sim}}
+
+
+_N_ROUTINGS = {('m', 'tc'): ExperimentRouting(routes={
+    'k': ParamRoute.single('k', PARAM, 'k', 1.0),
+    'S0': ParamRoute.single('S0', IC, 'S()', 1.0)})}
+_N_K, _N_S0 = 0.3, 100.0
+
+
+def _norm_free():
+    return _free(('k', 'uniform_var', 0.0, 100.0, _N_K), ('S0', 'uniform_var', 0.0, 1000.0, _N_S0))
+
+
+def _at_cset(thresh, weight=2.0, **kwargs):
+    """A one-constraint set reading row 2 of ``Stot`` against ``thresh`` (``Stot > thresh``)."""
+    c = AtConstraint('Stot', '>', thresh, 'm', 'tc', weight=weight, atvar=None, atval=2.0,
+                     **kwargs)
+    cset = ConstraintSet('m', 'tc')
+    cset.constraints = [c]
+    return cset
+
+
+def _penalty_fd(methods, thresh, h=1e-6):
+    """Central difference of the penalty over the SAME construct -> normalize -> score path a
+    gradient fit runs (``Result.normalize`` then ``ConstraintSet.total_penalty``). Both free
+    params are LINEAR, so this is the native-space gradient the assembly returns unscaled."""
+    grad = []
+    for i, value in enumerate((_N_K, _N_S0)):
+        step = h * abs(value)
+        point = []
+        for signed in (value + step, value - step):
+            args = [_N_K, _N_S0]
+            args[i] = signed
+            point.append(_at_cset(thresh).total_penalty(_norm_sim(args[0], args[1], methods)))
+        grad.append((point[0] - point[1]) / (2.0 * step))
+    return np.array(grad)
+
+
+def test_constraint_gradient_folds_peak_normalization():
+    """A ``peak``-normalized constraint readout is differentiated by the ADR-0053 quotient rule,
+    not by the raw #447 tensor (#718).
+
+    ``Data.normalize`` rescales the predicted column in place and leaves the tensor in raw units,
+    and ``Constraint.index`` reads the penalty out of the rescaled column -- so the constraint
+    accessor has to thread ``∂(raw/N)/∂θ = (s_i - n_i s_ref)/N`` exactly as the objective's does.
+    On the closed-form fixture both halves of that rule are visible: ``_C_DK[0] == 0`` (the decay
+    rate does not move t=0), so the ``k`` column is the raw sensitivity divided by the peak
+    ``N = 100``; and ``S0`` is a **pure scale** of the whole column, so it cancels against its own
+    peak and the true derivative is exactly 0. Differentiating the raw tensor instead returns the
+    ``k`` column 100x too large and a spurious ``-2*0.55`` on ``S0``."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    sdd['m']['tc'].normalize('peak')                       # N = 100 at row 0
+    cset = _at_cset(0.9)                                   # 0.9 > 0.55 at row 2 -> violated
+    assert cset.total_penalty(sdd) == pytest.approx(2.0 * (0.9 - _C_STOT[2] / 100.0))
+
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    n_2 = _C_STOT[2] / 100.0
+    d_norm = np.array([(_C_DK[2] - n_2 * _C_DK[0]) / 100.0,
+                       (_C_DS0[2] - n_2 * _C_DS0[0]) / 100.0])
+    np.testing.assert_allclose(g, -2.0 * d_norm)           # d/d theta of weight*(0.9 - n_2)
+    assert g[1] == pytest.approx(0.0, abs=1e-15)           # the pure IC scale cancels
+    np.testing.assert_allclose(g[0], -2.0 * _C_DK[2] / 100.0)
+
+
+@pytest.mark.parametrize('methods', [
+    [],                                                    # control: byte-identical bare tensor
+    ['peak'], ['init'], ['unit'], ['zero'], [('floor', 0.3)],
+    [[(('floor', 0.3), ['Stot']), ('peak', ['Stot'])]],    # a CHAIN (ADR-0066/0102, #539)
+])
+def test_constraint_gradient_matches_fd_under_every_normalization(methods):
+    """Central differences of the real ``normalize -> total_penalty`` path vs the assembled
+    constraint gradient, for every ``Data``-level transform and for a chain (#718).
+
+    Each method drops a different term when the raw tensor is differentiated instead --
+    ``peak``/``init``/``unit`` their reference row, ``floor`` its argmax row, ``zero`` the
+    every-row mean/σ coupling -- so the FD is run per method rather than on one representative.
+    The threshold is read off the scored row so the hinge is active (by the same margin) in each
+    column's own units."""
+    sdd = _norm_sim(_N_K, _N_S0, methods)
+    thresh = float(sdd['m']['tc'].data[2, 1]) + 0.5
+    g = assemble_constraint_gradient([_at_cset(thresh)], sdd, _N_ROUTINGS, _norm_free())
+    fd = _penalty_fd(methods, thresh)
+    np.testing.assert_allclose(g, fd, rtol=2e-5, atol=2e-5 * max(np.abs(fd).max(), 1.0))
+
+
+def test_constraint_gradient_folds_normalization_of_a_cross_suffix_readout():
+    """The fold is keyed by the ``(model, suffix, observable)`` the readout names, not by the
+    constraint's base suffix -- a ``suffix.Observable`` readout (``Constraint.get_key``) reads the
+    normalization records of the ``Data`` it actually indexes (#718)."""
+    sdd = _norm_sim(_N_K, _N_S0, [])
+    sdd['m']['other'] = _norm_sim(_N_K, _N_S0, ['peak'])['m']['tc']
+    routings = dict(_N_ROUTINGS)
+    routings[('m', 'other')] = _N_ROUTINGS[('m', 'tc')]
+    thresh = float(sdd['m']['other'].data[2, 1]) + 0.5
+
+    c = AtConstraint('other.Stot', '>', thresh, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, _norm_free())
+
+    # The same quotient rule the objective folds, read in 'other''s own pre-normalization values.
+    before = _norm_sim(_N_K, _N_S0, [])['m']['tc']
+    raw = before.data[:, 1]
+    s_k = before.output_sensitivities.d_param[:, 0, 0]
+    s_s0 = before.output_sensitivities.d_ic[:, 0, 0]
+    ref, n = int(np.argmax(raw)), float(np.max(raw))
+    n_2 = raw[2] / n
+    np.testing.assert_allclose(g, [-2.0 * (s_k[2] - n_2 * s_k[ref]) / n,
+                                   -2.0 * (s_s0[2] - n_2 * s_s0[ref]) / n])
+
+
+def test_constraint_and_objective_accessors_agree_on_a_normalized_column():
+    """The constraint accessor and the objective accessor return the **same** vector for the same
+    normalized column of the same ``Data`` -- the property #718 broke. They differ only in their
+    key (``(model, suffix, observable)`` vs ``observable``); the derivative is one quantity, and a
+    fit that both scores and constrains a normalized observable must use one value for it."""
+    sdd = _norm_sim(_N_K, _N_S0, ['peak'])
+    sim = sdd['m']['tc']
+    index, n_param = {'k': 0, 'S0': 1}, 2
+    objective_sens = assembly._raw_sensitivity_accessor(
+        ChiSquareObjective(), sim, sim.output_sensitivities, _N_ROUTINGS[('m', 'tc')],
+        index, n_param, 'time')
+    constraint_sens = assembly._constraint_sensitivity_accessor(
+        sdd, _N_ROUTINGS, index, n_param)
+    for row in range(len(_N_TIMES)):
+        np.testing.assert_allclose(constraint_sens('m', 'tc', 'Stot', row),
+                                   objective_sens('Stot', row))
+
+
+def test_constraint_hessian_folds_normalization():
+    """The Gauss-Newton constraint Hessian is built from the same folded ``grad q`` as the
+    gradient (it shares the accessor), so a normalized readout's curvature is
+    ``P''(q) outer(grad n, grad n)`` -- not the raw tensor's outer product, which #718 left it as
+    and which is wrong by ``N**2`` on the rate axis (#481)."""
+    from pybnf.constraint import _sigmoid
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    sdd['m']['tc'].normalize('peak')
+    s = 0.12
+    cset = _at_cset(0.9, weight=None, scale=s)
+    H = assemble_constraint_hessian([cset], sdd, routings, free)
+
+    n_2 = _C_STOT[2] / 100.0
+    grad_q = np.array([-(_C_DK[2] - n_2 * _C_DK[0]) / 100.0,      # d(0.9 - n_2)/d theta
+                       -(_C_DS0[2] - n_2 * _C_DS0[0]) / 100.0])
+    x = (0.9 - n_2) / s
+    pp = _sigmoid(x) * (1.0 - _sigmoid(x)) / s ** 2
+    np.testing.assert_allclose(H, pp * np.outer(grad_q, grad_q), rtol=1e-9, atol=1e-14)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-12)
+
+
+def test_constraint_gradient_refuses_an_unfoldable_chain():
+    """A chain whose earlier stage kept none of the values its own rule reads cannot be folded,
+    and the constraint path raises the same :class:`GradientNotSupported` the objective path does
+    (#539) -- a refusal routed to the gradient-free fallback, never a silently raw derivative."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    sim = sdd['m']['tc']
+    sim.normalize([(('floor', 0.3), ['Stot']), ('peak', ['Stot'])])
+    sim.normalization['Stot'][0].values = None            # as if a caller had normalized by hand
+    with pytest.raises(GradientNotSupported, match='chain of normalizations'):
+        assemble_constraint_gradient([_at_cset(0.9)], sdd, routings, free)

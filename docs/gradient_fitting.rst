@@ -786,7 +786,10 @@ is enforced ``once``). For the **static** model :math:`f' = \text{weight}` where
 violated and **0** where it is satisfied or pinned to a ``min_penalty`` floor (the non-smooth
 boundary takes the subgradient 0, like the Laplace kink). For the **likelihood** model
 :math:`f'(\Delta) = (p_\max - p_\min)\,\phi(-\Delta/k)/(k\,p_{\text{adj}})` — smooth everywhere.
-A constant operand contributes no sensitivity. PyBNF assembles the summed constraint gradient
+A constant operand contributes no sensitivity. A readout on a column the fit ``normalization``
+rescales carries the same normalization-aware sensitivity the objective reads (*Trajectory
+transforms and normalization* above): the penalty is scored on the rescaled column, so it is
+differentiated on that column too, chain and all. PyBNF assembles the summed constraint gradient
 (:func:`~pybnf.gradient.assemble_constraint_gradient`), in sampling space, ready to add to the
 objective gradient. Like an estimated-σ normalizer, a penalty is **not** a sum of squares, so a fit
 with active constraints is not ``least_squares_exact`` (its gradient is consumed on the scalar

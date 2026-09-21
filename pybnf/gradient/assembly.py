@@ -147,6 +147,11 @@ noise normalizer, a penalty is not a sum of squares, so it lives on the scalar g
 fit with active constraints is not ``least_squares_exact``, and #386 adds this term to the
 objective gradient.
 
+Layer F meets layer I where a constrained column is also **normalized** (#718). The penalty is
+read out of the rescaled column (:meth:`~pybnf.constraint.Constraint.index`) while the tensor
+stays raw, so the constraint accessor threads the very same ``_normalized_sensitivity`` fold the
+objective's does -- one derivative for one column, whichever side reads it.
+
 Measurement-model layer (layer H, #455)
 ---------------------------------------
 A scored observable may be a materialized **measurement-model** column (ADR-0036): an expression
@@ -1084,10 +1089,42 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
     may read any simulation's output. The independent variable does not move with theta
     (sensitivity 0); a constant operand is handled by the constraint (it never calls this).
 
+    A **normalized** column (ADR-0053/0066) is threaded through the very same
+    :func:`_normalized_sensitivity` fold the objective's accessor uses (#718). ``Data.normalize``
+    rescales the predicted column *in place* and leaves the #447 tensor in raw units, and the
+    penalty is read out of the rescaled column
+    (:meth:`~pybnf.constraint.Constraint.index`) -- so differentiating the bare tensor would
+    return ``P'(q)`` times ``d(RAW q)/d theta``. That is not a uniform scale a line search could
+    absorb: the normalizer's own theta-dependence is dropped entirely, so for ``peak`` the
+    quotient rule's ``-n_i * s_ref / N`` term goes missing and a pure initial-condition scale --
+    whose true normalized-column derivative is exactly 0, since it cancels against its own peak --
+    comes back with a spurious component, while the rate column comes back scaled by ``N``. The
+    fold is keyed by ``(model, suffix, observable)`` and built on first use, so each stage's
+    per-row memo is shared by every constraint reading that column within one assembly, exactly as
+    the objective's per-experiment cache is. An un-normalized column keeps the bare tensor
+    accessor and is byte-identical.
+
     Every supplied routing is checked for the one-contribution-per-native-column invariant the
     summation below relies on, exactly as the objective's accessor checks its own (#537)."""
     for routing in routings.values():
         routing.check_column_multiplicity()
+    accessors = {}   # (model, suffix, observable) -> its (col_name, row) accessor, bare or folded
+
+    def tensor_accessor(sens, routing):
+        """One (model, suffix)'s ``tensor_sens(col_name, row)`` -- the objective accessor's
+        two-argument signature, which is what lets a normalization stage call its predecessor."""
+        def tensor_sens(col_name, row):
+            selector = _selector_for(sens, col_name)
+            vec = np.zeros(n_param)
+            for name, route in routing.routes.items():
+                total = 0.0
+                for c in route.contributions:
+                    if c.target == NONE or c.factor == 0.0:
+                        continue
+                    total += c.factor * _sensitivity(sens, selector, c, row, name)
+                vec[index[name]] = total
+            return vec
+        return tensor_sens
 
     def raw_sens(model, suffix, observable, row):
         sim_data = sim_data_dict[model][suffix]
@@ -1105,15 +1142,11 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
                 "Constraint reads observable '%s' from model '%s' suffix '%s', but no routing "
                 "was supplied for it; provide an ExperimentRouting for every (model, suffix) a "
                 "constraint reads (routings[(model, suffix)])." % (observable, model, suffix))
-        routing = routings[(model, suffix)]
-        selector = _selector_for(sens, observable)
-        vec = np.zeros(n_param)
-        for name, route in routing.routes.items():
-            total = 0.0
-            for c in route.contributions:
-                if c.target == NONE or c.factor == 0.0:
-                    continue
-                total += c.factor * _sensitivity(sens, selector, c, row, name)
-            vec[index[name]] = total
-        return vec
+        key = (model, suffix, observable)
+        if key not in accessors:
+            tensor_sens = tensor_accessor(sens, routings[(model, suffix)])
+            records = (sim_data.normalization or {}).get(observable)
+            accessors[key] = (_normalized_sensitivity(records, observable, sim_data, tensor_sens)
+                              if records else tensor_sens)
+        return accessors[key](observable, row)
     return raw_sens
