@@ -73,8 +73,9 @@ def free_parameter_from_record(pid, raw_fields, initialization_distribution):
     # Bounds come as a pair: an open side is an explicit +-inf, never a blank
     # (ADR-0047 -- no specification by absence). Omitting *both* is the untruncated
     # shorthand. One-sided truncation IS supported now -- spell the open side with
-    # an infinity. The graded floor rule (positivity, support floor) is applied per
-    # path below: finite for a uniform box, the family floor for a truncated prior.
+    # an infinity. The graded bound rule (positivity, support floor and ceiling) is
+    # applied per path below: finite for a uniform box, the family's support endpoints
+    # for a truncated prior.
     if (lower is None) != (upper is None):
         present, absent = ('lower', 'upper') if upper is None else ('upper', 'lower')
         raise PybnfError(
@@ -160,7 +161,7 @@ def _require_finite_box(pid, lower, upper, is_log, where):
             f"(log of <= 0 is -inf), got lower={lower}.")
 
 def _graded_truncation_bounds(pid, lower, upper, fam, scale):
-    """Apply the ADR-0047 graded sentinel/floor rule to a truncated family's bounds.
+    """Apply the ADR-0047 graded sentinel/support rule to a truncated family's bounds.
 
     ``lower``/``upper`` are in theta, already validated to be both-set or both-None
     (the pairing rule). Omit-both passes through as the untruncated shorthand. On a
@@ -169,8 +170,17 @@ def _graded_truncation_bounds(pid, lower, upper, fam, scale):
     0 for any log form; the doubly-unbounded families floor at -inf and are exempt) --
     a sloppy-but-lossless ``lower: -inf`` is warned and canonicalized to the floor,
     and a *finite* ``lower`` below the floor (a wall in the zero-density region, a
-    likely wrong family/scale) is an error. These families are all unbounded above,
-    so the upper side needs no floor. Returns the (possibly canonicalized) bounds."""
+    likely wrong family/scale) is an error.
+
+    The ceiling side is the mirror image, and applies to the one family in the catalog
+    that has one: ``beta`` on ``[0, 1]`` (``support_hi_u``). It was skipped while every
+    truncatable family was unbounded above, which beta stopped being when it joined the
+    catalog (ADR-0057); an ``upper`` above the ceiling was then accepted and the box
+    silently narrowed to the ceiling by ``FreeParameter`` (#711). Refusing it says the
+    same thing the floor rule says: a wall in the zero-density region is almost always a
+    wrong family or scale, and stating it does not make the fit search there.
+
+    Returns the (possibly canonicalized) bounds."""
     if lower is None:
         return lower, upper
     floor = scale.inverse(fam.support_lo_u)   # theta-space support floor
@@ -187,6 +197,20 @@ def _graded_truncation_bounds(pid, lower, upper, fam, scale):
                 f"floor {floor:g} -- a finite wall in the zero-density region (likely "
                 f"a wrong family or scale). Use 'lower: {floor:g}' for an open lower "
                 f"side, or a value >= {floor:g} (ADR-0047).")
+    ceiling = scale.inverse(fam.support_hi_u)   # theta-space support ceiling
+    if np.isfinite(ceiling):
+        if upper == np.inf:
+            logger.warning(
+                f"Parameter '{pid}': 'upper: inf' on a prior whose support ceiling "
+                f"is {ceiling:g} -- interpreting as open above at the ceiling. Write "
+                f"'upper: {ceiling:g}' to silence this (ADR-0047).")
+            upper = ceiling
+        elif upper > ceiling:
+            raise PybnfError(
+                f"Parameter '{pid}': 'upper: {upper:g}' is above the prior's support "
+                f"ceiling {ceiling:g} -- a finite wall in the zero-density region (likely "
+                f"a wrong family or scale). Use 'upper: {ceiling:g}' for an open upper "
+                f"side, or a value <= {ceiling:g} (ADR-0047).")
     return lower, upper
 
 def _reject_extra_fields(pid, leftover, where):

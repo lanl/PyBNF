@@ -1295,3 +1295,84 @@ class TestCrossWithTargetDriven:
         assert de.force_mutation and de.cross_with_target
         _, best = self._drive(de, 4000)
         assert best < 1e-12
+
+
+class TestPositiveSupportPriorIsWalled:
+    """A population optimizer never proposes a value the declared prior excludes (#711).
+
+    ``de`` does not add the prior to its objective (nothing under
+    ``pybnf/algorithms/optimizers/`` calls ``prior_logpdf``), so the *only* thing keeping
+    it inside a positive-support prior's support is the reflecting box on the
+    ``FreeParameter``. That box used to be built from ``lower:``/``upper:`` alone, so an
+    omit-both ``gamma_var`` -- the documented untruncated-prior shorthand -- got the
+    doubly-infinite box of a normal and the fit was free to walk into the region where its
+    own declared prior density is exactly ``-inf``, silently: the one alarm
+    (``samplers/base.ln_prior``) is gated on ``has_bounded_support``, which is ``False``
+    for precisely these families, and ``de`` does not call it at all.
+
+    Driven on the analytical ``gaussian`` objective centered at ``-5``, so the search is
+    pulled straight at the zero-density region rather than wandering there by chance. On
+    the unfixed tree this scores hundreds of negative parameter sets and reports a best
+    fit near ``-5``; the wall must hold under exactly that pressure.
+    """
+
+    NAMES = ('x1', 'x2', 'x3')
+
+    def _drive(self, tmp_path, keyword, params):
+        text = ('edition = 2\nobjective = gaussian, mean = -5 -5 -5, variance = 1 1 1\n'
+                'job_type = de\n'
+                + ''.join('%s = %s %s\n' % (keyword, n, params) for n in self.NAMES)
+                + 'population_size = 12\nmax_iterations = 60\nmutation_rate = 1.0\n'
+                  'mutation_factor = 0.8\nislands = 1\nstop_tolerance = 0\n'
+                  'output_every = 1000000\nrandom_seed = 3\n'
+                  'output_dir = %s/out\nwall_time_sim = 0\n' % tmp_path)
+        c = config.Configuration(ploop(text.splitlines(keepends=True)))
+        de = algorithms.DifferentialEvolution(c)
+        d = data.Data()
+        d.data = d._read_file_lines(['# time x\n', ' 1 1\n'], r'\s+')
+        queue = list(de.start_run())
+        scored, out_of_support = 0, []
+        while queue:
+            ps = queue.pop(0)
+            scored += 1
+            values = [ps[n] for n in self.NAMES]
+            if any(v < 0.0 for v in values):
+                out_of_support.append(tuple(values))
+            res = algorithms.Result(ps, d, ps.name)
+            res.score = float(sum((v + 5.0) ** 2 for v in values))
+            de.add_to_trajectory(res)
+            got = de.got_result(res)
+            if got == 'STOP':
+                break
+            queue.extend(got)
+        return de, scored, out_of_support
+
+    def test_gamma_prior_confines_the_search_to_its_support(self, tmp_path):
+        de, scored, out_of_support = self._drive(tmp_path, 'gamma_var', '2 1')
+        assert scored > 100                      # the search really ran
+        assert out_of_support == []
+        # It piles up against the wall instead: the optimum it can reach is 0, not -5.
+        best = min(min(m[n] for n in self.NAMES) for m in de.individuals[0])
+        assert best >= 0.0
+        for v in de.variables:
+            assert (v.lower_bound, v.upper_bound) == (0.0, np.inf)
+
+    def test_beta_prior_confines_the_search_to_its_unit_interval(self, tmp_path):
+        de, scored, out_of_support = self._drive(tmp_path, 'beta_var', '2 5')
+        assert scored > 100
+        assert out_of_support == []
+        assert all(0.0 <= m[n] <= 1.0 for m in de.individuals[0] for n in self.NAMES)
+        for v in de.variables:
+            assert (v.lower_bound, v.upper_bound) == (0.0, 1.0)
+
+    def test_an_unbounded_family_is_still_free_to_go_negative(self, tmp_path):
+        """The control: a ``normal`` prior genuinely has density at -5, so nothing walls
+        it and the fit reaches the optimum. The fix must not bound a family that is
+        legitimately unbounded."""
+        de, scored, out_of_support = self._drive(tmp_path, 'normal_var', '0 3')
+        assert scored > 100
+        assert out_of_support        # negative values are correct here
+        best = min(min(m[n] for n in self.NAMES) for m in de.individuals[0])
+        assert best < -1.0
+        for v in de.variables:
+            assert (v.lower_bound, v.upper_bound) == (-np.inf, np.inf)

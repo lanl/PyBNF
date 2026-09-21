@@ -2287,14 +2287,58 @@ class FreeParameter:
                 raise PybnfError(
                     f"Parameter {self.name}: truncation bounds must be increasing in "
                     f"sampling space, got theta [{lo_theta}, {hi_theta}].")
+            # Whether the *user* asked for a truncation -- recorded before the support is
+            # folded in below, because the two do different things (see the branch).
+            truncated = np.isfinite(lo_u) or np.isfinite(hi_u)
+            # The family's own support is a wall in its own right (#711). The positive
+            # families (gamma/exponential/chisquare/rayleigh/weibull/inv_gamma/half_normal/
+            # half_cauchy) are open below at u = 0 and beta is closed at both ends of
+            # [0, 1]; outside that interval the declared prior density is exactly 0, so
+            # there is nothing for a fit to find. Built from lb/ub alone, an omit-both
+            # declaration -- the documented "untruncated prior" shorthand -- gave such a
+            # family the doubly-infinite box of a normal, so set_value stored a negative
+            # rate constant verbatim and a prior-ignoring population optimizer (de/pso/ss,
+            # which add no prior term to the objective) could report a best fit from the
+            # zero-density region, silently. Three declaration paths reach this
+            # constructor and only one of them checks a bound against the support
+            # (parameter_record._graded_truncation_bounds, on the `parameter:` record), so
+            # the intersection belongs here, where all three meet. The PEtab importer in
+            # particular relies on it: _truncation_box returns (None, None) for bounds
+            # that cover the natural domain, so `lowerBound: 0` on a gamma row arrives as
+            # no bound at all and takes its floor from the support. See ADR-0047, whose
+            # amendment records why this is a fix rather than a new rule.
+            supp_lo_u, supp_hi_u = self._prior.support()
+            # Only the binding side is re-derived: the declared side stays the user's own
+            # number in theta, because 10 ** log10(20) is above 20, so round-tripping a
+            # wall through u would move it out of the box the user wrote (#753, #750).
+            if supp_lo_u > lo_u:
+                lo_u, lo_theta = supp_lo_u, self._scale.inverse(supp_lo_u)
+            if supp_hi_u < hi_u:
+                hi_u, hi_theta = supp_hi_u, self._scale.inverse(supp_hi_u)
+            if not lo_u < hi_u:
+                raise PybnfError(
+                    f"Parameter {self.name}: truncation bounds [{lb}, {ub}] do not "
+                    f"overlap the {self.type} prior's support, which is theta "
+                    f"[{self._scale.inverse(supp_lo_u)}, {self._scale.inverse(supp_hi_u)}] "
+                    f"-- the whole box lies in the zero-density region (likely a wrong "
+                    f"family or scale).")
             if np.isfinite(lo_u) or np.isfinite(hi_u):
-                # At least one finite wall -- a half- or two-sided reflecting box that
-                # also truncates the prior density and sampling. The fold (_reflect)
-                # handles one infinite wall as the ub->inf limit of the triangle wave.
+                # At least one finite wall -- a half- or two-sided reflecting box. The fold
+                # (_reflect) handles one infinite wall as the ub->inf limit of the triangle
+                # wave.
+                #
+                # Only a *declared* wall also truncates the prior's density and sampling. A
+                # wall that is only the family's support truncates nothing (the retained
+                # mass over the support is 1), and wrapping it would still report
+                # has_bounded_support -- which is the box optimizers' "this is a box to
+                # search" test (local_base._is_box_start, config._declaration_kind), and a
+                # half-line is not a box. So a support wall moves the reflecting box and
+                # nothing else.
                 self.bounded = True
                 self.lower_bound = lo_theta
                 self.upper_bound = hi_theta
-                self._prior = TruncatedPrior(self._prior, lo_u, hi_u)
+                if truncated:
+                    self._prior = TruncatedPrior(self._prior, lo_u, hi_u)
             else:
                 # Both sides open (e.g. an explicit -inf/inf) -- the untruncated prior,
                 # identical to omitting the bounds (the bounded flag is meaningless for

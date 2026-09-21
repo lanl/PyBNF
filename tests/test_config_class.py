@@ -543,6 +543,25 @@ class TestParameterRecordConfig:
         assert got['d'].type == 'lognormal_var' and got['d'].has_bounded_support
         assert (got['d'].lower_bound, got['d'].upper_bound) == (0.0, 100.0)
 
+    def test_beta_record_bounds_are_measured_against_both_ends(self, tmp_path, monkeypatch,
+                                                              caplog):
+        """beta's support is ``[0, 1]``, so a truncation is graded on both sides (#711).
+
+        ``upper: inf`` canonicalizes to the ceiling with a warning (the mirror of
+        ``lower: -inf``), and an omit-both beta carries ``[0, 1]`` as its reflecting box
+        without becoming a truncated -- and therefore box-mode-eligible -- prior.
+        """
+        with caplog.at_level('WARNING'):
+            got = self._build_vars(tmp_path, monkeypatch, [
+                'parameter: a, prior: beta, alpha: 2, beta: 5, lower: 0.1, upper: inf',
+                'parameter: b, prior: beta, alpha: 2, beta: 5',
+            ])
+        assert (got['a'].lower_bound, got['a'].upper_bound) == (0.1, 1.0)
+        assert got['a'].has_bounded_support
+        assert 'support ceiling is 1' in caplog.text
+        assert (got['b'].lower_bound, got['b'].upper_bound) == (0.0, 1.0)
+        assert got['b'].bounded and not got['b'].has_bounded_support
+
     def test_record_family_variety(self, tmp_path, monkeypatch):
         got = self._build_vars(tmp_path, monkeypatch, [
             'parameter: a, prior: normal, mean: 0, sd: 1',                       # unbounded
@@ -693,6 +712,15 @@ class TestParameterRecordConfig:
         # (open below); only a finite sub-floor value raises.
         ({'prior': 'normal', 'parameter_scale': 'ln', 'mean': '1', 'sd': '0.5',
           'lower': '-5', 'upper': '100'}, "support floor"),
+        # The ceiling is the mirror image, and beta on [0, 1] is the one family in the
+        # catalog that has one. It was unchecked while every truncatable family was
+        # unbounded above, so an upper wall above 1 was accepted and then silently
+        # narrowed to 1 (#711). 'upper: inf' is the sloppy-but-lossless spelling and is
+        # warned + canonicalized, exactly as 'lower: -inf' is.
+        ({'prior': 'beta', 'alpha': '2', 'beta': '5', 'lower': '0.1', 'upper': '5'},
+         "support ceiling"),
+        ({'prior': 'beta', 'parameter_scale': 'log10', 'alpha': '2', 'beta': '5',
+          'lower': '2', 'upper': '50'}, "support ceiling"),
         ({'parameter_scale': 'log10', 'initial_value': '-5'}, 'initial_value > 0'),
     ])
     def test_record_field_errors(self, fields, match):

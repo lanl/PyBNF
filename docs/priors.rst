@@ -46,18 +46,33 @@ Support and reflecting bounds
 -----------------------------
 
 A family's **support** — the region where its density is nonzero — is intrinsic
-to the family: Uniform is finite, Normal and Laplace are unbounded, and the
+to the family: Uniform is finite, Normal and Laplace are unbounded, the
 positive families (Gamma, Exponential, half-Normal, …) are bounded below at
-zero.
+zero, and Beta is bounded at both ends of ``[0, 1]``.
 
 **Reflecting bounds** are a separate idea. They are a box a proposal is folded
-back into during a fit, and they exist only for the box-shaped
-``uniform_var`` / ``loguniform_var`` priors, which take an optional trailing flag
-— ``b`` (or blank) keeps the parameter **bounded**, so a proposal that would
-leave the box is reflected back in; ``u`` makes it **unbounded**, letting the
-search leave the initial range::
+back into during a fit. A parameter gets one from any of three places:
+
+* **The family's own support.** Outside it the declared density is exactly zero,
+  so there is nothing there for a fit to find, and the support is always a wall —
+  a ``gamma_var`` parameter is reflected at 0 and a ``beta_var`` one at 0 and 1
+  whether or not you write any bounds. (Without this, a population optimizer, which
+  does not add the prior to its objective, could spend simulations on — and report a
+  best fit at — a negative rate constant.)
+* **Declared truncation.** ``lower:`` / ``upper:`` on a :ref:`parameter record
+  <parameter-record>` truncate the prior to a box, renormalizing its density over
+  that box and reflecting proposals off it. A declared bound may only tighten the
+  support's own wall: one outside the support is refused, since it would put a wall
+  in the zero-density region (almost always a wrong family or scale).
+* **The Uniform box.** For ``uniform_var`` / ``loguniform_var`` the support *is* the
+  box, and it alone takes an optional trailing flag — ``b`` (or blank) keeps the
+  parameter **bounded**, while ``u`` turns the reflection off, letting the search
+  leave the range it was seeded from::
 
     uniform_var = x__FREE 10 30 u    # sample in [10, 30], but allow moves outside
+
+  No other family takes the flag: the wall of a support or a declared truncation is
+  where the density ends, not a seeding range, so there is nothing to switch off.
 
 Two samplers keep a bounded parameter inside the box by another route: adaptive MCMC
 (:ref:`alg-am`) and DREAM (:ref:`alg-dream`) **reject** a proposal that would leave it, and the
@@ -65,8 +80,11 @@ chain stays where it is for that iteration. Both propose along directions that c
 parameters, and folding such a proposal back into the box, one parameter at a time, would
 distort the distribution they sample.
 
-The other finite-support families (for example Beta on ``[0, 1]``) draw from
-their own density rather than a reflecting box, so they take no such flag.
+A support wall is not a *box* for the purposes of the start-point optimizers
+(:ref:`Simplex <alg-sim>`, :ref:`Powell <alg-powell>`, :ref:`CMA-ES <alg-cmaes>`, the
+:ref:`gradient methods <alg-gradient>`): those search a **finite** box, and the half-line a
+``gamma_var`` declares is not one, so they refuse it. Give such a parameter a ``lower:`` /
+``upper:`` box (or a ``uniform_var`` prior) to search it with those methods.
 
 Distribution families
 ---------------------

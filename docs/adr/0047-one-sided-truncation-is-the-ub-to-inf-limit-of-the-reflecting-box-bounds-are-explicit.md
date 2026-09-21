@@ -179,6 +179,55 @@ token and the importer's conf-writer) — found because a half-bounded import mu
   PEtab row (the finite wall on the truncated side, an explicit `±inf` on the open side) via
   `trunc_lb`/`trunc_ub` and the `inf`-aware `num` serializer — no code change, only docstrings.
 
+## Amendment (2026-09-21, #711)
+
+**The support wall was claimed but never built.** The native↔PEtab bullet below asserts that
+the native omit-both shorthand "resolves internally to the same `-inf/inf` (or **`0/inf`**)
+the PEtab importer reads explicitly". It did not. `FreeParameter.__init__` built the
+reflecting box from the declared `lb`/`ub` alone, so for the nine families whose support is
+not the whole line — `gamma`, `exponential`, `chisquare`, `rayleigh`, `weibull`, `inv_gamma`,
+`half_normal`, `half_cauchy` and `beta` — an omit-both declaration got `(-inf, inf)`: the box
+of a `normal`. `set_value` then compared a proposal against `-inf` and stored a negative rate
+constant verbatim. It was silent, because the one alarm (`samplers/base.ln_prior`) is gated on
+`has_bounded_support`, which is `False` for exactly these families — and a population
+optimizer (`de`/`pso`/`ss`), which adds no prior term to its objective and which
+`config._check_variable_keyword_combination` explicitly permits to carry an unbounded prior,
+never calls that alarm at all. Driven on an analytical objective centred at −5, `de` with three
+`gamma_var` parameters scored 690 out of 800 parameter sets outside the support and reported
+its best fit at ≈ −22.
+
+The fix does not change this ADR's rule; it implements it. The reflecting box is the
+**intersection** of the declared truncation with the family's own support (`Prior.support()`,
+in `u`), so:
+
+- **A support wall is not a truncation.** Only a *declared* wall wraps the family in a
+  `TruncatedPrior`. Truncating at the support endpoints would be a mathematical no-op (the
+  retained mass is 1) but would report `has_bounded_support`, which is the box optimizers'
+  "this is a box to search" test (`local_base._is_box_start`, `config._declaration_kind`) — and
+  a half-line is not a box. So the wall moves `bounded` / `lower_bound` / `upper_bound` and
+  nothing else; `gamma_var` with no bounds is still refused for `job_type = cmaes`, and
+  `trunc_lb` / `trunc_ub` stay `None`, so the PEtab exporter still writes blank bounds.
+- **Only the binding side is re-derived.** A declared bound is kept verbatim in θ, never
+  round-tripped through `u`: `10 ** log10(20)` is above 20, so a re-derived wall would leave
+  the user's own box.
+- **The graded rule gains its mirror.** `_graded_truncation_bounds` measured a written bound
+  against `support_lo_u` only, on the stated grounds that "these families are all unbounded
+  above" — which `beta` stopped being when it joined the catalog (ADR-0057). A new
+  `support_hi_u` (`inf`, `1.0` for `beta`) completes it: `upper: inf` on a `beta` is warned and
+  canonicalized to the ceiling, and a finite `upper` above it is the same error a finite
+  `lower` below the floor already was, instead of being silently narrowed.
+- **Three declaration paths, one chokepoint.** The graded rule sits on the `parameter:` record
+  only; the PEtab importer and direct construction bypass it — and the importer *relies* on the
+  constructor for this, since `_truncation_box` returns `(None, None)` for bounds that cover the
+  natural domain, so `lowerBound: 0` on a `gamma` row arrives as no bound at all. Putting the
+  intersection in `FreeParameter.__init__` covers all three.
+
+This also removes a disagreement between two checks that were meant to be equivalent:
+`config._start_point_box` validates a declared `start_point` against `prior_support()` (which
+always knew the support) while every other consumer replays `set_value(…, reflect=False)`
+(which did not), so a negative start point was refused at load and an identical mid-fit value
+was accepted.
+
 ## Considered Options
 
 - **Reject-and-resample on the half-line (rejected).** Doing nothing special already
@@ -208,4 +257,5 @@ Reflecting-Bounds seam), **0043** (the `parameter:` record where `lower`/`upper`
 **0022** (the explicit log10/ln scale, on which the positive-support floor depends), **0004**
 (the two-adapter proof the native↔PEtab divergence is measured against). Issues: **#432**
 (this tracker), **#411** (`TruncatedPrior`/box), **#417** (the native two-sided grammar this
-opens up), **#407** (the PEtab adapter).
+opens up), **#407** (the PEtab adapter), **#711** (the support wall this ADR claimed but did
+not build — see the Amendment above).
