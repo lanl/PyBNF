@@ -252,6 +252,41 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **Parallel tempering records each iteration of a chain once, instead of recording the
+  iteration after a replica exchange twice (#710).** At an exchange barrier `replica_exchange`
+  resumed each chain by calling `try_to_choose_new_pset`, then rewound the iteration counter by
+  one as if that call had only bumped the counter. It does more than that: after advancing the
+  counter it runs the whole per-iteration block -- record a statistical sample, refresh the
+  histograms, write output, run the convergence diagnostics. So the block ran once at iteration
+  E+1 on the post-exchange state, the rewind put the counter back to E, and the next result
+  advanced to E+1 and ran it a second time on the post accept/reject state. One iteration of one
+  chain contributed two draws to `samples.txt`, two rows to `log_likelihood.txt`, and double
+  weight in `Results/Histograms/*.txt` and the credible intervals -- two draws that are not even
+  the same point, since the accept/reject between them may have moved the chain. Nothing in the
+  output said so; the fit ran to completion and reported a posterior built from more draws than
+  iterations.
+
+  A run hits this whenever `(k*exchange_every + 1) % sample_every == 0` for some k: every
+  exchange under `sample_every = 1`, and periodically under pairings such as
+  `exchange_every = 19` with `sample_every = 20`, or `exchange_every = 7` with
+  `sample_every = 5`. The shipped defaults (`exchange_every = 20`, `sample_every = 100`) never
+  satisfy it, which is why it went unnoticed.
+
+  The per-iteration block moved into `_advance_iteration`, which opens an iteration and does its
+  bookkeeping, and `try_to_choose_new_pset` grew an `advance` flag. The exchange now resumes each
+  chain with `advance=False`: the chain stays on the barrier iteration it already counted and
+  recorded, and the rewind is gone. The psets the exchange proposes carry the same names as
+  before, the run performs the same number of simulations, and a chain that has to spend
+  iterations stuck at the same point to find a move inside the box still counts and records each
+  of those. A driven pt run now records iterations 1..N exactly once each; before the fix it
+  recorded the iteration after every barrier twice.
+
+  `exchange_every = 1` also runs now. Advancing to E+1 during the resume landed on a barrier
+  under that setting, so every chain parked itself again without proposing a move and the run
+  aborted at the first exchange with "I seem to have gone from one replica exchange to the next
+  replica exchange without proposing a single valid move". Resuming on the barrier iteration
+  does not re-enter that check -- its exchange has just happened -- and the run reaches
+  `max_iterations`, exchanging once per iteration.
 - **A constraint on a normalized observable is differentiated on the column its penalty is
   actually scored on (#718).** `normalization` rescales a predicted column in place before
   scoring and leaves the forward-sensitivity tensor in raw units, which is why the objective's

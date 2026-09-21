@@ -191,14 +191,23 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             return toreturn
         return [proposed_pset]
 
-    def try_to_choose_new_pset(self, index):
+    def try_to_choose_new_pset(self, index, advance=True):
         """
         Helper function
-        Advances the iteration number, and tries to choose a new parameter set for chain index i
+        Advances the iteration number (unless ``advance`` is False), and tries to choose a new
+        parameter set for chain index i
         If that fails (e.g. due to a box constraint), keeps advancing iteration number and trying again.
         If it hits an iteration where it has to stop and wait (a replica exchange iteration or the end), returns None
         Otherwise returns the new PSet.
-        :param index:
+
+        :param index: The chain index
+        :type index: int
+        :param advance: Whether this call opens a new iteration of the chain. True on the
+            normal path, where a result just came back and the chain moves on to the next
+            iteration. False when resuming a chain after a replica exchange: the chain is
+            still on its barrier iteration, which has already been counted and recorded,
+            so the first proposal attempt must not run that bookkeeping again (#710).
+        :type advance: bool
         :return:
         """
         proposed_pset = None
@@ -218,47 +227,73 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                        'smaller step_size.' % index)
                 self.iteration[index] = self.max_iterations
 
-            self.iteration[index] += 1
-            # Check if it's time to do various things
-            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0 \
-                    and self.should_sample(index):
-                self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
-            if (self.iteration[index] > self.burn_in
-               and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
-               and self.iteration[index] == min(self.iteration)):
-                self.update_histograms('_%i' % self.iteration[index])
-
-            if self.iteration[index] == min(self.iteration):
-                if self.iteration[index] % self.config.config['output_every'] == 0:
-                    self.output_results()
-                if self.iteration[index] % 10 == 0:
-                    print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                    print2('Current move accept rate: %f' % (self.accepted/self.attempts))
-                    if self.exchange_attempts > 0:
-                        print2('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
-                else:
-                    print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
-                if self.iteration[index] % self.diagnostics_every == 0:
-                    max_rhat = self.report_convergence_diagnostics(self.iteration[index])
-                    if self.check_convergence(self.iteration[index], max_rhat):
-                        self.converged = True
-                        return None
-                logger.debug('Completed %i iterations' % self.iteration[index])
-                logger.debug('Current move accept rate: %f' % (self.accepted/self.attempts))
-                if self.exchange_attempts > 0:
-                    logger.debug('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
-                print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
-            if self.iteration[index] >= self.max_iterations:
-                logger.info('Finished replicate number %i' % index)
-                print2('Finished replicate number %i' % index)
+            if advance and self._advance_iteration(index):
                 return None
-            if self.iteration[index] % self.exchange_every == 0:
-                # Need to wait for the rest of the chains to catch up to do replica exchange
-                self.wait_for_sync[index] = True
-                return None
+            # Every later pass through this loop is another iteration the chain spends
+            # stuck at the same point, and those do get their own bookkeeping even when
+            # the first pass skipped it.
+            advance = True
             proposed_pset = self.choose_new_pset(self.current_pset[index], index)
         return proposed_pset
+
+    def _advance_iteration(self, index):
+        """
+        Opens the next iteration of chain ``index`` and does that iteration's bookkeeping:
+        record a statistical sample, refresh the histograms, write output, report progress,
+        and run the convergence diagnostics.
+
+        Called exactly once per iteration of a chain. In particular, the replica exchange
+        does not call it when it resumes the chains: the barrier iteration has already been
+        through here, and running it again there wrote a second samples.txt row for a single
+        iteration (#710).
+
+        :param index: The chain index
+        :type index: int
+        :return: True if the chain has to stop here -- it converged, it finished, or it
+            reached an exchange barrier and has to wait for the other chains -- and False if
+            it should go on to propose a move.
+        :rtype: bool
+        """
+        self.iteration[index] += 1
+        # Check if it's time to do various things
+        if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0 \
+                and self.should_sample(index):
+            self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
+        if (self.iteration[index] > self.burn_in
+           and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
+           and self.iteration[index] == min(self.iteration)):
+            self.update_histograms('_%i' % self.iteration[index])
+
+        if self.iteration[index] == min(self.iteration):
+            if self.iteration[index] % self.config.config['output_every'] == 0:
+                self.output_results()
+            if self.iteration[index] % 10 == 0:
+                print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                print2('Current move accept rate: %f' % (self.accepted/self.attempts))
+                if self.exchange_attempts > 0:
+                    print2('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
+            else:
+                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
+            if self.iteration[index] % self.diagnostics_every == 0:
+                max_rhat = self.report_convergence_diagnostics(self.iteration[index])
+                if self.check_convergence(self.iteration[index], max_rhat):
+                    self.converged = True
+                    return True
+            logger.debug('Completed %i iterations' % self.iteration[index])
+            logger.debug('Current move accept rate: %f' % (self.accepted/self.attempts))
+            if self.exchange_attempts > 0:
+                logger.debug('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
+            print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
+        if self.iteration[index] >= self.max_iterations:
+            logger.info('Finished replicate number %i' % index)
+            print2('Finished replicate number %i' % index)
+            return True
+        if self.iteration[index] % self.exchange_every == 0:
+            # Need to wait for the rest of the chains to catch up to do replica exchange
+            self.wait_for_sync[index] = True
+            return True
+        return False
 
     def should_sample(self, index):
         """
@@ -332,7 +367,11 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         # Propose new psets - it's more complicated because of going out of box, and other counters.
         proposed = []
         for j in range(self.num_parallel):
-            proposed_pset = self.try_to_choose_new_pset(j)
+            # advance=False: chain j is still on its barrier iteration, which was counted
+            # and recorded when it arrived here. The exchange resumes it from that same
+            # iteration, so opening a new one now would run the iteration's bookkeeping
+            # twice -- once here and once when the proposed pset comes back (#710).
+            proposed_pset = self.try_to_choose_new_pset(j, advance=False)
             if proposed_pset is None:
                 if np.all(self.wait_for_sync):
                     logger.error('Aborting because no changes were made between one replica exchange and the next.')
@@ -343,10 +382,9 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 elif min(self.iteration) >= self.max_iterations:
                     return 'STOP'
             else:
-                # Iteration number got off by 1 because try_to_choose_new_pset() was called twice: once a while ago
-                # when it reached the exchange point and returned None, and a second time just now.
-                # Need to correct for that here.
-                self.iteration[j] -= 1
+                # The counter still reads the barrier iteration (or a later one, if the
+                # chain had to spend iterations stuck at the same point to find a move
+                # inside the box), so it names the pset directly.
                 proposed_pset.name = 'iter%irun%i' % (self.iteration[j], j)
                 proposed.append(proposed_pset)
         return proposed
