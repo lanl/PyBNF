@@ -2845,8 +2845,12 @@ For DREAM
    With the default ``reps_per_beta = 1`` there is exactly one such replica, so
    :math:`\hat{R}` is a *split*-R-hat over that one chain. That is a real diagnostic -- it
    catches a chain whose two halves disagree -- but it cannot see a chain that never left one
-   mode, which is the failure parallel tempering is usually run to avoid. ``pt`` prints a
-   warning at the start of such a run.
+   mode, which is the failure parallel tempering is usually run to avoid. The reported line
+   names the count it compared, so it reads ``Max R-hat: 1.0034 (split, 1 chain)`` rather than
+   claiming a between-chain comparison it did not make. (The ``rhat_*`` columns of
+   ``Results/diagnostics.txt`` hold that same statistic; the file's format is unchanged.)
+   Setting ``rhat_threshold`` on such a run additionally prints a warning at the start, because
+   the run can then *stop itself* on a statistic blind to the failure it is meant to catch.
 
    A between-chain :math:`\hat{R}` at the max beta costs **twice the replicas**, not a
    free flag flip. The number of temperatures is ``population_size // reps_per_beta``, so

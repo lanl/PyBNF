@@ -583,7 +583,14 @@ class BayesianAlgorithm(Algorithm):
         max_rhat = None
         if rhat is not None:
             max_rhat = np.nanmax(rhat)
-            print1(f'Max R-hat: {max_rhat:.4f}')
+            # Name what the number is. R-hat reads as a between-chain statistic, but it is
+            # computed over the replicas that carry the posterior, and under pt at the
+            # default reps_per_beta = 1 that is one chain -- split-R-hat, which cannot see a
+            # chain that never left one mode. Printing the count says so on the line the
+            # reader is already reading, without a warning to tune out (#782).
+            n_chains = len(self._posterior_chain_history())
+            print1(f'Max R-hat: {max_rhat:.4f} '
+                   f'({"split, 1 chain" if n_chains == 1 else f"{n_chains} chains"})')
             print2(f'R-hat per parameter: {str(np.round(rhat, 4))}')
             logger.info(f'R-hat values: {str(rhat)}')
 

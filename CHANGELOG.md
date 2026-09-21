@@ -277,7 +277,15 @@ All notable changes to PyBNF are documented below. This project adheres to
   With the default `reps_per_beta = 1` there is exactly one max-beta replica, so R-hat is now a
   split-R-hat over that one chain. That is a real diagnostic -- halving the chain is what the
   split is for -- but it cannot see a chain that never left one mode, which is the failure pt is
-  usually run to avoid. `pt` now prints a warning at the start of such a run saying so.
+  usually run to avoid.
+
+  That is a property of the default configuration rather than a mistake a user made, so it is
+  reported by naming the statistic, not by a warning every pt run would learn to scroll past:
+  the reported line now carries the number of chains it compared, reading `Max R-hat: 1.0034
+  (split, 1 chain)` or `(4 chains)`. A warning is reserved for the one case where that
+  statistic drives a decision -- `rhat_threshold > 0`, which makes the run stop itself on it.
+  `Results/diagnostics.txt` is byte-for-byte unchanged, since `inference_data.py` parses its
+  `rhat_*` columns by name.
 
   The remedy is not simply to raise `reps_per_beta`. The number of temperatures is
   `population_size // reps_per_beta`, so raising it alone shortens the ladder and weakens the
