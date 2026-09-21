@@ -345,6 +345,14 @@ class DifferentialEvolutionBase(Algorithm):
                 new_pset_vars.append(target.get_param(p.name))
 
         new_pset = PSet(new_pset_vars)
+        # Resolve a duplicate BEFORE the settings are registered, because the register is
+        # keyed by the candidate and two candidates that land on identical parameters are
+        # one key (#775). Registering first and de-duplicating afterwards -- which is what
+        # the island loop used to do -- let the second candidate's write overwrite the
+        # first one's record, and the move that followed carried the survivor to the
+        # perturbed key, so the first candidate's outcome was gone for good. The hook is a
+        # no-op for ``ade``, which tolerates a shared key by design (#730).
+        new_pset = self._deduplicate(new_pset)
         if self.adapt_mutation:
             # What the outcome will be judged against: the fitness, now, of the member the
             # mutant was crossed with, which is what these settings were applied to (see
@@ -352,6 +360,19 @@ class DifferentialEvolutionBase(Algorithm):
             reference_fitness = float(self._island_fitnesses(island)[crossed])
             self._trial_settings[new_pset] = (rate, factor, reference_fitness, island)
         return new_pset
+
+    def _deduplicate(self, pset):
+        """Hook: ``pset``, moved if it duplicates a candidate already in flight.
+
+        The base is the identity -- ``ade`` has no in-flight register to check against and
+        deliberately tolerates two candidates sharing a ``_trial_settings`` key, dropping
+        one record (``_note_trial_result``, #730). Island ``de`` overrides it, because it
+        does have one (``island_map``) and does intend every candidate to carry a record.
+
+        Called from :meth:`new_individual` at the point the island loop used to perturb, so
+        the rng is consumed in exactly the same order and every seeded oracle in
+        ``test_diff_evolution`` keeps its drawn values bit for bit."""
+        return pset
 
     def _difference(self, name, donors, factor):
         """How far the donors move parameter ``name``, in its sampling space: ``factor`` times
@@ -440,14 +461,16 @@ class DifferentialEvolutionBase(Algorithm):
         self._trial_settings = dict()
 
     def _perturb_duplicate(self, pset):
-        """``pset`` moved by up to 1e-6 in every parameter, keeping the settings that built
-        it: ``de`` does this to a candidate that duplicates one already in flight, and the
-        record has to follow the candidate or its outcome is lost."""
-        moved = PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in pset])
-        record = self._trial_settings.pop(pset, None)
-        if record is not None:
-            self._trial_settings[moved] = record
-        return moved
+        """``pset`` moved by up to 1e-6 in every parameter: what ``de`` does to a candidate
+        that duplicates one already in flight, so the two are distinct keys.
+
+        It carries no learned-mutation record, because it is now called from
+        :meth:`_deduplicate` *before* the candidate's settings are registered (#775). It
+        used to move the record too, from the duplicate's key to the perturbed one -- which
+        looked like it preserved the outcome and did not: the duplicate's write had already
+        overwritten the earlier candidate's record at the shared key, so what moved was the
+        survivor and what was lost was the record this was meant to protect."""
+        return PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in pset])
 
     def _note_trial_result(self, pset, score):
         """Report a finished candidate's score to the history that built it.
@@ -656,6 +679,23 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         self.migration_perms = dict()  # How do we rearrange between islands on migration i?
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
+    def _deduplicate(self, pset):
+        """``pset``, moved until it duplicates no candidate already in flight (#775).
+
+        Island ``de``'s override of the base hook. ``island_map`` holds every candidate
+        awaiting a result, including the ones this generation's loop has already produced,
+        so a candidate that lands on identical parameters -- which the learned settings make
+        reachable, since a low drawn ``mutation_rate`` leaves most parameters unmutated --
+        is moved by up to 1e-6 per parameter until it is its own key.
+
+        ``de`` needs this and ``ade`` does not because ``de`` keys a real per-candidate
+        register on the ``PSet``: ``island_map`` for the slot the result belongs to, and
+        ``_trial_settings`` for the settings that built it. Called before either is written,
+        so both land under the candidate's final key."""
+        while pset in self.island_map:
+            pset = self._perturb_duplicate(pset)
+        return pset
+
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
         self._reset_search_state()
@@ -844,10 +884,10 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
                 else:
                     new_pset = self.new_individual(self.individuals[island], island=island,
                                                    target_index=jj)
-                # If the new pset is a duplicate of one already in the island_map, it will cause problems.
-                # As a workaround, perturb it slightly.
-                while new_pset in self.island_map:
-                    new_pset = self._perturb_duplicate(new_pset)
+                # A duplicate of a candidate already in flight is resolved inside
+                # new_individual, before its learned-mutation record is registered
+                # (_deduplicate / #775). It used to be done here, after registration,
+                # which silently dropped the earlier candidate's record.
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
