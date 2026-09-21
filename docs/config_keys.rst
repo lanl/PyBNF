@@ -856,8 +856,11 @@ Parameter and Model Specification
   Drop the tag to export the box as real bounds.
 
 **normal_var**
-  A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation. The distribution
-  is truncated at 0 to prevent negative values
+  A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation.
+  Its support is the whole real line — the distribution is **not** truncated at 0, so a ``normal_var``
+  parameter can take a negative value. Use a positive-support family (``gamma_var``, ``half_normal_var``,
+  …) or a log-scale one (``lognormal_var``) for a quantity that must stay positive; those carry a
+  reflecting wall at their support floor.
 
   Example:
   

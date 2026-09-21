@@ -9,10 +9,11 @@ concentrate the mass.
 Unlike :class:`Uniform`, Beta is **not** a box whose bounds are its config values, so
 ``has_bounded_support`` stays ``False`` -- its ``p1``/``p2`` are shapes, not the support, and it
 samples from its own density rather than a latin-hypercube box. Its support floor is 0
-(``support_lo_u``), so a one-sided truncation floors there (ADR-0047); truncating to a
-sub-interval of [0,1] via finite ``lower``/``upper`` works through the family-agnostic
-:class:`TruncatedPrior`. (The upper support 1 is the frozen distribution's own -- a value above
-it already has zero density -- so it needs no separate floor attribute.)
+(``support_lo_u``) and its ceiling is 1 (``support_hi_u``), so a truncation is measured against
+both (ADR-0047); truncating to a sub-interval of [0,1] via finite ``lower``/``upper`` works
+through the family-agnostic :class:`TruncatedPrior`. The ``[0, 1]`` interval is also the
+reflecting box every beta parameter carries, declared bounds or not: above 1 and below 0 the
+density is exactly 0, so there is nothing there for a fit to find (#711).
 """
 
 from scipy import stats
@@ -25,6 +26,7 @@ from .base import FrozenPrior
 class Beta(FrozenPrior):
     has_bounded_support = False
     support_lo_u = 0.0   # support [0, 1]: a one-sided truncation floors at 0 (ADR-0047)
+    support_hi_u = 1.0   # ... and caps at 1, the only family in the catalog that does (#711)
     field_names = ('alpha', 'beta')
 
     def __init__(self, alpha, beta):

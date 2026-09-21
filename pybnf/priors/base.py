@@ -42,6 +42,15 @@ class Prior(ABC):
     #: ``FreeParameter``'s ``Scale.inverse`` maps it to the theta-space floor a one-sided
     #: truncation measures bounds against (ADR-0047).
     support_lo_u = -np.inf
+    #: The family's natural **upper** support endpoint in ``u``, the mirror of
+    #: ``support_lo_u``. ``inf`` for every family unbounded above (all of them but
+    #: ``beta``, whose ``[0, 1]`` overrides to ``1.0``). Read by the graded bound rule
+    #: (``parameter_record._graded_truncation_bounds``) so a declared ``upper`` above the
+    #: ceiling is refused instead of silently narrowed to it, exactly as a declared
+    #: ``lower`` below ``support_lo_u`` is (ADR-0047, #711). ``support()`` -- the live
+    #: ``(lo, hi)`` off the frozen distribution -- must agree with this pair; the wall
+    #: ``FreeParameter`` builds is taken from ``support()``.
+    support_hi_u = np.inf
     #: How many config numbers the family's parameterization takes -- ``2`` for the
     #: location/scale/bounds families; the one-parameter families (exponential/chisquare/
     #: rayleigh, the half-* scale priors) override to ``1`` so the positional grammar admits a

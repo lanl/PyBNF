@@ -563,3 +563,196 @@ class TestTruncatedPrior:
             TruncatedPrior(NoPrior(), -1.0, 1.0)        # no scipy frozen to truncate
         with pytest.raises(ValueError):
             TruncatedPrior(Normal(0.0, 1.0), 2.0, 1.0)  # lo >= hi
+
+
+# ---------------------------------------------------------------------------
+# The family's support is a reflecting wall of its own (#711).
+#
+# A positive-support family (gamma, exponential, chisquare, rayleigh, weibull,
+# inv_gamma, half_normal, half_cauchy) has zero density below 0 in u, and beta has
+# zero density outside [0, 1]; built from lower:/upper: alone, the reflecting box for
+# an omit-both declaration -- the documented "untruncated prior" shorthand -- was the
+# doubly-infinite box of a normal, so set_value stored a negative rate constant
+# verbatim and a prior-ignoring population optimizer searched the zero-density region.
+# The floor these pin is the one ADR-0047 already claims the shorthand resolves to
+# ("the same -inf/inf (or 0/inf)"), and the one config._start_point_box already
+# refuses a declared start point outside of.
+# ---------------------------------------------------------------------------
+
+#: (family base, p1, p2) for every family whose support is bounded on at least one side.
+POSITIVE_FAMILIES = [
+    ('gamma', 2.0, 1.0),
+    ('exponential', 1.0, None),
+    ('chisquare', 3.0, None),
+    ('rayleigh', 1.0, None),
+    ('weibull', 2.0, 1.0),
+    ('inv_gamma', 3.0, 1.0),
+    ('half_normal', 1.0, None),
+    ('half_cauchy', 1.0, None),
+    ('beta', 2.0, 3.0),
+]
+
+#: The families that really are open on both sides -- the control group, unchanged.
+UNBOUNDED_FAMILIES = [
+    ('normal', 0.0, 1.0),
+    ('laplace', 0.0, 1.0),
+    ('cauchy', 0.0, 1.0),
+    ('gumbel', 0.0, 1.0),
+    ('logistic', 0.0, 1.0),
+]
+
+
+class TestSupportIsAWall:
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES)
+    def test_untruncated_positive_family_is_walled_at_its_support(self, base, p1, p2):
+        """An omit-both declaration gets the support as its reflecting box."""
+        fp = pset.FreeParameter('k__FREE', f'{base}_var', p1, p2)
+        lo_u, hi_u = fp.prior_support()
+        assert fp.bounded
+        assert fp.lower_bound == lo_u == 0.0
+        assert fp.upper_bound == hi_u == (1.0 if base == 'beta' else np.inf)
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES)
+    def test_negative_proposal_folds_back_inside(self, base, p1, p2):
+        """set_value folds rather than storing a value whose prior density is zero.
+
+        This is the reported symptom: -5.0 was stored verbatim, and prior_logpdf there
+        is -inf, so the fit scored a point the declared prior excludes.
+
+        The fold lands *in* the box, a wall included -- ``_reflect``'s final clip
+        deliberately can return a bound exactly -- which for beta's closed ``[0, 1]``
+        means a density of 0 is still a legal landing (-5 folds onto 1). So the density
+        is checked on a proposal that folds strictly inside.
+        """
+        fp = pset.FreeParameter('k__FREE', f'{base}_var', p1, p2)
+        folded = fp.set_value(-5.0).value
+        assert fp.lower_bound <= folded <= fp.upper_bound
+        with pytest.raises(pset.OutOfBoundsException):
+            fp.set_value(-5.0, reflect=False)
+        inside = fp.set_value(-4.4).value
+        assert fp.lower_bound < inside < fp.upper_bound
+        assert np.isfinite(fp.prior_logpdf(inside))
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES)
+    def test_support_wall_does_not_make_it_a_box(self, base, p1, p2):
+        """The wall moves the reflecting box only -- not ``has_bounded_support``.
+
+        ``has_bounded_support`` is the refiners' "this is a box to search" test
+        (``local_base._is_box_start``, ``config._declaration_kind``), and a half-line is
+        not a box: a support wall must not promote an untruncated prior into one, or
+        ``job_type = cmaes`` would silently accept ``gamma_var`` with no bounds and take
+        an infinite box width. It also must not truncate the density (the retained mass
+        over the support is 1, so ``prior_logpdf`` is the family's own).
+        """
+        fp = pset.FreeParameter('k__FREE', f'{base}_var', p1, p2)
+        assert not fp.has_bounded_support
+        assert fp.trunc_lb is None and fp.trunc_ub is None
+        ref = build_prior(f'{base}_var', p1, p2)[0]
+        assert fp.prior_logpdf(0.5) == pytest.approx(ref.logpdf(0.5), rel=1e-12)
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES)
+    def test_log_scale_wall_sits_at_the_scaled_floor(self, base, p1, p2):
+        """On a log10 scale the u-floor 0 is theta = 1, the same map the graded bound
+        rule measures a written ``lower`` against (``scale.inverse(support_lo_u)``)."""
+        fp = pset.FreeParameter('k__FREE', f'log{base}_var', p1, p2)
+        assert fp.bounded and fp.lower_bound == 1.0
+        assert fp.upper_bound == (10.0 if base == 'beta' else np.inf)
+        assert fp.set_value(0.5).value == pytest.approx(2.0, rel=1e-12)   # fold at u=0
+
+    @pytest.mark.parametrize("base,p1,p2", UNBOUNDED_FAMILIES)
+    @pytest.mark.parametrize("prefix", ['', 'log'])
+    def test_doubly_unbounded_family_keeps_no_box(self, base, p1, p2, prefix):
+        """The control group: a family open on both sides is untouched by the wall."""
+        fp = pset.FreeParameter('k__FREE', f'{prefix}{base}_var', p1, p2)
+        assert not fp.bounded and not fp.has_bounded_support
+        assert fp.lower_bound == -np.inf and fp.upper_bound == np.inf
+        assert fp.set_value(-5.0).value == -5.0   # nothing to fold into
+
+    @pytest.mark.parametrize("keyword", ['var', 'logvar'])
+    def test_no_prior_start_point_keeps_no_box(self, keyword):
+        """``NoPrior.support()`` is ``(-inf, inf)``, so a start-point carrier is exempt:
+        a ``var`` line declares no density and so declares no zero-density region."""
+        fp = pset.FreeParameter('k__FREE', keyword, 1.0, None)
+        assert not fp.bounded
+        assert fp.lower_bound == -np.inf and fp.upper_bound == np.inf
+
+    def test_declared_truncation_still_wins_where_it_is_tighter(self):
+        """A written bound inside the support is the box, and is kept bit-exact.
+
+        The wall is an intersection, not a replacement: it may only tighten. The
+        declared side is never re-derived through ``u``, because ``10 ** log10(20)`` is
+        above 20 -- a round-tripped wall would leave the user's own box.
+        """
+        fp = pset.FreeParameter('k__FREE', 'gamma_var', 2.0, 1.0, lb=0.5, ub=20.0)
+        assert (fp.lower_bound, fp.upper_bound) == (0.5, 20.0)
+        assert fp.has_bounded_support and fp.prior_support() == (0.5, 20.0)
+        lfp = pset.FreeParameter('k__FREE', 'loggamma_var', 2.0, 1.0, lb=2.0, ub=20.0)
+        assert lfp.upper_bound == 20.0          # not 10 ** log10(20) == 20.000000000000004
+        assert lfp.lower_bound == 2.0
+
+    def test_declared_bound_outside_the_support_is_narrowed_to_it(self):
+        """A bound the graded rule never saw (the PEtab importer and direct construction
+        do not go through it) is still intersected, so no wall lands in zero density."""
+        fp = pset.FreeParameter('k__FREE', 'gamma_var', 2.0, 1.0, lb=-5.0, ub=20.0)
+        assert fp.lower_bound == 0.0 and fp.upper_bound == 20.0
+        bp = pset.FreeParameter('f__FREE', 'beta_var', 2.0, 3.0, lb=0.25, ub=5.0)
+        assert (bp.lower_bound, bp.upper_bound) == (0.25, 1.0)
+
+    def test_box_disjoint_from_the_support_is_refused(self):
+        """A box entirely in the zero-density region is a PybnfError naming the support,
+        not the bare ``ValueError`` TruncatedPrior raised for a zero-mass box."""
+        with pytest.raises(PybnfError, match='do not overlap'):
+            pset.FreeParameter('f__FREE', 'beta_var', 2.0, 3.0, lb=2.0, ub=5.0)
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES)
+    def test_load_time_and_run_time_box_checks_agree(self, base, p1, p2):
+        """``config._start_point_box`` validates a declared start against
+        ``prior_support()``, and every other consumer replays
+        ``set_value(..., reflect=False)``. Those two comparisons had disagreed for
+        exactly these families: the first refused a negative start, the second accepted
+        it. Both must now refuse it.
+        """
+        from pybnf.config import Configuration
+        fp = pset.FreeParameter('k__FREE', f'{base}_var', p1, p2)
+        lo_u, hi_u = Configuration._start_point_box(fp)
+        assert not (lo_u <= fp.to_sampling_space(-5.0) <= hi_u)
+        with pytest.raises(pset.OutOfBoundsException):
+            fp.set_value(-5.0, reflect=False)
+
+    def test_value_outside_the_support_is_refused_at_construction(self):
+        """The constructor's own bounds check now sees the wall, so a declared value in
+        the zero-density region is an OutOfBoundsException rather than a stored value."""
+        with pytest.raises(pset.OutOfBoundsException):
+            pset.FreeParameter('k__FREE', 'gamma_var', 2.0, 1.0, value=-1.0)
+        with pytest.raises(pset.OutOfBoundsException):
+            pset.FreeParameter('f__FREE', 'beta_var', 2.0, 3.0, value=1.5)
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES + UNBOUNDED_FAMILIES)
+    def test_sampling_stays_inside_the_wall(self, base, p1, p2):
+        """A prior draw already lands in the support, so the wall never folds one --
+        the fix must not perturb ``sample_value``'s distribution."""
+        rng = np.random.default_rng(12345)
+        fp = pset.FreeParameter('k__FREE', f'{base}_var', p1, p2)
+        drawn = [fp.sample_value(rng).value for _ in range(500)]
+        assert all(fp.lower_bound <= v <= fp.upper_bound for v in drawn)
+        assert all(np.isfinite(fp.prior_logpdf(v)) for v in drawn)
+
+
+class TestFamilySupportConstants:
+    """``support_lo_u`` / ``support_hi_u`` (the class constants the graded bound rule
+    reads) must agree with ``support()`` (the live endpoints ``FreeParameter`` builds
+    the wall from). Two sources for one fact, so pin them together."""
+
+    @pytest.mark.parametrize("base,p1,p2", POSITIVE_FAMILIES + UNBOUNDED_FAMILIES)
+    def test_constants_match_the_live_support(self, base, p1, p2):
+        prior = build_prior(f'{base}_var', p1, p2)[0]
+        assert prior.support() == (type(prior).support_lo_u, type(prior).support_hi_u)
+
+    def test_beta_is_the_only_family_with_a_ceiling(self):
+        """Pins the claim the graded ceiling rule is written against. ``uniform`` is
+        absent on purpose: its support is its ``p1``/``p2`` box, not a class constant,
+        and it never reaches the graded rule (the record path returns early for it)."""
+        from pybnf.registry import PRIOR_FAMILY_REGISTRY
+        capped = {base for base, e in PRIOR_FAMILY_REGISTRY.items()
+                  if np.isfinite(e.cls.support_hi_u)}
+        assert capped == {'beta'}
