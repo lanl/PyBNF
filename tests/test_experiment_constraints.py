@@ -22,6 +22,7 @@ import os
 import numpy as np
 import pytest
 
+from pybnf.algorithms.core import Result
 from pybnf.config import Configuration
 from pybnf.data import Data
 from pybnf.parse import ploop
@@ -275,3 +276,57 @@ class TestEstimatedQualitativeScale:
                 "loguniform_var = s_q 0.1 100",
                 "experiment: meas, data: meas.exp, c.prop",
             ])
+
+
+class TestNormalizedConstraintColumn:
+    """A `normalization` rule and a constraint on the same experiment land on the SAME column
+    (the configuration #718 is reachable through).
+
+    ``_load_experiment_constraints`` binds the ``ConstraintSet`` to the experiment's
+    ``data_key``, and ``_postprocess_normalization`` keys the resolved grid by that same
+    ``data_key`` over the experiment's *measured* column names -- so an experiment whose
+    ``data:`` lists both a ``.exp`` and a ``.prop`` normalizes exactly the column its constraint
+    reads, and ``Result.normalize`` rescales it in place before the penalty is scored. Nothing
+    gates the combination, which is the point: it is a supported configuration, and the
+    gradient path has to differentiate the rescaled column (pinned in
+    ``test_gradient_assembly.py``). The binding is job-type independent, so this states the
+    link rather than running a fit."""
+
+    _CONF = _BASE + ["normalization obsA = peak", "experiment: meas, data: meas.exp, c.prop"]
+
+    def test_grid_is_keyed_by_the_suffix_the_constraint_is_bound_to(self, tmp_path):
+        conf = _build(tmp_path, conf_lines=self._CONF)
+        (cs,) = tuple(conf.constraints)
+        assert (cs.base_model, cs.base_suffix) == ("m", "meas")
+        # The resolved grid's key IS that base_suffix, and it names that constraint's observable.
+        grid = conf.config["normalization"]
+        assert set(grid) == {"meas"}
+        assert [c for _method, cols in grid["meas"] for c in cols] == ["obsA"]
+
+    def test_result_normalize_rescales_the_column_the_constraint_indexes(self, tmp_path):
+        conf = _build(tmp_path, conf_lines=self._CONF)
+        (cs,) = tuple(conf.constraints)
+        res = Result(None, {"m": {"meas": _sim([10.0, 6.0, 4.0])}}, "test")
+        res.normalize(conf.config["normalization"])
+
+        # The Data the constraint RESOLVES to was rescaled in place, and carries the records the
+        # gradient's chain rule reads -- the two halves #718 has to keep consistent.
+        c = cs.constraints[0]
+        keys = c.get_key("obsA", res.simdata)                       # the constraint's own lookup
+        assert keys == ("m", "meas", "obsA")
+        np.testing.assert_allclose(c.index(res.simdata, keys), [1.0, 0.6, 0.4])   # peak = 10
+        records = res.simdata["m"]["meas"].normalization["obsA"]
+        assert [r.method for r in records] == ["peak"]
+        assert (records[0].scale, records[0].ref_row) == (10.0, 0)
+
+    def test_penalty_is_scored_on_the_normalized_values(self, tmp_path):
+        # Same trajectory, same constraint ('obsA > 5 always'): raw it misses at t=2 by 1.0;
+        # peak-normalized the whole column is <= 1, so 'always' takes the worst row and the
+        # penalty is 5 - 0.4. The penalty follows the rescaled column, which is why the
+        # gradient must too.
+        conf = _build(tmp_path, conf_lines=self._CONF)
+        (cs,) = tuple(conf.constraints)
+        res = Result(None, {"m": {"meas": _sim([10.0, 6.0, 4.0])}}, "test")
+        assert cs.total_penalty(res.simdata) == pytest.approx(1.0)
+        res.normalize(conf.config["normalization"])
+        assert cs.total_penalty(res.simdata) == pytest.approx(5.0 - 0.4)

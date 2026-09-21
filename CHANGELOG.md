@@ -280,7 +280,11 @@ All notable changes to PyBNF are documented below. This project adheres to
   z-score's reductions inherit the measured-row masking added in #726/#727. A column that was
   never normalized keeps the bare tensor accessor and is byte-identical. Central differences of
   the real normalize-then-score path now agree with the assembled gradient for every method and
-  for a chain, and a test pins the two accessors to one value for one column.
+  for a chain, and a test pins the two accessors to one value for one column. The configuration
+  that reaches this -- one experiment listing both a `.exp` and a `.prop`, with a `normalization`
+  on the measured observable the constraint reads -- is now asserted rather than traced by eye:
+  the resolved grid is keyed by the same `data_key` the `ConstraintSet` is bound to, and
+  `Result.normalize` rescales exactly the column `Constraint.index` returns.
 - **`fit_type = am` now writes the marginal histograms and the credible intervals it had been
   silently skipping (#771).** Adaptive MCMC overrode the method that writes them with a bare
   `pass`, so every run of it produced neither, at any number of parameters. Nothing else in the
