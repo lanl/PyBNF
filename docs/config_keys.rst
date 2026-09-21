@@ -2628,6 +2628,9 @@ For Parallel Tempering
     
 **reps_per_beta**
   How many identical replicas to run at each temperature. Must be a divisor of ``population_size``.
+  Only the replicas at the largest beta contribute statistical samples, so this also sets how many
+  chains the :math:`\hat{R}` / ESS diagnostics have to compare; at the default of 1 there is a
+  single such chain. See ``diagnostics_every``.
   
   Default: 1
   
@@ -2826,6 +2829,20 @@ For DREAM
   number of computations and keeps the cost roughly linear; the diagnostic value reported at any
   given iteration is unchanged. Set to 0 (the default) to auto-scale as ``max(10, max_iterations //
   100)`` (~100 reports per run); set a positive value to force a fixed cadence. Default: 0 (auto)
+
+.. note::
+
+   Under ``pt`` both diagnostics describe the **max-beta replicas only** -- the same replicas
+   whose draws reach ``samples.txt``. A replica at :math:`\beta < 1` is sampling
+   :math:`p(x)^\beta`, a different distribution, so pooling it in would raise
+   :math:`\hat{R}` by the spread of the beta ladder (a floor that does not shrink as the run
+   converges, making a threshold like 1.05 unreachable) and would inflate the ESS with draws
+   that are never reported.
+
+   With the default ``reps_per_beta = 1`` there is exactly one such replica, so
+   :math:`\hat{R}` is a *split*-R-hat over that one chain -- a real diagnostic, but a weaker
+   one than a between-chain comparison. Raise ``reps_per_beta`` to run several replicas at the
+   max beta and get that comparison.
 
 
 For Hamiltonian Monte Carlo (HMC)
