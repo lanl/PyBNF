@@ -252,6 +252,25 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A simulation folder that cannot be created is no longer retried 1000 times under new
+  names, and the reason reaches the log (#791).** `Job.run_simulation` creates its working
+  folder in a retry loop whose recovery is to take a new name. That is exactly right for the
+  case it was written for -- dask can run the same job twice, so the folder is already there --
+  and it cannot help with any other `OSError`. The loop caught bare `OSError` anyway, so a
+  missing parent, a read-only or full filesystem, a permission denial or a stale mount each
+  ran the full 1000 attempts and emitted 1001 warning lines, per job, before giving up; and
+  the exception was discarded, so the message that did reach the user named neither the errno
+  nor the strerror it was carrying.
+
+  Measured against real conditions: `EEXIST` succeeded on attempt 1, while `ENOENT` and
+  `EACCES` each took 1001 attempts to fail. `FileExistsError` is now caught on its own and
+  keeps the rename and the 1000-attempt cap; every other `OSError` fails the job immediately
+  with `Job <id> failed because it was unable to write to the Simulations folder: could not
+  create <path>: <strerror> (errno <n>)`. Nothing else about the job changes, and a folder
+  collision still recovers on the first retry.
+
+  There is no simulator log to read for this failure, because no simulator ran; the
+  troubleshooting docs now say so and point at the output directory rather than the model.
 - **MCMC checkpointing no longer re-serializes millions of small arrays every iteration
   (#789).** `chain_history` is appended to once per chain per iteration and never trimmed,
   `should_pickle` keeps it, and the checkpoint fires once per iteration by default

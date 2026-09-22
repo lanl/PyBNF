@@ -12,6 +12,8 @@ Failed simulations will send their logs (generally stdout and stderr) to a ``Fai
 
 By default, PyBNF saves logs of roughly the first 10 failed simulations encountered. If PyBNF is run with the ``-d`` flag, logs from all failed simulations will be saved. If the fit was run with ``delete_old_files=0`` in the config file, all logs can be found in the appropriate folders in the ``Simulations/`` directory.
 
+If a simulation never started because PyBNF could not create its folder, there is no simulator log to read -- the failure happened before the simulator ran. That case is reported in the PyBNF log instead, and it names what the operating system said, for example ``unable to write to the Simulations folder: could not create .../sim_1: Permission denied (errno 13)``. Such a message points at the output directory (permissions, a full or read-only filesystem, a stale network mount), not at the model or the parameter set.
+
 For BNGsim-backed runs (BNGL network, NF, SBML, and Antimony), PyBNF additionally writes a structured failure report next to each failed simulation. The report captures the backend name (``bngsim-net``, ``bngsim-nf``, ``bngsim-sbml``, ``bngsim-antimony``), the bngsim version, the model identity, the parameter set, the action/method/seed that was running, the exception type and message, the full traceback, and a path to the generated ``.net``/XML/SBML/Antimony input. Like the legacy logs, it is collected into ``FailedSimLogs/`` under the standard rules (first ~10 failures, or all failures with ``-d``).
 
 For BNGL simulations
