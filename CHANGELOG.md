@@ -252,6 +252,39 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **PyBNF reads an SBML initial assignment instead of the placeholder value it supersedes
+  (#795).** SBML lets a model set an entity's starting value in two places: an attribute on the
+  entity, and a `listOfInitialAssignments` entry that supersedes it. When both are present the
+  attribute is a placeholder the model never starts from. PyBNF's import-time SBML reader read
+  only the attributes, so a fit could be scored with a number the model does not start from,
+  with nothing said about it. On Bertozzi_PNAS2020, whose `beta_N` carries `value="0.0"` and an
+  assignment computing it from three parameters, an observable over `beta_N` was scored with a
+  rate constant of zero. The same number reached the exporter, so a relative `condition:` on
+  such a parameter wrote a wrong absolute value into `conditions.tsv`.
+
+  An entity an assignment derives now has no value the model file settles. An assignment that
+  is arithmetic over numbers alone is the value and replaces the attribute. An assignment
+  computed from other entities drops the entity from the value map and from the formula
+  namespace, and the measurement layer inlines its right hand side instead, which is what it
+  already did for an assignment rule. So an observable over `beta_N` is scored with the value
+  the model starts from, and it tracks the fit when a parameter it is computed from is
+  estimated. Inlining is refused, with the offender named, when the assignment reads something
+  that moves during the simulation, because the substituted expression is read at a measurement
+  time while the assignment fixed a value at the start.
+
+  A species is treated differently on purpose: an initial assignment pins the start only, so
+  the species is still a dynamical state and still a simulation output, and it keeps its place
+  in the formula namespace and only loses a stale declared initial. Two adjacent defects are
+  fixed with it. An assignment rule target that carries a leftover `value` attribute no longer
+  reports that number either, and a `sigma = prediction_formula` noise formula now inlines the
+  same entities a measurement formula does, so the two layers no longer disagree about which
+  symbols a model offers. The refusal when a relative condition has no nominal value to work
+  from now names the parameter and covers both languages rather than blaming BNGL alone.
+
+  Measured on 25 models from the public PEtab benchmark collection, 16 use initial assignments
+  and 28 assignments on a parameter or compartment were reporting a stale value. No model in
+  this repository has one on a parameter, so nothing shipped here changes. ADR-0147 records the
+  decision.
 - **A parameter with no finite box under `initialization_distribution = bounds` is now
   refused with its own numbers, the key that caused it, and what to do (#799).**
   `bounds` initialization draws uniformly over a finite box, so a parameter that has none
