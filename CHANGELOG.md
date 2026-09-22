@@ -252,6 +252,47 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A particle swarm no longer hangs when two particles meet on a large-magnitude position
+  (#721).** `pso` keys its in-flight parameter sets by value, so two particles arriving at the
+  same point have to be separated before the second overwrites the first's entry and the first
+  result back leaves the second to `KeyError`. The code's own comment named when that happens
+  -- "if all parameters have hit a box constraint" -- and it is right: a step that would leave
+  the box zeroes that velocity component, so a swarm converging on a corner piles up there.
+
+  The separation was a fixed ±1e-6 random step, added in sampling space. For a **linear**
+  parameter sampling space *is* the value, and 1e-6 is below one ULP of anything above ~1e10:
+  at 1e12 one ULP is 1.2e-4, a hundred times the whole step, so every draw rounded away. The
+  jittered set then compared equal by value to the one it came from, the loop's exit test
+  `while new_pset in self.pset_map` stayed true, and -- because each pass re-derives from the
+  particle's position, which the loop never reassigns, so nothing accumulates -- it spun
+  forever. No exception, no log line, no progress; the fit simply stopped, and a box reaching
+  1e12 is exactly where a parameter is likeliest to be sitting on a bound when the collision
+  happens.
+
+  The step is now sized to the parameter. A log-scaled one keeps the fixed 1e-6, which in
+  log10 space is already at least ten million ULP wide (`|log10(value)|` never exceeds ~324
+  for a representable value, where one ULP is 5.7e-14). A linear one takes 1e-9 of its own
+  magnitude, floored at that same 1e-6 -- so a parameter at 1e12 moves by 1e3 and one at 1e9
+  by 1, which is four and a half million ULP either way and one part per billion of the value
+  the fit is placing. And the loop is bounded: after 20 steps that all leave the position
+  unchanged it raises, naming the particle, the position it is stuck at, and the one
+  declaration that pins a parameter where no step can move it (equal lower and upper bounds),
+  instead of hanging.
+
+  Nothing outside the collision branch changed and nothing draws from the RNG until it is
+  taken, so **a fit that never reaches a duplicate position runs exactly as before**. The
+  floor holds to `|value| = 1000`; above it the step grows to keep the same relative size, so
+  the tutorial's largest box, `uniform_var = TCRtot__FREE 10000 100000`, would separate two
+  particles by 1e-4 where it used to use 1e-6. And a fit that does collide now separates on
+  the first attempt rather than after several: at 1e9, the last magnitude where the old step
+  mostly worked, one ULP was 1.2e-7 against a 2e-6-wide draw, so about 6 draws in 100 rounded
+  away and were retried.
+
+  Five tests, four of which fail on the previous code. They drive the loop through a fake RNG
+  that refuses past a draw budget, so a reinstated unbounded loop is a failure rather than a
+  hung CI job -- there is no pytest-timeout here, and against the previous code these four do
+  hang. The fifth passes both before and after: it is the guard that an ordinary-magnitude
+  collision still separates by no more than 1e-6.
 - **PyBNF reads an SBML initial assignment instead of the placeholder value it supersedes
   (#795).** SBML lets a model set an entity's starting value in two places: an attribute on the
   entity, and a `listOfInitialAssignments` entry that supersedes it. When both are present the

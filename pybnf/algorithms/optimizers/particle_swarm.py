@@ -8,7 +8,7 @@ inherits its run loop + execution seam; it makes no core.* call of its own.
 from ..base import Algorithm
 from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...pset import PSet
-from ...printing import print1, print2
+from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 
 import logging
@@ -19,6 +19,54 @@ import re
 # Preserve the original module logger name so log records keep the
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
+
+
+# --- Duplicate-position tie-break (see _tie_break_jitter) ------------------------
+_TIE_BREAK_STEP = 1e-6   # the fixed step this has always taken, now only a floor
+_TIE_BREAK_REL = 1e-9    # ... scaled to the magnitude of a linear parameter (#721)
+_TIE_BREAK_TRIES = 20    # ... and bounded, so an immovable position refuses instead of hanging
+
+
+def _tie_break_step(v):
+    """Half-width of the random step that moves ``v`` off its current value.
+
+    :meth:`FreeParameter.add_rand` adds in sampling space ``u``, so the step is
+    measured there.
+
+    A log-scaled parameter takes the fixed step below. Its ``u = log10(value)`` never
+    exceeds ~324 in magnitude for a representable value, and one ULP there is 5.7e-14, so
+    1e-6 spans at least ten million of them and always lands on a different float. That
+    case is exactly as it has always been.
+
+    A linear parameter's ``u`` *is* its value, and there a fixed 1e-6 is below one ULP of
+    anything above ~1e10 (ULP(1e12) is 1.2e-4). Every draw rounded away, the jittered
+    :class:`PSet` compared equal by value to the one it came from, and the caller's
+    ``while`` loop -- which re-derives from that same unchanged position each pass, so
+    nothing accumulates -- spun forever with no log line and no exception (#721). So
+    the step scales with the magnitude: ~1e-9 of the value is millions of ULP at any
+    magnitude, and one part per billion is negligible beside any parameter's own
+    uncertainty.
+
+    Re-deriving each attempt from the particle's position rather than from the previous
+    attempt is deliberate and stays: a random walk would carry the point further from
+    where the swarm thinks the particle is with every retry.
+    """
+    if v.log_space:
+        return _TIE_BREAK_STEP
+    return max(_TIE_BREAK_STEP, abs(v.value) * _TIE_BREAK_REL)
+
+
+def _tie_break_jitter(paramset, rng):
+    """``paramset`` moved off its position by a step too small to matter.
+
+    One draw per parameter, so a jittered set differs from its original unless *every*
+    parameter's draw rounded away -- see :func:`_tie_break_step` for why that no longer
+    happens at a magnitude the old fixed step could not resolve."""
+    jittered = []
+    for v in paramset:
+        step = _tie_break_step(v)
+        jittered.append(v.add_rand(-step, step, rng))
+    return PSet(jittered)
 
 
 class PSOConfig(MultiStartConfig):
@@ -258,11 +306,35 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
 
-        # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
-        # This could come up in practice if all parameters have hit a box constraint.
-        # As a simple workaround, perturb the parameters slightly
+        # Two particles can land on the same position -- likeliest when they have hit the
+        # same box constraint, since a step that would leave the box zeroes that velocity
+        # component and a swarm converging on a corner piles up there. ``pset_map`` is
+        # keyed by value, so the second particle would overwrite the first's entry, and
+        # the first result back would empty it and leave the second to KeyError. Break the
+        # tie by jittering the position off the collision.
+        #
+        # The loop is bounded because it used not to be: with the fixed 1e-6 step it could
+        # not move a large linear parameter at all and ran forever (#721). The jitter is
+        # now sized to the value, so the cap is only reached by a position no step can
+        # leave -- and if one exists, this says so instead of hanging.
+        tries = 0
         while new_pset in self.pset_map:
-            new_pset = PSet([v.add_rand(-1e-6, 1e-6, self.rng) for v in self.swarm[p][0]])
+            if tries == _TIE_BREAK_TRIES:
+                raise PybnfError(
+                    f'Particle swarm could not separate particle {p} from another particle at the '
+                    f'same position: {_TIE_BREAK_TRIES} random steps all left every parameter '
+                    f'unchanged. Position: '
+                    + ', '.join(f'{v.name} = {float(v.value)!r}' for v in self.swarm[p][0]),
+                    hint='Two particles reaching one point is normal near a box corner; being '
+                         'unable to step off it is not. The step is sized to each parameter, so '
+                         'the only declaration it cannot move is one with equal lower and upper '
+                         'bounds, which pins the parameter to a single value -- check the fit '
+                         'parameters for that, and if none is pinned, please report it.')
+            new_pset = _tie_break_jitter(self.swarm[p][0], self.rng)
+            tries += 1
+        if tries:
+            logger.debug(f'Particle {p} collided with a position already being simulated; '
+                         f'separated it in {tries} step(s)')
 
         self.pset_map[new_pset] = p
 
