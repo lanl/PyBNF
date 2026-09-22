@@ -1347,8 +1347,13 @@ Algorithm Options
   
     * ``initialization = rand``
 
+.. _initialization_distribution:
+
 **initialization_distribution**
   Which distribution to draw start points from. This is separate from the objective prior.
+  It governs every start point PyBNF draws: a population algorithm's or sampler's initial
+  parameter sets, the extra starts of a multi-start local fit, and the fresh point a
+  :ref:`CMA-ES restart <alg-cmaes>` reinitializes from.
 
    - ``prior`` - draw start points from each parameter's prior distribution. This is the backward-compatible default.
    - ``bounds`` - draw start points uniformly over each parameter's finite bounds in PyBNF's sampling space. Linear parameters use linear bounds; log parameters use log10 bounds.

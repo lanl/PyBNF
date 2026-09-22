@@ -252,6 +252,33 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A CMA-ES restart now draws from the initialization distribution, like every other start
+  point PyBNF draws (#797).** `initialization_distribution` is documented as "which
+  distribution to draw start points from", and every start-drawing path honors it --
+  `random_pset` and `random_latin_hypercube_psets` for the population algorithms and
+  samplers, and the concurrent multi-start scatter, which was fixed for exactly this in #583.
+  `CMAESAlgorithm._random_start_pset`, the start point of every restart, called
+  `value_from_quantile` directly: the *prior*'s inverse CDF, whatever the key said.
+
+  Under the default (`initialization_distribution = prior`) the two are the same function,
+  which is why nothing showed. With `bounds` they diverge sharply. On two parameters with a
+  `normal` prior of sd 0.01 truncated to `[-10, 10]`, 2000 restart draws: **all of them**
+  landed within ±0.037 of the prior's mean -- 0.4% of the declared box -- where every other
+  path covered `[-9.997, 9.997]`. So a restart, whose entire purpose is to probe a different
+  basin, probed the same one every time.
+
+  `_random_start_pset` is now `Algorithm.random_pset`, so there is one start-point draw in
+  PyBNF rather than two that agree only on the default. **A fit that does not set the key
+  restarts bit for bit as before**, including the rng stream position: `sample_initial_value`
+  delegates to `sample_value`, whose `Prior.rvs` is inverse-CDF on one `rng.random()` for
+  both families that can reach this branch (`Uniform` and `TruncatedPrior`) -- verified
+  identical in value and in stream over all 72 bounded-support declarations the prior catalog
+  can express.
+
+  The restart's own docstring, and `docs/algorithms.rst`, described the draw as "a uniform
+  random draw across the prior box" / "a fresh random point in the box". It is uniform across
+  the box only when the prior is uniform; both now say which distribution it is and that
+  `initialization_distribution` selects it.
 - **A half-bounded prior no longer hands CMA-ES its shape parameter as a search width
   (#777, ADR-0118 amendment).** A prior truncated on one side (`lower: 1e-12, upper: inf`, the
   one-sided box ADR-0047 made first class) reports a bounded support, so the box-mode

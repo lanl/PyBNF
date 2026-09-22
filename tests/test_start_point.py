@@ -416,10 +416,14 @@ def test_an_out_of_box_value_reflects_rather_than_clamping():
 # --------------------------------------------------------------------------- #
 def _record(**fields):
     """One :class:`FreeParameter` from an edition-2 ``parameter:`` record, the only
-    spelling that can write a half-bounded declaration (``lower:`` / ``upper:``)."""
+    spelling that can write a half-bounded declaration (``lower:`` / ``upper:``).
+
+    ``initialization_distribution`` names the record's own initialization distribution
+    (``prior`` unless given), which is a constructor argument rather than a record field."""
     from pybnf.parameter_record import free_parameter_from_record
+    init = fields.pop('initialization_distribution', 'prior')
     return free_parameter_from_record(
-        fields.pop('name', 'k'), {k: str(v) for k, v in fields.items()}, 'prior')
+        fields.pop('name', 'k'), {k: str(v) for k, v in fields.items()}, init)
 
 
 class TestHalfBoundedSearchWidth:
@@ -578,3 +582,112 @@ class TestHalfBoundedSearchWidth:
         assert u == v._prior.ppf(0.9)                    # the prior's own inverse CDF, in u
         assert v.value_from_quantile(0.9).value == 10.0 ** u   # the same quantile, in theta
         assert u == pytest.approx(-9 + 1.2815515655446004 * 0.5, rel=1e-8)
+
+
+# --------------------------------------------------------------------------- #
+# Which distribution a CMA-ES restart draws from (#797)
+# --------------------------------------------------------------------------- #
+class TestRestartDrawHonorsInitializationDistribution:
+    """``initialization_distribution`` is documented as "which distribution to draw start
+    points from", and every start-drawing path in PyBNF honors it -- ``random_pset`` and
+    ``random_latin_hypercube_psets`` for the population algorithms and samplers, and the
+    concurrent multi-start scatter, which was fixed for exactly this in #583. CMA-ES's
+    restart draw called ``value_from_quantile`` directly, i.e. the prior's inverse CDF
+    whatever the key said. Under the default the two are the same function, which is why
+    the divergence was invisible (#797)."""
+
+    #: A prior whose bulk is a rounding of its box, so "draw from the prior" and "draw
+    #: uniformly over the bounds" are impossible to confuse.
+    NARROW = {'prior': 'normal', 'mean': '0', 'sd': '0.01',
+              'lower': '-10', 'upper': '10'}
+
+    def _fit(self, tmp_path, **extra):
+        conf = _conf(tmp_path, dict(extra), fit_type='cmaes', edition2=True, extra_vars={
+            ('parameter', 'p%d' % (i + 1)): dict(self.NARROW) for i in range(2)})
+        return CMAESAlgorithm(conf)
+
+    @staticmethod
+    def _draws(alg, n=2000, seed=7):
+        alg.rng = np.random.default_rng(seed)
+        return np.array([[p.value for p in alg._random_start_pset()]
+                         for _ in range(n)]).ravel()
+
+    @staticmethod
+    def _old_draws(alg, n=2000, seed=7):
+        """The expression this method used to be, written out: one quantile of the PRIOR
+        per coordinate from the same rng, so the two can be compared from one seed."""
+        rng = np.random.default_rng(seed)
+        return np.array([[v.value_from_quantile(rng.random()).value for v in alg.variables]
+                         for _ in range(n)]).ravel()
+
+    def test_a_declared_initialization_box_now_governs_restarts(self, tmp_path):
+        """The headline. With ``initialization_distribution = bounds`` the restart draw
+        spans the declared box; it used to sit inside 0.4% of it, on the prior's mode --
+        so every restart of a fit with an informative prior probed the same basin, which
+        is the one thing a restart exists not to do."""
+        alg = self._fit(tmp_path, initialization_distribution='bounds')
+        now, was = self._draws(alg), self._old_draws(alg)
+        assert np.mean(np.abs(was) < 0.05) == 1.0          # all of it, on the mode
+        assert np.mean(np.abs(now) < 0.05) < 0.01          # essentially none of it
+        assert now.min() < -9.5 and now.max() > 9.5        # the declared box, covered
+        assert now.std() == pytest.approx(5.77, rel=0.05)  # uniform on [-10, 10]
+
+    def test_the_restart_draw_is_the_draw_every_other_path_makes(self, tmp_path):
+        """Not merely "wider" -- the *same function*. ``_random_start_pset`` is now
+        ``Algorithm.random_pset``, so there is one start-point draw in PyBNF rather than
+        two that agree only on the default."""
+        for dist in ('prior', 'bounds'):
+            alg = self._fit(tmp_path, initialization_distribution=dist)
+            alg.rng = np.random.default_rng(11)
+            restart = [p.value for p in alg._random_start_pset()]
+            alg.rng = np.random.default_rng(11)
+            population = [p.value for p in alg.random_pset()]
+            assert restart == population, dist
+
+    def test_the_default_restarts_bit_for_bit_as_before(self, tmp_path):
+        """The guarantee that makes this a safe change. Under the default
+        ``initialization_distribution = prior``, ``sample_initial_value`` delegates to
+        ``sample_value``, whose ``Prior.rvs`` is inverse-CDF on one ``rng.random()`` for
+        both families that can reach the box branch -- so the values and the rng stream
+        are identical to the old expression, and a fit that does not set the key restarts
+        exactly where it used to."""
+        alg = self._fit(tmp_path)
+        assert alg.config.config.get('initialization_distribution') in (None, 'prior')
+        assert np.array_equal(self._draws(alg), self._old_draws(alg))
+
+    @pytest.mark.parametrize('lower,upper', [('0.2', '5'), ('0.2', 'inf'), ('-inf', '5')])
+    def test_the_two_draws_agree_on_the_default_for_every_box_shape(self, tmp_path,
+                                                                    lower, upper):
+        """The bit-identity above holds because ``Uniform`` and ``TruncatedPrior`` both
+        draw by inverse CDF from one uniform. Checked here on the box shapes that can
+        reach this branch -- two-sided and both half-bounded (#777) -- so a family whose
+        ``rvs`` stopped being inverse-CDF would be caught rather than silently shifting
+        every seeded restart in the project."""
+        v = _record(prior='gamma', shape=2, scale=0.5, lower=lower, upper=upper)
+        assert v.has_bounded_support
+        a = np.random.default_rng(5)
+        b = np.random.default_rng(5)
+        assert ([v.value_from_quantile(a.random()).value for _ in range(50)]
+                == [v.sample_value(b).value for _ in range(50)])
+        assert a.random() == b.random()   # and the stream is left in the same place
+
+    def test_a_point_start_fit_still_restarts_from_its_configured_start(self, tmp_path):
+        """The non-box branch is untouched: with no box to draw from, a restart re-runs
+        from the same start with a rescaled population. ``random_pset`` would raise here
+        (a var/logvar carrier has no sampling distribution), so the guard is load-bearing."""
+        conf = _conf(tmp_path, fit_type='cmaes',
+                     extra_vars={('var', 'p1'): [1.0], ('var', 'p2'): [2.0]})
+        alg = CMAESAlgorithm(conf)
+        assert not alg._is_box_start()
+        assert _values(alg._random_start_pset()) == _values(alg.start_pset)
+
+    def test_a_half_bounded_box_cannot_reach_the_bounds_draw_at_all(self):
+        """The interaction between this change and #777, pinned because it is the one way
+        the new draw path could fail *during* a run rather than at load. A half-bounded
+        declaration has no finite box to draw uniformly over, and
+        ``initialization_distribution = bounds`` on one is refused when the FreeParameter
+        is built -- so the combination never reaches a restart. Were that refusal ever
+        relaxed, ``random_pset`` would raise mid-fit, on the restart, hours in."""
+        with pytest.raises(PybnfError, match='initialization bounds'):
+            _record(prior='gamma', shape=2, scale='1e-9', lower='1e-12', upper='inf',
+                    initialization_distribution='bounds')
