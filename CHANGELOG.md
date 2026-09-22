@@ -252,6 +252,48 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A parameter with no finite box under `initialization_distribution = bounds` is now
+  refused with its own numbers, the key that caused it, and what to do (#799).**
+  `bounds` initialization draws uniformly over a finite box, so a parameter that has none
+  has to be refused -- "uniformly over a half-line" is not a distribution -- and it is
+  refused in the right place, when the `FreeParameter` is built, before anything runs. The
+  message was the problem. A parameter declared
+  `lower: 1e-12, upper: inf, parameter_scale: log10` was refused with:
+
+      Parameter x1: initialization bounds must be finite and increasing in sampling
+      space, got [-12.0, inf].
+
+  `-12.0` is `log10(1e-12)` -- the sampling-space value, a number that appears nowhere in
+  the conf, so searching for it finds nothing. The line never named
+  `initialization_distribution`, the key that triggered it, leaving the reader hunting for
+  an `initialization_lb` they never wrote (those values came from the prior's support). It
+  offered neither of the two remedies. And it printed twice, being a one-argument
+  `PybnfError`. It now reads:
+
+      Parameter x1: initialization_distribution = 'bounds' draws start points uniformly
+      over a finite box, but its bounds are lower 1e-12, upper inf -- open above, so the
+      region to draw over is a half-line rather than a box.
+        -> Give x1 a finite 'upper:' bound, so there is a box to draw over
+        -> Or remove 'initialization_distribution = bounds' to draw x1 from its prior
+           instead -- the default, which needs no finite box
+
+  Bounds in the parameter's own units, the open side named, and only the side that is
+  actually missing asked for -- telling someone who wrote `lower: 1e-12, upper: inf` to
+  supply a lower and an upper is advice they have half-followed already. The remedies ride
+  as `hint`s, so they append to the diagnosis rather than replacing it, and the log line
+  stays the bare diagnosis (#527).
+
+  The sibling refusal, for a prior with no bounds at all, already named the key; it now
+  prints in the parameter's units and carries the same two remedies, so the two ways one
+  key can fail no longer read as though they came from different programs. A `gamma_var`
+  is asked only for an upper bound, since its own support already floors it at 0.
+
+  The declaration class that got the worse message was the half-bounded one -- the
+  configuration ADR-0047 made first class and #777 finished making work -- and for it the
+  second remedy is usually the right one, so it is stated rather than implied.
+  `docs/config_keys.rst` now says `bounds` requires a finite box on every parameter and
+  what happens when one does not have it. No configuration changes behavior: the same
+  declarations are accepted and refused as before.
 - **A CMA-ES restart now draws from the initialization distribution, like every other start
   point PyBNF draws (#797).** `initialization_distribution` is documented as "which
   distribution to draw start points from", and every start-drawing path honors it --
