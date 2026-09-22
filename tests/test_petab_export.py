@@ -2559,6 +2559,39 @@ class TestNativeBnglModel:
         with pytest.raises(ValueError):
             model.get_parameter_value('nope')
 
+    def test_a_parameter_defined_by_others_never_reports_a_value(self, tmp_path):
+        # The demo model above is all literals, so nothing here pinned what petab
+        # does with `kon  koff/Kd`. That is the case PyBNF depends on: a parameter
+        # defined by other parameters has no value the model file can settle,
+        # because a PEtab parameter table may override or estimate what it depends
+        # on, and a value handed out here would reach a simulator as a constant
+        # that overrides the model's own expression. PyBNF's own exporter already
+        # refuses to give such a parameter a nominal value (_numeric_nominal), and
+        # petab must not contradict it. Released petab 0.9.0 refuses with
+        # NotImplementedError and PEtab-dev/libpetab-python#517 refuses with
+        # ValueError; both leave it out of the free-value list, which is the part
+        # that matters. Nothing in pybnf/ calls these two methods, and the petab
+        # version is a range that CI re-resolves on every run, so this test is the
+        # only thing that would notice petab starting to report a value.
+        pytest.importorskip('petab')
+        from petab.v1.models.bngl_model import BnglModel
+        model_file = tmp_path / 'derived.bngl'
+        model_file.write_text(
+            'begin model\n'
+            'begin parameters\n'
+            '  koff  0.1\n'
+            '  Kd    5.0\n'
+            '  kon   koff/Kd\n'
+            'end parameters\n'
+            'end model\n'
+        )
+        model = BnglModel.from_file(model_file)
+        free = dict(model.get_free_parameter_ids_with_values())
+        assert 'kon' not in free
+        assert free['koff'] == 0.1  # a literal is still reported
+        with pytest.raises((ValueError, NotImplementedError)):
+            model.get_parameter_value('kon')
+
     def test_has_entity_spans_full_declared_namespace(self, model):
         # parameter, observable, global function, molecule type -- all model entities.
         for ent in ('v1', 'x', 'y', 'counter'):
