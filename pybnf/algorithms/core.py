@@ -325,7 +325,12 @@ class Job:
         if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
             failed_logs_dir = str(Path(self.home_dir) / failed_logs_dir)
 
-        # The check here is in case dask decides to run the same job twice, both of them can complete.
+        # A folder that already exists is not an error: dask can run the same job twice and
+        # both can complete, so take a new name and try again. Every other OSError -- a
+        # missing parent, a read-only or full filesystem, a permission denial -- is not
+        # fixed by renaming, and retrying one anyway spent 1000 attempts and 1001 warnings
+        # per job to arrive at a message that named neither the errno nor the strerror the
+        # exception was already carrying (#791). Fail those now, and say what the OS said.
         made_folder = False
         failures = 0
         while not made_folder:
@@ -333,13 +338,19 @@ class Job:
                 os.mkdir(self.folder)
                 self.jlogger.debug(f'Created folder {self.folder} for simulation')
                 made_folder = True
-            except OSError:
-                self.jlogger.warning(f'Failed to create folder {self.folder}, trying again.')
+            except FileExistsError:
                 failures += 1
-                self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    self.jlogger.error(f'Job {self.job_id} failed because it was unable to write to the Simulations folder')
+                    self.jlogger.error(f'Job {self.job_id} failed because it was unable to write to the '
+                                       f'Simulations folder: 1000 candidate folder names were all taken')
                     return FailedSimulation(self.params, self.job_id, 1)
+                self.jlogger.warning(f'Failed to create folder {self.folder}, trying again.')
+                self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
+            except OSError as e:
+                self.jlogger.error(f'Job {self.job_id} failed because it was unable to write to the '
+                                   f'Simulations folder: could not create {self.folder}: '
+                                   f'{e.strerror} (errno {e.errno})')
+                return FailedSimulation(self.params, self.job_id, 1)
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)

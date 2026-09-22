@@ -14,6 +14,9 @@ dask's public Future API. These tests pin down that translation and the
 eval-failure -> FailedSimulation path.
 """
 
+import errno
+import logging
+import os
 import shutil
 import tempfile
 import types
@@ -22,6 +25,7 @@ import numpy as np
 import pytest
 
 from .context import algorithms, data, pset, printing
+from pybnf.algorithms import core as algorithms_core
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +110,17 @@ class _FakeModel:
 
     def execute(self, folder, filename, timeout):
         return {'time_course': _make_data()}
+
+
+class _ScoringCalc:
+    """Stand-in for a scattered ObjectiveCalculator whose scoring succeeds, so a job
+    reaches its result and the only thing under test is the folder creation."""
+
+    def result(self):
+        return self
+
+    def evaluate_objective(self, simdata, ps, show_warnings=False):
+        return 1.0
 
 
 class _RaisingCalc:
@@ -225,3 +240,87 @@ def test_add_to_trajectory_eval_failure_penalizes():
 
     assert res.score == np.inf
     assert recorded == [(np.inf, 'sim_1')]
+
+
+# ---------------------------------------------------------------------------
+# Job.run_simulation: the simulation folder cannot be created (#791)
+# ---------------------------------------------------------------------------
+class TestSimulationFolderCreationFailure:
+    """Creating the job's folder is retried by taking a new name. That recovers the
+    one case it was written for -- dask running the same job twice, so the folder is
+    already there -- and cannot recover any other ``OSError``. Retrying those anyway
+    spent 1000 attempts and 1001 warnings per job to reach a message that named
+    neither the errno nor the strerror the exception was already carrying (#791).
+    """
+
+    def _job(self, out_dir):
+        return algorithms.Job(
+            [_FakeModel()], _make_pset(), 'sim_1', out_dir, None,
+            calc_future=_ScoringCalc(), norm_settings=None, postproc_settings=dict(),
+        )
+
+    def _attempts(self, job, monkeypatch, err, out_dir):
+        """Count the job's mkdir attempts, raising `err` on each.
+
+        ``algorithms_core.os`` is the real ``os`` module, so this patch is global for
+        the duration of the test. Scope it to paths under this job's output directory
+        and delegate everything else to the real ``mkdir``, so nothing else running in
+        the process can be caught by it."""
+        calls = []
+        real_mkdir = os.mkdir
+
+        def fake_mkdir(path, *a, **kw):
+            if str(path).startswith(str(out_dir)):
+                calls.append(path)
+                raise err
+            return real_mkdir(path, *a, **kw)
+
+        monkeypatch.setattr(algorithms_core.os, 'mkdir', fake_mkdir)
+        res = job.run_simulation()
+        return res, calls
+
+    def test_an_existing_folder_is_retried_under_a_new_name(self, tmp_path, monkeypatch):
+        """The dask-double-run case: the first name is taken, the next is free, and the
+        job runs. One retry, not a failure."""
+        job = self._job(str(tmp_path))
+        taken = job.folder
+        os.mkdir(taken)
+
+        res = job.run_simulation()
+
+        assert not isinstance(res, algorithms.FailedSimulation)
+        assert job.folder != taken and os.path.isdir(job.folder)
+
+    def test_a_permission_error_fails_immediately(self, tmp_path, monkeypatch):
+        """Renaming cannot fix EACCES, so it must not be tried 1000 times."""
+        err = PermissionError(errno.EACCES, 'Permission denied')
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
+        assert isinstance(res, algorithms.FailedSimulation)
+        assert len(calls) == 1
+
+    def test_a_missing_parent_fails_immediately(self, tmp_path, monkeypatch):
+        """Same for ENOENT: a new name is still under the parent that is not there."""
+        err = FileNotFoundError(errno.ENOENT, 'No such file or directory')
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
+        assert isinstance(res, algorithms.FailedSimulation)
+        assert len(calls) == 1
+
+    def test_the_reason_reaches_the_log(self, tmp_path, monkeypatch, caplog):
+        """The whole point: 'no space left on device' is the answer, it is already in
+        the exception, and it used to be discarded."""
+        err = OSError(errno.ENOSPC, 'No space left on device')
+        with caplog.at_level(logging.ERROR):
+            res, _ = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
+        assert isinstance(res, algorithms.FailedSimulation)
+        text = caplog.text
+        assert 'No space left on device' in text
+        assert str(errno.ENOSPC) in text
+        assert 'unable to write to the Simulations folder' in text
+
+    def test_an_unbroken_run_of_taken_names_still_gives_up(self, tmp_path, monkeypatch):
+        """The 1000-attempt cap stays for the case it guards: every candidate name
+        taken. Without it a pathological directory would spin forever."""
+        err = FileExistsError(errno.EEXIST, 'File exists')
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
+        assert isinstance(res, algorithms.FailedSimulation)
+        assert len(calls) == 1001
