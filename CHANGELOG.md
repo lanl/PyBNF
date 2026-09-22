@@ -252,6 +252,40 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **A half-bounded prior no longer hands CMA-ES its shape parameter as a search width
+  (#777, ADR-0118 amendment).** A prior truncated on one side (`lower: 1e-12, upper: inf`, the
+  one-sided box ADR-0047 made first class) reports a bounded support, so the box-mode
+  optimizers accept it -- deliberately. But a half-line has no width, and CMA-ES needs one per
+  coordinate to scale its first population. The substitute was `abs(p2 - p1)`, which is not a
+  length in the parameter's units: for a location-scale family it is `|scale - location|`, and
+  for the shape-scale families (`gamma`, `inv_gamma`, `weibull`) and `beta` it subtracts a
+  dimensionless *shape* from a scale.
+
+  Measured on the same prior and the same floor, moving only the open side:
+  `gamma, shape: 2, scale: 1e-9, lower: 1e-12, upper: inf` gave a width of **2.0** -- the
+  shape parameter -- for a coordinate whose plausible range is 1e-12 to 1e-6, about two million
+  times too large; with `upper: 1e-6` the same declaration gave `1e-6`, the box. CMA-ES squares
+  the width into its initial covariance diagonal, so the first population was drawn that far
+  out: at a population of 200 over two such coordinates, **none** of the first generation's
+  400 values landed between 1e-12 and 1e-6, and their median was 0.40 -- about 2e8 times the
+  start point. CMA-ES adapts, so the run still converged; the generations spent walking the
+  step back down were the whole cost, and nothing said so.
+
+  An open side now takes the **truncated prior's central 80% interval**,
+  `ppf(0.9) - ppf(0.1)` in the parameter's sampling space: a length in the coordinate's own
+  units by construction, finite on a half-line for every family in the catalog (verified over
+  all fifteen non-`uniform` families, both truncation directions and both scales), and derived
+  from the distribution that was declared. The gamma case above becomes `3.36e-09`, and all
+  400 of that first generation then land in range; a
+  `normal, parameter_scale: log10, mean: -9, sd: 0.5, lower: 1e-12, upper: inf` becomes `1.28`
+  -- the prior's own 80% spread -- where it was `9.5`, `|sd - mean|`. A coordinate with a
+  finite box on both sides is untouched, bit for bit.
+
+  The substitute is the prior's spread, not a range you stated, so `docs/priors.rst` now says
+  which number a half-bounded declaration gets and that writing both sides is how to state a
+  range. `docs/config_keys.rst` stated the rule as "an unbounded prior is refused", which does
+  not distinguish a half-bounded declaration from one with no bounds at all; it now names both
+  cases and says what each gets.
 - **A simulation folder that cannot be created is no longer retried 1000 times under new
   names, and the reason reaches the log (#791).** `Job.run_simulation` creates its working
   folder in a retry loop whose recovery is to take a new name. That is exactly right for the

@@ -926,9 +926,14 @@ Each of those ``job_type``\ s accepts **either** style, and not a mix:
   that box, beginning at its centre unless you name a different start with
   :ref:`start_point <start_point>`.
 
-An **unbounded** prior (``normal_var``, ``gamma_var``, …) is refused for these ``job_type``\ s:
-a box search needs a box. For any other algorithm, define parameters with the prior-based
-specifications, not ``var`` / ``logvar``.
+A prior with **no** box (``normal_var``, ``gamma_var``, … declared with no bounds at all) is
+refused for these ``job_type``\ s: a box search needs a box. For any other algorithm, define
+parameters with the prior-based specifications, not ``var`` / ``logvar``.
+
+A **half-bounded** declaration — one side written and the other left open, as
+``lower: 1e-12, upper: inf`` — *is* accepted: the search is confined to the half-line, and only
+the search width has no box to come from — that comes from the prior instead. See
+:ref:`Half-bounded boxes <half-bounded-search>`.
 
 The rule is about what each parameter *is*, not how it is spelled: a ``parameter:`` record with
 no ``prior:`` and no ``lower:``/``upper:`` is a start point exactly as ``var`` is, and is accepted
@@ -1982,8 +1987,10 @@ These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``job_
 
 These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``job_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget. Standalone, ``job_type = cmaes`` accepts either a single ``var`` / ``logvar`` start point (local search) or a bounded ``uniform_var`` / ``loguniform_var`` box (its global-start mode, starting from the box center); see :ref:`CMA-ES <alg-cmaes>`.
 
+.. _cmaes_sigma0:
+
 **cmaes_sigma0**
-  Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter). In box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors) it is instead read as a fraction of each box width, so the initial per-coordinate standard deviation is ``cmaes_sigma0`` × (box width).
+  Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter). In box / global-start mode (any prior with a bounded support — a ``uniform_var`` / ``loguniform_var`` box, or any family truncated to one with ``lower:`` / ``upper:``) it is instead read as a fraction of each box width, so the initial per-coordinate standard deviation is ``cmaes_sigma0`` × (box width). Where a coordinate's box is open on one side there is no width to take, and the central 80% of that coordinate's own truncated prior stands in for it (:ref:`half-bounded box <half-bounded-search>`).
 
   Default: 0.3
 

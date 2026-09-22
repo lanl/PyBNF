@@ -2678,6 +2678,22 @@ class FreeParameter:
         p1 + q*(p2 - p1) (linear) / exp10(log10(p1) + q*...) (log10)."""
         return self.set_value(self._scale.inverse(self._prior.ppf(q)))
 
+    def prior_quantile_u(self, q):
+        """The prior's inverse CDF at quantile ``q``, in **sampling space** ``u``.
+
+        The bare number, where :meth:`value_from_quantile` maps the same quantile back to
+        ``theta`` and returns a new :class:`FreeParameter` sitting at it. Both exist because
+        a caller measuring a *length* in ``u`` -- the box optimizers' per-coordinate search
+        width, ``local_base._box_widths_u`` -- wants the difference of two quantiles, and
+        reading that off two FreeParameters is wrong twice over: ``log10(10 ** u)`` moves a
+        value by a few ULP, and ``set_value`` reflects a value that lands outside the box
+        rather than returning it (#777, #750).
+
+        Keeps the caller off the private ``_prior``, exactly as :meth:`prior_support` does.
+        Raises for a no-prior ``var`` / ``logvar`` carrier, which has no inverse CDF to
+        evaluate -- ask :attr:`has_prior` first."""
+        return float(self._prior.ppf(q))
+
     def initial_value_from_quantile(self, q):
         """Map a [0, 1] quantile through the initialization distribution.
 

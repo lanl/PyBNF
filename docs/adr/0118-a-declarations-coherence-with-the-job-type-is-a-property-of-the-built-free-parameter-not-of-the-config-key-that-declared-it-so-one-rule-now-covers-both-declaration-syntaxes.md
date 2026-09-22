@@ -104,7 +104,62 @@ the point with `start_point`.
   `has_bounded_support` is true for any truncated prior. It is accepted by a box optimizer:
   the 0.5 quantile is finite, and ADR-0117 already made `_box_widths_u` fall back to the
   family scale where the support is infinite. Refusing it would be a new restriction, which
-  this change deliberately does not introduce.
+  this change deliberately does not introduce. (The fallback was not the family scale — see
+  the amendment below.)
 * `docs/config_keys.rst`'s account of the rule was stale in two ways and is corrected: it
   named only Simplex/Powell/CMA-ES as start-point optimizers (the gradient methods and `ms`
   are too), and said only CMA-ES could take a bounded prior instead (all of them can).
+
+## Amendment (2026-09-22, #777)
+
+**The width the half-bounded case falls back to was not the family scale.** The consequence
+bullet above admits a half-bounded declaration to the box optimizers on the strength of two
+finite numbers: a finite 0.5 quantile for the start, and "the family scale" for the width. The
+first is right. The second describes a line of code that does not compute it —
+`_box_widths_u` fell back to `abs(p2 - p1)`, a *difference*, where the scale is `p2` alone. The
+two are unrelated whenever `p1 != 0`, and for the shape-scale families (`gamma`, `inv_gamma`,
+`weibull`) and `beta` the difference subtracts a dimensionless **shape** from a scale, so it is
+not a length in the parameter's units at all.
+
+Measured on the same prior and the same floor, moving only the open side:
+
+| declaration | box | width CMA-ES squared into `C` |
+|---|---|---|
+| `gamma, shape: 2, scale: 1e-9, lower: 1e-12, upper: inf` | `(1e-12, inf)` | **2.0** |
+| `gamma, shape: 2, scale: 1e-9, lower: 1e-12, upper: 1e-6` | `(1e-12, 1e-6)` | `1e-6` |
+| `normal, parameter_scale: log10, mean: -9, sd: 0.5, lower: 1e-12, upper: inf` | `(1e-12, inf)` | 9.5 (= \|sd − mean\|) |
+| `normal, parameter_scale: log10, mean: -9, sd: 0.5, lower: 1e-12, upper: 1e-6` | `(1e-12, 1e-6)` | 6.0 (the box, in log10) |
+
+The gamma row is the sharp one: the plausible range of that coordinate is 1e-12 to 1e-6 and the
+initial per-coordinate step was set to 2.0, the shape parameter, about two million times too
+large. Measured on the issue's own configuration, at a population of 200 over two coordinates,
+**none** of the first generation's 400 values landed in that range — their median was 0.40,
+about 2e8 times the start point — and under the width below **all 400** do. CMA-ES adapts `C`
+over generations, so a run still converged; the generations spent walking the step back down to
+the right scale were the whole cost, and nothing said so.
+
+**The decision stands; the number is now derived from the prior.** Of the three ways out (refuse
+the declaration, derive a real width, or warn), refusing is the one this ADR already rejected,
+and the reasons have not changed: ADR-0047 made the one-sided box first class on purpose, and
+withdrawing it would break working configurations for a defect in a fallback. Warning is worse
+than useless here — the configuration is legitimate and the default, so the warning would fire
+on every correct run (the "label, don't warn" rule #782 arrived at).
+
+So the open side now takes the **truncated prior's central 80% interval** in `u`,
+`ppf(0.9) - ppf(0.1)` (`StartPointOptimizer._open_side_width_u`, reading a new
+`FreeParameter.prior_quantile_u`). It is a length in the coordinate's own units by
+construction, finite on a half-line for every family in the catalog — verified over all fifteen
+non-`uniform` families, both truncation directions and both scales, 50 combinations after the
+graded bound rule refuses the impossible ones — and derived from the distribution the user
+actually declared. The gamma row above becomes `3.36e-09`; the log10-normal row becomes
+`1.28`, which is `2 z(0.9) sd`, the prior's own spread. A coordinate with a finite box on both
+sides is untouched, bit for bit: the support width is still the box.
+
+**What is not fixed, and is not a defect.** The substitute is the prior's spread, not a range
+the user stated, so the width a half-bounded coordinate gets is discontinuous in the upper
+bound: `upper: 1e-6` gives 6.0 (in log10) and `upper: inf` gives 1.28. That is inherent — the
+box width diverges as the bound does, so every finite limit is a jump — and the documentation
+now says which number a half-bounded declaration gets and that writing both sides is the way
+to state a range. The only other reader of an open side, the `lower_bound` / `upper_bound`
+pair that `powell.py` and `gradient_base._u_bounds` confine a line search with, already handles
+the infinity correctly.

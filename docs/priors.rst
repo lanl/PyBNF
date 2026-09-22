@@ -86,6 +86,24 @@ A support wall is not a *box* for the purposes of the start-point optimizers
 ``gamma_var`` declares is not one, so they refuse it. Give such a parameter a ``lower:`` /
 ``upper:`` box (or a ``uniform_var`` prior) to search it with those methods.
 
+.. _half-bounded-search:
+
+Half-bounded boxes: one side open
+---------------------------------
+
+Writing one side and leaving the other open — ``lower: 1e-12, upper: inf`` — is a truncation,
+not a support wall, and the start-point optimizers take it. The search is confined to the
+half-line, which is what the reflecting box is; the start is the truncated prior's median,
+which is finite; and a :ref:`start_point <start_point>` line pins it wherever you like.
+
+The one thing a half-line cannot supply is a **width**, and CMA-ES needs one per coordinate to
+scale its first population (its initial per-coordinate standard deviation is
+:ref:`cmaes_sigma0 <cmaes_sigma0>` times the width). For an open side the width is taken from
+the central 80% of the coordinate's own truncated prior — ``ppf(0.9) - ppf(0.1)``, measured in
+the parameter's sampling space — so it is a real length in the parameter's units, derived from
+the distribution you declared. It is the prior's spread, though, not a range you stated: if you
+have a range in mind, writing both sides is more explicit and is what the optimizer will use.
+
 Distribution families
 ---------------------
 

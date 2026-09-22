@@ -16,6 +16,7 @@ two spellings, and one record:
 The tests below are grouped by the claim they pin: resolution, refusal, the record, and the
 two silent failures that motivated the work.
 """
+import numpy as np
 import pytest
 
 from . import integration_harness as H
@@ -338,7 +339,6 @@ class TestReviewFindings:
         outside a log-scaled wall maps to exactly the wall's ``u`` -- accepted at load, then
         raising a bare OutOfBoundsException mid-fit, reported as 'an unknown error … please
         report this bug'. Both comparisons are now made at load."""
-        import numpy as np
         wall = lo if side == 'lower' else hi
         theta = np.nextafter(wall, 0.0 if delta < 0 else wall * 2)
         with pytest.raises(PybnfError, match='out of bounds'):
@@ -409,3 +409,172 @@ def test_an_out_of_box_value_reflects_rather_than_clamping():
     v = FreeParameter('k', 'loguniform_var', 1e-5, 1e3, bounded=True)
     assert v.set_value(1e9).value == pytest.approx(1e-3)
     assert v.set_value(1e9).value != pytest.approx(1e3)
+
+
+# --------------------------------------------------------------------------- #
+# The half-bounded search width (#777)
+# --------------------------------------------------------------------------- #
+def _record(**fields):
+    """One :class:`FreeParameter` from an edition-2 ``parameter:`` record, the only
+    spelling that can write a half-bounded declaration (``lower:`` / ``upper:``)."""
+    from pybnf.parameter_record import free_parameter_from_record
+    return free_parameter_from_record(
+        fields.pop('name', 'k'), {k: str(v) for k, v in fields.items()}, 'prior')
+
+
+class TestHalfBoundedSearchWidth:
+    """A prior truncated on ONE side reports ``has_bounded_support``, so the box-mode
+    optimizers accept it -- deliberately, since ADR-0047 made the one-sided box first
+    class and ADR-0118 recorded the decision not to withdraw it. But a half-line has no
+    width, and the substitute ``_box_widths_u`` reached for was ``abs(p2 - p1)``, which is
+    not a length in the parameter's units: for a shape-scale family it subtracts a
+    dimensionless shape from a scale. The substitute is now the prior's own central 80%
+    interval (#777)."""
+
+    def test_a_half_bounded_gamma_no_longer_takes_its_shape_as_a_width(self):
+        """The headline, and the sharp row of #777's table. ``gamma, shape: 2,
+        scale: 1e-9`` on ``[1e-12, inf)`` gave ``|1e-9 - 2| = 2.0`` -- the shape parameter,
+        about two million times the plausible range of a coordinate that lives between
+        1e-12 and 1e-6. CMA-ES squares that into ``C``, so the first population was drawn
+        that far out and most of it folded back off the floor."""
+        v = _record(prior='gamma', shape=2, scale='1e-9', lower='1e-12', upper='inf')
+        assert v.has_bounded_support           # it is a 'box' to the gate, and stays one
+        assert v.prior_support() == (1e-12, np.inf)
+        w = _probe([v])._box_widths_u()[0]
+        assert abs(v.p2 - v.p1) == pytest.approx(2.0)   # what it used to be
+        assert 1e-12 < w < 1e-6                         # what a width for this coordinate is
+        assert w == pytest.approx(3.3579e-09, rel=1e-4)
+
+    def test_the_substitute_is_the_priors_own_central_80_percent(self):
+        """Not a number with the right order of magnitude -- exactly ``ppf(0.9) - ppf(0.1)``
+        of the *truncated* prior, in ``u``. That is what makes it a length in the
+        coordinate's units by construction rather than by coincidence."""
+        v = _record(prior='normal', parameter_scale='log10', mean=-9, sd=0.5,
+                    lower='1e-12', upper='inf')
+        w = _probe([v])._box_widths_u()[0]
+        assert w == v.prior_quantile_u(0.9) - v.prior_quantile_u(0.1)
+        # The wall at u = -12 is six sd below the mean, so it retains all but ~1e-9 of the
+        # mass and the interval is the untruncated normal's: 2 * z(0.9) * sd.
+        assert w == pytest.approx(2 * 1.2815515655446004 * 0.5, rel=1e-8)
+        assert w != pytest.approx(9.5)   # |sd - mean|, what it used to be
+
+    def test_an_upper_only_truncation_is_the_same_case_mirrored(self):
+        """An open side is an open side. ``upper:`` alone on a doubly-unbounded family
+        leaves ``prior_support()`` infinite *below*, and took the same wrong substitute --
+        here ``|0.5 - 1| = 0.5``, a number that looks perfectly reasonable and is 2.6x too
+        small, which is the reason this class of defect is not visible from the outside."""
+        v = _record(prior='normal', mean=1, sd=0.5, lower='-inf', upper=5)
+        assert v.has_bounded_support and v.prior_support()[0] == -np.inf
+        w = _probe([v])._box_widths_u()[0]
+        assert abs(v.p2 - v.p1) == pytest.approx(0.5)   # what it used to be
+        assert w == v.prior_quantile_u(0.9) - v.prior_quantile_u(0.1)
+        assert w == pytest.approx(2 * 1.2815515655446004 * 0.5, rel=1e-6)
+
+    @pytest.mark.parametrize('upper,expected', [('inf', 3.3579e-09), ('1e-6', 9.99999e-07)])
+    def test_only_the_open_side_changes(self, upper, expected):
+        """#777's table is the same prior and the same floor with only the upper side
+        moved. The finite-box row must come out of this change bit for bit -- the width
+        there is the box, and the box was never in doubt."""
+        v = _record(prior='gamma', shape=2, scale='1e-9', lower='1e-12', upper=upper)
+        assert _probe([v])._box_widths_u()[0] == pytest.approx(expected, rel=1e-4)
+
+    def test_every_family_in_the_catalog_yields_a_finite_positive_width(self):
+        """The property that matters, over the whole catalog rather than the two families
+        the issue measured: CMA-ES squares this vector into a covariance diagonal, so a
+        zero, a negative or an infinity is a run that cannot move or cannot start. Each
+        family is truncated on one side only, in both directions and both scales; the
+        combinations the graded bound rule refuses outright (a log10 scale under a
+        positive-support family's floor, a ``beta`` above its ceiling) are skipped."""
+        from pybnf.registry import PRIOR_FAMILY_REGISTRY
+        values = {'mean': 1, 'sd': 0.5, 'location': 1, 'scale': 0.5, 'shape': 2,
+                  'dof': 3, 'df': 4, 'alpha': 2, 'beta': 5}
+        checked = 0
+        for name, entry in sorted(PRIOR_FAMILY_REGISTRY.items()):
+            if name == 'uniform':
+                continue          # its bounds are validated finite; there is no open side
+            fields = {f: values[f] for f in entry.cls.field_names if f in values}
+            assert len(fields) == len(entry.cls.field_names), name
+            for parameter_scale in ('linear', 'log10'):
+                for lower, upper in (('0.2', 'inf'), ('-inf', '5')):
+                    rec = dict(fields, prior=name, lower=lower, upper=upper)
+                    if parameter_scale != 'linear':
+                        rec['parameter_scale'] = parameter_scale
+                    try:
+                        v = _record(**rec)
+                    except PybnfError:
+                        continue
+                    w = _probe([v])._box_widths_u()[0]
+                    assert np.isfinite(w) and w > 0.0, (name, parameter_scale, lower, upper, w)
+                    checked += 1
+        assert checked >= 50   # falls if a family or a legal combination disappears
+
+    @staticmethod
+    def _half_bounded_gamma_fit(tmp_path, population_size=200):
+        """#777's own reproduction, through a real ``Configuration``: two coordinates whose
+        plausible range is 1e-12 to 1e-6, declared half-bounded, under ``job_type = cmaes``.
+        A population wide enough to measure where the first generation lands."""
+        conf = _conf(tmp_path, {'population_size': population_size},
+                     fit_type='cmaes', edition2=True, extra_vars={
+                         ('parameter', 'p%d' % (i + 1)): {
+                             'prior': 'gamma', 'shape': '2', 'scale': '1e-9',
+                             'lower': '1e-12', 'upper': 'inf'} for i in range(2)})
+        return CMAESAlgorithm(conf)
+
+    def test_the_width_reaches_the_covariance_cmaes_actually_starts_from(self, tmp_path):
+        """``_box_widths_u`` has exactly one reader, ``_seed_distribution``, and the whole
+        defect is what that reader squares into ``C``. Driven through a real
+        ``Configuration`` so the record, the gate and the seed are the ones a fit uses --
+        the layer where the wrong number was actually paid for."""
+        alg = self._half_bounded_gamma_fit(tmp_path)
+        assert alg._is_box_start()
+        sigma = np.sqrt(np.diag(alg.C))
+        assert sigma == pytest.approx([3.3579e-09, 3.3579e-09], rel=1e-4)
+
+    def test_the_first_generation_now_lands_where_the_parameter_lives(self, tmp_path):
+        """What the width is *for*, measured on the draws themselves rather than on ``C``.
+        The same 400 coordinates, the same seed, the same everything but the covariance
+        diagonal: with the prior-derived width every one of them lands in the coordinate's
+        plausible range, and with the old ``|p2 - p1|`` not one of them does -- their median
+        is 0.40, about 2e8 times the start point. That whole generation was spent, and the
+        only trace was a fit that took longer to converge than it should have."""
+        alg = self._half_bounded_gamma_fit(tmp_path)
+        start = _values(alg.start_pset)['p1']
+        assert start == pytest.approx(1.678e-09, rel=1e-3)   # the truncated gamma's median
+
+        def draw():
+            return np.array([p.value for ps in alg._sample_generation() for p in ps])
+
+        fixed = draw()
+        assert len(fixed) == 400
+        assert np.all((fixed >= 1e-12) & (fixed <= 1e-6))
+
+        alg._seed_distribution(alg._u_from_pset(alg.start_pset), alg.sigma0)
+        alg.C = np.diag(np.full(2, abs(alg.variables[0].p2 - alg.variables[0].p1)) ** 2)
+        was = draw()
+        assert not np.any((was >= 1e-12) & (was <= 1e-6))
+        assert np.median(was) == pytest.approx(0.40, rel=0.05)
+        assert np.median(was) / start > 2e8
+
+    def test_a_no_prior_carrier_falls_back_to_a_unit_step(self):
+        """``_box_widths_u`` is only reached in box mode, where every coordinate has a
+        prior -- but the helper is total, so a point-start carrier gets the isotropic unit
+        step a point-start fit gets rather than an exception from ``NoPrior.ppf``."""
+        v = FreeParameter('k', 'var', 1.0, None)
+        assert not v.has_prior
+        assert StartPointOptimizer._open_side_width_u(v) == 1.0
+
+    def test_the_quantile_accessor_is_in_u_where_the_length_is_measured(self):
+        """``prior_quantile_u`` exists because the width is a length in ``u``, and the
+        pre-existing quantile accessor is not: ``value_from_quantile`` maps the quantile
+        back to theta and wraps it in a FreeParameter, so on a log-scaled parameter the two
+        differ by the whole scale transform -- a difference of two of *those* is not a
+        width in the space CMA-ES steps in. Recovering ``u`` from one costs a round trip
+        that is not the identity (over a grid of 1125 ordinary log10-scaled half-bounded
+        normals, 40 of 2250 quantiles come back one ULP away) and, at a box corner, can
+        reflect rather than report (#750)."""
+        v = _record(prior='normal', parameter_scale='log10', mean=-9, sd=0.5,
+                    lower='1e-12', upper='inf')
+        u = v.prior_quantile_u(0.9)
+        assert u == v._prior.ppf(0.9)                    # the prior's own inverse CDF, in u
+        assert v.value_from_quantile(0.9).value == 10.0 ** u   # the same quantile, in theta
+        assert u == pytest.approx(-9 + 1.2815515655446004 * 0.5, rel=1e-8)
