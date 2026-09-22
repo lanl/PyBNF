@@ -13,6 +13,7 @@ from ...config_schema import PyBNFConfigModel
 from ...printing import print1, print2, PybnfError
 from ... import diagnostics
 
+import json
 import logging
 import numpy as np
 from pathlib import Path
@@ -624,8 +625,58 @@ class BayesianAlgorithm(Algorithm):
             return True
         return False
 
+    #: Schema version of ``Results/diagnostics_meta.json``. Adding a field is backward
+    #: compatible and does not bump it; removing one, renaming one, or changing what one
+    #: means does. A reader should check the major version and ignore fields it does not
+    #: know.
+    DIAGNOSTICS_META_SCHEMA = 'pybnf-diagnostics-meta/1'
+
+    def _write_diagnostics_meta(self, path):
+        """Write the run-level provenance of ``diagnostics.txt`` as a sidecar JSON.
+
+        Which replicas the diagnostics compared is a property of the run, not of any
+        one row, and it is what separates a between-chain R-hat from a split of a
+        single chain (#782). It is deliberately *not* in ``diagnostics.txt``:
+
+        * That file is append-only and its header is written once, by whichever PyBNF
+          version started the run. ``--resume`` reloads a pickled algorithm and appends
+          to the existing file -- only a *fresh* run clears ``Results/``, which
+          ``pybnf.py`` does with ``shutil.rmtree`` -- so a new column or a changed
+          header would let a resumed run write rows that disagree with the header
+          above them, silently.
+        * ``inference_data.py`` reads ``lines[0]`` as the column header and matches
+          columns by name prefix, and external consumers parse it as a plain TSV. A
+          machine-read table should not be reshaped to carry a label.
+
+        The sidecar is rewritten in full on every diagnostics write, so it is correct
+        after a resume and needs no append protocol of its own.
+
+        :param path: Where to write the sidecar.
+        :type path: pathlib.Path
+        """
+        selected = [i for i in range(self.num_parallel) if self.should_sample(i)]
+        # Only the tempered sampler has a beta ladder; for the rest the replicas are
+        # interchangeable copies of one target and there is no per-chain beta to name.
+        betas = getattr(self, 'betas', None)
+        meta = {
+            'schema': self.DIAGNOSTICS_META_SCHEMA,
+            'statistic': 'rank-normalized split-R-hat and bulk/tail ESS '
+                         '(Vehtari et al. 2021)',
+            'chains_compared': len(selected),
+            'chain_replicas': selected,
+            'chain_betas': [betas[i] for i in selected] if betas is not None else None,
+            'num_parallel': self.num_parallel,
+        }
+        with open(path, 'w') as f:
+            json.dump(meta, f, indent=2, sort_keys=True)
+            f.write('\n')
+
     def _write_diagnostics(self, iteration, rhat, bulk_ess, tail_ess):
-        """Append convergence diagnostics to the diagnostics output file."""
+        """Append convergence diagnostics to the diagnostics output file.
+
+        The table's format is fixed; its run-level provenance goes to the sidecar
+        written by :meth:`_write_diagnostics_meta`.
+        """
         diag_file = Path(self.config.config['output_dir']) / 'Results' / 'diagnostics.txt'
         write_header = not diag_file.exists()
         param_names = [v.name for v in self.variables]
@@ -642,6 +693,7 @@ class BayesianAlgorithm(Algorithm):
                 tail_val = f'{tail_ess[i]:.2f}' if tail_ess is not None else 'nan'
                 vals.extend([rhat_val, bulk_val, tail_val])
             f.write('\t'.join(vals) + '\n')
+        self._write_diagnostics_meta(diag_file.with_name('diagnostics_meta.json'))
 
     def cleanup(self):
         """Called when quitting due to error.

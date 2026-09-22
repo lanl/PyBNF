@@ -8,6 +8,7 @@ Ln_probability column. arviz is an optional extra, so the whole module skips whe
 it is absent.
 """
 
+import json
 import sys
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 
 az = pytest.importorskip('arviz')
 
+from pybnf import inference_data
 from pybnf.inference_data import from_pybnf
 from pybnf.pset import FreeParameter
 
@@ -610,3 +612,79 @@ def test_am_all_chains_empty_raises(tmp_path):
     _write_am_params(runs / 'params_1.txt', ['x'], [])
     with pytest.raises(ValueError, match='No draws found'):
         from_pybnf(tmp_path / 'Results')
+
+
+# --------------------------------------------------------------------------- #
+# diagnostics_meta.json: run-level provenance of diagnostics.txt (#782)
+# --------------------------------------------------------------------------- #
+class TestDiagnosticsMetaSidecar:
+    """Which replicas PyBNF's R-hat compared is what separates a between-chain
+    R-hat from a split of a single chain, and under ``pt`` at the default
+    ``reps_per_beta = 1`` it is the latter. It rides in a sidecar rather than in
+    ``diagnostics.txt`` because that table is append-only across a ``--resume``
+    and is parsed positionally/by-name by this module and by users.
+    """
+
+    HEADER = ('# iteration\ttotal_evaluations\trhat_a\tbulk_ess_a\ttail_ess_a\n')
+
+    def _results(self, tmp_path, meta=None):
+        res = tmp_path / 'Results'
+        res.mkdir(parents=True, exist_ok=True)
+        (res / 'diagnostics.txt').write_text(self.HEADER + '100\t400\t1.0303\t180.00\t160.00\n')
+        if meta is not None:
+            (res / 'diagnostics_meta.json').write_text(json.dumps(meta))
+        return res
+
+    def test_sidecar_fields_reach_the_attrs(self, tmp_path):
+        res = self._results(tmp_path, {
+            'schema': 'pybnf-diagnostics-meta/1',
+            'chains_compared': 1, 'chain_replicas': [3], 'chain_betas': [1.0],
+            'num_parallel': 4, 'statistic': 'rank-normalized split-R-hat',
+        })
+        attrs = inference_data._read_diagnostics_attrs(res)
+        assert attrs['pybnf_diagnostics_chains'] == 1
+        assert attrs['pybnf_diagnostics_replicas'] == [3]
+        assert attrs['pybnf_diagnostics_betas'] == [1.0]
+        # The table's own numbers still come through unchanged.
+        assert attrs['pybnf_max_rhat'] == 1.0303
+
+    def test_absent_sidecar_is_not_an_error(self, tmp_path):
+        """A run made before the sidecar existed, or one whose diagnostics never
+        fired. The table's attrs must still be returned."""
+        attrs = inference_data._read_diagnostics_attrs(self._results(tmp_path))
+        assert attrs['pybnf_max_rhat'] == 1.0303
+        assert 'pybnf_diagnostics_chains' not in attrs
+
+    def test_unrecognized_schema_is_ignored(self, tmp_path):
+        """A major-version bump means the fields may mean something else, so a
+        reader pinned to /1 must decline rather than guess -- while still
+        returning what it did understand."""
+        res = self._results(tmp_path, {'schema': 'pybnf-diagnostics-meta/2',
+                                       'chains_compared': 99})
+        attrs = inference_data._read_diagnostics_attrs(res)
+        assert 'pybnf_diagnostics_chains' not in attrs
+        assert attrs['pybnf_max_rhat'] == 1.0303
+
+    def test_unknown_field_in_a_v1_sidecar_is_harmless(self, tmp_path):
+        """Adding a field is backward compatible and does not bump the schema, so
+        a reader must ignore what it does not know rather than bail."""
+        res = self._results(tmp_path, {'schema': 'pybnf-diagnostics-meta/1',
+                                       'chains_compared': 2, 'something_new': 'x'})
+        assert inference_data._read_diagnostics_attrs(res)['pybnf_diagnostics_chains'] == 2
+
+    def test_corrupt_sidecar_does_not_break_the_table(self, tmp_path):
+        res = self._results(tmp_path)
+        (res / 'diagnostics_meta.json').write_text('{not json')
+        attrs = inference_data._read_diagnostics_attrs(res)
+        assert attrs['pybnf_max_rhat'] == 1.0303
+        assert 'pybnf_diagnostics_chains' not in attrs
+
+    def test_untempered_run_names_every_replica(self, tmp_path):
+        """No beta ladder -> chain_betas is null, and every replica is compared."""
+        res = self._results(tmp_path, {'schema': 'pybnf-diagnostics-meta/1',
+                                       'chains_compared': 4, 'chain_replicas': [0, 1, 2, 3],
+                                       'chain_betas': None, 'num_parallel': 4})
+        attrs = inference_data._read_diagnostics_attrs(res)
+        assert attrs['pybnf_diagnostics_chains'] == 4
+        assert attrs['pybnf_diagnostics_replicas'] == [0, 1, 2, 3]
+        assert 'pybnf_diagnostics_betas' not in attrs

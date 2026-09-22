@@ -23,6 +23,7 @@ specific to this class and tested here:
 Construction follows test_dream_class / test_adaptive_mcmc: a real
 config.Configuration over the three v*__FREE params in parabola.bngl.
 """
+import json
 import os
 
 import numpy as np
@@ -317,6 +318,26 @@ class TestRhatLineNamesItsChainCount:
         is unchanged in substance from before."""
         out = self._report(tmp_path, capsys, n_chains=4, fit_type='mh', beta=[1.0])
         assert '(4 chains)' in out
+
+    def test_sidecar_records_the_same_provenance(self, tmp_path, capsys):
+        """The console line is for a reader; ``Results/diagnostics_meta.json`` is the
+        machine-readable copy, and the two must agree. ``diagnostics.txt`` itself keeps
+        its format -- it is append-only across a ``--resume`` and is parsed by column
+        name, so the provenance does not belong in it (#782)."""
+        out = self._report(tmp_path, capsys, n_chains=1)
+        meta = json.loads((tmp_path / 'Results' / 'diagnostics_meta.json').read_text())
+
+        assert '(split, 1 chain)' in out
+        assert meta['schema'] == 'pybnf-diagnostics-meta/1'
+        assert meta['chains_compared'] == 1
+        assert meta['chain_replicas'] == [3]      # (i+1) %% betas_per_group == 0, 4 rungs
+        assert meta['chain_betas'] == [1.0]
+        assert meta['num_parallel'] == 4
+
+        header = (tmp_path / 'Results' / 'diagnostics.txt').read_text().splitlines()[0]
+        cols = header.lstrip('#').strip().split('\t')
+        assert cols[:2] == ['iteration', 'total_evaluations']
+        assert all(c.startswith(('rhat_', 'bulk_ess_', 'tail_ess_')) for c in cols[2:])
 
 
 # --------------------------------------------------------------------------- #

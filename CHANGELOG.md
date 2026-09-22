@@ -284,8 +284,17 @@ All notable changes to PyBNF are documented below. This project adheres to
   the reported line now carries the number of chains it compared, reading `Max R-hat: 1.0034
   (split, 1 chain)` or `(4 chains)`. A warning is reserved for the one case where that
   statistic drives a decision -- `rhat_threshold > 0`, which makes the run stop itself on it.
-  `Results/diagnostics.txt` is byte-for-byte unchanged, since `inference_data.py` parses its
-  `rhat_*` columns by name.
+
+  For machines, the same provenance is written to a new `Results/diagnostics_meta.json`
+  beside the table: a schema version, how many chains were compared, which replicas they were,
+  their betas (`null` for the untempered samplers) and `num_parallel`.
+  `pybnf.inference_data.from_pybnf` surfaces it as the `pybnf_diagnostics_chains`,
+  `pybnf_diagnostics_replicas` and `pybnf_diagnostics_betas` attrs. It is a sidecar rather
+  than a column because `diagnostics.txt` is appended to across a `--resume` (only a fresh run
+  clears `Results/`), so a header or column change would let a resumed run write rows that
+  disagree with the header written above them by an older version -- silently. The sidecar is
+  rewritten in full on each diagnostics write and so has no append protocol to get wrong, and
+  `diagnostics.txt` stays byte-for-byte as it was.
 
   The remedy is not simply to raise `reps_per_beta`. The number of temperatures is
   `population_size // reps_per_beta`, so raising it alone shortens the ladder and weakens the
