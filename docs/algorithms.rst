@@ -894,8 +894,14 @@ multimodal objective it reaches only a local minimum. Setting ``cmaes_restarts >
 0`` (global-start / box mode only) turns on the standard multimodal-CMA-ES
 **restart**: each time a run *finishes* by converging or reaching its optional
 ``cmaes_run_maxgen`` cap — as distinct from spending the whole ``max_iterations``
-budget — CMA-ES reinitializes from a fresh random point in the box with a rescaled
-population and keeps searching, keeping the best fit across all runs.
+budget — CMA-ES reinitializes from a fresh random point with a rescaled population and
+keeps searching, keeping the best fit across all runs. That point is drawn exactly the way
+a population algorithm draws its initial parameter sets, so
+:ref:`initialization_distribution <initialization_distribution>` governs it: from each
+parameter's prior by default, or uniformly over each parameter's bounds with
+``initialization_distribution = bounds``. With an informative prior the two differ sharply
+— a restart drawn from the prior stays near its mode, which is rarely what a restart is
+wanted for — so set ``bounds`` when you want restarts to cover the declared box.
 ``cmaes_restart_strategy = ipop`` grows the population geometrically each
 restart (a progressively broader global search, [AugerHansen2005]_);
 ``cmaes_restart_strategy = bipop`` interleaves that with a small-population regime,

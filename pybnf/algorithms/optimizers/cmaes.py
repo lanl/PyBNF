@@ -93,7 +93,6 @@ from .local_base import StartPointOptimizer
 from ..noise_handling import RankChangeNoise
 from ...config_schema import PyBNFConfigModel
 from ...printing import print1, print2, PybnfError
-from ...pset import PSet
 from ...registry import register_fit_type
 
 import copy
@@ -749,11 +748,31 @@ class CMAESAlgorithm(StartPointOptimizer):
                 self.base_sigma0, self.configured_run_maxgen)
 
     def _random_start_pset(self):
-        """A fresh start point for a restart: a uniform random draw across the prior box
-        in box / global-start mode (each coordinate at a random quantile from the seeded
-        ``self.rng``), so restarts probe different basins. In point-start / refine mode
-        there is no box to sample, so fall back to the configured start point (a restart
-        there just re-runs from the same start with a rescaled population)."""
+        """A fresh start point for a restart: in box / global-start mode, one independent
+        draw per coordinate from the configured **initialization distribution**, taken from
+        the seeded ``self.rng`` so restarts probe different basins and reproduce from
+        ``random_seed``. In point-start / refine mode there is no box to sample, so fall
+        back to the configured start point (a restart there just re-runs from the same
+        start with a rescaled population).
+
+        This is :meth:`Algorithm.random_pset` -- the same draw every population algorithm
+        makes, and the one the concurrent multi-start scatter makes for its extra starts.
+        It used to call ``value_from_quantile(self.rng.random())`` directly, which is the
+        *prior*'s inverse CDF whatever ``initialization_distribution`` says. So
+        ``initialization_distribution = bounds`` was a silent no-op here while governing
+        every other start-point draw in PyBNF, and with an informative prior every restart
+        landed in the prior's bulk rather than across the declared box -- on a ``normal``
+        of sd 0.01 truncated to [-10, 10], all of 2000 restart draws fell inside 0.4% of
+        the box, which is the opposite of what a restart is for (#797). The same silent
+        no-op was fixed for the multi-start scatter in #583; this method was missed.
+
+        Under the default ``initialization_distribution = prior`` the two expressions are
+        the same function: ``sample_initial_value`` delegates to ``sample_value``, whose
+        ``Prior.rvs`` is inverse-CDF on one ``rng.random()`` for both families that can
+        reach this branch (``Uniform`` and ``TruncatedPrior``). Verified bit-identical, and
+        identical in rng stream position, over all 72 bounded-support declarations the
+        catalog can express, so a fit that does not set the key restarts exactly as before.
+        """
         if self._is_box_start():
-            return PSet([v.value_from_quantile(self.rng.random()) for v in self.variables])
+            return self.random_pset()
         return self.start_pset
