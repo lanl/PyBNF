@@ -146,7 +146,7 @@ def _species_target_value(pattern, op, val):
 # Asset: one mutation's operator -> a PEtab targetValue string
 # ---------------------------------------------------------------------------
 
-def mutation_target_value(op, val, *, nominal=None, surrogate=None):
+def mutation_target_value(op, val, *, nominal=None, surrogate=None, target=None):
     """Map one PyBNF mutation ``<op> <val>`` to a PEtab ``targetValue`` string.
 
     An absolute set (``=``) is the bare number, regardless of target kind. A relative op
@@ -181,11 +181,19 @@ def mutation_target_value(op, val, *, nominal=None, surrogate=None):
     if surrogate is not None:
         return f'{surrogate} {op} {num(val)}'
     if nominal is None:
+        named = f"the fixed parameter '{target}'" if target else 'a fixed parameter'
+        fix = (f"Write this condition as an absolute set ('= <number>'), or declare '{target}' as "
+               f"a fit parameter so the condition can be expressed relative to its surrogate"
+               if target else
+               "Write this condition as an absolute set ('= <number>')")
         raise NotImplementedError(
-            f"A relative mutation ('{op}' {num(val)}) of a fixed parameter needs the "
-            f"parameter's numeric nominal value, but it has a non-numeric (expression) "
-            f"value in the model. Evaluating a BNGL parameter expression is "
-            f"simulation-grade work, out of scope for the exporter (ADR-0027).")
+            f"A relative mutation ('{op}' {num(val)}) of {named} needs that parameter's numeric "
+            f"nominal value, but the model file does not settle one. In a BNGL model its value is "
+            f"an expression over other parameters. In an SBML model an assignment rule computes it "
+            f"every step, or an initial assignment derives it at the start of the simulation. "
+            f"PyBNF does not report a value the model file alone cannot settle, because a PEtab "
+            f"parameter table may override or estimate the entities it is computed from, and the "
+            f"reported number would then be stale. {fix} (ADR-0027, #465, #795).")
     if op == '*':
         return num(nominal * val)
     if op == '/':
@@ -234,7 +242,7 @@ def _condition_rows_for(cid, perturbations, surrogate, nominal_of, species_id_of
                 cid, species_id_of[var], _species_target_value(var, op, val)))
             continue
         rows.append(PetabConditionRow(
-            cid, var, mutation_target_value(op, val, nominal=nominal_of(var))))
+            cid, var, mutation_target_value(op, val, nominal=nominal_of(var), target=var)))
     return rows
 
 

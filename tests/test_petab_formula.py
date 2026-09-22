@@ -34,6 +34,7 @@ guarantee.
 """
 
 import builtins
+import re
 import sys
 
 import pytest
@@ -395,3 +396,78 @@ class TestPlaceholderSubstitution:
         from pybnf.petab.formula import formula_free_symbols
         assert formula_free_symbols('0.1 + 0.05*slope + base') == ['base', 'slope']
         assert formula_free_symbols('0.5') == []        # a pure constant has no free symbols
+
+
+class TestDerivedSymbolInlining:
+    """Inlining a derived SBML entity into a measurement formula (#465 for an assignment rule,
+    #795 for a parameter an initialAssignment derives)."""
+
+    @staticmethod
+    def _derived(**kwargs):
+        from pybnf.petab._sbml import DerivedSymbol
+        return {name: DerivedSymbol('initial_assignment', expr, None)
+                for name, expr in kwargs.items()}
+
+    def test_a_derived_parameter_inlines_to_its_definition(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import inline_derived_symbols
+        # Bertozzi's shape: the model file gives beta_N no value of its own, so scoring an
+        # observable over it used to use the placeholder attribute.
+        out = inline_derived_symbols('beta_N * I',
+                                     self._derived(beta_N='(R0_ * gamma_) / N_'),
+                                     observable_id='rate')
+        assert 'beta_N' not in out
+        assert {'R0_', 'gamma_', 'N_', 'I'} <= set(re.findall(r'[A-Za-z_]\w*', out))
+
+    def test_an_alias_inlines(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import inline_derived_symbols
+        # Laske's shape: 27 parameters of the form ModelValue_82 = D_rib.
+        assert inline_derived_symbols('ModelValue_82',
+                                      self._derived(ModelValue_82='D_rib')) == 'D_rib'
+
+    def test_a_chain_resolves_through(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import inline_derived_symbols
+        out = inline_derived_symbols('chain', self._derived(chain='stale * 2', stale='k + 1'))
+        assert 'stale' not in out and 'chain' not in out
+        assert 'k' in out
+
+    def test_a_formula_naming_nothing_derived_is_returned_verbatim(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import inline_derived_symbols
+        assert inline_derived_symbols('A + B', self._derived(x='k + 1')) == 'A + B'
+
+    def test_a_non_inlinable_initial_assignment_names_the_real_cause(self):
+        pytest.importorskip('petab')
+        from pybnf.petab._sbml import DerivedSymbol, _r_time_varying
+        from pybnf.petab.formula import inline_derived_symbols
+        from pybnf.printing import PybnfError
+        derived = {'over_species': DerivedSymbol('initial_assignment', None,
+                                                 _r_time_varying(['A']))}
+        with pytest.raises(PybnfError) as excinfo:
+            inline_derived_symbols('over_species * 2', derived, observable_id='rate')
+        message = str(excinfo.value)
+        assert "Measurement model 'rate'" in message
+        assert 'gives no value of its own' in message
+        assert "'A'" in message and 'changes during the simulation' in message
+        assert '#795' in message
+
+    def test_an_untranslatable_assignment_rule_still_says_assignment_rule(self):
+        pytest.importorskip('petab')
+        from pybnf.petab._sbml import DerivedSymbol, _R_RULE_UNTRANSLATABLE
+        from pybnf.petab.formula import inline_derived_symbols
+        from pybnf.printing import PybnfError
+        derived = {'ruled': DerivedSymbol('assignment_rule', None, _R_RULE_UNTRANSLATABLE)}
+        with pytest.raises(PybnfError, match='assignment rule'):
+            inline_derived_symbols('ruled', derived, observable_id='rate')
+
+    def test_a_cyclic_definition_names_the_construct_and_the_chain(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import inline_derived_symbols
+        from pybnf.printing import PybnfError
+        with pytest.raises(PybnfError) as excinfo:
+            inline_derived_symbols('a', self._derived(a='b', b='a'), observable_id='rate')
+        message = str(excinfo.value)
+        assert 'initial assignment' in message
+        assert 'a -> b -> a' in message
