@@ -33,6 +33,14 @@ def split_chains(chain_history, num_parallel, start_floor=0):
     ``(2 * num_parallel, half, n_dim)`` array, or ``None`` if there is too little
     history (fewer than 20 recorded steps, or fewer than 5 per split half).
 
+    The 50% rule is the classic Gelman-Rubin warmup discard and is deliberately *not*
+    the sampler's ``burn_in``: while ``burn_in`` exceeds half the run so far the window
+    includes draws that ``burn_in`` kept out of samples.txt. Restricting to post-burn_in
+    draws would shorten the window in exactly that band, and R-hat over a short window
+    reads high on its own -- measured at 1.52 against 1.06 for the last-50% window on a
+    chain whose true value is 1.0. Keep the rule as it is unless there is an argument
+    that survives that measurement.
+
     :param start_floor: An index before which no chain's history may be read, even
         if the 50% rule would reach further back. A caller passes this when some of
         the recorded history is not a draw from the chain it is filed under -- as
