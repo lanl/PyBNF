@@ -259,13 +259,21 @@ class TestSimulationFolderCreationFailure:
             calc_future=_ScoringCalc(), norm_settings=None, postproc_settings=dict(),
         )
 
-    def _attempts(self, job, monkeypatch, err):
-        """Count os.mkdir calls, raising `err` on each."""
+    def _attempts(self, job, monkeypatch, err, out_dir):
+        """Count the job's mkdir attempts, raising `err` on each.
+
+        ``algorithms_core.os`` is the real ``os`` module, so this patch is global for
+        the duration of the test. Scope it to paths under this job's output directory
+        and delegate everything else to the real ``mkdir``, so nothing else running in
+        the process can be caught by it."""
         calls = []
+        real_mkdir = os.mkdir
 
         def fake_mkdir(path, *a, **kw):
-            calls.append(path)
-            raise err
+            if str(path).startswith(str(out_dir)):
+                calls.append(path)
+                raise err
+            return real_mkdir(path, *a, **kw)
 
         monkeypatch.setattr(algorithms_core.os, 'mkdir', fake_mkdir)
         res = job.run_simulation()
@@ -286,14 +294,14 @@ class TestSimulationFolderCreationFailure:
     def test_a_permission_error_fails_immediately(self, tmp_path, monkeypatch):
         """Renaming cannot fix EACCES, so it must not be tried 1000 times."""
         err = PermissionError(errno.EACCES, 'Permission denied')
-        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err)
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
         assert isinstance(res, algorithms.FailedSimulation)
         assert len(calls) == 1
 
     def test_a_missing_parent_fails_immediately(self, tmp_path, monkeypatch):
         """Same for ENOENT: a new name is still under the parent that is not there."""
         err = FileNotFoundError(errno.ENOENT, 'No such file or directory')
-        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err)
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
         assert isinstance(res, algorithms.FailedSimulation)
         assert len(calls) == 1
 
@@ -302,7 +310,7 @@ class TestSimulationFolderCreationFailure:
         the exception, and it used to be discarded."""
         err = OSError(errno.ENOSPC, 'No space left on device')
         with caplog.at_level(logging.ERROR):
-            res, _ = self._attempts(self._job(str(tmp_path)), monkeypatch, err)
+            res, _ = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
         assert isinstance(res, algorithms.FailedSimulation)
         text = caplog.text
         assert 'No space left on device' in text
@@ -313,6 +321,6 @@ class TestSimulationFolderCreationFailure:
         """The 1000-attempt cap stays for the case it guards: every candidate name
         taken. Without it a pathological directory would spin forever."""
         err = FileExistsError(errno.EEXIST, 'File exists')
-        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err)
+        res, calls = self._attempts(self._job(str(tmp_path)), monkeypatch, err, tmp_path)
         assert isinstance(res, algorithms.FailedSimulation)
         assert len(calls) == 1001
