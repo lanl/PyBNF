@@ -252,6 +252,35 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **DREAM's outlier reset no longer lets a chain be compared against a duplicate of itself
+  (#787).** `detect_and_reset_outliers` resets an outlier chain by copying the donor's history
+  over it rather than discarding the outlier's own. That keeps the archive
+  `_update_preconditioner` pools well formed, but it files the donor's draws under the
+  outlier's index, and the convergence diagnostics read the same structure. Two chains then
+  agreed exactly over that window, so R-hat's between-chain variance was deflated and it read
+  low -- toward declaring a convergence that had not happened, which is the direction that
+  matters. ESS was inflated by the same duplication, counting the copied draws twice.
+
+  Measured on four chains that have genuinely not converged (means 0.0, 0.8, 1.6, 2.4), with
+  one chain's window replaced by another's exactly as the reset does: max R-hat fell from
+  1.3664, 1.3885, 1.4046 and 1.4079 to 1.2478, 1.2585, 1.2648 and 1.2639 -- about -0.14 on
+  every seed, from a single duplicated chain in four over a third of the window.
+
+  The copied window was in reach because resets are gated to burn-in but `chain_history` is
+  never truncated, while `split_chains` reads the last 50% of the whole history. At iteration
+  T the window is `[T/2, T]`, so it overlapped the copied burn-in ranges whenever
+  `T < 2 * burn_in`, and `check_convergence` is live for `T > burn_in`. Every shipped `dream`
+  and `p_dream` benchmark conf sets `max_iterations` to exactly twice `burn_in`, so that band
+  was their entire sampling phase.
+
+  The reset now records where the chain's own history resumes, and the diagnostics start no
+  earlier than the latest such point across the replicas they compare. `split_chains`, `rhat`
+  and `ess` take an optional `start_floor` that defaults to 0 and is byte-identical to the
+  previous two-argument call, so every sampler that never overwrites a chain -- `mh`, `pt`,
+  `am`, `hmc`, and any `dream` run with no outlier -- is unchanged. The floor only moves
+  forward, counts only the replicas the diagnostics read (#782), and is created on demand so
+  an algorithm resumed from a backup written before it existed keeps working. It is reported
+  in `Results/diagnostics_meta.json` as `history_starts_at`.
 - **Parallel tempering's R-hat and ESS describe the replicas that carry the posterior, not
   every replica on the beta ladder (#782).** `should_sample` gates `sample_pset`, so under `pt`
   only the max-beta replicas reach `samples.txt`, `log_likelihood.txt`, the histograms and the

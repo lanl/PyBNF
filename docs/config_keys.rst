@@ -2864,11 +2864,18 @@ For DREAM
         "chains_compared": 1,
         "chain_replicas": [3],
         "chain_betas": [1.0],
-        "num_parallel": 4
+        "num_parallel": 4,
+        "history_starts_at": 0
       }
 
    ``chain_betas`` is ``null`` for the untempered samplers, whose replicas are interchangeable
-   copies of one target. The file is rewritten in full on every diagnostics write, so it is
+   copies of one target. ``history_starts_at`` is the earliest recorded step the diagnostics
+   were allowed to read. It is 0 for every sampler but ``dream`` / ``p_dream``, and non-zero
+   there only once an outlier chain has been reset: that reset overwrites the chain's window
+   with a copy of a donor's, so reading across it would show two chains agreeing exactly and
+   deflate :math:`\hat{R}` toward a convergence that has not happened. Resets happen only
+   during burn-in, so past ``burn_in`` this settles at the last reset and the window is
+   post-burn-in draws. The file is rewritten in full on every diagnostics write, so it is
    correct after a resume. Adding a field is backward compatible and leaves the schema at
    ``/1``; removing or redefining one bumps the major version, and a reader should check that
    prefix and ignore fields it does not know.

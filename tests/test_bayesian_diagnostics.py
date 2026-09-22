@@ -505,6 +505,127 @@ class TestDiagnosticsFollowTheReportedPosterior:
 
 
 # --------------------------------------------------------------------------- #
+# Overwritten history must not reach the diagnostics (#787)
+# --------------------------------------------------------------------------- #
+class TestOverwrittenHistoryIsExcluded:
+    """DREAM's outlier reset overwrites a chain's window with a copy of a donor's,
+    which keeps the archive ``_update_preconditioner`` pools well formed but files
+    the donor's draws under the outlier's index. Two chains then agree exactly over
+    that window, so R-hat's between-chain variance is deflated and it reads low --
+    toward convergence that has not happened (#787). ``start_floor`` keeps the
+    window clear of it.
+    """
+
+    BURN, LEN, N = 200, 300, 4
+
+    def _four_unconverged(self, seed):
+        """Four chains at genuinely different locations, so honest R-hat is well
+        above any threshold and a deflation is unmistakable."""
+        rng = np.random.default_rng(100 + seed)
+        return [[rng.normal(m, 1.0, 1) for _ in range(self.LEN)]
+                for m in (0.0, 0.8, 1.6, 2.4)]
+
+    def _with_reset(self, history):
+        """Chain 3's [BURN//2:BURN] replaced by chain 0's, as the reset does."""
+        dup = [[v.copy() for v in c] for c in history]
+        dup[3][self.BURN // 2:self.BURN] = [v.copy() for v in dup[0][self.BURN // 2:self.BURN]]
+        return dup
+
+    def test_a_duplicated_window_deflates_rhat(self):
+        """The defect itself. Without a floor the copy pulls R-hat down on every
+        seed -- about -0.14 here -- which is the direction that matters."""
+        for seed in range(4):
+            honest = self._four_unconverged(seed)
+            with_copy = self._with_reset(honest)
+            assert (np.nanmax(diagnostics.rhat(with_copy, self.N))
+                    < np.nanmax(diagnostics.rhat(honest, self.N)) - 0.05)
+
+    def test_a_floor_past_the_copy_removes_the_deflation(self):
+        """With the window starting after the reset, the duplicate is out of reach
+        and R-hat is back in the honest range rather than systematically under it."""
+        for seed in range(4):
+            honest = float(np.nanmax(diagnostics.rhat(self._four_unconverged(seed), self.N)))
+            floored = float(np.nanmax(diagnostics.rhat(
+                self._with_reset(self._four_unconverged(seed)), self.N, self.BURN)))
+            assert floored > honest - 0.05
+
+    def test_start_floor_zero_is_the_previous_behaviour(self):
+        """The floor is opt-in: every sampler that never overwrites a chain passes 0
+        and must get exactly the numbers it got before."""
+        for seed in range(8):
+            h = self._four_unconverged(seed)
+            assert np.array_equal(diagnostics.rhat(h, self.N, 0), diagnostics.rhat(h, self.N))
+            assert np.array_equal(diagnostics.ess(h, self.N, 0)[0],
+                                  diagnostics.ess(h, self.N)[0])
+            assert np.array_equal(diagnostics.split_chains(h, self.N, 0),
+                                  diagnostics.split_chains(h, self.N))
+
+    def test_floor_below_the_halfway_point_changes_nothing(self):
+        """The floor is a lower bound on the start, not a replacement for the 50%
+        rule -- a floor the 50% rule already clears must not widen the window."""
+        h = self._four_unconverged(0)
+        assert np.array_equal(diagnostics.split_chains(h, self.N, self.LEN // 4),
+                              diagnostics.split_chains(h, self.N))
+
+    def test_floor_leaving_too_little_history_yields_no_diagnostic(self):
+        """Right after a reset there is not enough of the chain's own history to say
+        anything. That must read as 'no diagnostic yet', not as a number off a
+        handful of draws."""
+        h = self._four_unconverged(0)
+        assert diagnostics.split_chains(h, self.N, self.LEN - 4) is None
+        assert diagnostics.rhat(h, self.N, self.LEN - 4) is None
+        assert diagnostics.ess(h, self.N, self.LEN - 4) == (None, None)
+
+
+class TestHistoryValidityFloorBookkeeping:
+    """``_mark_history_overwritten`` / ``_diagnostics_start_floor`` on the base."""
+
+    def _bare(self, num_parallel=4, selected=None):
+        ba = object.__new__(BA)
+        ba.num_parallel = num_parallel
+        if selected is not None:
+            ba.should_sample = lambda i: i in selected
+        return ba
+
+    def test_absent_attribute_means_no_floor(self):
+        """A sampler that never marks anything, and an algorithm unpickled by
+        --resume from a backup written before the attribute existed."""
+        assert self._bare()._diagnostics_start_floor() == 0
+
+    def test_marking_creates_the_list_on_an_algorithm_that_lacks_it(self):
+        """The write has to heal a missing attribute too: DREAM resets chains during
+        burn-in, so a resumed old run would otherwise crash there rather than in the
+        diagnostics."""
+        ba = self._bare()
+        assert not hasattr(ba, 'chain_history_valid_from')
+        ba._mark_history_overwritten(2, 150)
+        assert ba.chain_history_valid_from == [0, 0, 150, 0]
+
+    def test_the_floor_never_moves_backwards(self):
+        """Chains are reset repeatedly during burn-in. An earlier reset arriving
+        after a later one must not reopen history the later one invalidated."""
+        ba = self._bare()
+        ba._mark_history_overwritten(2, 150)
+        ba._mark_history_overwritten(2, 90)
+        assert ba.chain_history_valid_from[2] == 150
+
+    def test_the_floor_is_the_latest_over_all_marked_chains(self):
+        """One window is read across every chain, so it must clear the last reset."""
+        ba = self._bare()
+        ba._mark_history_overwritten(1, 40)
+        ba._mark_history_overwritten(2, 150)
+        assert ba._diagnostics_start_floor() == 150
+
+    def test_only_the_compared_chains_count(self):
+        """The diagnostics read the replicas ``should_sample`` selects (#782), so a
+        reset on a replica they do not read must not shrink their window."""
+        ba = self._bare(selected={0, 1})
+        ba._mark_history_overwritten(1, 40)
+        ba._mark_history_overwritten(2, 150)     # not compared
+        assert ba._diagnostics_start_floor() == 40
+
+
+# --------------------------------------------------------------------------- #
 # _param_vec: extract parameters into the sampling space
 # --------------------------------------------------------------------------- #
 class TestParamVec:

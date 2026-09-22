@@ -25,19 +25,27 @@ import numpy as np
 from scipy import stats
 
 
-def split_chains(chain_history, num_parallel):
+def split_chains(chain_history, num_parallel, start_floor=0):
     """Build the split-chains array used for R-hat and ESS.
 
     Uses the last 50% of each chain, then splits that window in two (doubling the
     chain count, catching within-chain non-stationarity). Returns an
     ``(2 * num_parallel, half, n_dim)`` array, or ``None`` if there is too little
     history (fewer than 20 recorded steps, or fewer than 5 per split half).
+
+    :param start_floor: An index before which no chain's history may be read, even
+        if the 50% rule would reach further back. A caller passes this when some of
+        the recorded history is not a draw from the chain it is filed under -- as
+        after DREAM's outlier reset, which overwrites a chain's window with a copy of
+        a donor's, so that R-hat would otherwise compare a chain against a duplicate
+        of itself and read low (#787). 0, the default, restores the plain 50% rule.
+    :type start_floor: int
     """
     min_len = min(len(h) for h in chain_history)
     if min_len < 20:
         return None
 
-    start = min_len // 2
+    start = max(min_len // 2, start_floor)
     usable = min_len - start
     half = usable // 2
     if half < 5:
@@ -78,7 +86,7 @@ def split_chain_rhat(chains):
         return np.sqrt(var_plus / W)
 
 
-def rhat(chain_history, num_parallel):
+def rhat(chain_history, num_parallel, start_floor=0):
     """
     Compute rank-normalized split-R-hat for each parameter (Vehtari, Gelman, Simpson,
     Carpenter & Burkner, 2021, Bayesian Analysis).
@@ -89,9 +97,11 @@ def rhat(chain_history, num_parallel):
     3. Compute R-hat on both the ranked values and folded ranked values (detects scale differences)
     4. Return the element-wise maximum
 
+    ``start_floor`` is forwarded to :func:`split_chains`.
+
     Returns a numpy array of shape (n_dim,) or None if insufficient data.
     """
-    chains = split_chains(chain_history, num_parallel)
+    chains = split_chains(chain_history, num_parallel, start_floor)
     if chains is None:
         return None
 
@@ -169,16 +179,18 @@ def ess_from_chains(chains):
     return max(ess_val, 1.0)
 
 
-def ess(chain_history, num_parallel):
+def ess(chain_history, num_parallel, start_floor=0):
     """
     Compute bulk and tail effective sample size per Vehtari et al. (2021).
 
     Bulk ESS: computed on rank-normalized values (same transform as R-hat).
     Tail ESS: minimum ESS of the 5% and 95% quantile indicators.
 
+    ``start_floor`` is forwarded to :func:`split_chains`.
+
     Returns (bulk_ess, tail_ess) arrays of shape (n_dim,) or (None, None).
     """
-    chains = split_chains(chain_history, num_parallel)
+    chains = split_chains(chain_history, num_parallel, start_floor)
     if chains is None:
         return None, None
 
