@@ -252,6 +252,32 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
+- **MCMC checkpointing no longer re-serializes millions of small arrays every iteration
+  (#789).** `chain_history` is appended to once per chain per iteration and never trimmed,
+  `should_pickle` keeps it, and the checkpoint fires once per iteration by default
+  (`get_backup_every()` is `backup_every * population_size * smoothing`, all 1). So `backup()`
+  re-serialized the entire growing history every iteration, and the cost of a run was
+  quadratic in `max_iterations`. Measured on a real algorithm at 20 chains, the whole-algorithm
+  pickle went from 0.04 MB empty to 46.45 MB and 1.335 s at 40,000 iterations -- the history
+  was essentially the whole checkpoint.
+
+  Each chain is now stored as one growing array (`ChainRecord`) rather than a list of
+  per-step arrays, so the pickle is a handful of buffers instead of millions of objects. Same
+  algorithm, same draws: **25.64 MB and 0.0052 s at 40,000 iterations, about half the size and
+  258x faster.** Integrated over a 20-chain, 100,000-iteration run that is the difference
+  between tens of hours of pickling and about ten minutes. Resident memory falls by about the
+  same factor of two, because a `(n_dim,)` array costs 112 bytes of object overhead per
+  recorded step regardless of `n_dim`.
+
+  Nothing else changes. `ChainRecord` supports append, `len`, indexing, slicing, slice
+  assignment, iteration and comparison against a plain list, so every reader --
+  `diagnostics.split_chains`, DREAM's `_update_preconditioner` and its outlier reset -- works
+  on it unmodified, and a test that assigns a plain list in its place still does. Slicing
+  returns a copy, as list slicing does, so no caller can alias a buffer a later append
+  reallocates. R-hat, ESS and `split_chains` are byte-identical between the two
+  representations, including through the `start_floor` path added for #787. An algorithm
+  resumed from a backup written before this change unpickles its plain lists and keeps
+  working, since every reader is duck-typed.
 - **DREAM's outlier reset no longer lets a chain be compared against a duplicate of itself
   (#787).** `detect_and_reset_outliers` resets an outlier chain by copying the donor's history
   over it rather than discarding the outlier's own. That keeps the archive

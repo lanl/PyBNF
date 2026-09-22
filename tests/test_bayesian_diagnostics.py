@@ -22,6 +22,8 @@ The ``pybnf.diagnostics`` functions are pure (they take ``chain_history`` /
 on bare instances built with ``object.__new__`` rather than paying for the full
 (model-parsing, directory-creating) constructor.
 """
+import pickle
+
 import numpy as np
 import pytest
 from hypothesis import given, assume, settings, strategies as st
@@ -623,6 +625,105 @@ class TestHistoryValidityFloorBookkeeping:
         ba._mark_history_overwritten(1, 40)
         ba._mark_history_overwritten(2, 150)     # not compared
         assert ba._diagnostics_start_floor() == 40
+
+
+# --------------------------------------------------------------------------- #
+# ChainRecord: the packed chain_history container (#789)
+# --------------------------------------------------------------------------- #
+class TestChainRecordIsADropInForTheList:
+    """``chain_history`` is re-pickled by ``backup()`` once per iteration and never
+    trimmed, so how it is stored is the dominant cost of a long run. ``ChainRecord``
+    stores each chain as one growing array instead of a list of per-step arrays.
+    Every reader was written against a list, so the container has to behave like one.
+    """
+
+    def _record(self, n=10, d=3):
+        rec = algorithms.ChainRecord()
+        for i in range(n):
+            rec.append(np.arange(d, dtype=float) + i)
+        return rec
+
+    def test_append_len_and_indexing(self):
+        rec = self._record()
+        assert len(rec) == 10
+        assert np.array_equal(rec[2], np.array([2.0, 3.0, 4.0]))
+        assert np.array_equal(rec[-1], np.array([9.0, 10.0, 11.0]))
+
+    def test_slicing_matches_a_list_of_arrays(self):
+        rows = [np.arange(3, dtype=float) + i for i in range(10)]
+        rec = algorithms.ChainRecord(rows)
+        assert np.array_equal(rec[4:8], np.array(rows[4:8]))
+        assert np.array_equal(rec[len(rec) // 2:], np.array(rows[5:]))
+
+    def test_slicing_returns_a_copy_not_a_view(self):
+        """List slicing copies. A view would alias a buffer that a later append can
+        reallocate, which is the kind of bug that surfaces a thousand iterations later."""
+        rec = self._record()
+        got = rec[0:4]
+        got[0] = 99.0
+        assert rec[0][0] == 0.0
+
+    def test_slice_assignment_writes_through(self):
+        """DREAM's outlier reset does exactly this: ``h[out][a:b] = h[donor][a:b]``."""
+        rec, donor = self._record(), self._record()
+        donor[0:10] = np.zeros((10, 3))
+        rec[2:5] = donor[2:5]
+        assert np.array_equal(rec[2:5], np.zeros((3, 3)))
+        assert np.array_equal(rec[5], np.array([5.0, 6.0, 7.0]))   # untouched
+
+    def test_iteration_yields_rows(self):
+        """``_update_preconditioner`` does ``all_samples.extend(chain[n//2:])``."""
+        rec = self._record()
+        rows = list(rec)
+        assert len(rows) == 10 and np.array_equal(rows[3], np.array([3.0, 4.0, 5.0]))
+
+    def test_equality_against_a_plain_list(self):
+        """Callers and assertions written as ``history == [a, b]`` keep working."""
+        rec = algorithms.ChainRecord([1.0, 2.0, 3.0])
+        assert rec == [1.0, 2.0, 3.0]
+        assert not rec == [1.0, 2.0]
+        assert not rec == [1.0, 2.0, 4.0]
+
+    def test_scalar_items_for_ln_posterior_history(self):
+        """The item shape comes from the first append, so the same container holds
+        ``ln_posterior_history``'s floats."""
+        rec = algorithms.ChainRecord([float(i) for i in range(20)])
+        assert len(rec) == 20
+        assert np.mean(rec[10:15]) == 12.0
+
+    def test_growth_past_the_initial_capacity(self):
+        """The buffer doubles; nothing may be lost or reordered across a reallocation."""
+        n = algorithms.ChainRecord._INITIAL_CAPACITY * 4 + 7
+        rec = algorithms.ChainRecord(range(n))
+        assert len(rec) == n
+        assert np.array_equal(rec[:], np.arange(n, dtype=float))
+
+    def test_pickle_round_trips_and_carries_no_capacity_slack(self):
+        """The pickle is the whole point: it must hold the filled prefix only, not
+        the doubling headroom."""
+        rec = algorithms.ChainRecord(range(65))      # just past a doubling
+        back = pickle.loads(pickle.dumps(rec))
+        assert len(back) == 65 and np.array_equal(back[:], rec[:])
+        assert len(pickle.dumps(rec)) < len(pickle.dumps(algorithms.ChainRecord(range(200))))
+
+    def test_pickle_is_much_smaller_than_the_list_of_arrays_it_replaced(self):
+        """The regression guard. A list of per-step arrays is millions of small
+        objects; one array per chain is a buffer."""
+        rows = [np.zeros(3) for _ in range(5000)]
+        packed = len(pickle.dumps(algorithms.ChainRecord(rows), protocol=pickle.HIGHEST_PROTOCOL))
+        as_list = len(pickle.dumps(rows, protocol=pickle.HIGHEST_PROTOCOL))
+        assert packed < as_list / 1.5
+
+    def test_the_diagnostics_read_it_identically(self):
+        """No R-hat or ESS value may move because of how the draws are stored --
+        including through the #787 start_floor path."""
+        rng = np.random.default_rng(3)
+        raw = [[rng.normal(m, 1.0, 3) for _ in range(400)] for m in (0.0, 0.4, 0.8, 1.2)]
+        packed = [algorithms.ChainRecord(c) for c in raw]
+        assert np.array_equal(diagnostics.rhat(raw, 4), diagnostics.rhat(packed, 4))
+        assert np.array_equal(diagnostics.ess(raw, 4)[0], diagnostics.ess(packed, 4)[0])
+        assert np.array_equal(diagnostics.split_chains(raw, 4), diagnostics.split_chains(packed, 4))
+        assert np.array_equal(diagnostics.rhat(raw, 4, 250), diagnostics.rhat(packed, 4, 250))
 
 
 # --------------------------------------------------------------------------- #

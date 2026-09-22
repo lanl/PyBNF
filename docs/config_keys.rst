@@ -1181,6 +1181,12 @@ Output Options
   ``-r`` :ref:`resume <config>` reads to continue an interrupted run. A larger value checkpoints
   less often, trading resume granularity for lower I/O.
 
+  For an MCMC fit the checkpoint carries the recorded chain history, which grows for the whole
+  run, so each write costs a little more than the last and the total cost over a run grows with
+  the *square* of ``max_iterations``. The history is stored packed, which keeps the constant
+  small (a 20-chain checkpoint at 40,000 iterations is about 26 MB and 5 ms), but on a very long
+  run raising ``backup_every`` is still the knob that trades resume granularity for that cost.
+
   Default: 1
 
   Example:
