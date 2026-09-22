@@ -36,6 +36,10 @@ from .base import (
 # samplers/base.py; the facade re-export keeps algorithms.BayesianAlgorithm
 # resolving for tests.
 from .samplers.base import BayesianAlgorithm as BayesianAlgorithm
+# ChainRecord is the packed store behind chain_history / ln_posterior_history
+# (#789); re-exported on the same facade so it is reachable as
+# algorithms.ChainRecord, like the class that holds it.
+from .samplers.base import ChainRecord as ChainRecord
 # Leaf fit types, re-exported so pybnf.py's algs.* dispatch and the test facade
 # (algorithms.ParticleSwarm, ...) keep resolving.
 from .optimizers.particle_swarm import ParticleSwarm as ParticleSwarm
