@@ -176,6 +176,13 @@ class BayesianAlgorithm(Algorithm):
 
         # Chain history for convergence diagnostics (R-hat, ESS)
         self.chain_history = [[] for _ in range(self.num_parallel)]
+        # Index into chain_history[i] before which its entries are not draws from
+        # chain i. Only DREAM moves it: its outlier reset overwrites a chain's window
+        # with a copy of a donor's, which keeps the archive the whitened preconditioner
+        # pools well formed but would let R-hat compare a chain against a duplicate of
+        # itself and read low (#787). Stays 0 for every other sampler, and for a DREAM
+        # run that never resets a chain, so their diagnostics are unchanged.
+        self.chain_history_valid_from = [0] * self.num_parallel
         self.ln_posterior_history = [[] for _ in range(self.num_parallel)]
 
         # Convergence threshold (0 = disabled)
@@ -540,6 +547,40 @@ class BayesianAlgorithm(Algorithm):
         """
         return [h for i, h in enumerate(self.chain_history) if self.should_sample(i)]
 
+    def _mark_history_overwritten(self, index, valid_from):
+        """Record that ``chain_history[index]`` holds entries before ``valid_from``
+        that are not draws from chain ``index``, so the diagnostics do not read them.
+
+        The floor only ever moves forward: a chain reset twice resumes at the later
+        point. Creates the list when absent, so an algorithm unpickled by ``--resume``
+        from a backup written before this existed keeps working (#787).
+
+        :param index: The chain whose recorded history was overwritten
+        :type index: int
+        :param valid_from: The index at which that chain's own history resumes
+        :type valid_from: int
+        """
+        if not hasattr(self, 'chain_history_valid_from'):
+            self.chain_history_valid_from = [0] * self.num_parallel
+        self.chain_history_valid_from[index] = max(
+            self.chain_history_valid_from[index], valid_from)
+
+    def _diagnostics_start_floor(self):
+        """The earliest index the diagnostics may read, over the chains they compare.
+
+        A chain whose history was overwritten contributes its own resume point; the
+        window has to clear the latest of them, since R-hat reads one window across
+        all the chains. ``getattr`` because an algorithm unpickled by ``--resume``
+        from a backup written before this attribute existed will not carry it.
+
+        :rtype: int
+        """
+        valid_from = getattr(self, 'chain_history_valid_from', None)
+        if not valid_from:
+            return 0
+        selected = [i for i in range(self.num_parallel) if self.should_sample(i)]
+        return max((valid_from[i] for i in selected), default=0)
+
     def compute_rhat(self):
         """Rank-normalized split-R-hat per parameter (Vehtari et al. 2021).
 
@@ -560,7 +601,7 @@ class BayesianAlgorithm(Algorithm):
         history = self._posterior_chain_history()
         if not history:
             return None
-        return diagnostics.rhat(history, len(history))
+        return diagnostics.rhat(history, len(history), self._diagnostics_start_floor())
 
     def compute_ess(self):
         """Bulk and tail effective sample size per parameter (Vehtari et al. 2021).
@@ -573,7 +614,7 @@ class BayesianAlgorithm(Algorithm):
         history = self._posterior_chain_history()
         if not history:
             return None, None
-        return diagnostics.ess(history, len(history))
+        return diagnostics.ess(history, len(history), self._diagnostics_start_floor())
 
     def report_convergence_diagnostics(self, iteration):
         """
@@ -666,6 +707,8 @@ class BayesianAlgorithm(Algorithm):
             'chain_replicas': selected,
             'chain_betas': [betas[i] for i in selected] if betas is not None else None,
             'num_parallel': self.num_parallel,
+            # 0 unless a chain's history was overwritten (DREAM's outlier reset, #787).
+            'history_starts_at': self._diagnostics_start_floor(),
         }
         with open(path, 'w') as f:
             json.dump(meta, f, indent=2, sort_keys=True)

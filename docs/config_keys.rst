@@ -2555,6 +2555,9 @@ For all Bayesian algorithms except ``sa``
     
 **burn_in**
   Don't sample for this many iterations at the start, to let the system equilibrate. 
+
+  This governs what reaches ``samples.txt`` and the histograms. It does **not** set the window
+  the :math:`\hat{R}` / ESS diagnostics read -- see ``diagnostics_every``.
   
   Default: 10000
   
@@ -2864,11 +2867,37 @@ For DREAM
         "chains_compared": 1,
         "chain_replicas": [3],
         "chain_betas": [1.0],
-        "num_parallel": 4
+        "num_parallel": 4,
+        "history_starts_at": 0
       }
 
+.. note::
+
+   The diagnostics read **the last 50% of each chain's recorded history**, which is the classic
+   Gelman-Rubin warmup discard and is not the same thing as ``burn_in``. While
+   ``burn_in`` exceeds half the run so far -- that is, for every iteration before
+   ``2 * burn_in`` -- the window therefore includes draws that ``burn_in`` kept out of
+   ``samples.txt``.
+
+   This is deliberate, not an oversight. Restricting the window to post-``burn_in`` draws
+   would shorten it in exactly that band, and :math:`\hat{R}` over a short window is noisier
+   and reads high all by itself: on a chain that had fully relaxed, the last-50% window gave
+   1.06 where a post-``burn_in`` window of a third the length gave 1.52, against a true value
+   of 1.0. The longer window is the better-estimated one. What it costs is that a genuinely
+   unrelaxed transient can sit inside the window; measured with the length held fixed, that
+   shifts :math:`\hat{R}` by well under the gap to any usable threshold.
+
+   ``history_starts_at`` in the sidecar below reports the one case where the window is
+   narrowed anyway.
+
    ``chain_betas`` is ``null`` for the untempered samplers, whose replicas are interchangeable
-   copies of one target. The file is rewritten in full on every diagnostics write, so it is
+   copies of one target. ``history_starts_at`` is the earliest recorded step the diagnostics
+   were allowed to read. It is 0 for every sampler but ``dream`` / ``p_dream``, and non-zero
+   there only once an outlier chain has been reset: that reset overwrites the chain's window
+   with a copy of a donor's, so reading across it would show two chains agreeing exactly and
+   deflate :math:`\hat{R}` toward a convergence that has not happened. Resets happen only
+   during burn-in, so past ``burn_in`` this settles at the last reset and the window is
+   post-burn-in draws. The file is rewritten in full on every diagnostics write, so it is
    correct after a resume. Adding a field is backward compatible and leaves the schema at
    ``/1``; removing or redefining one bumps the major version, and a reader should check that
    prefix and ignore fields it does not know.

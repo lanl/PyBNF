@@ -450,6 +450,14 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.ln_current_P[out_idx] = self.ln_current_P[donor_idx]
             self.ln_posterior_history[out_idx][start:min_len] = self.ln_posterior_history[donor_idx][start:min_len]
             self.chain_history[out_idx][start:min_len] = self.chain_history[donor_idx][start:min_len]
+            # The copy keeps the archive _update_preconditioner pools well formed, but
+            # those entries are the donor's draws filed under out_idx. Left in the
+            # diagnostics' reach they would show two chains agreeing exactly, deflating
+            # R-hat's between-chain variance toward convergence that has not happened
+            # (#787). Record where this chain's own history resumes; the diagnostics
+            # start no earlier. Resets are burn-in only, so past burn-in this settles at
+            # the last reset point and the window is post-burn-in draws.
+            self._mark_history_overwritten(out_idx, min_len)
 
     def got_result(self, res):
         """

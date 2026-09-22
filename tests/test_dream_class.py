@@ -295,6 +295,53 @@ class TestResetOutliers:
         # The healthy chains are untouched.
         assert da.ln_current_P[1:] == healthy_means
 
+    def test_reset_records_where_the_chain_s_own_history_resumes(self):
+        """The reset copies the donor's window into chain 0, which keeps the archive
+        ``_update_preconditioner`` pools well formed but files the donor's draws under
+        chain 0. Left in the diagnostics' reach, two chains would agree exactly there
+        and deflate R-hat toward convergence that has not happened, so the reset
+        records the point past the copy for ``_diagnostics_start_floor`` (#787).
+        Only the reset chain is marked; the untouched ones keep reading from 0."""
+        da = object.__new__(algorithms.DreamAlgorithm)
+        da.num_parallel = 6
+        da.outlier_method = 'iqr'
+        da.iteration = [40] * 6
+        healthy_means = [5.0, 5.1, 4.9, 5.05, 4.95]
+        da.ln_posterior_history = [[-1000.0] * 40] + [[m] * 40 for m in healthy_means]
+        da.chain_history = [[np.zeros(3)] * 40] + [[np.ones(3)] * 40 for _ in range(5)]
+        da.current_pset = [_normal_pset((0., 0., 0.))] \
+            + [_normal_pset((1., 1., 1.)) for _ in range(5)]
+        da.ln_current_P = [-1000.0] + healthy_means
+        da.rng = np.random.default_rng(0)
+
+        da.detect_and_reset_outliers()
+
+        # 40 recorded steps: the copy covers [20:40], so chain 0's own history
+        # resumes at 40 -- everything appended from here on.
+        assert da.chain_history_valid_from == [40, 0, 0, 0, 0, 0]
+        da.should_sample = lambda i: True
+        assert da._diagnostics_start_floor() == 40
+
+    def test_no_outlier_leaves_the_floor_alone(self):
+        """A DREAM run that never resets a chain must read exactly as before: the
+        floor stays 0 and the diagnostics see the whole last half."""
+        da = object.__new__(algorithms.DreamAlgorithm)
+        da.num_parallel = 6
+        da.outlier_method = 'iqr'
+        da.iteration = [40] * 6
+        tight = [5.0, 5.1, 4.9, 5.05, 4.95, 5.02]      # no IQR outlier
+        da.ln_posterior_history = [[m] * 40 for m in tight]
+        da.chain_history = [[np.ones(3)] * 40 for _ in range(6)]
+        da.current_pset = [_normal_pset((1., 1., 1.)) for _ in range(6)]
+        da.ln_current_P = list(tight)
+        da.rng = np.random.default_rng(0)
+
+        da.detect_and_reset_outliers()
+
+        assert not hasattr(da, 'chain_history_valid_from')
+        da.should_sample = lambda i: True
+        assert da._diagnostics_start_floor() == 0
+
     def test_no_reset_when_no_outlier(self):
         """When every chain has a comparable mean ln-posterior, no chain is an
         outlier and the state is left entirely unchanged."""
