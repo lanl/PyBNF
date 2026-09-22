@@ -1,4 +1,5 @@
 import fnmatch
+import importlib.metadata
 import os
 import re
 import subprocess
@@ -346,3 +347,114 @@ def test_subprocess_pybnf_no_bngsim_package_root_import_smoke():
         'stdout=%r stderr=%r' % (result.stdout, result.stderr)
     )
     assert 'OK' in result.stdout
+
+
+def _requirement_floor(specifier):
+    """The lower bound a requirement declares, or ``None`` when it declares none.
+
+    ``'>=0.9,<1'`` -> ``'0.9'``. Only the ``>=`` clause matters here: an upper bound cannot be
+    violated by a stale environment, because resolving an old lock can only leave a package
+    behind, never ahead of a ceiling that was lowered.
+    """
+    for clause in specifier.split(','):
+        clause = clause.strip()
+        if clause.startswith('>='):
+            return clause[2:]
+    return None
+
+
+def _release_tuple(version_text):
+    """The numeric release segment of a version as a tuple: ``'2026.3.0'`` -> ``(2026, 3, 0)``.
+
+    A pre-release, post-release or local suffix is dropped rather than ordered. That is the safe
+    direction for this check: dropping it can only let a violation through, never invent one, and
+    no floor this project declares is a pre-release. Comparing tuples also keeps the test free of
+    a `packaging` import, which PyBNF does not declare and only has transitively.
+    """
+    release = re.match(r'\d+(?:\.\d+)*', version_text.strip())
+    return tuple(int(part) for part in release.group(0).split('.')) if release else ()
+
+
+def _declared_floors():
+    """Every distribution pyproject declares a lower bound for, name -> floor.
+
+    Runtime dependencies and every optional extra, since a developer environment installs the
+    extras too. A distribution named in more than one list is held to the highest floor any of
+    them declares, so the check cannot be weakened by an out-of-date copy of the same entry.
+    """
+    metadata = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())
+    groups = [metadata['project']['dependencies']]
+    groups += list(metadata['project'].get('optional-dependencies', {}).values())
+    floors = {}
+    for group in groups:
+        for requirement in group:
+            # An environment marker is not part of the version range.
+            parsed = _split_requirement(requirement.split(';')[0])
+            if parsed is None:
+                continue
+            name, specifier = parsed
+            floor = _requirement_floor(specifier)
+            if floor is None:
+                continue
+            if name not in floors or _release_tuple(floor) > _release_tuple(floors[name]):
+                floors[name] = floor
+    return floors
+
+
+def test_the_installed_environment_meets_every_floor_pyproject_declares():
+    """An environment below a declared floor must say so, rather than failing somewhere else.
+
+    `uv.lock` is not tracked, so the lock in a working copy and the declarations in
+    pyproject.toml drift apart with nothing to notice. When they do, the tests fail somewhere
+    far away from the cause. A `.venv` holding petab 0.8.2 against a declared `petab>=0.9,<1`
+    made six tests in `TestNativeBnglModel` fail with "Unknown model format: bngl", because
+    petab gained its BioNetGen loader in 0.9.0. Nothing in that output points at the
+    environment, and a run of the petab modules in that state reports nothing trustworthy in
+    either direction (#803).
+
+    A package that is not installed at all is skipped rather than failed. Every one of these
+    lives in an optional extra, the suites that need them `importorskip`, and an environment
+    without them is a supported way to work on the rest of PyBNF. Present but below the floor
+    never is.
+    """
+    too_old = {}
+    for name, floor in sorted(_declared_floors().items()):
+        try:
+            installed = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        if _release_tuple(installed) < _release_tuple(floor):
+            too_old[name] = (installed, floor)
+
+    detail = ', '.join(f'{name} {installed} is below the declared {floor}'
+                       for name, (installed, floor) in sorted(too_old.items()))
+    assert not too_old, (
+        f'this environment does not meet what pyproject.toml declares ({detail}). The lock '
+        f'file is not tracked, so it can predate a floor that moved. Run '
+        f'`uv sync --extra petab --extra tests` (adding whichever other extras you work with) '
+        f'and run the suite again. Until then a failure anywhere else proves nothing.')
+
+
+def test_the_floor_check_reads_a_requirement_and_orders_versions():
+    """The parts of the check above, on the case that prompted it and on the shapes it meets.
+
+    The guard itself passes trivially in a healthy environment, so the logic that decides what
+    "too old" means is pinned here rather than left to the day it matters.
+    """
+    assert _requirement_floor('>=0.9,<1') == '0.9'
+    assert _requirement_floor('>=0.15.0,<1') == '0.15.0'
+    assert _requirement_floor('') is None                      # `h5py`, no bound at all
+    assert _requirement_floor('<2') is None                    # a ceiling is not a floor
+
+    # The real case: petab 0.8.2 installed against a declared floor of 0.9.
+    assert _release_tuple('0.8.2') < _release_tuple('0.9')
+    assert _release_tuple('0.9.0') >= _release_tuple('0.9')    # the floor itself passes
+    assert _release_tuple('2026.3.0') > _release_tuple('2024.1.0')
+    assert _release_tuple('1.24.4') > _release_tuple('1.24')
+    assert _release_tuple('0.9.0rc1') == (0, 9, 0)             # a suffix is dropped, not ordered
+    assert _release_tuple('') == ()
+
+    floors = _declared_floors()
+    assert floors['petab'] == '0.9'                            # read out of pyproject, not typed
+    assert floors['bngsim'] == '0.15.0'                        # extras stripped
+    assert 'h5py' not in floors                                # declared with no lower bound
