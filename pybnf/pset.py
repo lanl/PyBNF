@@ -2593,25 +2593,80 @@ class FreeParameter:
         falls back to a finite prior support (plain uniform/loguniform). The
         algorithms also operate in ``u``, so log parameters initialize uniformly
         over log-bounds.
+
+        Raises when there is no such box, which is a configuration error and is reported as
+        one: the refusal names ``initialization_distribution`` (the key that asked for the
+        box), prints the bounds in the parameter's **own units** rather than in ``u``, and
+        carries the two remedies as hints (#799). It used to print the sampling-space pair,
+        so a parameter declared ``lower: 1e-12`` was refused with ``got [-12.0, inf]`` -- a
+        number appearing nowhere in the user's conf.
         """
         if self.initialization_lb is not None:
-            lo_u = self._scale.forward(float(self.initialization_lb))
-            hi_u = self._scale.forward(float(self.initialization_ub))
+            lo_theta, hi_theta = float(self.initialization_lb), float(self.initialization_ub)
+            lo_u, hi_u = self._scale.forward(lo_theta), self._scale.forward(hi_theta)
+            declared = 'the initialization bounds declared for it are'
         elif np.isfinite(self.lower_bound) and np.isfinite(self.upper_bound):
-            lo_u = self._scale.forward(self.lower_bound)
-            hi_u = self._scale.forward(self.upper_bound)
+            lo_theta, hi_theta = self.lower_bound, self.upper_bound
+            lo_u, hi_u = self._scale.forward(lo_theta), self._scale.forward(hi_theta)
+            declared = 'its bounds are'
         elif self._prior.has_bounded_support:
             lo_u, hi_u = self._prior.support()
+            lo_theta, hi_theta = self.lower_bound, self.upper_bound
+            declared = 'its bounds are'
         else:
-            raise PybnfError(
-                f"Parameter {self.name}: initialization_distribution='bounds' "
-                f"requires finite parameter bounds or a finite-support prior.")
+            raise self._no_initialization_box(
+                f'{self.name} declares no bounds, and its {self.type} prior has no finite '
+                f'support to fall back on', self.lower_bound, self.upper_bound)
 
         if not (np.isfinite(lo_u) and np.isfinite(hi_u)) or lo_u >= hi_u:
-            raise PybnfError(
-                f"Parameter {self.name}: initialization bounds must be finite and "
-                f"increasing in sampling space, got [{lo_u}, {hi_u}].")
+            raise self._no_initialization_box(
+                f'{declared} {self._describe_box(lo_theta, hi_theta)}', lo_theta, hi_theta)
         return lo_u, hi_u
+
+    def _describe_box(self, lo, hi):
+        """The declared box in the parameter's **own units**, saying what is wrong with it.
+
+        ``repr`` on the floats, not ``%f``: these bounds are routinely far from 1 (a rate
+        constant floored at 1e-12 prints as ``0.000000`` at six decimals), and repr is the
+        shortest string that round-trips -- the same reasoning as :meth:`set_value`'s log
+        line (#753)."""
+        box = f'lower {float(lo)!r}, upper {float(hi)!r}'
+        if lo == -np.inf or hi == np.inf:
+            return (f'{box} -- open {"above" if hi == np.inf else "below"}, so the region to '
+                    f'draw over is a half-line rather than a box')
+        if self._scale.is_log and lo <= 0.0:
+            return (f'{box} -- and {self.name} is sampled in {self._scale.name}, where a '
+                    f'bound of 0 or below has no finite value')
+        return f'{box} -- which is not an increasing range'
+
+    def _no_initialization_box(self, because, lo, hi):
+        """The refusal for ``initialization_distribution = 'bounds'`` with no finite box.
+
+        One :class:`PybnfError`, built in one place so both raise sites in
+        :meth:`_initialization_bounds_u` say the same thing: what was asked for, why this
+        parameter cannot supply it, and the two ways out. ``lo``/``hi`` are the box in theta,
+        and name only the side(s) actually missing -- telling someone who wrote
+        ``lower: 1e-12, upper: inf`` to "give it a lower and an upper" is advice they have
+        half-followed already.
+
+        The remedies ride as ``hint``\\ s rather than as a ``user_message``, so they are
+        appended to the diagnosis instead of replacing it: a refusal that shows only a
+        generic remedy discards its own reason (#527)."""
+        missing = [side for side, closed in (("'lower:'", lo > -np.inf),
+                                             ("'upper:'", hi < np.inf)) if not closed]
+        if len(missing) == 1:
+            fix = f"Give {self.name} a finite {missing[0]} bound, so there is a box to draw over"
+        elif missing:
+            fix = (f"Give {self.name} finite {' and '.join(missing)} bounds, so there is a box "
+                   f"to draw over")
+        else:
+            fix = f"Give {self.name} a box whose lower bound is below its upper bound"
+        return PybnfError(
+            f"Parameter {self.name}: initialization_distribution = 'bounds' draws start "
+            f"points uniformly over a finite box, but {because}.",
+            hint=[fix,
+                  f"Or remove 'initialization_distribution = bounds' to draw {self.name} "
+                  f"from its prior instead -- the default, which needs no finite box"])
 
     @property
     def has_bounded_initialization(self):

@@ -509,10 +509,93 @@ class TestInitializationDistribution:
         assert got.initialization_ub == 10.0
 
     def test_bounds_initialization_requires_finite_box(self):
-        with pytest.raises(PybnfError, match='requires finite'):
+        with pytest.raises(PybnfError, match='initialization_distribution'):
             pset.FreeParameter(
                 'x__FREE', 'normal_var', 0.0, 1.0,
                 initialization_distribution=pset.INITIALIZATION_BOUNDS)
+
+
+class TestTheNoInitializationBoxRefusalIsActionable:
+    """``initialization_distribution = 'bounds'`` needs a finite box, and a parameter that
+    has none has to be refused -- "uniformly over a half-line" is not a distribution. The
+    refusal is a configuration error and now reads like one (#799).
+
+    It used to read ``Parameter x1: initialization bounds must be finite and increasing in
+    sampling space, got [-12.0, inf].`` for a parameter declared ``lower: 1e-12``: the
+    number was the log10 of what the user wrote and appeared nowhere in their conf, the key
+    that caused the refusal was never named, and no remedy was offered -- on the one
+    declaration class (half-bounded, ADR-0047) where the right answer is usually just to
+    drop the key."""
+
+    @staticmethod
+    def _refusal(**kwargs):
+        """The PybnfError from building a parameter whose initialization box is unusable."""
+        with pytest.raises(PybnfError) as excinfo:
+            pset.FreeParameter(
+                'kon__FREE', kwargs.pop('type', 'lognormal_var'),
+                kwargs.pop('p1', -9.0), kwargs.pop('p2', 0.5),
+                initialization_distribution=pset.INITIALIZATION_BOUNDS, **kwargs)
+        return excinfo.value
+
+    def test_the_bounds_are_printed_in_the_parameters_own_units(self):
+        """The headline. A log-scaled parameter's box is stored in theta and sampled in
+        log10; the refusal has to quote the one the user typed, or it names a number that
+        is not in their file."""
+        e = self._refusal(lb=1e-12, ub=np.inf)
+        assert '1e-12' in e.log_message
+        assert '-12.0' not in e.log_message      # log10(1e-12): what it used to print
+
+    def test_it_names_the_key_that_caused_it(self):
+        """Nothing else in the conf mentions "initialization bounds", so without the key
+        the reader goes looking for a setting they never wrote."""
+        e = self._refusal(lb=1e-12, ub=np.inf)
+        assert "initialization_distribution = 'bounds'" in e.log_message
+
+    def test_it_says_which_side_is_open_and_offers_only_that_side(self):
+        """Telling someone who wrote ``lower: 1e-12, upper: inf`` to supply a lower and an
+        upper is advice they have half-followed already."""
+        e = self._refusal(lb=1e-12, ub=np.inf)
+        assert 'open above' in e.log_message
+        assert "'upper:'" in e.message and "'lower:'" not in e.message
+
+    def test_the_mirrored_open_side_is_named_the_other_way(self):
+        e = self._refusal(type='normal_var', p1=0.0, p2=1.0, lb=-np.inf, ub=5.0)
+        assert 'open below' in e.log_message
+        assert "'lower:'" in e.message and "'upper:'" not in e.message
+
+    def test_both_remedies_ride_as_hints_and_leave_the_diagnosis_intact(self):
+        """``hint`` appends; ``user_message`` would replace. A refusal carrying only a
+        generic remedy discards its own reason (#527), and the log line should stay the
+        bare diagnosis rather than repeating the advice."""
+        e = self._refusal(lb=1e-12, ub=np.inf)
+        assert len(e.hints) == 2
+        assert e.message.startswith(e.log_message)
+        assert '->' not in e.log_message
+        assert "remove 'initialization_distribution = bounds'" in e.hints[1]
+
+    def test_a_parameter_with_no_bounds_at_all_asks_for_both_sides(self):
+        """The sibling refusal, for an untruncated prior. It already named the key; it now
+        also prints in the parameter's units and carries the same two remedies, so the two
+        failures of one key do not read as though they came from different programs."""
+        e = self._refusal(type='normal_var', p1=0.0, p2=1.0)
+        assert "initialization_distribution = 'bounds'" in e.log_message
+        assert 'normal_var' in e.log_message         # the prior that has no finite support
+        assert "'lower:' and 'upper:'" in e.message
+        assert len(e.hints) == 2
+
+    def test_a_positive_family_is_only_asked_for_the_side_it_lacks(self):
+        """A ``gamma_var`` is floored at 0 by its own support, so only the ceiling is
+        missing. Asking for a lower bound it already has would be noise."""
+        e = self._refusal(type='gamma_var', p1=2.0, p2=1.0)
+        assert "'upper:'" in e.message and "'lower:' and" not in e.message
+
+    def test_a_usable_box_is_not_refused(self):
+        """The guard against an over-eager refusal: the case this key exists for still
+        builds, and initializes over the box rather than the prior."""
+        fp = pset.FreeParameter('kon__FREE', 'lognormal_var', -9.0, 0.5,
+                                lb=1e-12, ub=1e-6,
+                                initialization_distribution=pset.INITIALIZATION_BOUNDS)
+        assert fp._initialization_bounds_u() == (-12.0, -6.0)
 
 
 class TestTheOutOfBoundsDebugLineIsReadable:

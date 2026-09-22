@@ -688,6 +688,6 @@ class TestRestartDrawHonorsInitializationDistribution:
         ``initialization_distribution = bounds`` on one is refused when the FreeParameter
         is built -- so the combination never reaches a restart. Were that refusal ever
         relaxed, ``random_pset`` would raise mid-fit, on the restart, hours in."""
-        with pytest.raises(PybnfError, match='initialization bounds'):
+        with pytest.raises(PybnfError, match='initialization_distribution'):
             _record(prior='gamma', shape=2, scale='1e-9', lower='1e-12', upper='inf',
                     initialization_distribution='bounds')

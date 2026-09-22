@@ -1358,6 +1358,12 @@ Algorithm Options
    - ``prior`` - draw start points from each parameter's prior distribution. This is the backward-compatible default.
    - ``bounds`` - draw start points uniformly over each parameter's finite bounds in PyBNF's sampling space. Linear parameters use linear bounds; log parameters use log10 bounds.
 
+  ``bounds`` requires a finite box on **every** parameter, so a parameter with an unbounded
+  prior, or a :ref:`half-bounded one <half-bounded-search>` (``upper: inf``), is refused when
+  the configuration loads — there is no such thing as a uniform draw over a half-line. The
+  refusal names the parameter and the side that is open. Either close that side or leave the
+  key at its ``prior`` default, which needs no finite box.
+
   Default: prior
 
   Example:
