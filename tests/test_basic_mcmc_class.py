@@ -222,8 +222,14 @@ class TestSingleMaxBetaReplicaWarning:
     """Only max-beta replicas carry the posterior, so the R-hat / ESS diagnostics
     compare ``reps_per_beta`` chains. At the default of 1 that is a single chain
     and R-hat degrades to a split of it, which cannot detect a chain that never
-    left one mode -- the failure pt is usually run to avoid. The run says so up
-    front, and points at the remedy that does not cost the ladder.
+    left one mode -- the failure pt is usually run to avoid.
+
+    That is a property of the default configuration, not a mistake, so it is
+    reported by labelling the statistic (see
+    ``report_convergence_diagnostics``), not by a warning on every pt run --
+    which would be a line every user learns to scroll past. The warning is
+    reserved for the case where the statistic drives a decision:
+    ``rhat_threshold > 0`` makes ``check_convergence`` end the run on it.
     """
 
     def _run(self, tmp_path, capsys, **overrides):
@@ -236,28 +242,81 @@ class TestSingleMaxBetaReplicaWarning:
         n_sampled = sum(algo.should_sample(i) for i in range(algo.num_parallel))
         return n_sampled, capsys.readouterr().out
 
-    def test_warns_when_one_replica_sits_at_the_max_beta(self, tmp_path, capsys):
-        n_sampled, out = self._run(tmp_path, capsys)
+    def test_warns_when_a_threshold_will_stop_on_a_single_chain(self, tmp_path, capsys):
+        """One max-beta replica AND rhat_threshold set: the run can terminate
+        itself on a statistic blind to the failure it is meant to catch."""
+        n_sampled, out = self._run(tmp_path, capsys, rhat_threshold=1.05)
         assert n_sampled == 1
         assert '1 replica at the maximum beta' in out
         # The remedy must name both keys: reps_per_beta alone shortens the ladder.
         assert 'reps_per_beta = 2' in out and 'double population_size' in out
 
+    def test_silent_on_a_default_run_that_only_reports_the_number(self, tmp_path, capsys):
+        """The same configuration with rhat_threshold at its default of 0. R-hat is
+        still computed and printed, but it stops nothing, so there is no decision
+        to interrupt -- the label on the printed line carries the caveat instead.
+        This is the shape of an ordinary pt run, and it must not warn."""
+        n_sampled, out = self._run(tmp_path, capsys)
+        assert n_sampled == 1
+        assert 'maximum beta' not in out
+
     def test_silent_when_several_replicas_share_the_max_beta(self, tmp_path, capsys):
         """reps_per_beta=2 over 4 replicas gives a 2-rung ladder with 2 replicas
         each, so the diagnostics have two chains to compare and there is nothing
-        to warn about."""
+        to warn about even with a threshold set."""
         n_sampled, out = self._run(tmp_path, capsys, reps_per_beta=2,
-                                   beta=[0.5, 1.0], population_size=4)
+                                   beta=[0.5, 1.0], population_size=4, rhat_threshold=1.05)
         assert n_sampled == 2
         assert 'maximum beta' not in out
 
     def test_silent_for_mh(self, tmp_path, capsys):
         """mh is not tempered -- every replica samples the posterior -- so the
         warning must not fire there however many replicas it runs."""
-        n_sampled, out = self._run(tmp_path, capsys, fit_type='mh', beta=[1.0])
+        n_sampled, out = self._run(tmp_path, capsys, fit_type='mh', beta=[1.0],
+                                   rhat_threshold=1.05)
         assert n_sampled == 4
         assert 'maximum beta' not in out
+
+
+# --------------------------------------------------------------------------- #
+# The R-hat line names how many chains it compared (#782)
+# --------------------------------------------------------------------------- #
+class TestRhatLineNamesItsChainCount:
+    """``Max R-hat: 1.0034`` reads as a between-chain statistic. It is computed
+    over the replicas that carry the posterior, which under pt at the default
+    ``reps_per_beta = 1`` is one chain. The printed line names the count, so the
+    number does not overclaim on the line the reader is already reading -- and
+    costs no extra output to ignore."""
+
+    def _report(self, tmp_path, capsys, n_chains, **overrides):
+        kwargs = dict(fit_type='pt', population_size=4, reps_per_beta=1,
+                      exchange_every=10, max_iterations=100, burn_in=0,
+                      sample_every=10, beta=[0.25, 0.5, 0.75, 1.0])
+        kwargs.update(overrides)
+        algo = algorithms.BasicBayesMCMCAlgorithm(_make_config(tmp_path, NORMAL_VARS, **kwargs))
+        rng = np.random.default_rng(5)
+        algo.chain_history = [[rng.normal(0, 1, 3) for _ in range(200)]
+                              for _ in range(algo.num_parallel)]
+        capsys.readouterr()
+        algo.report_convergence_diagnostics(100)
+        assert len(algo._posterior_chain_history()) == n_chains
+        return capsys.readouterr().out
+
+    def test_single_chain_is_named_a_split(self, tmp_path, capsys):
+        out = self._report(tmp_path, capsys, n_chains=1)
+        assert 'Max R-hat:' in out
+        assert '(split, 1 chain)' in out
+
+    def test_several_chains_report_their_count(self, tmp_path, capsys):
+        out = self._report(tmp_path, capsys, n_chains=2, reps_per_beta=2,
+                           beta=[0.5, 1.0], population_size=4)
+        assert '(2 chains)' in out
+
+    def test_untempered_run_counts_every_replica(self, tmp_path, capsys):
+        """mh samples every replica, so the count is population_size and the line
+        is unchanged in substance from before."""
+        out = self._report(tmp_path, capsys, n_chains=4, fit_type='mh', beta=[1.0])
+        assert '(4 chains)' in out
 
 
 # --------------------------------------------------------------------------- #
