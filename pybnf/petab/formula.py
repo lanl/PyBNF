@@ -182,9 +182,9 @@ def substitute_placeholders(formula, substitutions):
     return petab_math
 
 
-def inline_assignment_rules(formula, rules, *, observable_id=None):
-    """Inline the SBML assignment-rule variables a measurement ``observableFormula`` references
-    down to the species/parameters their rules are defined over (#465, ADR-0036).
+def inline_derived_symbols(formula, derived, *, observable_id=None):
+    """Inline the derived SBML entities a measurement ``observableFormula`` references down to the
+    species/parameters they are defined over (#465 and #795, ADR-0036).
 
     An SBML ``assignmentRule variable="X"`` makes ``X`` an algebraic function of other model
     entities, recomputed every step -- never a simulation-output column and value-less, so the
@@ -197,48 +197,65 @@ def inline_assignment_rules(formula, rules, *, observable_id=None):
     :func:`compile_petab_formula` + the chain-rule gradient (:meth:`MeasurementModel.\
 prediction_sensitivity`) handle unchanged: the rule's species sensitivities flow in automatically.
 
-    ``rules`` maps every assignment-rule target id to its RHS as a PEtab-math infix string (the
-    stdlib ``_sbml`` scanner's serialization), or to ``None`` when the rule's MathML used a
-    construct the scanner could not translate. A formula that references **no** rule variable is
-    returned **verbatim** (the common case never reaches sympy, so it stays byte-stable). The
-    substitution + serialization go through ``sympy`` (never a string tokenizer -- ADR-0033),
+    The second construct is an ``initialAssignment`` on a parameter or compartment (#795). SBML
+    lets one supersede the declared ``value``/``size``, so the attribute is a placeholder and the
+    entity has no value of its own. Inlining is what makes such a model work rather than merely
+    fail politely: an observable over Bertozzi's ``beta_N``, defined as ``(R0_ * gamma_) / N_``,
+    resolves to an expression over the three parameters, and if the fit estimates one of them the
+    measurement tracks the fit, because :meth:`MeasurementModel.materialize` resolves a symbol
+    from the parameter set before the constant snapshot. An initial assignment is only inlinable
+    when every entity it reads holds still for the whole simulation, since the substituted
+    expression is read at a measurement time while the assignment fixed a value at t=0; the
+    scanner applies that gate and records a non-inlinable definition as ``None``.
+
+    ``derived`` maps every derived entity id to a ``DerivedSymbol`` carrying its ``kind``, its RHS
+    as a PEtab-math infix string (the stdlib ``_sbml`` scanner's serialization) or ``None``, and
+    the clause naming why a ``None`` cannot be inlined. A formula that references **no** derived
+    entity is returned **verbatim** (the common case never reaches sympy, so it stays byte-stable).
+    The substitution + serialization go through ``sympy`` (never a string tokenizer -- ADR-0033),
     guarded by the same numeric round-trip self-check as the exporter.
 
     Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable formula/RHS, a reference to
-    a rule whose MathML was not translatable (``None`` RHS), a cyclic rule dependency, or a
+    a definition the scanner could not carry (``None`` RHS), a cyclic dependency, or a
     substitution that fails its round-trip self-check.
     """
-    if not rules:
+    if not derived:
         return formula
     sympify_petab = _require_petab_math()
     expr = _parse(sympify_petab, formula, source='observableFormula')
-    referenced = {str(s) for s in expr.free_symbols} & set(rules)
+    referenced = {str(s) for s in expr.free_symbols} & set(derived)
     if not referenced:
-        return formula      # no assignment-rule variable in the formula -> carry it verbatim
+        return formula      # no derived entity in the formula -> carry it verbatim
     where = f"Measurement model '{observable_id}': " if observable_id else 'Measurement model: '
-    resolved = {}           # rule name -> its fully rule-free sympy expr (memoized)
+    resolved = {}           # name -> its fully derived-free sympy expr (memoized)
 
     def resolve(name, path):
         if name in resolved:
             return resolved[name]
+        symbol = derived.get(name)
+        noun = ('initial assignment' if getattr(symbol, 'kind', None) == 'initial_assignment'
+                else 'assignment rule')
         if name in path:
             chain = ' -> '.join(path[path.index(name):] + (name,))
             raise PybnfError(
-                f"{where}the SBML assignment rule for '{name}' is cyclic ({chain}), so it cannot "
-                f"be resolved to a closed-form observable. (ADR-0036, #465.)")
-        rhs_infix = rules.get(name)
+                f"{where}the SBML {noun} for '{name}' is cyclic ({chain}), so it cannot "
+                f"be resolved to a closed-form observable. (ADR-0036, #465 and #795.)")
+        rhs_infix = symbol.expression if symbol is not None else None
         if rhs_infix is None:
+            reason = getattr(symbol, 'refusal', None) or (
+                f'its defining {noun} uses a construct this reader does not translate')
             raise PybnfError(
-                f"{where}the observableFormula references the SBML assignment-rule variable "
-                f"'{name}', whose defining math uses a construct PyBNF's measurement layer cannot "
-                f"inline (e.g. a piecewise/relational rule). Write the observable directly over "
-                f"the species/parameters it is computed from instead. (ADR-0036, #465.)")
-        rhs = _parse(sympify_petab, rhs_infix, source=f"assignment rule for {name!r}")
+                f"{where}the observableFormula references '{name}', which the SBML model file "
+                f"defines in terms of other model entities and gives no value of its own. PyBNF "
+                f"cannot inline that definition here because {reason}. Write the observable "
+                f"directly over the species and parameters it is computed from instead. "
+                f"(ADR-0036, #465 and #795.)")
+        rhs = _parse(sympify_petab, rhs_infix, source=f"{noun} for {name!r}")
         # Substitute by the ACTUAL free-symbol objects of this RHS parse (petab tags symbols with
         # assumptions, so a plain sp.Symbol(name) would be a distinct object subs/diff ignore --
         # the same gotcha inline_constants / substitute_placeholders guard).
         sub = {s: resolve(str(s), path + (name,))
-               for s in rhs.free_symbols if str(s) in rules}
+               for s in rhs.free_symbols if str(s) in derived}
         resolved[name] = rhs.subs(sub) if sub else rhs
         return resolved[name]
 

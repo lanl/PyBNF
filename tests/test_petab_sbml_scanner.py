@@ -240,3 +240,303 @@ class TestAssignmentRuleSerialization:
         ent = parse_model(doc)
         assert ent.assignment_rules == {'x': None}
         assert 'x' not in ent.namespace_symbols
+
+
+# A model exercising every <initialAssignment> shape at once (#795). SBML lets an initial
+# assignment supersede a parameter's value, a compartment's size, and a species' initial
+# amount/concentration, so the declared attribute is a placeholder the model never starts from.
+#   settled   -- arithmetic over numbers alone, so the assignment IS the value
+#   stale     -- computed from a constant parameter: no value, inlinable
+#   valueless -- the same, written the way antimony emits it (no value attribute at all)
+#   chain     -- computed from another derived parameter
+#   dcomp     -- a compartment, to show size is superseded the same way
+#   over_*    -- one per kind of entity that moves during a simulation, none of them inlinable
+#   piecewise -- MathML this stdlib reader does not translate
+#   A         -- a species by assignment, which stays an output column
+SBML_INITIAL = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="derived">
+    <listOfCompartments>
+      <compartment id="cell" size="1" constant="true"/>
+      <compartment id="dcomp" size="9" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="cell" initialConcentration="1" constant="false" boundaryCondition="false"/>
+      <species id="B" compartment="cell" initialConcentration="3" constant="false" boundaryCondition="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="4" constant="true"/>
+      <parameter id="moving" value="1" constant="false"/>
+      <parameter id="ruled" constant="false"/>
+      <parameter id="rated" value="0" constant="false"/>
+      <parameter id="evented" value="0" constant="false"/>
+      <parameter id="settled" value="0" constant="true"/>
+      <parameter id="stale" value="99" constant="true"/>
+      <parameter id="valueless" constant="true"/>
+      <parameter id="chain" value="0" constant="true"/>
+      <parameter id="over_species" value="0" constant="true"/>
+      <parameter id="over_moving" value="0" constant="true"/>
+      <parameter id="over_ruled" value="0" constant="true"/>
+      <parameter id="over_rated" value="0" constant="true"/>
+      <parameter id="over_evented" value="0" constant="true"/>
+      <parameter id="piecewise" value="0" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="ruled">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math>
+      </assignmentRule>
+      <rateRule variable="rated">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math>
+      </rateRule>
+    </listOfRules>
+    <listOfEvents>
+      <event id="e1">
+        <listOfEventAssignments>
+          <eventAssignment variable="evented">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><cn>1</cn></math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="settled">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><cn>2</cn><cn>3</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="stale">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><plus/><ci>k</ci><cn>1</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="valueless">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><plus/><ci>k</ci><cn>1</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="chain">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>stale</ci><cn>2</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="dcomp">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>cell</ci><cn>4</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="over_species">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>A</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="over_moving">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>moving</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="over_ruled">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>ruled</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="over_rated">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>rated</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="over_evented">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>evented</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="piecewise">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <piecewise><piece><cn>1</cn><true/></piece></piecewise>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="A">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><cn>2</cn><cn>21</cn></apply>
+        </math>
+      </initialAssignment>
+      <initialAssignment symbol="B">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k</ci><cn>5</cn></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+  </model>
+</sbml>
+"""
+
+
+class TestInitialAssignmentValues:
+    """An <initialAssignment> supersedes the declared attribute, so the attribute is a
+    placeholder the model never starts from (#795)."""
+
+    def test_self_contained_assignment_supersedes_the_attribute(self):
+        ent = parse_model(SBML_INITIAL)
+        assert ent.parameter_values['settled'] == 6.0      # 2 * 3, not the value="0"
+        assert 'settled' in ent.namespace_symbols          # it has a value, so it binds
+        assert 'settled' not in ent.derived_initial_values
+
+    def test_a_derived_parameter_reports_no_value(self):
+        # The wrong-number symptom: the scanner used to hand out value="99" while the model
+        # starts from k + 1 == 5.
+        ent = parse_model(SBML_INITIAL)
+        assert 'stale' not in ent.parameter_values
+        assert 'stale' not in ent.constants
+
+    def test_a_derived_parameter_is_recorded_with_its_expression(self):
+        ent = parse_model(SBML_INITIAL)
+        assert ent.derived_initial_values['stale'] == 'k + 1'
+
+    def test_a_derived_parameter_leaves_the_namespace_but_not_the_declaration(self):
+        ent = parse_model(SBML_INITIAL)
+        assert 'stale' not in ent.namespace_symbols   # not resolvable as a symbol
+        assert 'stale' in ent.parameter_names         # the scan stays faithful to the file
+        assert 'k' in ent.namespace_symbols
+
+    def test_a_value_less_derived_parameter_behaves_identically(self):
+        # What antimony emits for `k_derived = k_base + 1`: no value attribute at all. This is
+        # the shape that used to reach the measurement layer's "should be unreachable" branch.
+        ent = parse_model(SBML_INITIAL)
+        assert ent.derived_initial_values['valueless'] == 'k + 1'
+        assert 'valueless' not in ent.parameter_values
+        assert 'valueless' not in ent.namespace_symbols
+
+    def test_a_derived_compartment_loses_its_size(self):
+        ent = parse_model(SBML_INITIAL)
+        assert 'dcomp' not in ent.parameter_values
+        assert ent.derived_initial_values['dcomp'] == 'cell * 4'
+        assert 'dcomp' in ent.compartment_names
+
+    def test_a_chain_of_initial_assignments_is_recorded(self):
+        # `chain` reads `stale`, which is itself derived. Both are recorded, and the inliner
+        # resolves the chain.
+        ent = parse_model(SBML_INITIAL)
+        assert ent.derived_initial_values['chain'] == 'stale * 2'
+
+    def test_block_order_does_not_matter(self):
+        # The initial assignments are settled after the whole container loop, so a document that
+        # declares them before the parameters reads the same.
+        reordered = SBML_INITIAL.replace('<listOfCompartments>', '<listOfInitialAssignments>\n'
+                                         '      <initialAssignment symbol="settled">\n'
+                                         '        <math xmlns="http://www.w3.org/1998/Math/MathML">\n'
+                                         '          <apply><times/><cn>2</cn><cn>3</cn></apply>\n'
+                                         '        </math>\n'
+                                         '      </initialAssignment>\n'
+                                         '    </listOfInitialAssignments>\n    <listOfCompartments>', 1)
+        assert parse_model(reordered).parameter_values['settled'] == 6.0
+
+    def test_a_model_without_initial_assignments_has_none(self):
+        assert parse_model(SBML_L3).derived_initial_values == {}
+
+
+class TestInitialAssignmentSoundnessGate:
+    """An initial assignment fixes a value from its inputs' *initial* values, so it may only be
+    inlined into a measurement formula when every input holds still (#795)."""
+
+    def test_an_assignment_over_a_moving_entity_is_not_inlinable(self):
+        ent = parse_model(SBML_INITIAL)
+        for name, offender in (('over_species', 'A'), ('over_moving', 'moving'),
+                               ('over_ruled', 'ruled'), ('over_rated', 'rated'),
+                               ('over_evented', 'evented')):
+            assert ent.derived_initial_values[name] is None, name
+            assert offender in ent.derived_refusals[name], name
+            assert 'changes during the simulation' in ent.derived_refusals[name]
+
+    def test_untranslatable_math_is_recorded_as_none(self):
+        ent = parse_model(SBML_INITIAL)
+        assert ent.derived_initial_values['piecewise'] is None
+        assert 'does not translate' in ent.derived_refusals['piecewise']
+
+    def test_an_algebraic_rule_makes_its_symbols_untrusted(self):
+        algebraic = SBML_INITIAL.replace(
+            '</listOfRules>',
+            '      <algebraicRule>\n'
+            '        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math>\n'
+            '      </algebraicRule>\n    </listOfRules>', 1)
+        ent = parse_model(algebraic)
+        assert ent.derived_initial_values['stale'] is None
+        assert "'k'" in ent.derived_refusals['stale']
+
+
+class TestInitialAssignmentSpecies:
+    """A species with an initial assignment is still a dynamical state and still an output
+    column, so it keeps its place in the namespace and only loses a stale declared initial."""
+
+    def test_a_species_stays_in_the_namespace(self):
+        ent = parse_model(SBML_INITIAL)
+        assert 'B' in ent.namespace_symbols
+        assert 'B' in ent.species_names
+        assert 'B' not in ent.derived_initial_values
+
+    def test_a_derived_species_loses_its_stale_initial(self):
+        ent = parse_model(SBML_INITIAL)
+        assert 'B' not in ent.species_initial     # the file says k * 5, not the declared 3
+
+    def test_a_self_contained_species_assignment_is_evaluated(self):
+        ent = parse_model(SBML_INITIAL)
+        assert ent.species_initial['A'] == 42.0   # 2 * 21, not initialConcentration="1"
+
+    def test_boehm_species_lose_their_placeholder_initials(self):
+        # The only committed model with this shape: STAT5A and STAT5B carry
+        # initialConcentration="1" while the assignments set them from 207.6 * ratio.
+        from pathlib import Path
+        text = (Path(__file__).parent / 'petab_fixtures' / 'boehm_v2'
+                / 'model_Boehm_JProteomeRes2014.xml').read_text()
+        ent = parse_model(text)
+        assert 'STAT5A' not in ent.species_initial
+        assert 'STAT5B' not in ent.species_initial
+        assert 'STAT5A' in ent.namespace_symbols          # still an output column
+        assert ent.species_initial['pApB'] == 0.0         # a literal initial is untouched
+
+
+class TestDerivedSymbolMap:
+    """The one map the measurement and import layers inline through."""
+
+    def test_each_kind_is_labelled(self):
+        symbols = parse_model(SBML_INITIAL).derived_symbols
+        assert symbols['stale'].kind == 'initial_assignment'
+        assert symbols['ruled'].kind == 'assignment_rule'
+
+    def test_a_refusal_travels_with_the_symbol(self):
+        symbols = parse_model(SBML_INITIAL).derived_symbols
+        assert symbols['stale'].refusal is None
+        assert 'changes during the simulation' in symbols['over_species'].refusal
+
+    def test_an_assignment_rule_target_reports_no_value_either(self):
+        # The sibling of the same defect: a rule target that carries a vestigial value attribute
+        # still had that number reported, though the rule overwrites it at t=0 anyway.
+        vestigial = SBML_RULES.replace('<parameter id="ratio" constant="false"/>',
+                                       '<parameter id="ratio" value="7" constant="false"/>')
+        assert 'value="7"' in vestigial                   # the fixture really changed
+        ent = parse_model(vestigial)
+        assert 'ratio' not in ent.parameter_values
+        assert 'ratio' not in ent.namespace_symbols
+
+
+class TestInitialAssignmentEvaluation:
+    """The numeric reading of MathML, which is how a self-contained assignment is told from a
+    derived one."""
+
+    def _value(self, math_xml, attr='value="0"'):
+        doc = SBML_INITIAL.replace(
+            '      <initialAssignment symbol="settled">\n'
+            '        <math xmlns="http://www.w3.org/1998/Math/MathML">\n'
+            '          <apply><times/><cn>2</cn><cn>3</cn></apply>\n'
+            '        </math>\n'
+            '      </initialAssignment>\n',
+            f'      <initialAssignment symbol="settled">\n'
+            f'        <math xmlns="http://www.w3.org/1998/Math/MathML">{math_xml}</math>\n'
+            f'      </initialAssignment>\n', 1)
+        return parse_model(doc).parameter_values.get('settled')
+
+    def test_e_notation_literal(self):
+        assert self._value('<cn type="e-notation">1<sep/>3</cn>') == 1000.0
+
+    def test_rational_literal(self):
+        assert self._value('<cn type="rational">1<sep/>4</cn>') == 0.25
+
+    def test_unary_minus_and_power(self):
+        assert self._value('<apply><minus/><cn>2</cn></apply>') == -2.0
+        assert self._value('<apply><power/><cn>2</cn><cn>3</cn></apply>') == 8.0
+
+    def test_a_function_call(self):
+        assert self._value('<apply><exp/><cn>0</cn></apply>') == 1.0
+
+    def test_division_by_zero_is_not_a_number(self):
+        # Not an exception: the entity simply has no value the file settles, and it is recorded
+        # as derived like any other.
+        assert self._value('<apply><divide/><cn>1</cn><cn>0</cn></apply>') is None

@@ -2505,9 +2505,9 @@ class Configuration:
             ed, 2, "the 'observable: <id>, formula: <expr>' measurement-model syntax")
 
         from .measurement import MeasurementLayer, MeasurementModel, PerMeasurementModel
-        from .petab.formula import compile_petab_formula, inline_assignment_rules
+        from .petab.formula import compile_petab_formula, inline_derived_symbols
 
-        namespace, constants, assignment_rules = self._model_expression_namespace()
+        namespace, constants, derived = self._model_expression_namespace()
         free_names = {v.name for v in self.variables}
         # Free parameters resolve from the PSet at eval time, not from the constant snapshot.
         constants = {n: val for n, val in constants.items() if n not in free_names}
@@ -2521,18 +2521,20 @@ class Configuration:
         models = []                 # constant measurement models -> pre-materialized layer
         per_measurement = {}        # row-varying ones -> bound per data point in the objective
         for obs_id, formula in specs:
-            # An SBML assignment-rule variable is declared in the model (so it would pass the
-            # namespace check if it were not excluded) but is algebraically computed -- never a
-            # simulation-output column and value-less -- so it cannot be resolved as a symbol at
-            # fit time. Inline it instead: substitute the rule's RHS down to the species the rule
-            # is defined over (recursively), so `observable: Epo_cells, formula: Epo_cells` just
-            # works -- the D2D convenience observable IS an assignment rule (#465, the option-2
-            # successor to #464's reconstruct-from-species rejection). A formula naming no rule
-            # variable is returned verbatim; an unresolvable rule (untranslatable MathML / a
-            # cyclic dependency) raises a pointed error here at load, not late in materialize.
-            if assignment_rules:
-                formula = inline_assignment_rules(
-                    formula, assignment_rules, observable_id=obs_id)
+            # A derived SBML entity is declared in the model (so it would pass the namespace check
+            # if it were not excluded) but has no value of its own, so it cannot be resolved as a
+            # symbol at fit time. Inline it instead: substitute its defining RHS down to the
+            # species/parameters it is computed from (recursively), so
+            # `observable: Epo_cells, formula: Epo_cells` just works -- the D2D convenience
+            # observable IS an assignment rule (#465, the option-2 successor to #464's
+            # reconstruct-from-species rejection), and an observable over a parameter an
+            # initialAssignment derives scores the value the model actually starts from instead of
+            # a stale declared attribute (#795). A formula naming no derived entity is returned
+            # verbatim; one that cannot be resolved (untranslatable MathML, a cyclic dependency, or
+            # an initial assignment over something that moves) raises a pointed error here at
+            # load, not late in materialize.
+            if derived:
+                formula = inline_derived_symbols(formula, derived, observable_id=obs_id)
             # A surviving per-measurement placeholder marks a row-varying scale/offset (ADR-0045):
             # its token differs per data row, so it is bound per data point, NOT pre-materialized.
             # Admit the placeholder symbol(s) to the allowed set so the rest validates fail-fast.
@@ -2608,11 +2610,18 @@ class Configuration:
         ed = edition.resolve_edition(self.config.get('edition'))
         edition.require_edition(
             ed, 2, "a prediction-dependent 'sigma = prediction_formula <expr>' noise source")
-        from .petab.formula import compile_petab_formula
-        namespace, _constants, _rules = self._model_expression_namespace()
+        from .petab.formula import compile_petab_formula, inline_derived_symbols
+        namespace, _constants, derived = self._model_expression_namespace()
         free_names = {v.name for v in self.variables}
         allowed = namespace | free_names
         for label, src in sources:
+            # A prediction noise formula reads the same model namespace as a measurement formula,
+            # so a derived SBML entity has to be inlined here too. Without this the sibling layers
+            # disagree: the same symbol works in `observable:` and is rejected as unknown in
+            # `sigma = prediction_formula` (#465 for a rule target, #795 for an initialAssignment).
+            if derived:
+                src.formula = inline_derived_symbols(
+                    src.formula, derived, observable_id=label)
             # Validate every symbol is a model entity or a declared free parameter, and adopt the
             # compiler's canonical ordering (the callable is rebuilt lazily worker-side, dropped
             # across pickling -- this is the validation pass, ADR-0036 §5).
@@ -2664,18 +2673,19 @@ class Configuration:
         formula over a ``.ant`` model's species must not be rejected as "not a known model
         entity" just because the namespace was built by parsing the file as BNGL (#463).
 
-        Returns ``(namespace_symbols, constants, assignment_rules)``, where ``assignment_rules``
-        maps an SBML assignment-rule variable (declared as a parameter, but algebraically
-        computed -- never a simulation-output column and value-less, so it cannot be resolved as
-        a symbol at ``materialize``) to its rule's RHS as a PEtab-math infix string (``None`` if
-        the rule's MathML was not translatable). Such a variable is **excluded** from
-        ``namespace_symbols``; ``assignment_rules`` lets the loader **inline** a formula that
-        references one down to the species the rule is defined over (#465)."""
+        Returns ``(namespace_symbols, constants, derived)``, where ``derived`` maps every SBML
+        entity the model file defines in terms of others to a ``DerivedSymbol``: an
+        assignment-rule variable, which is algebraically computed at every step (#465), and a
+        parameter or compartment an ``initialAssignment`` derives, whose declared attribute is a
+        placeholder the model never starts from (#795). Neither can be resolved as a symbol at
+        ``materialize``, so both are **excluded** from ``namespace_symbols``, and ``derived`` lets
+        the loader **inline** a formula that references one down to the entities it is computed
+        from."""
         from .petab._bngl import parse_model as parse_bngl
         from .petab._sbml import parse_model as parse_sbml
         namespace = set()
         constants = {}
-        assignment_rules = {}
+        derived = {}
         for mf in self.config['models']:
             text = Path(self._absolute(mf)).read_text(encoding='utf-8', errors='replace')
             if mf.endswith('.xml') or mf.endswith('.ant'):
@@ -2689,7 +2699,7 @@ class Configuration:
                 ent = parse_sbml(text)
                 namespace |= ent.namespace_symbols
                 constants.update(ent.constants)
-                assignment_rules.update(ent.assignment_rules)
+                derived.update(ent.derived_symbols)
             else:  # .bngl -- the BNGL ParamList (parameters u observables u functions)
                 ent = parse_bngl(text)
                 namespace |= (set(ent.parameters) | set(ent.observable_names)
@@ -2699,7 +2709,7 @@ class Configuration:
                         constants[name] = float(rhs)
                     except (TypeError, ValueError):
                         pass  # an expression-valued parameter is not a numeric constant
-        return namespace, constants, assignment_rules
+        return namespace, constants, derived
 
     def _load_simulators(self):
 

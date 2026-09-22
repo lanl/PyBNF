@@ -2738,8 +2738,50 @@ class TestConditionMappingUnit:
         assert mutation_target_value(op, val, nominal=nominal) == expected
 
     def test_relative_op_on_expression_nominal_raises(self):
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(NotImplementedError) as excinfo:
             mutation_target_value('*', 2.0, nominal=None)
+        message = str(excinfo.value)
+        # The refusal covers both languages: a BNGL parameter whose value is an expression, and
+        # an SBML parameter a rule or an initial assignment defines (#795). It used to name BNGL
+        # alone, though an SBML model could already reach it.
+        assert 'BNGL' in message and 'SBML' in message
+        assert 'initial assignment' in message
+
+    def test_the_refusal_names_the_parameter_when_the_caller_knows_it(self):
+        with pytest.raises(NotImplementedError, match="'beta_N'"):
+            mutation_target_value('*', 2.0, nominal=None, target='beta_N')
+
+    def test_a_relative_condition_on_a_derived_sbml_parameter_refuses(self, tmp_path):
+        # End to end through the exporter's own reader: the model file settles no value for
+        # beta_N, so the exporter refuses rather than writing the placeholder attribute times two
+        # into conditions.tsv, which is what issue #795 reported.
+        from pybnf.petab.conditions import mutation_target_value as target_value
+        from pybnf.petab.export import _numeric_nominal, _read_model
+        xml = tmp_path / 'derived.xml'
+        xml.write_text(
+            '''<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="derived">
+    <listOfParameters>
+      <parameter id="koff" value="1" constant="true"/>
+      <parameter id="Kd" value="2" constant="true"/>
+      <parameter id="kon" value="0" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="kon">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><divide/><ci>koff</ci><ci>Kd</ci></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+  </model>
+</sbml>
+''')
+        view = _read_model(xml.read_text(), xml, 'sbml')
+        assert _numeric_nominal(view, 'koff') == 1.0      # a literal still has a nominal
+        assert _numeric_nominal(view, 'kon') is None      # the placeholder value="0" is gone
+        with pytest.raises(NotImplementedError, match="'kon'"):
+            target_value('*', 2.0, nominal=_numeric_nominal(view, 'kon'), target='kon')
 
     def test_surrogate_marker_is_double_underscore(self):
         assert surrogate_name('v1') == 'v1__REF'

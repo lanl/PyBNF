@@ -737,7 +737,7 @@ class TestAssignmentRuleObservableMaterializesLikeSpecies:
     def test_inlined_rule_observable_equals_hand_species_column(self, tmp_path):
         pytest.importorskip('petab')
         from pybnf.petab._sbml import parse_model as parse_sbml
-        from pybnf.petab.formula import inline_assignment_rules
+        from pybnf.petab.formula import inline_derived_symbols
         from pybnf.pset import FreeParameter, PSet, SbmlModelNoTimeout, TimeCourse
 
         # RULE_SBML is DECAY_SBML + ``total := A + B``; simulate it on RoadRunner.
@@ -746,7 +746,7 @@ class TestAssignmentRuleObservableMaterializesLikeSpecies:
         namespace = set(ent.namespace_symbols)
         # Inline ``total`` exactly as config._load_measurement_models does, then materialize it
         # alongside the hand-reconstructed species formula on the same trace.
-        inlined = inline_assignment_rules('total', ent.assignment_rules, observable_id='from_rule')
+        inlined = inline_derived_symbols('total', ent.derived_symbols, observable_id='from_rule')
         assert inlined == 'A + B'                      # the rule resolved to its species
         assert 'total' not in namespace                # the target is never bound as a symbol
 
@@ -885,3 +885,134 @@ class TestBoehmRecovery:
         for oid in _BOEHM_OBS:
             on_rr_grid = np.interp(rr['time'], bg['time'], bg[oid])
             np.testing.assert_allclose(on_rr_grid, rr[oid], rtol=1e-3, atol=1e-3)
+
+
+# An SBML model whose rate constant is derived: `beta_N` carries a placeholder value="0.0" and
+# an initialAssignment computing it from three parameters. This is Bertozzi_PNAS2020's shape,
+# which the scan of the public PEtab benchmark collection found wrong today (#795).
+DERIVED_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="derived">
+    <listOfCompartments>
+      <compartment id="cell" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="I" compartment="cell" initialConcentration="2" constant="false" boundaryCondition="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="R0_" value="3" constant="true"/>
+      <parameter id="gamma_" value="0.5" constant="true"/>
+      <parameter id="N_" value="10" constant="true"/>
+      <parameter id="beta_N" value="0.0" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="beta_N">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><divide/>
+            <apply><times/><ci>R0_</ci><ci>gamma_</ci></apply>
+            <ci>N_</ci>
+          </apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+  </model>
+</sbml>
+"""
+
+
+class TestDerivedParameterObservable:
+    """An observable over a parameter an ``initialAssignment`` derives (#795).
+
+    The scanner drops the placeholder attribute, so the value is not silently wrong; the loader
+    inlines the definition, so the observable is not merely refused either."""
+
+    def _conf(self, tmp_path, formula, model_text=DERIVED_SBML, extra='',
+              objective='objective = chi_sq'):
+        import os
+        import textwrap
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        (tmp_path / 'derived.xml').write_text(model_text)
+        (tmp_path / 'tc.exp').write_text('# time\trate\trate_SD\n0\t1.0\t0.1\n1\t1.0\t0.1\n')
+        conf_text = textwrap.dedent(f"""\
+            edition = 2
+            job_type = trf
+            {objective}
+            sbml_backend = roadrunner
+            model: derived.xml
+            observable: rate, formula: {formula}
+            experiment: tc, data: tc.exp
+            uniform_var = R0_ 1 5
+            population_size = 4
+            max_iterations = 1
+            verbosity = 0
+            """) + extra
+        home = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            return config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+        finally:
+            os.chdir(home)
+
+    def test_the_observable_inlines_to_the_entities_it_is_computed_from(self, tmp_path):
+        pytest.importorskip('petab')
+        conf = self._conf(tmp_path, 'beta_N * I')
+        mm = conf.obj.measurement.models[0]
+        assert 'beta_N' not in mm.formula        # the placeholder value is never bound
+        assert {'R0_', 'gamma_', 'N_', 'I'} <= mm.allowed_symbols
+        assert 'beta_N' not in mm.allowed_symbols
+
+    def test_the_materialized_column_is_the_value_the_model_starts_from(self, tmp_path):
+        # Before the fix the scanner reported beta_N = 0.0, so this column was all zeros.
+        pytest.importorskip('petab')
+        import numpy as np
+        from pybnf.data import Data
+        conf = self._conf(tmp_path, 'beta_N * I')
+        mm = conf.obj.measurement.models[0]
+        data = Data()
+        data.cols = {'time': 0, 'I': 1}
+        data.data = np.array([[0., 2.], [1., 4.]])
+        got = mm.materialize(data, pset_values={'R0_': 3.0})
+        np.testing.assert_allclose(got, (3.0 * 0.5 / 10.0) * np.array([2., 4.]))
+        assert not np.allclose(got, 0.0)
+
+    def test_the_column_tracks_a_fitted_dependency(self, tmp_path):
+        # The property that makes the import-time view agree with the runtime (ADR-0094): R0_ is
+        # a free parameter, so the derived rate constant moves with the fit rather than staying
+        # at whatever the model file implied.
+        pytest.importorskip('petab')
+        import numpy as np
+        from pybnf.data import Data
+        conf = self._conf(tmp_path, 'beta_N * I')
+        mm = conf.obj.measurement.models[0]
+        data = Data()
+        data.cols = {'time': 0, 'I': 1}
+        data.data = np.array([[0., 2.]])
+        low = mm.materialize(data, pset_values={'R0_': 1.0})
+        high = mm.materialize(data, pset_values={'R0_': 4.0})
+        np.testing.assert_allclose(high / low, 4.0)
+
+    def test_an_assignment_over_something_that_moves_refuses_at_load(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.printing import PybnfError
+        moving = DERIVED_SBML.replace('<ci>N_</ci>\n          </apply>',
+                                      '<ci>I</ci>\n          </apply>')
+        assert '<ci>I</ci>' in moving          # the assignment really reads the species now
+        with pytest.raises(PybnfError) as excinfo:
+            self._conf(tmp_path, 'beta_N * I', model_text=moving)
+        message = str(excinfo.value)
+        assert 'initial assignment' in message
+        assert 'changes during the simulation' in message
+
+    def test_a_prediction_noise_formula_may_name_a_derived_parameter(self, tmp_path):
+        # The sibling layer reads the same model namespace, so it has to inline the same way.
+        # Without this a derived parameter works in `observable:` and is rejected as an unknown
+        # symbol in `sigma = prediction_formula`, which is a #465 gap the initial-assignment work
+        # would otherwise have widened.
+        pytest.importorskip('petab')
+        conf = self._conf(
+            tmp_path, 'I',
+            objective='noise_model = normal, sigma = prediction_formula beta_N * I')
+        formulas = [src.formula for _label, src in conf._prediction_noise_sources()]
+        assert formulas and all('beta_N' not in f for f in formulas)
+        assert any('R0_' in f for f in formulas)

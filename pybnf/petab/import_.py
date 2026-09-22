@@ -288,7 +288,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # post-sim observation layer, never a model-file edit (ADR-0036).
     model_texts = {}            # location -> verbatim text
     namespaces, entity_name_sets = [], []
-    assignment_rules = {}       # SBML assignmentRule target -> RHS infix (inlined below, #493)
+    derived = {}                # SBML entity defined by others -> DerivedSymbol (inlined below, #493/#795)
     for m in models:
         loc, lang = m['location'], (m['language'] or 'bngl').lower()
         text = (base / loc).read_text(encoding='utf-8', errors='replace')
@@ -296,7 +296,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         ns, ents, rules = _model_namespace(text, lang)
         namespaces.append(ns)
         entity_name_sets.append(ents)
-        assignment_rules.update(rules)
+        derived.update(rules)
     namespace = set().union(*namespaces)
     entity_names = set().union(*entity_name_sets)
 
@@ -305,7 +305,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
-        row_varying_obs_params, assignment_rules)
+        row_varying_obs_params, derived)
 
     # Pre-equilibrated dose-response reconstruction (ADR-0062): pull out the two-period scan groups
     # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
@@ -504,21 +504,21 @@ def _model_namespace(model_text, language):
     """The model's expression namespace + entity name set + assignment rules, per language
     (ADR-0036).
 
-    Returns ``(namespace_symbols, entity_names, assignment_rules)``: ``namespace_symbols`` are
+    Returns ``(namespace_symbols, entity_names, derived)``: ``namespace_symbols`` are
     the names an ``observableFormula`` may reference (the BNGL ``ParamList`` -- parameters u
     observables u functions; or SBML species u parameters u compartments -- ADR-0026/0036);
     ``entity_names`` is the broader declared-name set used for the shadow check (a measurement
-    model's id must not collide with a model output column); ``assignment_rules`` maps each SBML
-    ``assignmentRule`` target id to its rule's RHS as a PEtab-math infix string (``None`` if the
-    MathML was not translatable), the map the importer **inlines** so a formula naming a rule
-    variable resolves down to the species/parameters the rule is computed from (#493, the import
-    peer of the config-load inlining -- #465). It is ``{}`` for a BNGL model (no assignment
-    rules). Read from the model text directly with the stdlib scanners (``_bngl`` / ``_sbml``),
-    simulator-free.
+    model's id must not collide with a model output column); ``derived`` maps each SBML entity
+    the model file defines in terms of others to a ``DerivedSymbol`` -- an ``assignmentRule``
+    target (#465/#493) and a parameter or compartment an ``initialAssignment`` derives (#795) --
+    the map the importer **inlines** so a formula naming one resolves down to the
+    species/parameters it is computed from, the import peer of the config-load inlining. It is
+    ``{}`` for a BNGL model. Read from the model text directly with the stdlib scanners
+    (``_bngl`` / ``_sbml``), simulator-free.
     """
     if language == 'sbml':
         ent = parse_sbml_model(model_text)
-        return ent.namespace_symbols, set(ent.namespace_symbols), ent.assignment_rules
+        return ent.namespace_symbols, set(ent.namespace_symbols), ent.derived_symbols
     ent = parse_bngl_model(model_text)
     namespace = (set(ent.parameters) | set(ent.observable_names)
                  | set(ent.function_names))
@@ -527,7 +527,7 @@ def _model_namespace(model_text, language):
     return namespace, entity_names, {}
 
 
-def _shared_bare_entities(observable_rows, namespace, assignment_rules, row_varying_obs_params):
+def _shared_bare_entities(observable_rows, namespace, derived, row_varying_obs_params):
     """Model entities named as a bare ``observableFormula`` by more than one observable (#503).
 
     A bare-name observable (no observableParameters placeholder, formula an identifier in the
@@ -543,10 +543,10 @@ def _shared_bare_entities(observable_rows, namespace, assignment_rules, row_vary
     counts = Counter()
     for row in observable_rows:
         raw = (row.observable_formula or '').strip()
-        if assignment_rules:
-            from .formula import inline_assignment_rules
-            raw = inline_assignment_rules(
-                raw, assignment_rules, observable_id=row.observable_id)
+        if derived:
+            from .formula import inline_derived_symbols
+            raw = inline_derived_symbols(
+                raw, derived, observable_id=row.observable_id)
         if _PLACEHOLDER.search(raw) or row.observable_id in row_varying_obs_params:
             continue
         if _IDENTIFIER.match(raw) and raw in namespace:
@@ -556,7 +556,7 @@ def _shared_bare_entities(observable_rows, namespace, assignment_rules, row_vary
 
 def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params,
                              obs_params, free_names, row_varying_obs_params=(),
-                             assignment_rules=None):
+                             derived=None):
     """Map each ``observableId`` to the model column it measures, recording a measurement
     model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
@@ -593,18 +593,19 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     validate against the model namespace. A *constant*-per-observable placeholder is substituted
     away as in Phase 1; an unresolved (neither constant nor row-varying) placeholder still raises.
 
-    ``assignment_rules`` (#493) is the SBML ``assignmentRule`` map (target id -> rule RHS as
-    PEtab-math infix). An assignment-rule variable is a *derived* model output -- declared as a
-    parameter/species but algebraically computed every step, so it is never a simulation-output
-    column and cannot be resolved *as a symbol* (that is exactly why it is absent from
-    ``namespace``). Each observableFormula is therefore **inlined** first: every referenced rule
-    variable is replaced by its rule's RHS (recursively) so the formula reduces to species /
-    parameters the layer can evaluate -- the SBML analogue of a BNGL global function in an
-    observableFormula, which PyBNF already accepts. A formula naming no rule variable is returned
-    verbatim (the bare-name common case stays dependency-free); this mirrors the config-load
-    inlining (#465).
+    ``derived`` (#493/#795) maps an SBML entity the model file defines in terms of others to a
+    ``DerivedSymbol``. Such an entity is declared as a parameter/species but has no value of its
+    own -- an ``assignmentRule`` target is recomputed every step, and a parameter an
+    ``initialAssignment`` derives has only a placeholder attribute -- so it is never a
+    simulation-output column and cannot be resolved *as a symbol* (that is exactly why it is
+    absent from ``namespace``). Each observableFormula is therefore **inlined** first: every
+    referenced entity is replaced by its defining RHS (recursively) so the formula reduces to
+    species and parameters the layer can evaluate -- the SBML analogue of a BNGL global function
+    in an observableFormula, which PyBNF already accepts. A formula naming no derived entity is
+    returned verbatim (the bare-name common case stays dependency-free); this mirrors the
+    config-load inlining (#465/#795).
     """
-    assignment_rules = assignment_rules or {}
+    derived = derived or {}
     # Fixed PEtab parameters that are NOT model entities are inlined as literals; one that
     # IS a model entity stays a symbol (it resolves as a model constant at eval time).
     inline = {n: v for n, v in fixed_params.items() if n not in namespace}
@@ -620,7 +621,7 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     # columns below so their per-observable noise_model overrides key by distinct ids, not the
     # one shared column (#503, ADR-0077). A uniquely-targeted entity keeps the bare-name path.
     shared_entities = _shared_bare_entities(
-        observable_rows, namespace, assignment_rules, row_varying_obs_params)
+        observable_rows, namespace, derived, row_varying_obs_params)
     for row in observable_rows:
         raw = (row.observable_formula or '').strip()
         # Inline any SBML assignment-rule variable the formula names down to the species /
@@ -630,10 +631,10 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
         # the bare-name common case never reaches the translator (dependency-free, byte-stable);
         # the inlining leaves any observableParameters placeholder untouched (rules are model
         # MathML, never placeholders), so the placeholder handling below is unchanged.
-        if assignment_rules:
-            from .formula import inline_assignment_rules
-            raw = inline_assignment_rules(
-                raw, assignment_rules, observable_id=row.observable_id)
+        if derived:
+            from .formula import inline_derived_symbols
+            raw = inline_derived_symbols(
+                raw, derived, observable_id=row.observable_id)
         had_placeholder = bool(_PLACEHOLDER.search(raw))
         row_varying = row.observable_id in row_varying_obs_params
         if row_varying:
