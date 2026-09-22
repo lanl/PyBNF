@@ -2847,10 +2847,33 @@ For DREAM
    catches a chain whose two halves disagree -- but it cannot see a chain that never left one
    mode, which is the failure parallel tempering is usually run to avoid. The reported line
    names the count it compared, so it reads ``Max R-hat: 1.0034 (split, 1 chain)`` rather than
-   claiming a between-chain comparison it did not make. (The ``rhat_*`` columns of
-   ``Results/diagnostics.txt`` hold that same statistic; the file's format is unchanged.)
-   Setting ``rhat_threshold`` on such a run additionally prints a warning at the start, because
-   the run can then *stop itself* on a statistic blind to the failure it is meant to catch.
+   claiming a between-chain comparison it did not make. Setting ``rhat_threshold`` on such a
+   run additionally prints a warning at the start, because the run can then *stop itself* on a
+   statistic blind to the failure it is meant to catch.
+
+   The ``rhat_*`` columns of ``Results/diagnostics.txt`` hold that same statistic. The file's
+   format is fixed -- it is appended to across a ``--resume``, and a header change would leave
+   a resumed run writing rows that disagree with the header above them -- so the provenance
+   lives beside it in ``Results/diagnostics_meta.json``:
+
+   .. code-block:: json
+
+      {
+        "schema": "pybnf-diagnostics-meta/1",
+        "statistic": "rank-normalized split-R-hat and bulk/tail ESS (Vehtari et al. 2021)",
+        "chains_compared": 1,
+        "chain_replicas": [3],
+        "chain_betas": [1.0],
+        "num_parallel": 4
+      }
+
+   ``chain_betas`` is ``null`` for the untempered samplers, whose replicas are interchangeable
+   copies of one target. The file is rewritten in full on every diagnostics write, so it is
+   correct after a resume. Adding a field is backward compatible and leaves the schema at
+   ``/1``; removing or redefining one bumps the major version, and a reader should check that
+   prefix and ignore fields it does not know.
+   :func:`pybnf.inference_data.from_pybnf` surfaces it as the ``pybnf_diagnostics_chains``,
+   ``pybnf_diagnostics_replicas`` and ``pybnf_diagnostics_betas`` attrs.
 
    A between-chain :math:`\hat{R}` at the max beta costs **twice the replicas**, not a
    free flag flip. The number of temperatures is ``population_size // reps_per_beta``, so

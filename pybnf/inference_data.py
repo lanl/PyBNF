@@ -41,6 +41,7 @@ differ only in the one ``from_dict`` construction call (see ``_build_idata``); t
 extra is uncapped so installing the bridge never downgrades a user's arviz.
 """
 
+import json
 import logging
 import re
 import warnings
@@ -334,9 +335,45 @@ def _read_diagnostics_attrs(results_dir):
             attrs['pybnf_min_tail_ess'] = min(tail)
         if 'iteration' in row:
             attrs['pybnf_diagnostics_iteration'] = float(row['iteration'])
+        attrs.update(_read_diagnostics_meta(results_dir))
         return attrs
     except Exception:
         logger.debug('Could not parse diagnostics.txt for attrs', exc_info=True)
+        return {}
+
+
+def _read_diagnostics_meta(results_dir):
+    """Run-level provenance of ``diagnostics.txt`` from its sidecar, for ``attrs``.
+
+    ``diagnostics_meta.json`` records which replicas PyBNF's R-hat/ESS compared --
+    the difference between a between-chain R-hat and a split of a single chain, which
+    under ``pt`` at the default ``reps_per_beta = 1`` is what you get (#782). Written
+    by ``BayesianAlgorithm._write_diagnostics_meta``; absent from runs made before it
+    existed, which is not an error.
+
+    Reads only the ``pybnf-diagnostics-meta/1`` major version and ignores fields it
+    does not know, so a later minor addition is harmless. Returns ``{}`` when the file
+    is absent, unreadable, or of an unrecognized schema."""
+    meta_file = Path(results_dir) / 'diagnostics_meta.json'
+    if not meta_file.is_file():
+        return {}
+    try:
+        with open(meta_file) as f:
+            meta = json.load(f)
+        schema = str(meta.get('schema', ''))
+        if not schema.startswith('pybnf-diagnostics-meta/1'):
+            logger.debug('Unrecognized diagnostics_meta schema %r; ignoring', schema)
+            return {}
+        attrs = {}
+        if 'chains_compared' in meta:
+            attrs['pybnf_diagnostics_chains'] = int(meta['chains_compared'])
+        if meta.get('chain_replicas') is not None:
+            attrs['pybnf_diagnostics_replicas'] = [int(i) for i in meta['chain_replicas']]
+        if meta.get('chain_betas') is not None:
+            attrs['pybnf_diagnostics_betas'] = [float(b) for b in meta['chain_betas']]
+        return attrs
+    except Exception:
+        logger.debug('Could not parse diagnostics_meta.json for attrs', exc_info=True)
         return {}
 
 
