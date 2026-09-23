@@ -126,7 +126,26 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         # Initialize storage for the swarm data
         self.swarm = []  # List of lists of the form [PSet, velocity]. Velocity is stored as a dict with the same keys
         # as PSet
-        self.pset_map = dict()  # Maps each PSet to it s particle number, for easy lookup.
+        # Maps the *name* of each in-flight PSet to its particle number, for easy lookup.
+        #
+        # Keyed by name rather than by the PSet, because a PSet hashes and compares by
+        # value while two particles at one position are a legitimate state -- an ordinary
+        # one, even: a step that would leave the box zeroes that velocity component, so a
+        # swarm converging on a corner piles up there, and two start draws can land
+        # together in a box narrow beside the spacing of doubles at its magnitude. A
+        # value-keyed map cannot hold both, so the second entry overwrote the first and the
+        # swarm either lost a particle in silence or raised ``KeyError`` on the second
+        # result back, whichever particle happened to move first (#807). The update path
+        # answered that by jittering one position off the other, which could not move a
+        # large linear parameter at all and spun forever (#721).
+        #
+        # A name is the identity the run loop already goes by: unique per in-flight PSet by
+        # construction (:meth:`Algorithm.start_run` requires it -- the name is the
+        # simulation folder), and it says which particle the result came back from. So a
+        # score is credited to the particle that actually ran it even where two positions
+        # coincide, no position has to be perturbed to keep the bookkeeping straight, and
+        # there is no tie to break on either path.
+        self.particle_of_name = dict()
         # One independent [PSet, objective] slot per particle. A list-multiply
         # ([[None, inf]] * n) would alias one inner list across every particle --
         # harmless today (got_result reassigns the whole slot) but a foot-gun if
@@ -151,7 +170,7 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         self.nv = 0
         self.num_evals = 0
         self.swarm = []
-        self.pset_map = dict()
+        self.particle_of_name = dict()
         self.bests = [[None, np.inf] for _ in range(self.num_particles)]
         self.global_best = [None, np.inf]
         self.last_best = np.inf
@@ -185,7 +204,9 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
             new_velocity = dict({v.name: 0. for v in self.variables})
 
             self.swarm.append([p, new_velocity])
-            self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
+            # 'iter0p<i>' is unique however the draws landed, so registering every particle
+            # here cannot lose one even when two of them share a position.
+            self.particle_of_name[p.name] = len(self.swarm)-1  # Index of the newly added PSet.
 
         return [particle[0] for particle in self.swarm]
 
@@ -225,7 +246,7 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         if self.num_evals % self.output_every == 0:
             self.output_results()
 
-        p = self.pset_map.pop(paramset)  # Particle number
+        p = self.particle_of_name.pop(paramset.name)  # Particle number
 
         # Update best scores if needed.
         if score <= self.bests[p][1]:
@@ -258,18 +279,14 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
 
-        # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
-        # This could come up in practice if all parameters have hit a box constraint.
-        # As a simple workaround, perturb the parameters slightly
-        while new_pset in self.pset_map:
-            new_pset = PSet([v.add_rand(-1e-6, 1e-6, self.rng) for v in self.swarm[p][0]])
-
-        self.pset_map[new_pset] = p
-
         # Set the new name: the old pset name is iter##p##
         # Extract the iter number
         iternum = int(re.search('iter([0-9]+)', paramset.name).groups()[0])
         new_pset.name = 'iter%ip%i' % (iternum+1, p)
+        # Named before it is registered, since the name is now the key. Two particles that
+        # land on one position keep two entries and get their own results back, so nothing
+        # has to be jittered apart (see ``particle_of_name`` in ``__init__``).
+        self.particle_of_name[new_pset.name] = p
 
         # Check for stopping criteria
         if self.num_evals >= self.max_evals or self.nv >= self.n_stop:
