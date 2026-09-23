@@ -1,6 +1,7 @@
 from .context import data, algorithms, pset, config, printing
 
 from types import SimpleNamespace
+from copy import deepcopy
 import shutil
 import numpy as np
 import numpy.testing as npt
@@ -69,9 +70,9 @@ class TestDiffEvolution:
             res = algorithms.Result(next_params[i], self.data1s, next_params[i].name)
             res.score = max(1., i ** 2)
             if i < 10:
-                assert de.island_map[next_params[i]] == (0, i)
+                assert de.island_map[next_params[i].name] == (0, i)
             else:
-                assert de.island_map[next_params[i]] == (1, i-10)
+                assert de.island_map[next_params[i].name] == (1, i-10)
             torun = de.got_result(res)
             # Replace if i**2 is better than previous value
             if i <= 6:
@@ -240,8 +241,9 @@ def _de_config(tmp_path, **over):
     # output: unseeded, Algorithm._init_rng builds the stream from SeedSequence(None), which
     # draws fresh OS entropy per construction, and a failure cannot be reproduced (#730's
     # analysis, applied to the de fixture as #732 applied it to the ade one). It is NOT what
-    # keeps the flush oracle below at three records -- de de-duplicates a candidate before
-    # registering it (#775), so that count holds for every draw, seeded or not; see
+    # keeps the flush oracle below at three records -- a candidate's record is filed under its
+    # name (#812), which is its own however the draw landed, so that count holds for every
+    # draw, seeded or not; see
     # test_every_candidate_of_a_generation_carries_a_record_even_when_they_coincide, which
     # forces the coincidence instead of hoping for it. Override it in a test wanting another
     # draw.
@@ -289,7 +291,7 @@ class TestDifferentialEvolutionPlumbing:
             _de_config(tmp_path, de_strategy='rand2', population_size=24, islands=8))
         assert de.num_per_island == 5
         start = de.start_run()
-        island0 = [ps for ps in start if de.island_map[ps][0] == 0]
+        island0 = [ps for ps in start if de.island_map[ps.name][0] == 0]
         assert len(island0) == 5
         out = None
         for ps in island0:
@@ -355,9 +357,10 @@ class TestDifferentialEvolutionPlumbing:
                                                          de_strategy=strategy))
         recorded, targets = [], []
         orig = de.new_individual
-        de.new_individual = (lambda inds, base_index=None, island=0, target_index=None:
+        de.new_individual = (lambda inds, base_index=None, island=0, target_index=None, name=None:
                              recorded.append(base_index) or targets.append(target_index)
-                             or orig(inds, base_index, island=island, target_index=target_index))
+                             or orig(inds, base_index, island=island, target_index=target_index,
+                                     name=name))
         self._run_one_island_generation(de, [5.0, 3.0, 7.0])  # argmin at index 1
         assert len(recorded) == 3
         if expected == 'argmin':
@@ -534,9 +537,9 @@ class TestAsyncDifferentialEvolution:
         ade.individuals = list(start)
         recorded, targets = [], []
         orig = ade.new_individual
-        ade.new_individual = (lambda inds, base_index=None, target_index=None:
+        ade.new_individual = (lambda inds, base_index=None, target_index=None, name=None:
                               recorded.append(base_index) or targets.append(target_index)
-                              or orig(inds, base_index, target_index=target_index))
+                              or orig(inds, base_index, target_index=target_index, name=name))
         res = algorithms.Result(start[0], self.d1s, start[0].name); res.score = 5.0  # index j=0
         ade.got_result(res)
         if expected == 'argmin':
@@ -670,10 +673,10 @@ class TestLearnedMutationSettings:
         monkeypatch.setattr(ade, 'rng', _fake_rng(
             choice=lambda n, k, replace=False: np.array([2, 0, 1]), integers=lambda n: 0,
             random=lambda: 0.0))
-        new = ade.new_individual(inds)
+        new = ade.new_individual(inds, name='gen1ind0')
         for name in NAMES:
             npt.assert_allclose(new[name], inds[2][name] + 0.6 * (inds[0][name] - inds[1][name]))
-        assert ade._trial_settings[new] == (0.9, 0.6, 7.0, 0)
+        assert ade._trial_settings['gen1ind0'] == (0.9, 0.6, 7.0, 0)
 
     def test_a_drawn_rate_of_zero_still_mutates_the_parameter_chosen_in_advance(self, tmp_path, monkeypatch):
         """Oracle (binomial crossover's guarantee, which learning always turns on, #698): with
@@ -705,13 +708,11 @@ class TestLearnedMutationSettings:
         monkeypatch.setattr(ade, 'rng', _fake_rng(
             choice=lambda n, k, replace=False: np.array([1, 0, 2]), integers=lambda n: 0,
             random=lambda: 0.0))
-        beats_slot_only = ade.new_individual(ade.individuals)
-        beats_slot_only.name = 'gen1ind2'
+        beats_slot_only = ade.new_individual(ade.individuals, name='gen1ind2')
         ade.got_result(self._result(beats_slot_only, 4.0))
         assert ade.histories[0].pending == []
         assert ade.fitnesses[2] == 4.0                       # it did take the slot
-        beats_base = ade.new_individual(ade.individuals)
-        beats_base.name = 'gen1ind0'
+        beats_base = ade.new_individual(ade.individuals, name='gen1ind0')
         ade.got_result(self._result(beats_base, 2.0))
         assert ade.histories[0].pending == [(0.9, 0.6, 1.0)]
 
@@ -725,12 +726,10 @@ class TestLearnedMutationSettings:
             choice=lambda n, k, replace=False: np.array([1, 0, 2]), integers=lambda n: 0,
             random=lambda: 0.0, normal=lambda loc, scale: loc, standard_cauchy=lambda: 0.0))
         ade.fitnesses = [5.0, np.inf, 7.0]                   # base (index 1) unscored
-        unscored_base = ade.new_individual(ade.individuals)
-        unscored_base.name = 'gen1ind0'
+        unscored_base = ade.new_individual(ade.individuals, name='gen1ind0')
         ade.got_result(self._result(unscored_base, 1.0))
         ade.fitnesses = [5.0, 3.0, 7.0]
-        failed = ade.new_individual(ade.individuals)
-        failed.name = 'gen1ind2'
+        failed = ade.new_individual(ade.individuals, name='gen1ind2')
         ade.got_result(self._result(failed, np.inf))
         assert ade.histories[0].pending == []
 
@@ -755,56 +754,24 @@ class TestLearnedMutationSettings:
         assert history.next_slot == 1 and history.pending == []
         assert len(de._trial_settings) == 3                  # generation 2 registered
 
-    def test_de_moves_a_duplicate_before_its_record_is_registered(self, tmp_path):
-        """Oracle (#775): de resolves a duplicate candidate BEFORE registering its settings,
-        so the earlier candidate's record is not overwritten at the shared key.
-
-        ``_deduplicate`` is called inside ``new_individual``, between building the PSet and
-        writing ``_trial_settings``. Here the first candidate is already in flight, exactly
-        as the generation loop leaves it, and a second candidate lands on its parameters: the
-        second must come out moved, and registering it must leave the first's record alone.
-        Registering first and moving afterwards -- the old order -- made these one key, so
-        the second write destroyed the first record and the move carried the survivor."""
-        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
-        de.start_run()
-        first = _wide_pset((1., 2., 3.))
-        de.island_map[first] = (0, 0)
-        de._trial_settings[first] = (0.5, 0.5, 2.0, 0)
-        moved = de._deduplicate(_wide_pset((1., 2., 3.)))
-        assert moved != first
-        de._trial_settings[moved] = (0.4, 0.6, 3.0, 0)
-        assert de._trial_settings == {first: (0.5, 0.5, 2.0, 0), moved: (0.4, 0.6, 3.0, 0)}
-
-    def test_perturb_duplicate_moves_only_the_pset(self, tmp_path):
-        """Oracle (the helper is now pure): ``_perturb_duplicate`` moves the parameters by up
-        to 1e-6 each and touches no record, because it runs before any record exists."""
-        de = algorithms.DifferentialEvolution(_de_config(tmp_path, de_adapt_mutation=1))
-        de.start_run()
-        p = _wide_pset((1., 2., 3.))
-        moved = de._perturb_duplicate(p)
-        assert moved != p and de._trial_settings == {}
-        for name, before in zip(NAMES, (1., 2., 3.)):
-            assert abs(moved[name] - before) <= 1e-6
-
-    def test_ade_does_not_deduplicate(self, tmp_path):
-        """Oracle (the hook is de-only): ``ade`` keeps the base identity, because it has no
-        in-flight register keyed by the candidate and tolerates two candidates sharing a
-        ``_trial_settings`` key by design (#730, ``_note_trial_result``)."""
-        ade = algorithms.AsynchronousDifferentialEvolution(_ade_config(tmp_path, de_adapt_mutation=1))
-        ade.start_run()
-        p = _wide_pset((1., 2., 3.))
-        assert ade._deduplicate(p) is p
-
     def test_every_candidate_of_a_generation_carries_a_record_even_when_they_coincide(self, tmp_path):
-        """Oracle (#775, end to end): a generation whose three candidates all land on the
-        same parameters still registers three records -- one per candidate.
+        """Oracle (#775's guarantee, under #812's mechanism): a generation whose three
+        candidates all land on the same parameters still registers three records -- one per
+        candidate -- and now without any of them being moved.
 
         The rng is scripted so every draw is fixed, which makes ``new_individual`` a pure
         function of the population: the same donor picks, the same settings draw, and the
         same forced parameter and value, so all three candidates of the generation come out
-        identical. Each is then moved off the previous one by ``_deduplicate``, and each must
-        own a record. On the old order this generation held ONE record instead of three, and
-        the two lost candidates' outcomes never reached the success history.
+        identical. Keyed by the candidate, that was ONE record instead of three and the two
+        lost candidates' outcomes never reached the success history; #775 answered by moving
+        each one off the last, and #812 by filing the record under the candidate's name,
+        which is its own wherever it landed. So the three stay coincident -- that is the
+        point -- and the register, the in-flight map and the success history each hold three.
+
+        The fake rng deliberately has no ``uniform`` draw, which is the one
+        ``_perturb_duplicate`` used and the only ``uniform`` the module ever called: anything
+        that tries to move a candidate off another fails here with ``AttributeError`` rather
+        than quietly reinstating the loop that could not terminate above ~1e10 (#812).
 
         The copy guarantee stays ON here -- ``de_adapt_mutation`` forces it on whatever
         ``de_force_mutation`` says -- so this is not a coincidence that needed the guarantee
@@ -818,15 +785,17 @@ class TestLearnedMutationSettings:
         de.rng = _fake_rng(
             choice=lambda n, k, replace=False: np.array([0, 1, 2]),
             integers=lambda n: 0, random=lambda: 0.0,
-            normal=lambda loc, scale: loc, standard_cauchy=lambda: 0.0,
-            uniform=lambda lo, hi: hi)
+            normal=lambda loc, scale: loc, standard_cauchy=lambda: 0.0)
         gen1 = None
         for ps, sc in zip(start, [5.0, 3.0, 7.0]):
             gen1 = de.got_result(self._result(ps, sc))
         assert len(gen1) == 3
-        assert len(set(gen1)) == 3                      # moved off one another
+        assert len(set(gen1)) == 1                      # coincident, and left that way
+        names = [c.name for c in gen1]
+        assert names == ['gen1ind0', 'gen1ind1', 'gen1ind2']
         assert len(de._trial_settings) == 3             # and every one of them recorded
-        assert set(de._trial_settings) == set(gen1)
+        assert set(de._trial_settings) == set(names)
+        assert de.island_map == {'gen1ind0': (0, 0), 'gen1ind1': (0, 1), 'gen1ind2': (0, 2)}
 
     def test_ade_flushes_every_population_size_results(self, tmp_path):
         """Oracle (when ade learns): a population's worth of results is ade's generation.
@@ -865,7 +834,7 @@ class TestLearnedMutationSettings:
         ade.start_run()
         assert len(ade.histories) == 1 and ade.histories[0].rates == [1.0] * 3
         ade.histories[0].rates[0] = 0.2
-        ade._trial_settings[_wide_pset((1., 2., 3.))] = (0.5, 0.5, 2.0, 0)
+        ade._trial_settings['gen1ind0'] = (0.5, 0.5, 2.0, 0)
         ade._search_start_run()
         assert ade.histories[0].rates == [1.0] * 3 and ade._trial_settings == {}
 
@@ -1292,8 +1261,8 @@ class TestCrossWithTarget:
         ade.individuals, ade.fitnesses = inds, [5.0, 3.0, 7.0, 9.0]
         monkeypatch.setattr(ade.histories[0], 'draw', lambda rng: (0.9, 0.6))
         ade.rng = _ScriptedRng(choice=[[0, 1, 2]], integers=[0], random=0.0)
-        new = ade.new_individual(inds, target_index=3)
-        assert ade._trial_settings[new] == (0.9, 0.6, 9.0, 0)
+        new = ade.new_individual(inds, target_index=3, name='gen1ind3')
+        assert ade._trial_settings['gen1ind3'] == (0.9, 0.6, 9.0, 0)
         ade._note_trial_result(new, 8.0)
         assert ade.histories[0].pending == [(0.9, 0.6, 1.0)]
 
@@ -1447,3 +1416,149 @@ class TestPositiveSupportPriorIsWalled:
         assert best < -1.0
         for v in de.variables:
             assert (v.lower_bound, v.upper_bound) == (-np.inf, np.inf)
+
+
+# --------------------------------------------------------------------------- #
+# Two candidates on one point (#812).
+#
+# Island `de` identified an in-flight candidate by its *position*: `island_map`
+# was keyed by the PSet, which hashes and compares by value, so it could not hold
+# two candidates that landed on the same parameters and the second write
+# overwrote the first. `de` is synchronous, so the entry a popped key leaves
+# behind is not re-registered until the whole generation completes -- and it
+# cannot complete, because one of its results has nowhere to go. Every collision
+# therefore ended the fit with KeyError, after crediting one slot with another
+# slot's score. The proposal path's guard against the same collision was the #721
+# loop: a fixed 1e-6 step that cannot move a linear parameter above ~1e10 at all,
+# taken until the candidate is distinct, which at that magnitude is never.
+#
+# The map is keyed by the candidate's name now, which is what `ade` has always
+# read its own slot from. These tests assert that property; each fails on the
+# previous code.
+# --------------------------------------------------------------------------- #
+class TestDuplicateCandidates:
+    @classmethod
+    def setup_class(cls):
+        cls.d1s = data.Data()
+        cls.d1s.data = cls.d1s._read_file_lines(
+            ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
+
+    def _de(self, tmp_path, box=(-100, 100), **over):
+        """Like ``_de_config`` but with the box as a parameter: the ``uniform_var`` keys are
+        tuples, which cannot ride in ``**kwargs``."""
+        base = {
+            'population_size': 3, 'max_iterations': 100, 'islands': 1, 'migrate_every': 20,
+            'num_to_migrate': 1, 'mutation_rate': 1.0, 'mutation_factor': 0.5,
+            'fit_type': 'de', 'de_strategy': 'rand1', 'random_seed': 1,
+            'initialization': 'rand',
+            ('uniform_var', 'v1__FREE'): list(box), ('uniform_var', 'v2__FREE'): list(box),
+            ('uniform_var', 'v3__FREE'): list(box),
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
+            'output_dir': str(tmp_path / 'de_dup')}
+        base.update(over)
+        return algorithms.DifferentialEvolution(config.Configuration(base))
+
+    def _collide_starts(self, de, dupes):
+        """Start ``de`` with the members in ``dupes`` drawn to one shared position.
+
+        Distinct PSet objects carrying equal values, which is what two independent draws
+        landing together produce -- a birthday problem on a box narrow beside the spacing
+        of doubles at its magnitude, and a certainty on a box pinned to a point (#808)."""
+        real = de.random_pset
+        shared = real()
+        drawn = []
+
+        def draw():
+            i = len(drawn)
+            drawn.append(i)
+            return deepcopy(shared) if i in dupes else real()
+
+        de.random_pset = draw
+        return de.start_run()
+
+    def _feed(self, de, starts, order, scores):
+        """Report results in ``order``. ``scores`` is indexed by the member, not by
+        arrival, so the same mapping holds whatever order the run loop delivers."""
+        for i in order:
+            res = algorithms.Result(starts[i], self.d1s, starts[i].name)
+            res.score = scores[i]
+            de.got_result(res)
+
+    def test_colliding_start_draws_all_reach_their_own_slot(self, tmp_path):
+        """Regression (#812): two of three members drawn to one point. Keyed by position
+        the map held two entries for three slots, the shared position's result was credited
+        to whichever slot was registered last, and the other one raised KeyError and ended
+        the fit -- in every result order, since a synchronous generation never re-registers
+        the key it popped."""
+        de = self._de(tmp_path, population_size=3)
+        starts = self._collide_starts(de, {0, 2})
+        assert starts[0] == starts[2] and starts[0] is not starts[2]      # the collision
+        assert de.island_map == {'gen0ind0': (0, 0), 'gen0ind1': (0, 1), 'gen0ind2': (0, 2)}
+        self._feed(de, starts, [0, 1, 2], [10.0, 11.0, 12.0])             # KeyError before
+        assert de.fitnesses == [[10.0, 11.0, 12.0]]                       # each to its own slot
+
+    def test_a_colliding_start_survives_every_result_order(self, tmp_path):
+        """The same collision, reported in each of the orders the run loop can deliver.
+        Which slot was misfiled and which result died used to depend on the order; none of
+        them is a special case now."""
+        for order in ([0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]):
+            de = self._de(tmp_path, population_size=3)
+            starts = self._collide_starts(de, {0, 2})
+            self._feed(de, starts, order, [10.0, 11.0, 12.0])
+            assert de.fitnesses == [[10.0, 11.0, 12.0]], f'order {order}'
+
+    def test_a_box_pinned_to_a_point_does_not_collapse_the_population(self, tmp_path):
+        """``uniform_var = x 5 5`` is accepted today (#808) and pins the parameter, so with
+        every parameter pinned every draw is the same point. The population used to collapse
+        to a single map entry -- three slots, one entry, the first result credited to slot 2
+        and the second ending the run. It is still a fit with nothing to search, but every
+        member is scored into its own slot."""
+        de = self._de(tmp_path, population_size=3, box=(5, 5))
+        starts = de.start_run()
+        assert len(de.island_map) == 3
+        self._feed(de, starts, [0, 1, 2], [10.0, 11.0, 12.0])
+        assert de.fitnesses == [[10.0, 11.0, 12.0]]
+
+    def test_islands_keep_colliding_members_apart(self, tmp_path):
+        """The slot a name carries is (island, index), so a collision across two islands is
+        no different: the shared position used to leave one island's member holding the
+        other island's score."""
+        de = self._de(tmp_path, population_size=6, islands=2)   # floored at 3 per island
+        starts = self._collide_starts(de, {0, 3})       # one member of each island
+        assert de.island_map == {'gen0isl0ind0': (0, 0), 'gen0isl0ind1': (0, 1),
+                                 'gen0isl0ind2': (0, 2), 'gen0isl1ind0': (1, 0),
+                                 'gen0isl1ind1': (1, 1), 'gen0isl1ind2': (1, 2)}
+        self._feed(de, starts, range(6), [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+        assert de.fitnesses == [[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]]
+
+    def test_a_large_magnitude_duplicate_is_left_where_it_landed(self, tmp_path):
+        """Regression (#812, the #721 shape): the guard that used to separate two candidates
+        added a fixed +-1e-6 in sampling space, which for a linear parameter *is* the value,
+        so above ~1e10 every draw rounded away (one ULP at 6e12 is 9.77e-4), the perturbed
+        set compared equal to the one it came from, and the loop taking it never terminated
+        -- no exception, no log line, the fit simply stopped. Nothing separates them now, so
+        the candidate is exactly where the mutation arithmetic put it.
+
+        The scripted rng has no ``uniform`` draw, the only one ``_perturb_duplicate`` made
+        and the only ``uniform`` the module ever called, so a reinstated loop fails here
+        instead of hanging CI."""
+        de = self._de(tmp_path, population_size=3, box=(0, 1e13))
+        start = de.start_run()
+        de.rng = _fake_rng(choice=lambda n, k, replace=False: np.array([0, 1, 2]),
+                           integers=lambda n: 0, random=lambda: 0.0)
+        gen1 = None
+        for ps, sc in zip(start, [5.0, 3.0, 7.0]):
+            gen1 = de.got_result(self._result(ps, sc))
+        assert len(gen1) == 3 and len(set(gen1)) == 1          # coincident at 6e12-scale
+        assert [c.name for c in gen1] == ['gen1ind0', 'gen1ind1', 'gen1ind2']
+        assert de.island_map == {'gen1ind0': (0, 0), 'gen1ind1': (0, 1), 'gen1ind2': (0, 2)}
+        # and the three of them still score into their own slots
+        for c, sc in zip(gen1, [1.0, 2.0, 3.0]):
+            de.got_result(self._result(c, sc))
+        assert de.fitnesses == [[1.0, 2.0, 3.0]]
+
+    def _result(self, ps, score):
+        res = algorithms.Result(ps, self.d1s, ps.name)
+        res.score = score
+        return res

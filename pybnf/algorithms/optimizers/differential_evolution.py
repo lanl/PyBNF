@@ -275,7 +275,8 @@ class DifferentialEvolutionBase(Algorithm):
             return bool(int(configured))
         return edition.is_modern(edition.resolve_edition(self.config.config.get('edition')))
 
-    def new_individual(self, individuals, base_index=None, island=0, target_index=None):
+    def new_individual(self, individuals, base_index=None, island=0, target_index=None,
+                       name=None):
         """
         Create a new individual for the specified island, according to the set strategy
 
@@ -287,6 +288,10 @@ class DifferentialEvolutionBase(Algorithm):
         :param target_index: The index of the member the new individual will compete with. With
             ``de_cross_with_target`` on, its unmutated parameters are that member's; without an
             index, or with the key off, they are the base's.
+        :param name: The candidate's name, assigned here rather than by the caller because it is
+            the key its learned-mutation record is filed under, and the record is written below
+            (#812). A caller that only wants the mutation arithmetic may leave it out; a caller
+            putting the candidate in flight must not, since the name is its identity.
         :return:
         """
 
@@ -345,34 +350,20 @@ class DifferentialEvolutionBase(Algorithm):
                 new_pset_vars.append(target.get_param(p.name))
 
         new_pset = PSet(new_pset_vars)
-        # Resolve a duplicate BEFORE the settings are registered, because the register is
-        # keyed by the candidate and two candidates that land on identical parameters are
-        # one key (#775). Registering first and de-duplicating afterwards -- which is what
-        # the island loop used to do -- let the second candidate's write overwrite the
-        # first one's record, and the move that followed carried the survivor to the
-        # perturbed key, so the first candidate's outcome was gone for good. The hook is a
-        # no-op for ``ade``, which tolerates a shared key by design (#730).
-        new_pset = self._deduplicate(new_pset)
+        new_pset.name = name
         if self.adapt_mutation:
             # What the outcome will be judged against: the fitness, now, of the member the
             # mutant was crossed with, which is what these settings were applied to (see
             # _note_trial_result).
             reference_fitness = float(self._island_fitnesses(island)[crossed])
-            self._trial_settings[new_pset] = (rate, factor, reference_fitness, island)
+            # Filed under the name, not the candidate. Keyed by the candidate, two that
+            # landed on identical parameters were one key and the second write dropped the
+            # first one's record -- which #775 answered by moving one of them off the
+            # other, and #812 answers by giving the register an identity that does not
+            # depend on where the candidate landed. Names being unique per in-flight
+            # candidate, ``ade`` no longer drops a record either (#730).
+            self._trial_settings[new_pset.name] = (rate, factor, reference_fitness, island)
         return new_pset
-
-    def _deduplicate(self, pset):
-        """Hook: ``pset``, moved if it duplicates a candidate already in flight.
-
-        The base is the identity -- ``ade`` has no in-flight register to check against and
-        deliberately tolerates two candidates sharing a ``_trial_settings`` key, dropping
-        one record (``_note_trial_result``, #730). Island ``de`` overrides it, because it
-        does have one (``island_map``) and does intend every candidate to carry a record.
-
-        Called from :meth:`new_individual` at the point the island loop used to perturb, so
-        the rng is consumed in exactly the same order and every seeded oracle in
-        ``test_diff_evolution`` keeps its drawn values bit for bit."""
-        return pset
 
     def _difference(self, name, donors, factor):
         """How far the donors move parameter ``name``, in its sampling space: ``factor`` times
@@ -460,18 +451,6 @@ class DifferentialEvolutionBase(Algorithm):
                           for _ in range(n_islands)]
         self._trial_settings = dict()
 
-    def _perturb_duplicate(self, pset):
-        """``pset`` moved by up to 1e-6 in every parameter: what ``de`` does to a candidate
-        that duplicates one already in flight, so the two are distinct keys.
-
-        It carries no learned-mutation record, because it is now called from
-        :meth:`_deduplicate` *before* the candidate's settings are registered (#775). It
-        used to move the record too, from the duplicate's key to the perturbed one -- which
-        looked like it preserved the outcome and did not: the duplicate's write had already
-        overwritten the earlier candidate's record at the shared key, so what moved was the
-        survivor and what was lost was the record this was meant to protect."""
-        return PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in pset])
-
     def _note_trial_result(self, pset, score):
         """Report a finished candidate's score to the history that built it.
 
@@ -487,10 +466,15 @@ class DifferentialEvolutionBase(Algorithm):
         history that a rate near 0 is best (ADR-0142), so it is judged against the base.
         A failed simulation on either side is not evidence about the settings, since
         anything finite beats infinity, so it records nothing. A candidate this history did
-        not build (the initial population, or a duplicate whose record another candidate
-        overwrote) records nothing either.
+        not build -- the initial population -- records nothing either; it is looked up by
+        name, and its name is not one the register holds.
+
+        A duplicate used to fall in that last group too: keyed by the candidate, two on
+        identical parameters were one key and one record was lost (#730 for ``ade``, which
+        tolerated it; #775 for ``de``, which moved one of them off the other to avoid it).
+        The register is keyed by name now, so neither happens (#812).
         """
-        record = self._trial_settings.pop(pset, None)
+        record = self._trial_settings.pop(pset.name, None)
         if record is None:
             return
         rate, factor, reference_fitness, island = record
@@ -661,7 +645,26 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
             self.migrate_every = np.inf
         self.num_to_migrate = config.config['num_to_migrate']
 
-        self.island_map = dict()  # Maps each proposed PSet to its location (island, individual_i)
+        # Maps the NAME of each in-flight candidate to its location (island, individual_i).
+        #
+        # Keyed by name and not by the candidate, because a PSet hashes and compares by
+        # value and two candidates on identical parameters are a legitimate state -- the
+        # ordinary end state of a converging population, and likelier still under
+        # ``de_adapt_mutation``, where a low drawn rate leaves most parameters unmutated.
+        # Keyed by value the map could hold only one of them: the second registration
+        # overwrote the first, a slot was credited with another slot's score, and since a
+        # generation does not re-register a key until all of its results are in, the
+        # duplicate's result had nowhere to go and ended the fit with ``KeyError`` (#812).
+        # The proposal path answered that by perturbing one candidate off the other, in a
+        # loop whose fixed 1e-6 step cannot move a linear parameter above ~1e10 at all, so
+        # it never terminated (#721 in ``pso``, the same code here).
+        #
+        # A name is unique per in-flight candidate by construction and says which slot the
+        # result belongs to, so each of two coincident candidates is scored into its own
+        # slot. ``ade`` has always read its slot straight out of the name, which is why it
+        # never had either failure; ``simplex``, ``scatter_search`` and (since #811)
+        # ``pso`` key their in-flight registers the same way.
+        self.island_map = dict()
         self.iter_num = [0] * self.num_islands  # Count the number of completed iterations on each island
         self.waiting_count = []  # Count of the number of PSets that are pending evaluation on the current iteration of each island.
         self.individuals = []  # Nested list; individuals[i][j] gives individual j on island i.
@@ -678,23 +681,6 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         # each migration, used for all islands
         self.migration_perms = dict()  # How do we rearrange between islands on migration i?
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
-
-    def _deduplicate(self, pset):
-        """``pset``, moved until it duplicates no candidate already in flight (#775).
-
-        Island ``de``'s override of the base hook. ``island_map`` holds every candidate
-        awaiting a result, including the ones this generation's loop has already produced,
-        so a candidate that lands on identical parameters -- which the learned settings make
-        reachable, since a low drawn ``mutation_rate`` leaves most parameters unmutated --
-        is moved by up to 1e-6 per parameter until it is its own key.
-
-        ``de`` needs this and ``ade`` does not because ``de`` keys a real per-candidate
-        register on the ``PSet``: ``island_map`` for the slot the result belongs to, and
-        ``_trial_settings`` for the settings that built it. Called before either is written,
-        so both land under the candidate's final key."""
-        while pset in self.island_map:
-            pset = self._perturb_duplicate(pset)
-        return pset
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
@@ -723,6 +709,17 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
 
     def _island_fitnesses(self, island):
         return self.fitnesses[island]
+
+    def _candidate_name(self, gen, island, j):
+        """The name of the candidate in slot ``j`` of ``island`` at generation ``gen``.
+
+        One place, because the name is now the key ``island_map`` and the learned-mutation
+        register are filed under (#812), and two formats that drift apart would be two
+        candidates the fit cannot tell apart. A single-island run keeps the island out of the
+        name, so its simulation folders are named exactly as they always were."""
+        if self.num_islands == 1:
+            return 'gen%iind%i' % (gen, j)
+        return 'gen%iisl%iind%i' % (gen, island, j)
 
     def _search_start_run(self):
         # Reset every search counter first (the per-island iteration and migration
@@ -763,11 +760,9 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
 
         for i in range(len(self.proposed_individuals)):
             for j in range(len(self.proposed_individuals[i])):
-                self.island_map[self.proposed_individuals[i][j]] = (i, j)
-                if self.num_islands == 1:
-                    self.proposed_individuals[i][j].name = 'gen0ind%i' % j
-                else:
-                    self.proposed_individuals[i][j].name = 'gen0isl%iind%i' % (i, j)
+                # Named before it is registered, the name being the key.
+                self.proposed_individuals[i][j].name = self._candidate_name(0, i, j)
+                self.island_map[self.proposed_individuals[i][j].name] = (i, j)
 
         self.waiting_count = [self.num_per_island] * self.num_islands
 
@@ -793,7 +788,7 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
         self._note_trial_result(pset, score)
 
         # Calculate the fitness of this individual, and replace if it is better than the previous one.
-        island, j = self.island_map.pop(pset)
+        island, j = self.island_map.pop(pset.name)
         fitness = score
         if fitness <= self.fitnesses[island][j]:
             self.individuals[island][j] = pset
@@ -875,25 +870,20 @@ class DifferentialEvolution(MultiStartOptimizer, DifferentialEvolutionBase):
             # Set up the next generation
             best = np.argmin(self.fitnesses[island])
             for jj in range(self.num_per_island):
+                name = self._candidate_name(self.iter_num[island], island, jj)
                 if 'best' in self.strategy:
                     new_pset = self.new_individual(self.individuals[island], best, island=island,
-                                                   target_index=jj)
+                                                   target_index=jj, name=name)
                 elif 'all' in self.strategy:
                     new_pset = self.new_individual(self.individuals[island], jj, island=island,
-                                                   target_index=jj)
+                                                   target_index=jj, name=name)
                 else:
                     new_pset = self.new_individual(self.individuals[island], island=island,
-                                                   target_index=jj)
-                # A duplicate of a candidate already in flight is resolved inside
-                # new_individual, before its learned-mutation record is registered
-                # (_deduplicate / #775). It used to be done here, after registration,
-                # which silently dropped the earlier candidate's record.
+                                                   target_index=jj, name=name)
+                # new_individual named it, so the register below and the learned-mutation
+                # record it wrote are filed under the same key.
                 self.proposed_individuals[island][jj] = new_pset
-                self.island_map[new_pset] = (island, jj)
-                if self.num_islands == 1:
-                    new_pset.name = 'gen%iind%i' % (self.iter_num[island], jj)
-                else:
-                    new_pset.name = 'gen%iisl%iind%i' % (self.iter_num[island], island, jj)
+                self.island_map[new_pset.name] = (island, jj)
 
             self.waiting_count[island] = self.num_per_island
 
@@ -1057,13 +1047,15 @@ class AsynchronousDifferentialEvolution(MultiStartOptimizer, DifferentialEvoluti
             if self._population_converged():
                 return 'STOP'
 
+        # Named as it is built, so the learned-mutation record new_individual writes is
+        # filed under the name this method reads back off the result (#812).
+        name = 'gen%iind%i' % (gen+1, j)
         if 'best' in self.strategy:
             best = np.argmin(self.fitnesses)
-            new_pset = self.new_individual(self.individuals, best, target_index=j)
+            new_pset = self.new_individual(self.individuals, best, target_index=j, name=name)
         elif 'all' in self.strategy:
-            new_pset = self.new_individual(self.individuals, j, target_index=j)
+            new_pset = self.new_individual(self.individuals, j, target_index=j, name=name)
         else:
-            new_pset = self.new_individual(self.individuals, target_index=j)
-        new_pset.name = 'gen%iind%i' % (gen+1, j)
+            new_pset = self.new_individual(self.individuals, target_index=j, name=name)
 
         return [new_pset]
