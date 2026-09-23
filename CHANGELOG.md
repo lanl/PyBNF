@@ -254,6 +254,56 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **Island differential evolution no longer ends the fit when two candidates land on one
+  point, or stops dead trying to keep them apart (#812).** `de` identified an in-flight
+  candidate by its *position*: `island_map` was keyed by the `PSet`, which hashes and compares
+  by value, so it could not hold two candidates on identical parameters and the second
+  registration overwrote the first. This is #807 in `de` rather than `pso`, and the guard `de`
+  carried on its proposal path was #721 in `de` rather than `pso`. `ade` was never affected --
+  it keeps no in-flight map and reads its slot straight out of the candidate's name, which is
+  what `simplex` and `scatter_search` do too, and what #811 gave `pso`.
+
+  On the **start** path the initial population was registered with no collision check. Unlike
+  `pso` there was no benign outcome: `de` is synchronous, so the entry a popped key leaves
+  behind is not re-registered until the whole generation completes, and the generation cannot
+  complete when one of its results has nowhere to go. Every collision ended the fit with
+  `KeyError`, after crediting one slot with another slot's score on the way. Measured on three
+  members with two of them drawn together: two map entries for three slots, the shared
+  position's score filed into the wrong slot, and the fit over on the next result -- in every
+  one of the five result orders tried, there being no order that saves it. With every parameter
+  pinned (`uniform_var = x 5 5`, accepted today -- #808) it was one entry for the whole
+  population, the first result credited to the last slot and the second ending the run;
+  `ade` on that same box scored all of its members correctly.
+
+  On the **proposal** path the collision was instead broken by moving one candidate off the
+  other, added by #775 so two candidates keep two learned-mutation records. That guard was the
+  #721 bug: a fixed ±1e-6 added in sampling space, which for a linear parameter *is* the value,
+  and one ULP at 6e12 is 9.77e-4, so every draw rounded away and the perturbed set compared
+  equal to the one it came from. Measured: 500 perturbations at 6e12 and still a duplicate,
+  against one perturbation at 6.0. The loop taking them had no cap, so the fit stopped with no
+  exception and no log line.
+
+  Both are one defect and both are fixed in one place: `island_map` is keyed by the candidate's
+  **name**, and so is the learned-mutation register. A name is unique per in-flight candidate by
+  construction and says which slot the result belongs to, so two candidates at one point keep
+  two entries and each is scored into its own slot. Nothing has to be moved to keep the
+  bookkeeping straight, so the de-duplication hook and the perturbation it took are gone. The
+  name is now assigned by `new_individual` as it builds the candidate rather than by the caller
+  afterwards, because the name is the key its record is filed under, and one helper builds it so
+  the two formats cannot drift apart. #775's guarantee -- every candidate of a generation carries
+  its own record, even when they all coincide -- holds without the perturbation, and `ade` stops
+  dropping a record when two of its candidates share parameters, which closes the #730 caveat.
+
+  **A fit whose candidates never share a point runs exactly as before**, and a single-island
+  run's simulation folders keep the names they have always had. One that does collide now runs
+  on, with its candidates left exactly where the mutation arithmetic put them.
+
+  Five tests, each failing on the previous code -- on the lost map entry, on the `KeyError`, and
+  on the collapsed population. The two that exercise a duplicate hand the algorithm an rng with
+  no `uniform` draw, which is the only one the perturbation made and the only `uniform` the
+  module ever called, so a reinstated loop fails there rather than hanging CI. #775's own
+  end-to-end test keeps its subject and swaps its oracle: its three coincident candidates are
+  asserted to stay coincident and to hold three names, three records and three map entries.
 - **`CHANGELOG.md`'s `[Unreleased]` section carries one heading per kind, in Keep a Changelog
   order (#800).** It had drifted to a duplicate `### Added` and a non-canonical order, which is
   what repeated hand-resolution of a conflict in one region produces. The entries are merged
