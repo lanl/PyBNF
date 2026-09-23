@@ -6,6 +6,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+
 - **Two opt-in settings for how scatter search pays for its noise handling's deferral, both
   measured as no better (#696, ADR-0145).** `ss_noise_optimistic = 1` gives the reference slot
   to whichever side of an undecided parent-versus-child contest leads on the mean, right away,
@@ -80,52 +81,6 @@ All notable changes to PyBNF are documented below. This project adheres to
   (`de`, `ss` and `cmaes` each with and without their noise handling) at equal simulation
   budgets, and the baseline results. It is what makes the stochastic-fitting claims of #659,
   #660 and #661 measurable; the full suite the issue asks for is built on it.
-
-### Changed
-- **Scatter search's noise handling defers an undecided contest for three draws, not five
-  (#663, ADR-0141).** `ss_noise_max_draws` now defaults to 3. Measured on the stochastic
-  recovery benchmark over twenty seeds and four problems, the deferral length was the cost
-  of the noise handling: at five, scatter search accepted about half as many replacements
-  into its reference set per run, spent a tenth of its budget re-drawing points it had seen,
-  and ended no better than without the feature; at three it had the most successes of the
-  settings tried and cost nothing measurable against plain scatter search. A conf that sets
-  `ss_noise_max_draws` itself is unchanged.
-- **Scatter search gives idle processors another draw of a member whose rank is in doubt
-  (#660 step 4, ADR-0139).** Scatter search waits for every simulation of a round before it
-  builds the next, so toward the end of a round processors sit idle waiting for the slowest
-  simulation, and for a stochastic model the spread in running times is wide. The run now
-  records how many simulations it can execute at once, and when a stochastic scatter search
-  has fewer in flight than that, the difference is filled with fresh draws of the members
-  the noise cannot order, the same draws it would have spent at the round's end, each
-  within `ss_noise_max_draws`. `ss_fill_idle = 0` turns just this off, for a fit that would
-  rather end each round as soon as its own simulations do. A deterministic fit, a run whose
-  processor count cannot be read, and a round with nothing idle are unchanged.
-- **Scatter search fills the diverse half of its first reference set by distance under
-  `edition = 2` (#660 step 2, ADR-0137).** Glover's template builds the first reference set
-  from the best half of the initial population and the most *diverse* half of the rest,
-  chosen one at a time as the candidate farthest from the nearest member already in the
-  set. PyBNF picked that half at random, which is diverse only on average and, with many
-  parameters, far less so than choosing for it. Distance is measured in the parameter
-  sampling space with each parameter divided by its spread over the initial population.
-  The legacy edition keeps the random choice, and `ss_diverse_by_distance` sets it either
-  way.
-- **PyBNF requires Python 3.12 or newer, and the `petab` extra requires petab 0.9 or
-  newer (#591).** petab 0.9.0 is the first release that loads a `language: bngl` model
-  natively, through the `BnglModel` loader PyBNF contributed upstream
-  (PEtab-dev/libpetab-python#508), and it requires Python 3.12. Python 3.11 support is
-  dropped with it.
-
-### Removed
-- **The `pybnf.petab.bngl_model` module, its `BnglModel` adapter, and the
-  `register_bngl()` shim that taught older petab releases to load BNGL models (#591).**
-  petab now does this itself, so PEtab's own validator checks a BNGL-model problem with no
-  PyBNF code involved; `register_bngl()` had already collapsed to a no-op on petab 0.9.0.
-  The stand-alone BNGL reader and the parameter-expression evaluator (#666) stay: the
-  importer and exporter use the reader, and the evaluator is the staging copy for an
-  upstream port, since petab's native loader does not yet evaluate an expression-valued
-  parameter.
-
-### Added
 - **Scatter search gained the improvement method of Glover's template (#660 step 1,
   ADR-0138).** PyBNF's scatter search relied on recombination alone; the template refines
   the candidates combination produces with a local search, which Egea and colleagues' version
@@ -251,7 +206,59 @@ All notable changes to PyBNF are documented below. This project adheres to
   report, around the optimum it just found and aimed at the parameters it just flagged. Off
   by default. Both surfaces are documented under gradient-based fitting.
 
+### Changed
+
+- **Scatter search's noise handling defers an undecided contest for three draws, not five
+  (#663, ADR-0141).** `ss_noise_max_draws` now defaults to 3. Measured on the stochastic
+  recovery benchmark over twenty seeds and four problems, the deferral length was the cost
+  of the noise handling: at five, scatter search accepted about half as many replacements
+  into its reference set per run, spent a tenth of its budget re-drawing points it had seen,
+  and ended no better than without the feature; at three it had the most successes of the
+  settings tried and cost nothing measurable against plain scatter search. A conf that sets
+  `ss_noise_max_draws` itself is unchanged.
+- **Scatter search gives idle processors another draw of a member whose rank is in doubt
+  (#660 step 4, ADR-0139).** Scatter search waits for every simulation of a round before it
+  builds the next, so toward the end of a round processors sit idle waiting for the slowest
+  simulation, and for a stochastic model the spread in running times is wide. The run now
+  records how many simulations it can execute at once, and when a stochastic scatter search
+  has fewer in flight than that, the difference is filled with fresh draws of the members
+  the noise cannot order, the same draws it would have spent at the round's end, each
+  within `ss_noise_max_draws`. `ss_fill_idle = 0` turns just this off, for a fit that would
+  rather end each round as soon as its own simulations do. A deterministic fit, a run whose
+  processor count cannot be read, and a round with nothing idle are unchanged.
+- **Scatter search fills the diverse half of its first reference set by distance under
+  `edition = 2` (#660 step 2, ADR-0137).** Glover's template builds the first reference set
+  from the best half of the initial population and the most *diverse* half of the rest,
+  chosen one at a time as the candidate farthest from the nearest member already in the
+  set. PyBNF picked that half at random, which is diverse only on average and, with many
+  parameters, far less so than choosing for it. Distance is measured in the parameter
+  sampling space with each parameter divided by its spread over the initial population.
+  The legacy edition keeps the random choice, and `ss_diverse_by_distance` sets it either
+  way.
+- **PyBNF requires Python 3.12 or newer, and the `petab` extra requires petab 0.9 or
+  newer (#591).** petab 0.9.0 is the first release that loads a `language: bngl` model
+  natively, through the `BnglModel` loader PyBNF contributed upstream
+  (PEtab-dev/libpetab-python#508), and it requires Python 3.12. Python 3.11 support is
+  dropped with it.
+
+### Removed
+
+- **The `pybnf.petab.bngl_model` module, its `BnglModel` adapter, and the
+  `register_bngl()` shim that taught older petab releases to load BNGL models (#591).**
+  petab now does this itself, so PEtab's own validator checks a BNGL-model problem with no
+  PyBNF code involved; `register_bngl()` had already collapsed to a no-op on petab 0.9.0.
+  The stand-alone BNGL reader and the parameter-expression evaluator (#666) stay: the
+  importer and exporter use the reader, and the evaluator is the staging copy for an
+  upstream port, since petab's native loader does not yet evaluate an expression-valued
+  parameter.
+
 ### Fixed
+
+- **`CHANGELOG.md`'s `[Unreleased]` section carries one heading per kind, in Keep a Changelog
+  order (#800).** It had drifted to a duplicate `### Added` and a non-canonical order, which is
+  what repeated hand-resolution of a conflict in one region produces. The entries are merged
+  back into one section per kind and `tests/test_changelog_structure.py` now fails on a repeat,
+  an unknown heading or a misordering.
 - **A particle swarm no longer loses a particle, misfiles a score, or hangs when two particles
   meet on one position (#807, #721).** `pso` looked a particle up by its *position*, and a
   position is not an identity: a `PSet` hashes and compares by value, so a map keyed by one
