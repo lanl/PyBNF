@@ -252,47 +252,67 @@ All notable changes to PyBNF are documented below. This project adheres to
   by default. Both surfaces are documented under gradient-based fitting.
 
 ### Fixed
-- **A particle swarm no longer hangs when two particles meet on a large-magnitude position
-  (#721).** `pso` keys its in-flight parameter sets by value, so two particles arriving at the
-  same point have to be separated before the second overwrites the first's entry and the first
-  result back leaves the second to `KeyError`. The code's own comment named when that happens
-  -- "if all parameters have hit a box constraint" -- and it is right: a step that would leave
-  the box zeroes that velocity component, so a swarm converging on a corner piles up there.
+- **A particle swarm no longer loses a particle, misfiles a score, or hangs when two particles
+  meet on one position (#807, #721).** `pso` looked a particle up by its *position*, and a
+  position is not an identity: a `PSet` hashes and compares by value, so a map keyed by one
+  cannot hold two particles at the same point, and the second entry overwrote the first. Two
+  particles there is not exotic. The code's own comment named when it happens -- "if all
+  parameters have hit a box constraint" -- and it is right: a step that would leave the box
+  zeroes that velocity component, so a swarm converging on a corner piles up there.
 
-  The separation was a fixed ±1e-6 random step, added in sampling space. For a **linear**
-  parameter sampling space *is* the value, and 1e-6 is below one ULP of anything above ~1e10:
-  at 1e12 one ULP is 1.2e-4, a hundred times the whole step, so every draw rounded away. The
-  jittered set then compared equal by value to the one it came from, the loop's exit test
-  `while new_pset in self.pset_map` stayed true, and -- because each pass re-derives from the
-  particle's position, which the loop never reassigns, so nothing accumulates -- it spun
-  forever. No exception, no log line, no progress; the fit simply stopped, and a box reaching
-  1e12 is exactly where a parameter is likeliest to be sitting on a bound when the collision
-  happens.
+  On the **start** path there was no guard at all (#807), and which of two failures you got
+  depended on the order the results came back in. If the shared position's own result arrived
+  first it was also the personal and the global best, so all three velocity terms were zero,
+  the surviving particle did not move, and it re-registered under the same key and absorbed the
+  duplicate's score -- while the other particle's per-particle best stayed at `[None, inf]`, it
+  never received a result, it never moved, and it was out of the swarm for the rest of the run,
+  with nothing logged and nothing raised. If any other particle reported a better score first,
+  the shared-position particle was pulled off the point, its key went with it, and the next
+  result for that position raised `KeyError`. Measured on four particles with two of them drawn
+  together: the first order credited particle 0's score to particle 2 and left the
+  per-particle bests at `[inf, 11.0, 10.0, 13.0]`; the second ended the run. With every
+  parameter pinned -- `uniform_var = x 5 5`, which is accepted, and is filed separately as
+  #808 -- every draw is the same point and the whole swarm collapsed onto one particle: four
+  particles, one map entry, all four results credited to particle 3, bests
+  `[inf, inf, inf, 10.0]`.
 
-  The step is now sized to the parameter. A log-scaled one keeps the fixed 1e-6, which in
-  log10 space is already at least ten million ULP wide (`|log10(value)|` never exceeds ~324
-  for a representable value, where one ULP is 5.7e-14). A linear one takes 1e-9 of its own
-  magnitude, floored at that same 1e-6 -- so a parameter at 1e12 moves by 1e3 and one at 1e9
-  by 1, which is four and a half million ULP either way and one part per billion of the value
-  the fit is placing. And the loop is bounded: after 20 steps that all leave the position
-  unchanged it raises, naming the particle, the position it is stuck at, and the one
-  declaration that pins a parameter where no step can move it (equal lower and upper bounds),
-  instead of hanging.
+  Outside the pinned case a start collision needs two draws to agree in every parameter, so it
+  is a one- or two-parameter, narrow-box, large-magnitude concern -- the same corner as #721.
+  `[1e12, 1e12+1]` spans about 8,192 distinct doubles, one ULP there being 1.2e-4, and on a
+  one-parameter fit 100 start draws collided in 48.5% of 200 trials against the 45.4% the
+  birthday formula `1 - exp(-n(n-1)/2m)` predicts (20 particles 3.0%, 50 particles 13.5%).
+  Widening the box a hundredfold, to about 819,200 doubles, took 100 particles down to 0.5%.
 
-  Nothing outside the collision branch changed and nothing draws from the RNG until it is
-  taken, so **a fit that never reaches a duplicate position runs exactly as before**. The
-  floor holds to `|value| = 1000`; above it the step grows to keep the same relative size, so
-  the tutorial's largest box, `uniform_var = TCRtot__FREE 10000 100000`, would separate two
-  particles by 1e-4 where it used to use 1e-6. And a fit that does collide now separates on
-  the first attempt rather than after several: at 1e9, the last magnitude where the old step
-  mostly worked, one ULP was 1.2e-7 against a 2e-6-wide draw, so about 6 draws in 100 rounded
-  away and were retried.
+  On the **update** path the collision was instead broken by jittering one position off the
+  other, and a fixed ±1e-6 added in sampling space is below one ULP of a *linear* parameter
+  above ~1e10 -- at 1e12 one ULP is 1.2e-4, a hundred times the whole step -- so every draw
+  rounded away, the jittered set compared equal by value to the one it came from, and the loop
+  taking it spun forever with no exception and no log line (#721).
 
-  Five tests, four of which fail on the previous code. They drive the loop through a fake RNG
-  that refuses past a draw budget, so a reinstated unbounded loop is a failure rather than a
-  hung CI job -- there is no pytest-timeout here, and against the previous code these four do
-  hang. The fifth passes both before and after: it is the guard that an ordinary-magnitude
-  collision still separates by no more than 1e-6.
+  Both are one defect and it is now fixed in one place: the map is keyed by the in-flight
+  `PSet`'s **name**. That is the identity the run loop already goes by -- unique per in-flight
+  parameter set by construction, since it names the simulation folder -- and it says which
+  particle the result came back from, so two particles at one position keep two entries and
+  each gets its own result, credited to the particle that actually ran it. Nothing has to be
+  perturbed to keep the bookkeeping straight, so the jitter, the magnitude-scaled step sizing
+  that made it work at 1e12, and the bounded-retry `PybnfError` it could raise in the middle of
+  a fit are all gone: 55 lines out of the module, net.
+
+  **A fit whose particles never share a position runs exactly as before.** One that does now
+  runs on rather than losing a particle or stopping, and its particles sit exactly where the
+  velocity update puts them: an ordinary-magnitude collision used to move one of them by up to
+  1e-6, and the position the swarm recorded then differed from the position actually simulated.
+  The two coincident particles evaluate the same point twice, which is what the jitter did too
+  (a step of one part per billion is not a different simulation), and they separate on the next
+  update as soon as any other particle beats them, their cognitive and social coefficients
+  being drawn independently -- measured, from a staged three-particle swarm with two particles
+  coincident and holding the global best.
+
+  Six tests, all six failing on the previous code: four on the lost or misfiled result, and two
+  because the position is stepped off the collision. The update-path two budget the RNG draws
+  one update makes (exactly two per parameter, and nothing else), which is both how they say no
+  step was taken and what turns a reinstated unbounded jitter loop into a failure rather than
+  the hung CI job #721 would be -- there is no pytest-timeout here.
 - **PyBNF reads an SBML initial assignment instead of the placeholder value it supersedes
   (#795).** SBML lets a model set an entity's starting value in two places: an attribute on the
   entity, and a `listOfInitialAssignments` entry that supersedes it. When both are present the

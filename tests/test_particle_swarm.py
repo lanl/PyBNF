@@ -1,13 +1,10 @@
-from .context import data, algorithms, pset, objective, config, printing
+from .context import data, algorithms, pset, objective, config
 from types import SimpleNamespace
 import numpy as np
 import numpy.testing as npt
-import pytest
 from os import path
 from shutil import rmtree
 from copy import deepcopy
-
-from pybnf.algorithms.optimizers.particle_swarm import _tie_break_step
 
 
 class TestParticleSwarm:
@@ -178,7 +175,7 @@ class TestParticleSwarmUpdate:
         """Install a one-particle swarm at a known state so got_result is
         deterministic given the random coefficient(s)."""
         ps.swarm = [[cur, dict(vel)]]
-        ps.pset_map = {cur: 0}
+        ps.particle_of_name = {cur.name: 0}
         ps.bests = [[best, best_score]]
         ps.global_best = [gbest, gbest_score]
         ps.num_evals = 0
@@ -285,7 +282,7 @@ class TestParticleSwarmUpdate:
         ps = self._pso(tmp_path, population_size=1, max_iterations=100, adaptive_abs_tol=1.0)
         cur = _uniform_pset((5., 5., 5.)); cur.name = 'iter0p0'
         ps.swarm = [[cur, {'v1__FREE': 0., 'v2__FREE': 0., 'v3__FREE': 0.}]]
-        ps.pset_map = {cur: 0}
+        ps.particle_of_name = {cur.name: 0}
         ps.bests = [[cur, 10.0]]; ps.global_best = [cur, 10.0]
         ps.num_evals = 0; ps.last_best = 10.0; ps.nv = 0
         res = algorithms.Result(cur, self.d1s, 'iter0p0'); res.score = 12.0  # no improvement
@@ -331,7 +328,7 @@ class TestParticleSwarmUpdate:
         ps.nv = 7; ps.num_evals = 42; ps.last_best = 1.0
         ps.global_best = [object(), 0.1]
         ps.reset()
-        assert ps.swarm == [] and ps.pset_map == {}
+        assert ps.swarm == [] and ps.particle_of_name == {}
         assert ps.nv == 0 and ps.num_evals == 0 and ps.last_best == np.inf
         assert ps.global_best == [None, np.inf]
         assert ps.bests == [[None, np.inf]] * 3
@@ -347,136 +344,182 @@ class TestParticleSwarmUpdate:
 
 
 # --------------------------------------------------------------------------- #
-# The duplicate-position tie-break (#721). Two particles can converge on one
-# point -- the comment the original code carried names the case, a swarm piling
-# up in a box corner -- and pset_map is keyed by value, so the collision has to
-# be broken before the second particle's entry overwrites the first's. The step
-# that breaks it used to be a fixed +-1e-6 added in sampling space, which for a
-# linear parameter is a step in the value itself and rounds away entirely above
-# ~1e10, leaving the loop that takes it no way to terminate.
+# Two particles at one position (#807, #721).
+#
+# pso used to look a particle up by its *position*, which is not an identity: a
+# PSet hashes and compares by value, so a value-keyed map cannot hold two
+# particles at one point. The second entry overwrote the first, and the swarm
+# either lost a particle without a word (its per-particle best left at
+# [None, inf], its score credited to the survivor) or raised KeyError on the
+# second result back -- whichever particle happened to move first (#807). On the
+# update path the collision was instead broken by jittering one position off the
+# other, a step that could not move a large linear parameter at all and so spun
+# forever (#721).
+#
+# The map is now keyed by the in-flight PSet's *name*, which is unique per
+# particle by construction, so two particles may share a position and each still
+# gets its own result. These tests assert that property rather than the mechanism
+# that used to paper over it, and every one of them fails on the previous code:
+# the four start-path ones on the lost or misfiled result, and the two update-path
+# ones because the position is stepped off the collision -- measured through the
+# draw budget below, which is also what turns a reinstated unbounded jitter loop
+# into a failure rather than the hang #721 was.
 # --------------------------------------------------------------------------- #
 class _BudgetedRng:
     """A Generator stand-in that refuses past ``budget`` draws.
 
-    The property under test is that the tie-break loop is *bounded*, and a test that
-    checked it by letting an unbounded one run would hang CI rather than fail it --
-    which is how the bug behaves, and there is no pytest-timeout here to catch it.
-    This turns "spins forever" into a failure on the first draw past the budget.
-    ``constant`` freezes the draw instead of passing the real one through."""
+    An update makes exactly two draws per parameter (the cognitive and social
+    coefficients) and nothing else, so budgeting the draws is how these tests say
+    *no step was taken to separate the particles*. It is also the guard that a
+    reinstated jitter loop fails rather than hangs -- the #721 behaviour is an
+    unbounded loop, and there is no pytest-timeout here to catch one."""
 
-    def __init__(self, budget, constant=None, seed=0):
+    def __init__(self, budget, seed=0):
         self._inner = np.random.default_rng(seed)
-        self._constant = constant
         self._left = budget
 
     def random(self):
         if self._left <= 0:
-            raise AssertionError('the tie-break made more draws than this test allows; '
-                                 'the loop is not bounded')
+            raise AssertionError('the update made more draws than this test allows; '
+                                 'something is stepping the position to separate it')
         self._left -= 1
-        return self._inner.random() if self._constant is None else self._constant
+        return self._inner.random()
 
 
-class TestParticleSwarmTieBreak:
+class TestParticleSwarmDuplicatePositions:
     @classmethod
     def setup_class(cls):
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(
             ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
 
-    def _pso(self, tmp_path, hi, **over):
-        """A two-particle swarm on the box [0, hi], with the acceleration terms zeroed
-        and w0 = 1, so a particle's next position is exactly position + velocity."""
+    def _pso(self, tmp_path, n=4, lo=0, hi=10, **over):
         base = {
-            'population_size': 2, 'max_iterations': 100,
-            'cognitive': 0., 'social': 0., 'particle_weight': 1.0,
-            ('uniform_var', 'v1__FREE'): [0, hi], ('uniform_var', 'v2__FREE'): [0, hi],
-            ('uniform_var', 'v3__FREE'): [0, hi],
+            'population_size': n, 'max_iterations': 100, 'initialization': 'rand',
+            ('uniform_var', 'v1__FREE'): [lo, hi], ('uniform_var', 'v2__FREE'): [lo, hi],
+            ('uniform_var', 'v3__FREE'): [lo, hi],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'fit_type': 'pso', 'output_dir': str(tmp_path / 'pso_tie')}
+            'fit_type': 'pso', 'output_dir': str(tmp_path / 'pso_dup')}
         base.update(over)
         return algorithms.ParticleSwarm(config.Configuration(base))
 
-    def _collide(self, ps, hi, here, step, budget=24, constant=None):
-        """Stage the collision: particle 0 sits at ``here`` with velocity ``step``, so
-        its next position is ``here + step`` -- exactly where particle 1 is already being
-        simulated. The velocity update spends 6 of the draw budget (two per parameter,
-        both multiplied by a zeroed acceleration); each tie-break attempt spends 3.
-        Returns particle 1's position and the result to feed in for particle 0."""
+    def _collide_starts(self, ps, dupes):
+        """Start ``ps`` with the particles in ``dupes`` drawn to one shared position.
+
+        Distinct PSet objects carrying equal values, which is what two independent
+        draws landing together produce -- a box narrow beside the spacing of doubles
+        at its magnitude makes it a birthday problem (#807)."""
+        real = ps.random_pset
+        shared = real()
+        drawn = []
+
+        def draw():
+            i = len(drawn)
+            drawn.append(i)
+            return deepcopy(shared) if i in dupes else real()
+
+        ps.random_pset = draw
+        return ps.start_run()
+
+    def _feed(self, ps, starts, order, scores):
+        for i, score in zip(order, scores):
+            res = algorithms.Result(starts[i], self.d1s, starts[i].name)
+            res.score = score
+            ps.got_result(res)
+
+    def test_colliding_start_draws_keep_every_particle(self, tmp_path):
+        """Regression (#807, outcome a): two start draws on one point, and the shared
+        position's own result first. All three velocity terms are then zero, so the
+        surviving particle does not move and re-registers under the same key, absorbing
+        the duplicate's result as its own -- silently, with nothing logged and nothing
+        raised. The lost particle's best stayed [None, inf] for the whole run."""
+        ps = self._pso(tmp_path)
+        starts = self._collide_starts(ps, {0, 2})
+        assert starts[0] == starts[2] and starts[0] is not starts[2]   # the collision
+        assert ps.particle_of_name == {'iter0p%i' % i: i for i in range(4)}
+        self._feed(ps, starts, [0, 1, 2, 3], [10.0, 11.0, 12.0, 13.0])
+        assert all(b[0] is not None for b in ps.bests)   # no particle went unscored
+        assert len(ps.particle_of_name) == len(ps.swarm) == 4
+
+    def test_colliding_start_draws_survive_any_result_order(self, tmp_path):
+        """Regression (#807, outcome b): the same collision, but another particle
+        reports a better score first. That pulls the shared-position particle off the
+        point, its key goes with it, and the next result for that position used to die
+        in ``pset_map.pop``."""
+        ps = self._pso(tmp_path)
+        starts = self._collide_starts(ps, {0, 2})
+        self._feed(ps, starts, [1, 0, 2, 3], [5.0, 12.0, 13.0, 14.0])   # KeyError before
+        assert all(b[0] is not None for b in ps.bests)
+        assert len(ps.particle_of_name) == len(ps.swarm) == 4
+
+    def test_each_score_goes_to_the_particle_that_ran_it(self, tmp_path):
+        """The name says which particle a result came back from, so a score is credited
+        to the particle that ran it and not to whichever one the position last belonged
+        to. This is what a map from position to a *list* of particles could not do: with
+        two coincident particles it would have to assign the two scores in arrival order,
+        which for a stochastic objective mixes up which particle saw which draw."""
+        ps = self._pso(tmp_path)
+        starts = self._collide_starts(ps, {0, 2})
+        self._feed(ps, starts, [0, 1, 2, 3], [10.0, 11.0, 12.0, 13.0])
+        assert [b[1] for b in ps.bests] == [10.0, 11.0, 12.0, 13.0]
+
+    def test_every_particle_of_a_pinned_box_gets_its_own_result(self, tmp_path):
+        """The one declaration that makes the collision certain rather than unlikely:
+        ``uniform_var = x 5 5`` is accepted (see #808) and pins the parameter, so with
+        every parameter pinned every draw is the same point. The swarm used to collapse
+        onto one particle for the whole run -- four particles, one map entry, all four
+        results credited to particle 3, bests [inf, inf, inf, 10.0]. It is still a fit
+        with nothing to search, but no particle is lost and no result is misfiled."""
+        ps = self._pso(tmp_path, lo=5, hi=5)
+        starts = ps.start_run()
+        assert len(ps.particle_of_name) == 4
+        self._feed(ps, starts, [0, 1, 2, 3], [10.0, 11.0, 12.0, 13.0])
+        assert [b[1] for b in ps.bests] == [10.0, 11.0, 12.0, 13.0]
+        assert len(ps.particle_of_name) == 4
+
+    # --- the update path (#721) --------------------------------------------- #
+    def _collide_update(self, ps, hi, here, step, budget=6):
+        """Stage the update-path collision: particle 0 sits at ``here`` with velocity
+        ``step``, so its next position is ``here + step`` -- exactly where particle 1 is
+        already being simulated. The budget is the six draws the velocity update itself
+        makes (two per parameter, both against a zeroed acceleration); a seventh means
+        something is stepping the position to separate it."""
         cur = _uniform_pset((here,) * 3, lo=0., hi=hi); cur.name = 'iter0p0'
         other = _uniform_pset((here + step,) * 3, lo=0., hi=hi); other.name = 'iter0p1'
         vel = {'v1__FREE': step, 'v2__FREE': step, 'v3__FREE': step}
         ps.swarm = [[cur, dict(vel)], [other, dict(vel)]]
-        ps.pset_map = {cur: 0, other: 1}
+        ps.particle_of_name = {'iter0p0': 0, 'iter0p1': 1}
         ps.bests = [[cur, 5.0], [other, 5.0]]
         ps.global_best = [cur, 5.0]
         ps.num_evals = 0
         ps.last_best = np.inf
-        ps.rng = _BudgetedRng(budget, constant)
+        ps.rng = _BudgetedRng(budget)
         res = algorithms.Result(cur, self.d1s, 'iter0p0'); res.score = 20.0
         return other, res
 
-    def test_tie_break_separates_a_large_linear_parameter(self, tmp_path):
-        """Regression (#721): with a linear parameter of magnitude 6e12 one ULP is
-        1.2e-4, a hundred times the +-1e-6 step the tie-break used to take, so every
-        draw rounded away, the jittered PSet compared equal by value to the position it
-        came from, and `while new_pset in self.pset_map` never terminated. The step is
-        now sized to the value, so the collision is broken -- and the point returned is
-        a distinct pset_map key, which is the whole reason to break it."""
-        ps = self._pso(tmp_path, hi=1e13)
-        other, res = self._collide(ps, hi=1e13, here=5e12, step=1e12)
+    def test_a_particle_may_step_onto_another_particles_position(self, tmp_path):
+        """Regression (#721): a step that would leave the box zeroes that velocity
+        component, so a swarm converging on a corner piles up there and this is the
+        ordinary case, not the exotic one. The particle now goes exactly where the
+        velocity update sends it and both particles stay tracked under their own names.
+        At a magnitude of 6e12 one ULP is 1.2e-4, so the +-1e-6 step that used to
+        separate them rounded away entirely and the loop taking it never terminated."""
+        ps = self._pso(tmp_path, n=2, hi=1e13, cognitive=0., social=0., particle_weight=1.0)
+        other, res = self._collide_update(ps, hi=1e13, here=5e12, step=1e12)
         out = ps.got_result(res)
         assert len(out) == 1
-        assert out[0] != other                                  # separated
-        assert ps.pset_map[out[0]] == 0 and ps.pset_map[other] == 1   # both still tracked
+        assert out[0] == other                     # coincident, and that is allowed
+        assert all(out[0][v] == 6e12 for v in ('v1__FREE', 'v2__FREE', 'v3__FREE'))
+        assert ps.particle_of_name == {'iter0p1': 1, 'iter1p0': 0}   # both still tracked
 
-    def test_tie_break_step_is_negligible_at_any_magnitude(self, tmp_path):
-        """Separating the two must not move the particle anywhere that matters: the
-        step is ~1e-9 of the value, so a particle stepping to 6e12 is simulated within
-        1e-8 of 6e12 relative -- and not *at* 6e12, which is the collision broken."""
-        ps = self._pso(tmp_path, hi=1e13)
-        _, res = self._collide(ps, hi=1e13, here=5e12, step=1e12)
+    def test_an_ordinary_magnitude_collision_is_also_left_alone(self, tmp_path):
+        """The same on the [0, 10] box, where the old step did work: the position is no
+        longer moved off the collision at any magnitude, so a fit's particles sit where
+        the velocity update puts them rather than a jitter's width away from it."""
+        ps = self._pso(tmp_path, n=2, hi=10., cognitive=0., social=0., particle_weight=1.0)
+        other, res = self._collide_update(ps, hi=10., here=5., step=1.)
         out = ps.got_result(res)
-        for v in ('v1__FREE', 'v2__FREE', 'v3__FREE'):
-            assert out[0][v] != 6e12
-            npt.assert_allclose(out[0][v], 6e12, rtol=1e-8)
-
-    def test_tie_break_step_unchanged_for_ordinary_magnitudes(self, tmp_path):
-        """The historical +-1e-6 is a floor, not a replacement: on the [0, 10] box where
-        it always worked, the separated point is still within 1e-6 of the computed
-        position rather than 1e-9 of its value (which would be 6e-9 here). This one
-        passes before the fix as well -- it is the guard that the fix changed nothing
-        where there was nothing wrong."""
-        ps = self._pso(tmp_path, hi=10.)
-        _, res = self._collide(ps, hi=10., here=5., step=1.)
-        out = ps.got_result(res)
-        for v in ('v1__FREE', 'v2__FREE', 'v3__FREE'):
-            assert out[0][v] != 6.0
-            assert abs(out[0][v] - 6.0) <= 1e-6
-
-    def test_tie_break_step_floors_a_log_parameter(self):
-        """A log-scaled parameter steps in log10 space, where |u| never exceeds ~324 and
-        one ULP is 5.7e-14, so the fixed step already spans at least ten million of them:
-        it keeps the floor and jitters exactly as it always has. The scaling is for linear
-        parameters, where sampling space *is* the value."""
-        log_p = pset.FreeParameter('v1__FREE', 'loguniform_var', 1e-3, 1e15, 1e12)
-        assert _tie_break_step(log_p) == 1e-6
-        lin_p = pset.FreeParameter('v2__FREE', 'uniform_var', 0, 1e15, 1e12)
-        assert _tie_break_step(lin_p) == 1e12 * 1e-9
-        small_p = pset.FreeParameter('v3__FREE', 'uniform_var', 0, 10, 0.5)
-        assert _tie_break_step(small_p) == 1e-6
-
-    def test_tie_break_refuses_instead_of_hanging(self, tmp_path):
-        """The cap. Freezing the draw at 0.5 makes add_rand's step exactly
-        -eps + (2*eps)*0.5 == 0 for every parameter, so no attempt can move the position
-        -- the shape of the #721 hang, and of any position no step can leave. The loop
-        gives up and says which particle, where it is stuck, and the one declaration
-        that pins a parameter where no step can move it."""
-        ps = self._pso(tmp_path, hi=10.)
-        _, res = self._collide(ps, hi=10., here=5., step=1., budget=200, constant=0.5)
-        with pytest.raises(printing.PybnfError) as exc:
-            ps.got_result(res)
-        assert 'could not separate particle 0' in exc.value.log_message
-        assert 'v1__FREE = 6.0' in exc.value.log_message          # the position it is stuck at
-        assert 'equal lower and upper bounds' in exc.value.message  # the remedy rides along
+        assert out[0] == other
+        assert all(out[0][v] == 6.0 for v in ('v1__FREE', 'v2__FREE', 'v3__FREE'))
+        assert ps.particle_of_name == {'iter0p1': 1, 'iter1p0': 0}
