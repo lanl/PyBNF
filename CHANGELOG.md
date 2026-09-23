@@ -7,6 +7,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 
+- **`tools/changelog_merge.py` resolves a `CHANGELOG.md` merge conflict by appending rather than
+  by merging lines (#800).** It takes the incoming version of the file whole and re-inserts the
+  entries the branch added, so nothing on either side can be lost and an entry cannot come out
+  garbled. It refuses if the branch removed or reworded an existing entry. `CONTRIBUTING.md` now
+  documents the changelog rules and this procedure.
 - **Two opt-in settings for how scatter search pays for its noise handling's deferral, both
   measured as no better (#696, ADR-0145).** `ss_noise_optimistic = 1` gives the reference slot
   to whichever side of an undecided parent-versus-child contest leads on the mean, right away,
