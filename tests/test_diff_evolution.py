@@ -1532,6 +1532,91 @@ class TestDuplicateCandidates:
         self._feed(de, starts, range(6), [10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
         assert de.fitnesses == [[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]]
 
+    # --- the invariant the registers now rest on ---------------------------- #
+    class _Watched(dict):
+        """A dict that counts writes landing on a key it already holds."""
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.clobbers = 0
+
+        def __setitem__(self, key, value):
+            if key in self:
+                self.clobbers += 1
+            super().__setitem__(key, value)
+
+    def _drive(self, alg, seed):
+        """Run ``alg`` to completion in process, delivering results in a shuffled order,
+        and report what the registers saw.
+
+        The registers are wrapped only after ``start_run``, which calls
+        ``_reset_adaptation`` and rebinds them."""
+        rng = np.random.default_rng(seed)
+        pending = list(alg.start_run())
+        alg._trial_settings = self._Watched(alg._trial_settings)
+        island_map = None
+        if hasattr(alg, 'island_map'):
+            alg.island_map = self._Watched(alg.island_map)
+            island_map = alg.island_map
+        unnamed = duplicated = built = 0
+        while pending:
+            ps = pending.pop(int(rng.integers(len(pending))))
+            res = algorithms.Result(ps, self.d1s, ps.name)
+            res.score = float(abs(rng.normal()) * 10)
+            out = alg.got_result(res)
+            if out == 'STOP':
+                break
+            for c in out:
+                built += 1
+                if c.name is None:
+                    unnamed += 1
+                if any(c.name == q.name for q in pending):
+                    duplicated += 1
+            pending.extend(out)
+        return dict(built=built, unnamed=unnamed, duplicated=duplicated,
+                    records_clobbered=alg._trial_settings.clobbers,
+                    slots_clobbered=island_map.clobbers if island_map is not None else 0)
+
+    @pytest.mark.parametrize('islands', [1, 3])
+    def test_no_in_flight_candidate_of_a_real_de_run_is_unnamed_or_shares_a_name(self, tmp_path, islands):
+        """The invariant both registers now rest on: every candidate the fit puts in flight
+        has a name, and no two in flight at once share one. That is what makes the name an
+        identity, and it is checked here over whole runs rather than asserted, because
+        ``new_individual`` takes the name as an optional argument -- a future call site that
+        left it out would file every candidate under ``None`` and put the silence back.
+
+        Migration is on (``migrate_every = 3``), so this also covers the generations where a
+        member arrives from another island carrying that island's name."""
+        de = self._de(tmp_path, population_size=3 * islands, islands=islands,
+                      max_iterations=12, migrate_every=3, num_to_migrate=1,
+                      de_adapt_mutation=1)
+        seen = self._drive(de, seed=7)
+        assert seen['built'] >= 30                     # the run really ran
+        assert seen['unnamed'] == 0
+        assert seen['duplicated'] == 0
+        assert seen['records_clobbered'] == 0
+        assert seen['slots_clobbered'] == 0
+
+    def test_ade_keeps_a_record_for_two_candidates_that_coincide(self, tmp_path):
+        """#730's caveat, closed. ``ade`` keyed its learned-mutation register on the
+        candidate, so two that landed on identical parameters were one key and the second
+        write dropped the first's record -- documented as tolerated rather than fixed, since
+        ``ade`` had no in-flight register to de-duplicate against. Filed under the name it is
+        not tolerated but impossible, and nothing had to be perturbed to make it so.
+
+        Seed 4 is not arbitrary: it is the first of the four seeds in 0..119 whose run
+        contains a genuine coincidence (4 coincident candidates in 8,520 at this population,
+        so a scan was needed to find one -- #730 measured the same event as about 0.5% of
+        *runs* at population 3). This run builds 71 candidates, one of which duplicates
+        another in flight, and on the previous code that costs exactly one record."""
+        ade = algorithms.AsynchronousDifferentialEvolution(
+            _ade_config(tmp_path, population_size=6, max_iterations=12,
+                        de_adapt_mutation=1, random_seed=4))
+        seen = self._drive(ade, seed=4)
+        assert seen['built'] == 71
+        assert seen['unnamed'] == 0 and seen['duplicated'] == 0
+        assert seen['records_clobbered'] == 0          # 1 on the previous code
+
     def test_a_large_magnitude_duplicate_is_left_where_it_landed(self, tmp_path):
         """Regression (#812, the #721 shape): the guard that used to separate two candidates
         added a fixed +-1e-6 in sampling space, which for a linear parameter *is* the value,
