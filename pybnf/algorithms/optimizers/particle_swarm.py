@@ -8,7 +8,7 @@ inherits its run loop + execution seam; it makes no core.* call of its own.
 from ..base import Algorithm
 from .multistart import MultiStartConfig, MultiStartOptimizer
 from ...pset import PSet
-from ...printing import print1, print2, PybnfError
+from ...printing import print1, print2
 from ...registry import register_fit_type
 
 import logging
@@ -19,54 +19,6 @@ import re
 # Preserve the original module logger name so log records keep the
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
-
-
-# --- Duplicate-position tie-break (see _tie_break_jitter) ------------------------
-_TIE_BREAK_STEP = 1e-6   # the fixed step this has always taken, now only a floor
-_TIE_BREAK_REL = 1e-9    # ... scaled to the magnitude of a linear parameter (#721)
-_TIE_BREAK_TRIES = 20    # ... and bounded, so an immovable position refuses instead of hanging
-
-
-def _tie_break_step(v):
-    """Half-width of the random step that moves ``v`` off its current value.
-
-    :meth:`FreeParameter.add_rand` adds in sampling space ``u``, so the step is
-    measured there.
-
-    A log-scaled parameter takes the fixed step below. Its ``u = log10(value)`` never
-    exceeds ~324 in magnitude for a representable value, and one ULP there is 5.7e-14, so
-    1e-6 spans at least ten million of them and always lands on a different float. That
-    case is exactly as it has always been.
-
-    A linear parameter's ``u`` *is* its value, and there a fixed 1e-6 is below one ULP of
-    anything above ~1e10 (ULP(1e12) is 1.2e-4). Every draw rounded away, the jittered
-    :class:`PSet` compared equal by value to the one it came from, and the caller's
-    ``while`` loop -- which re-derives from that same unchanged position each pass, so
-    nothing accumulates -- spun forever with no log line and no exception (#721). So
-    the step scales with the magnitude: ~1e-9 of the value is millions of ULP at any
-    magnitude, and one part per billion is negligible beside any parameter's own
-    uncertainty.
-
-    Re-deriving each attempt from the particle's position rather than from the previous
-    attempt is deliberate and stays: a random walk would carry the point further from
-    where the swarm thinks the particle is with every retry.
-    """
-    if v.log_space:
-        return _TIE_BREAK_STEP
-    return max(_TIE_BREAK_STEP, abs(v.value) * _TIE_BREAK_REL)
-
-
-def _tie_break_jitter(paramset, rng):
-    """``paramset`` moved off its position by a step too small to matter.
-
-    One draw per parameter, so a jittered set differs from its original unless *every*
-    parameter's draw rounded away -- see :func:`_tie_break_step` for why that no longer
-    happens at a magnitude the old fixed step could not resolve."""
-    jittered = []
-    for v in paramset:
-        step = _tie_break_step(v)
-        jittered.append(v.add_rand(-step, step, rng))
-    return PSet(jittered)
 
 
 class PSOConfig(MultiStartConfig):
@@ -174,7 +126,26 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         # Initialize storage for the swarm data
         self.swarm = []  # List of lists of the form [PSet, velocity]. Velocity is stored as a dict with the same keys
         # as PSet
-        self.pset_map = dict()  # Maps each PSet to it s particle number, for easy lookup.
+        # Maps the *name* of each in-flight PSet to its particle number, for easy lookup.
+        #
+        # Keyed by name rather than by the PSet, because a PSet hashes and compares by
+        # value while two particles at one position are a legitimate state -- an ordinary
+        # one, even: a step that would leave the box zeroes that velocity component, so a
+        # swarm converging on a corner piles up there, and two start draws can land
+        # together in a box narrow beside the spacing of doubles at its magnitude. A
+        # value-keyed map cannot hold both, so the second entry overwrote the first and the
+        # swarm either lost a particle in silence or raised ``KeyError`` on the second
+        # result back, whichever particle happened to move first (#807). The update path
+        # answered that by jittering one position off the other, which could not move a
+        # large linear parameter at all and spun forever (#721).
+        #
+        # A name is the identity the run loop already goes by: unique per in-flight PSet by
+        # construction (:meth:`Algorithm.start_run` requires it -- the name is the
+        # simulation folder), and it says which particle the result came back from. So a
+        # score is credited to the particle that actually ran it even where two positions
+        # coincide, no position has to be perturbed to keep the bookkeeping straight, and
+        # there is no tie to break on either path.
+        self.particle_of_name = dict()
         # One independent [PSet, objective] slot per particle. A list-multiply
         # ([[None, inf]] * n) would alias one inner list across every particle --
         # harmless today (got_result reassigns the whole slot) but a foot-gun if
@@ -199,7 +170,7 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         self.nv = 0
         self.num_evals = 0
         self.swarm = []
-        self.pset_map = dict()
+        self.particle_of_name = dict()
         self.bests = [[None, np.inf] for _ in range(self.num_particles)]
         self.global_best = [None, np.inf]
         self.last_best = np.inf
@@ -233,7 +204,9 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
             new_velocity = dict({v.name: 0. for v in self.variables})
 
             self.swarm.append([p, new_velocity])
-            self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
+            # 'iter0p<i>' is unique however the draws landed, so registering every particle
+            # here cannot lose one even when two of them share a position.
+            self.particle_of_name[p.name] = len(self.swarm)-1  # Index of the newly added PSet.
 
         return [particle[0] for particle in self.swarm]
 
@@ -273,7 +246,7 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         if self.num_evals % self.output_every == 0:
             self.output_results()
 
-        p = self.pset_map.pop(paramset)  # Particle number
+        p = self.particle_of_name.pop(paramset.name)  # Particle number
 
         # Update best scores if needed.
         if score <= self.bests[p][1]:
@@ -306,42 +279,14 @@ class ParticleSwarm(MultiStartOptimizer, Algorithm):
         new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
 
-        # Two particles can land on the same position -- likeliest when they have hit the
-        # same box constraint, since a step that would leave the box zeroes that velocity
-        # component and a swarm converging on a corner piles up there. ``pset_map`` is
-        # keyed by value, so the second particle would overwrite the first's entry, and
-        # the first result back would empty it and leave the second to KeyError. Break the
-        # tie by jittering the position off the collision.
-        #
-        # The loop is bounded because it used not to be: with the fixed 1e-6 step it could
-        # not move a large linear parameter at all and ran forever (#721). The jitter is
-        # now sized to the value, so the cap is only reached by a position no step can
-        # leave -- and if one exists, this says so instead of hanging.
-        tries = 0
-        while new_pset in self.pset_map:
-            if tries == _TIE_BREAK_TRIES:
-                raise PybnfError(
-                    f'Particle swarm could not separate particle {p} from another particle at the '
-                    f'same position: {_TIE_BREAK_TRIES} random steps all left every parameter '
-                    f'unchanged. Position: '
-                    + ', '.join(f'{v.name} = {float(v.value)!r}' for v in self.swarm[p][0]),
-                    hint='Two particles reaching one point is normal near a box corner; being '
-                         'unable to step off it is not. The step is sized to each parameter, so '
-                         'the only declaration it cannot move is one with equal lower and upper '
-                         'bounds, which pins the parameter to a single value -- check the fit '
-                         'parameters for that, and if none is pinned, please report it.')
-            new_pset = _tie_break_jitter(self.swarm[p][0], self.rng)
-            tries += 1
-        if tries:
-            logger.debug(f'Particle {p} collided with a position already being simulated; '
-                         f'separated it in {tries} step(s)')
-
-        self.pset_map[new_pset] = p
-
         # Set the new name: the old pset name is iter##p##
         # Extract the iter number
         iternum = int(re.search('iter([0-9]+)', paramset.name).groups()[0])
         new_pset.name = 'iter%ip%i' % (iternum+1, p)
+        # Named before it is registered, since the name is now the key. Two particles that
+        # land on one position keep two entries and get their own results back, so nothing
+        # has to be jittered apart (see ``particle_of_name`` in ``__init__``).
+        self.particle_of_name[new_pset.name] = p
 
         # Check for stopping criteria
         if self.num_evals >= self.max_evals or self.nv >= self.n_stop:
