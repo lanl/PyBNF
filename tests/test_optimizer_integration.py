@@ -1266,44 +1266,74 @@ def test_multistart_name_boundary(tmp_path):
     assert res.pset.name == 'gen0ind0'                 # stripped for the inner search
 
 
-# The (config, n_starts) at which each method is trapped single-start but escapes
-# multi-start on the two-mode trap -- a per-method budget (ss is the expensive one, and
-# gets a wider global basin so its small-population search can find it within budget).
+# The (config, n_starts) at which each method is usually trapped single-start and often
+# escapes multi-start on the two-mode trap -- a per-method budget (ss is the expensive
+# one, and gets a wider global basin so its small-population search can find it within
+# budget).
+#
+# The last field, min_escapes, is how many of the _MS_ESCAPE_SEEDS must show multi-start
+# reaching the global mode where the single run did not. It is set from the rates measured
+# over seeds 1-100 (2026-09-24): de 47, ade 43, ss 46, pso 24 seeds in 100. A fresh draw
+# of twenty seeds at those rates falls short of the threshold with probability 0.2% or
+# less (pso: 0.4%), so a change to the random sequence alone should not trip it, while a
+# multi-start that stopped helping would.
 _MS_TRAP_MODES_WIDE = [(0.3, [-4.0, -4.0], [12.0, 12.0]), (0.7, [5.0, 5.0], [0.6, 0.6])]
 _MS_ESCAPE = [
-    ('de',  dict(population_size=12, max_iterations=60, stop_tolerance=1e-5,
-                 random_seed=42), 8),
+    ('de',  dict(population_size=12, max_iterations=60, stop_tolerance=1e-5), 8, 3),
     # ade is the async one-in-one-out variant: this case drives the mixin's DRAINING
     # path end to end -- at each start's inner STOP a full population is still in flight
     # and must drain (its stragglers already scored into the trajectory) before the next
     # start seeds (#501).
-    ('ade', dict(population_size=12, max_iterations=60, stop_tolerance=1e-5,
-                 random_seed=29), 6),
-    ('ss',  dict(population_size=5, max_iterations=15, random_seed=5,
-                 modes=_MS_TRAP_MODES_WIDE), 6),
-    ('pso', dict(population_size=12, max_iterations=40, random_seed=3), 6),
+    ('ade', dict(population_size=12, max_iterations=60, stop_tolerance=1e-5), 6, 3),
+    ('ss',  dict(population_size=5, max_iterations=15, modes=_MS_TRAP_MODES_WIDE), 6, 3),
+    ('pso', dict(population_size=12, max_iterations=40), 6, 1),
 ]
+_MS_ESCAPE_SEEDS = range(1, 21)
+
+
+def _ms_reaches_global_mode(alg):
+    return (alg.trajectory.best_score() < 0.5          # the global mode's NLL is ~0.36
+            and np.allclose(H.best_params(alg, 2), [5.0, 5.0], atol=0.6))
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('fit_type,kwargs,n_starts', _MS_ESCAPE,
+@pytest.mark.parametrize('fit_type,kwargs,n_starts,min_escapes', _MS_ESCAPE,
                          ids=[e[0] for e in _MS_ESCAPE])
-def test_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_type, kwargs, n_starts):
-    """The case multi-start exists for. A single run collapses into the wide, shallow
-    LOCAL mode; running n_starts independent searches and keeping the global best escapes
-    to the deep, narrow GLOBAL mode -- a strictly better fit a single run does not reach."""
-    (tmp_path / 'a').mkdir(); (tmp_path / 'b').mkdir()
-    single = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path / 'a', fit_type, n_starts=1, **kwargs))
-    H.drive(single)
-    assert single.trajectory.best_score() > 0.8        # trapped near the local mode (~1.20)
-    assert np.allclose(H.best_params(single, 2), [-4.0, -4.0], atol=0.6)
+def test_multistart_escapes_a_trap_a_single_run_falls_into(tmp_path, fit_type, kwargs,
+                                                           n_starts, min_escapes):
+    """The case multi-start exists for. A single run usually collapses into the wide,
+    shallow LOCAL mode; running n_starts independent searches and keeping the global best
+    often escapes to the deep, narrow GLOBAL mode -- a strictly better fit the single run
+    did not reach.
 
-    multi = _MS_OPTIMIZERS[fit_type](_ms_config(tmp_path / 'b', fit_type, n_starts=n_starts, **kwargs))
-    H.drive(multi)
-    assert multi._start_index >= 1                     # at least one extra start ran
-    assert multi.trajectory.best_score() < 0.5         # escaped toward the global mode (~0.36)
-    assert np.allclose(H.best_params(multi, 2), [5.0, 5.0], atol=0.6)
-    assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5
+    Judged over twenty seeds rather than one, because for any one seed the outcome is a
+    coin toss: a single de run reaches the global mode for 6 seeds in 100, eight starts for
+    53. A pinned seed therefore passes or fails according to the exact sequence of random
+    draws, and a change to that sequence flips it with no change in how well multi-start
+    works -- which is how the seed this test used to pin (42) began failing when #813
+    removed a draw that only duplicate candidates made. The rates below do not move that
+    way. The one per-seed check is exact: start 0 repeats the single run, so multi-start's
+    best can never be worse than it."""
+    trapped = escapes = 0
+    for seed in _MS_ESCAPE_SEEDS:
+        (tmp_path / ('single%d' % seed)).mkdir(); (tmp_path / ('multi%d' % seed)).mkdir()
+        single = _MS_OPTIMIZERS[fit_type](_ms_config(
+            tmp_path / ('single%d' % seed), fit_type, n_starts=1, random_seed=seed, **kwargs))
+        H.drive(single)
+        multi = _MS_OPTIMIZERS[fit_type](_ms_config(
+            tmp_path / ('multi%d' % seed), fit_type, n_starts=n_starts, random_seed=seed,
+            **kwargs))
+        H.drive(multi)
+        assert multi._start_index >= 1, seed           # at least one extra start ran
+        assert multi.trajectory.best_score() <= single.trajectory.best_score() + 1e-9, seed
+        trapped += single.trajectory.best_score() > 0.8   # not in the global basin (~1.20)
+        escapes += _ms_reaches_global_mode(multi) and not _ms_reaches_global_mode(single)
+
+    n = len(_MS_ESCAPE_SEEDS)
+    assert trapped > n // 2, 'single run trapped for only %d of %d seeds' % (trapped, n)
+    assert escapes >= min_escapes, (
+        'multi-start escaped the trap for %d of %d seeds; at least %d expected'
+        % (escapes, n, min_escapes))
 
 
 # --------------------------------------------------------------------------- #
