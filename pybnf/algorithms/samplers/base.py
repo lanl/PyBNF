@@ -559,8 +559,27 @@ class BayesianAlgorithm(Algorithm):
         :type file_ext: str
         :return:
         """
-        # Read the samples file into an array, ignoring the first row (header)
-        # and first 2 columns (pset names, probabilities).
+        # Read each variable's column from the samples file by its name in the header.
+        #
+        # The file stores the parameters in alphabetical order (PSet.keys_to_string and
+        # values_to_string), while self.variables is in the order the configuration
+        # declares them. Pairing the two by position gave one parameter's credible
+        # intervals and histogram another parameter's samples -- binned in the wrong
+        # parameter's scale -- whenever the orders differed, which is the common case
+        # (lanl/PyBNF#856).
+        with open(self.samples_file) as f:
+            header = f.readline().lstrip('#').split()
+        if header[:2] != ['Name', 'Ln_probability']:
+            raise PybnfError('Cannot read the samples file %s: its first line is not the '
+                             '"# Name  Ln_probability  <parameters>" header PyBNF writes.'
+                             % self.samples_file)
+        names = header[2:]
+        missing = [v.name for v in self.variables if v.name not in names]
+        if missing:
+            raise PybnfError('Cannot write histograms or credible intervals: the samples '
+                             'file %s has no column for %s.'
+                             % (self.samples_file, ', '.join(missing)))
+        cols = [2 + names.index(v.name) for v in self.variables]
         #
         # ndmin=2 because genfromtxt drops any axis of length one: one free parameter
         # reads back as a 1-D array of samples, a lone sample as a 1-D array of
@@ -569,8 +588,11 @@ class BayesianAlgorithm(Algorithm):
         # and the credible intervals for the whole run while the samples file filled
         # up as normal (lanl/PyBNF#769). With ndmin the shape is always
         # (n_samples, n_variables) and the row count alone decides.
+        #
+        # genfromtxt returns the columns in the order usecols lists them, so column i of
+        # dat_array is self.variables[i].
         dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
-                                  usecols=range(2, len(self.variables)+2), ndmin=2)
+                                  usecols=cols, ndmin=2)
 
         if dat_array.shape[0] == 0:
             logger.warning('No samples collected — skipping histogram generation')

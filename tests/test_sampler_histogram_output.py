@@ -11,18 +11,31 @@ while the samples file itself filled up as normal (lanl/PyBNF#769). These tests 
 the shape contract at each of those corners against the *content* of the files, so
 they fail if the array comes back transposed as well as if it comes back flat.
 
+The method also has to find each parameter's column by name. samples.txt stores the
+parameters in alphabetical order, while ``variables`` is in the order the configuration
+declares them, and the method used to pair the two by position: whenever the orders
+differed, one parameter's credible intervals and histogram were built from another
+parameter's samples, binned in the wrong scale (lanl/PyBNF#856). ``_write_samples``
+below writes its header in declaration order, which is why the tests above could not
+see that; the tests at the end write the file with PyBNF's own writer.
+
 The method reads only ``samples_file``, ``variables``, ``credible_intervals``,
 ``num_bins`` and the output directory, so it is exercised on bare ``object.__new__``
 instances (following test_bayesian_diagnostics) rather than paying for the full
 model-parsing constructor — these need no BNG2.pl.
 """
+import glob
+import importlib.util
 import os
+import re
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from . import integration_harness as H
 from .context import algorithms, pset
+from pybnf.printing import PybnfError
 
 BA = algorithms.BayesianAlgorithm
 
@@ -159,3 +172,259 @@ def test_no_samples_still_skips(tmp_path, n_vars):
     assert os.listdir(os.path.join(str(tmp_path), 'Results', 'Histograms')) == []
     assert [f for f in os.listdir(os.path.join(str(tmp_path), 'Results'))
             if f.startswith('credible')] == []
+
+
+# --------------------------------------------------------------------------- #
+# Columns are found by name, not by position (lanl/PyBNF#856)
+# --------------------------------------------------------------------------- #
+
+# Declared out of alphabetical order, with a log parameter among linear ones, and with
+# samples in ranges that do not overlap, so a column read for the wrong parameter shows
+# up both in the values and in the histogram's scale.
+_OUT_OF_ORDER = [('x2', 'uniform_var', 40.0, 60.0, (45.0, 55.0)),
+                 ('x1', 'uniform_var', -10.0, 10.0, (-2.0, 2.0)),
+                 ('a3', 'loguniform_var', 0.01, 1000.0, (1.0, 100.0))]
+
+
+def _order_statistics(column, interval):
+    """The bounds ``update_histograms`` documents: order statistics of the sorted
+    column at the rounded central indices."""
+    col = sorted(column)
+    n = len(col)
+    want = n * (interval / 100)
+    lo_i = max(0, int(np.round(n / 2 - want / 2)))
+    hi_i = min(n - 1, int(np.round(n / 2 + want / 2 - 1)))
+    return col[lo_i], col[hi_i]
+
+
+def _write_samples_as_pybnf_does(ba, columns, n_samples):
+    """Write samples.txt with the same PSet methods ``sample_pset`` and ``start_run``
+    use, so the column order is whatever PyBNF really writes (alphabetical)."""
+    with open(ba.samples_file, 'w') as f:
+        header_pset = pset.PSet([v.set_value(columns[v.name][0]) for v in ba.variables])
+        f.write('# Name\tLn_probability\t' + header_pset.keys_to_string() + '\n')
+        for i in range(n_samples):
+            ps = pset.PSet([v.set_value(columns[v.name][i]) for v in ba.variables])
+            f.write('s%d\t-1.0\t' % i + ps.values_to_string() + '\n')
+
+
+def test_columns_are_read_by_name_when_declared_out_of_order(tmp_path):
+    """Oracle: each parameter's own samples, generated here and never read back from
+    the file. Every credible bound must be the order statistic of that parameter's
+    column, and every histogram must span that parameter's samples in that
+    parameter's scale."""
+    out = str(tmp_path)
+    os.makedirs(os.path.join(out, 'Results', 'Histograms'))
+    ba = object.__new__(BA)
+    ba.samples_file = os.path.join(out, 'Results', 'samples.txt')
+    ba.variables = [pset.FreeParameter(name, kind, lo, hi, (lo + hi) / 2 if kind == 'uniform_var' else 1.0)
+                    for name, kind, lo, hi, _ in _OUT_OF_ORDER]
+    ba.credible_intervals = [68, 95]
+    ba.num_bins = 10
+    ba.config = SimpleNamespace(config={'output_dir': out})
+
+    n_samples = 200
+    rng = np.random.default_rng(3)
+    columns = {name: rng.uniform(a, b, n_samples) for name, _, _, _, (a, b) in _OUT_OF_ORDER}
+    _write_samples_as_pybnf_does(ba, columns, n_samples)
+    with open(ba.samples_file) as f:
+        assert f.readline().split()[3:] == ['a3', 'x1', 'x2']   # really not declaration order
+
+    ba.update_histograms('_final')
+
+    for interval in (68, 95):
+        bounds = _read_credible(tmp_path, interval, '_final')
+        assert set(bounds) == {'x2', 'x1', 'a3'}
+        for name in bounds:
+            assert bounds[name] == tuple(pytest.approx(b) for b in
+                                         _order_statistics(columns[name], interval)), name
+    for v in ba.variables:
+        path = os.path.join(out, 'Results', 'Histograms', v.name + '_final.txt')
+        with open(path) as f:
+            header = f.readline()
+        assert header.startswith('# log10_lower_bound' if v.name == 'a3' else '# lower_bound'), v.name
+        a = np.genfromtxt(path)
+        own = columns[v.name] if v.name != 'a3' else np.log10(columns[v.name])
+        assert a[0, 0] == pytest.approx(own.min()), v.name
+        assert a[-1, 1] == pytest.approx(own.max()), v.name
+        assert a[:, 2].sum() == n_samples
+
+
+def test_samples_file_without_a_parameter_column_is_refused(tmp_path):
+    """A variable with no column must stop the run with its name, not be paired with
+    whatever column happens to sit at its index."""
+    ba = _bare_ba(tmp_path, 2)
+    with open(ba.samples_file, 'w') as f:
+        f.write('# Name\tLn_probability\tp1\tq9\n')
+        f.write('s0\t-1.0\t0.1\t0.2\n')
+    with pytest.raises(PybnfError, match='p2'):
+        ba.update_histograms('_final')
+
+
+def test_samples_file_without_the_header_is_refused(tmp_path):
+    ba = _bare_ba(tmp_path, 1)
+    with open(ba.samples_file, 'w') as f:
+        f.write('0.1 0.2\n')
+    with pytest.raises(PybnfError, match='header'):
+        ba.update_histograms('_final')
+
+
+# --------------------------------------------------------------------------- #
+# Columns are found by name: the corners of the name lookup (lanl/PyBNF#856)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize('declared', [
+    # Python's str sort is case-sensitive (upper before lower) and puts '_' before
+    # 'a', so the file holds Kd, k_on, ka: exactly the reverse of the declaration.
+    ['ka', 'k_on', 'Kd'],
+    # Names equal to the two header tokens the method strips off the front.
+    ['zeta', 'Name', 'Ln_probability', 'alpha'],
+    # More than nine parameters: str sort puts p10..p12 between p1 and p2, the shape
+    # of the shipped W1..W9, W0 example.
+    ['p%d' % i for i in range(1, 13)],
+], ids=['case', 'header_tokens', 'twelve'])
+def test_columns_read_by_name_not_by_permutation(tmp_path, declared):
+    """Each variable is read from the column carrying its name, including when a name
+    sorts by case, when it equals a header token, when numeric suffixes sort as
+    strings, and when the file has a column that is not a variable at all (so the
+    lookup must be by name, not a permutation of every column after the second).
+
+    Oracle: each parameter's own samples, drawn here in ranges that do not overlap, so
+    a column read for the wrong parameter changes the bounds."""
+    out = str(tmp_path)
+    os.makedirs(os.path.join(out, 'Results', 'Histograms'))
+    ba = object.__new__(BA)
+    ba.samples_file = os.path.join(out, 'Results', 'samples.txt')
+    ba.variables = [pset.FreeParameter(n, 'uniform_var', -1e6, 1e6, 0.0) for n in declared]
+    ba.credible_intervals = [68, 95]
+    ba.num_bins = 10
+    ba.config = SimpleNamespace(config={'output_dir': out})
+
+    n_samples = 60
+    rng = np.random.default_rng(11)
+    columns = {n: rng.uniform(100.0 * k, 100.0 * k + 50.0, n_samples)
+               for k, n in enumerate(declared)}
+    columns['zz_not_a_variable'] = rng.uniform(-900.0, -800.0, n_samples)
+    in_file = sorted(columns)                     # the order PSet.keys_to_string writes
+    assert in_file[:-1] != declared               # the declaration really is out of order
+    with open(ba.samples_file, 'w') as f:
+        f.write('# Name\tLn_probability\t' + '\t'.join(in_file) + '\n')
+        for i in range(n_samples):
+            f.write('iter%drun0\t-1.0\t' % i
+                    + '\t'.join(repr(float(columns[n][i])) for n in in_file) + '\n')
+
+    ba.update_histograms('_final')
+
+    for interval in (68, 95):
+        path = os.path.join(out, 'Results', 'credible%d_final.txt' % interval)
+        with open(path) as f:
+            lines = f.read().splitlines()[1:]
+        assert [line.split('\t')[0] for line in lines] == declared
+        for line in lines:
+            name, lo, hi = line.split('\t')
+            assert (float(lo), float(hi)) == tuple(
+                pytest.approx(b) for b in _order_statistics(columns[name], interval)), name
+    for name in declared:
+        h = np.genfromtxt(os.path.join(out, 'Results', 'Histograms', name + '_final.txt'))
+        assert h[0, 0] == pytest.approx(columns[name].min()), name
+        assert h[-1, 1] == pytest.approx(columns[name].max()), name
+
+
+# --------------------------------------------------------------------------- #
+# Every sampler, every write: strided _<iter> and _final (lanl/PyBNF#856)
+# --------------------------------------------------------------------------- #
+
+_ORDER_CONF = (
+    'edition = 2\n'
+    'objective = expression\n'
+    'expression = 0.5*((x2 - 50)/1)^2 + 0.5*((x1 - 0)/1)^2 + 0.5*((a3 - 10)/2)^2\n'
+    'uniform_var = x2 40 60\n'
+    'uniform_var = x1 -10 10\n'
+    'loguniform_var = a3 0.01 1000\n'
+    'credible_intervals = 68 95\n'
+    'random_seed = 1\n'
+    'output_dir = out\n'
+    'verbosity = 0\n'
+    # Keep the per-iteration bookkeeping out of the fast tier's time.
+    'backup_every = 1000000000\n'
+    'output_every = 1000000000\n'
+    'diagnostics_every = 1000000000\n')
+
+_HAS_JAX = all(importlib.util.find_spec(m) is not None for m in ('jax', 'blackjax'))
+
+_PER_SAMPLER = {
+    'mh': ('max_iterations = 300\nburn_in = 100\nsample_every = 1\npopulation_size = 2\n'
+           'output_hist_every = 100\n'),
+    'pt': ('max_iterations = 300\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
+           'reps_per_beta = 2\nbeta = 0.5 1.0\nexchange_every = 10\noutput_hist_every = 100\n'),
+    # am writes _final from samples.txt and only then repoints samples_file at
+    # combined_params.txt, so this also pins that ordering.
+    'am': ('max_iterations = 400\nburn_in = 100\nadaptive = 100\nsample_every = 1\n'
+           'population_size = 2\noutput_hist_every = 100\n'),
+    'dream': ('max_iterations = 200\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
+              'output_hist_every = 50\n'),
+    'p_dream': ('max_iterations = 200\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
+                'output_hist_every = 50\n'),
+    # hmc writes only _final.
+    'hmc': 'num_warmup = 100\nnum_samples = 150\npopulation_size = 2\nmax_iterations = 150\n',
+}
+
+
+@pytest.mark.parametrize('job_type', [
+    'mh', 'pt', 'am', 'dream', 'p_dream',
+    pytest.param('hmc', marks=pytest.mark.skipif(
+        not _HAS_JAX, reason='needs the optional jax extra (pip install pybnf[jax])')),
+])
+def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, monkeypatch, job_type):
+    """#856 names six job types and two in-run call sites; the reproduction test above
+    runs mh and reads only ``_final``. Here every sampler runs with the parameters
+    declared x2, x1, a3, and
+    EVERY credible file it leaves -- the strided ``_<iter>`` writes as well as
+    ``_final`` -- must hold, on each parameter's row, the order statistics of that
+    parameter's own samples.txt column. samples.txt is append-only, so a strided write
+    saw exactly its first N rows, N being the count total of that write's histogram.
+    Each histogram must also span that parameter's samples in that parameter's scale.
+    """
+    from pybnf.parse import load_config
+    from pybnf.pybnf import _create_algorithm
+    H.install(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'order.conf').write_text(
+        _ORDER_CONF + 'job_type = %s\n' % job_type + _PER_SAMPLER[job_type])
+    alg = _create_algorithm(load_config(str(tmp_path / 'order.conf')))
+    H.drive(alg)
+
+    results = tmp_path / 'out' / 'Results'
+    with open(results / 'samples.txt') as f:
+        header = f.readline().lstrip('#').split()
+    assert header[2:] == ['a3', 'x1', 'x2']
+    data = np.genfromtxt(results / 'samples.txt', skip_header=1, ndmin=2)
+    by_name = {n: data[:, i] for i, n in enumerate(header) if i >= 2}
+    space = {'x2': (np.asarray, ''), 'x1': (np.asarray, ''), 'a3': (np.log10, 'log10_')}
+
+    exts = set()
+    for path in glob.glob(str(results / 'credible*.txt')):
+        m = re.fullmatch(r'credible(\d+(?:\.\d+)?)(_\w+)\.txt', os.path.basename(path))
+        interval, ext = float(m.group(1)), m.group(2)
+        exts.add(ext)
+        n_used = int(np.genfromtxt(results / 'Histograms' / ('x1%s.txt' % ext),
+                                   ndmin=2)[:, 2].sum())
+        assert 1 < n_used <= data.shape[0]
+        with open(path) as f:
+            rows = {line.split('\t')[0]: tuple(float(x) for x in line.split('\t')[1:])
+                    for line in f.read().splitlines()[1:]}
+        assert set(rows) == set(by_name)
+        for name, col in by_name.items():
+            assert rows[name] == tuple(pytest.approx(b) for b in
+                                       _order_statistics(col[:n_used], interval)), (path, name)
+            hist_path = results / 'Histograms' / ('%s%s.txt' % (name, ext))
+            with open(hist_path) as f:
+                assert f.readline().startswith('# %slower_bound' % space[name][1]), hist_path
+            h = np.genfromtxt(hist_path, ndmin=2)
+            own = space[name][0](col[:n_used])
+            assert h[0, 0] == pytest.approx(own.min()), hist_path
+            assert h[-1, 1] == pytest.approx(own.max()), hist_path
+
+    assert '_final' in exts
+    if job_type != 'hmc':
+        assert len(exts) > 1, 'no strided write was checked: %s' % sorted(exts)

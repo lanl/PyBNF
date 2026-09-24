@@ -259,6 +259,13 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **Bayesian fits now report each parameter's credible intervals and histogram from that
+  parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
+  that writes `credible*.txt` and `Histograms/` read its columns by position in declaration
+  order. So whenever the parameters were not declared alphabetically, each was reported from
+  another parameter's samples, binned in that parameter's scale. This affected mh, pt, am,
+  dream, p_dream and hmc. `samples.txt`, R-hat, ESS and `inference_data.nc` were correct, so
+  intervals from earlier runs can be recomputed from `samples.txt`.
 - **Island differential evolution no longer ends the fit when two candidates land on one
   point, or stops dead trying to keep them apart (#812).** `de` identified an in-flight
   candidate by its *position*: `island_map` was keyed by the `PSet`, which hashes and compares
