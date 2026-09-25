@@ -115,9 +115,9 @@ F5B is a plain dose-response scan at the model-default 7 pM hot. See
 ## ⚠️ NATIVE-ONLY (not PEtab-exportable, for now)
 
 `normalization=init` (a whole-fit PyBNF prediction transform with no PEtab v2 operator) makes this
-job native-only regardless. Separately, PEtab **export** of the edition-2 preincubate→wash→dose-scan
-shape (a species-amount condition + a pre-equilibrated dose-response) is **deferred** — a follow-up
-to ADR-0052's phased export; the fitter supports it, the exporter refuses it with a clear message.
+job native-only, and the exporter refuses it for that reason alone. The preincubate→wash→dose-scan
+shape itself exports (ADR-0063): each dose is a two-period PEtab experiment whose 7200 s
+preincubation (`equil_t_end: 7200`) is a leading period at time `-7200` (#896).
 
 ## Verification (see VALIDATION.md for the full scorecard)
 
