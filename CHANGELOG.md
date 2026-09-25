@@ -259,6 +259,12 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **The PEtab importer reads every file a `problem.yaml` lists under a table key (#902).** It
+  used to read only the first, so a problem that split its measurements or parameters over
+  several files was fitted to part of its data, with the later files' parameters left fixed. An
+  id defined in two places is now refused. The one-line `[a.tsv, b.tsv]` list form, which read
+  as no condition, experiment or mapping table at all, is read, and a shape the reader cannot
+  read (an unknown key, a file name where a list belongs) is refused instead of skipped.
 - **The bngsim `.net` backend compiles its ODE right-hand side once per model, and no longer
   re-loads the `.net` file on every evaluation (ADR-0148).** Each per-evaluation copy of a
   model went through its pickling hooks, which re-loaded the file and re-ran codegen for a
