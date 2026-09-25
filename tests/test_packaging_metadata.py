@@ -142,10 +142,11 @@ def test_the_version_is_the_same_everywhere_it_is_written_down():
     documentation with the previous release.
 
     The changelog is checked in the same breath because it is the same ritual and the same
-    mistake. `[Unreleased]` is promoted to a dated heading at release time, so the newest
-    versioned heading is the released version at every commit -- both before a release, when
-    the promotion has not happened and neither has the bump, and after it, when both have.
-    Bumping one without the other is what this catches.
+    mistake. The release commit assembles the staged `changelog.d/` fragments into a dated
+    heading (`tools/changelog.py build`), so the newest versioned heading is the released
+    version at every commit -- both before a release, when the assembly has not happened and
+    neither has the bump, and after it, when both have. Bumping one without the other is what
+    this catches.
     """
     init_text = (REPO_ROOT / 'pybnf' / '__init__.py').read_text()
     match = re.search(r'^__version__ = [\'"]([^\'"]+)[\'"]', init_text, re.MULTILINE)

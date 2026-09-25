@@ -1,0 +1,77 @@
+name: changelog
+
+# Every pull request that changes the shipped package stages its own changelog
+# fragment under changelog.d/, and none of them edits CHANGELOG.md (issue #800).
+# Ported from lanl/bngsim (bngsim#668); tools/changelog.py says what was adapted.
+#
+# The second half is the one that removes the conflict rather than relocating
+# it. A branch that stages a fragment *and* also edits CHANGELOG.md still
+# collides with every other open branch, because CHANGELOG.md has one place a
+# new entry can go. Before this, 30 of 40 merges touched that file, each one put
+# every other open pull request into conflict, and GitHub runs no CI at all on a
+# pull request that conflicts with its base.
+#
+# `pull_request` only. On a push to main there is no diff to ask about, and the
+# fragments themselves are also validated on every push by the test suite
+# (tests/test_changelog_fragments.py runs the same check against the real
+# directory), and locally by the `changelog-fragments` pre-commit hook.
+#
+# The file list comes from the pulls API rather than from a `git diff` against a
+# deep checkout: it is GitHub's own answer to "what does this pull request
+# change", which is the question being asked, and it needs neither
+# fetch-depth: 0 nor a merge-base. Read-only, so a fork PR's restricted token is
+# enough.
+
+on:
+  pull_request:
+    # `labeled`/`unlabeled` on top of the three default types, because the escape
+    # hatch below is a label: without them, applying `changelog exempt` leaves a
+    # red check that only an unrelated commit can clear. lanl/bngsim measured
+    # that on the pull request that introduced this workflow there.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  fragment:
+    name: fragment staged
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Names, shape and the 1,200-character limit, over every fragment in the
+      # tree. The script is stdlib-only, so the runner's python3 is enough and
+      # nothing is installed. Not skipped by the label: an exempt pull request
+      # still must not leave a malformed fragment behind.
+      - name: The staged fragments are well-formed
+        run: python3 tools/changelog.py check
+
+      # The label is for a change to pybnf/ that is genuinely invisible to
+      # users, and for the two kinds of pull request that legitimately write
+      # CHANGELOG.md: a release commit (`tools/changelog.py build`), and the
+      # one-time migration that moved the entries pending under [Unreleased]
+      # into fragments when this workflow was introduced. See
+      # changelog.d/README.md.
+      - name: This branch stages its own entry, and edits no shared file
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'changelog exempt') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        # `pipefail` is load-bearing, not hygiene: a pipeline's exit status is
+        # the last command's, so without it a `gh api` that failed for any
+        # reason would hand an empty list to a checker that found nothing to
+        # object to, and this job would go green having read nothing. The script
+        # refuses an empty list for the same reason, and a response body where
+        # the paths should be, which is what a failed `gh api` actually prints
+        # to stdout (it applies --jq only to a success): two independent guards.
+        run: |
+          set -o pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \
+            --paginate --jq '.[].filename' \
+            | python3 tools/changelog.py required --files -
