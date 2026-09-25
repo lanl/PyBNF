@@ -526,6 +526,43 @@ class TestSbmlExport:
         obs = (out / 'observables.tsv').read_text()
         assert 'obs_ratio' in obs and OBS_FORMULA in obs
 
+    def test_sbml_dose_response_is_re_pinned_and_keyed_by_dose(self, tmp_path):
+        # The dose-response export path is language-agnostic, so an SBML scan takes the same
+        # fixes as a BNGL one: each per-dose condition re-pins the fit-and-perturbed k1 (#892),
+        # and a replicate listing its doses in another order is keyed by its own doses (#895).
+        from pybnf.petab import export_job
+
+        d = tmp_path / 'job'
+        d.mkdir()
+        (d / 'decay.xml').write_text(DECAY_SBML)
+        (d / 'tc.exp').write_text('# time\tobs_ratio\n0\t100\n1\t60\n')
+        (d / 'rep1.exp').write_text('# scale\tobs_ratio\n50\t30\n100\t60\n')
+        (d / 'rep2.exp').write_text('# scale\tobs_ratio\n100\t61\n50\t29\n')
+        (d / 'job.conf').write_text(textwrap.dedent(f"""\
+            edition = 2
+            job_type = de
+            objective = sos
+            model: decay.xml
+            observable: obs_ratio, formula: {OBS_FORMULA}
+            condition: fast, perturbations: k1 * 2
+            experiment: tc, condition: fast, data: tc.exp
+            experiment: dr, type: parameter_scan, t_end: 1, data: rep1.exp, rep2.exp
+            uniform_var = k1 0.01 10
+            """))
+        out = export_job(d / 'job.conf', tmp_path / 'petab')
+
+        def rows(name):
+            with open(out / name, newline='') as fh:
+                return list(csv.DictReader(fh, delimiter='\t'))
+        assert [(r['conditionId'], r['targetId'], r['targetValue'])
+                for r in rows('conditions.tsv')] == [
+            ('cond_fast', 'k1', 'k1__REF * 2'),
+            ('cond_dr_0', 'scale', '50'), ('cond_dr_0', 'k1', 'k1__REF'),
+            ('cond_dr_1', 'scale', '100'), ('cond_dr_1', 'k1', 'k1__REF')]
+        assert [(r['experimentId'], r['measurement']) for r in rows('measurements.tsv')
+                if r['experimentId'] != 'tc'] == [
+            ('dr_0', '30'), ('dr_1', '60'), ('dr_1', '61'), ('dr_0', '29')]
+
     def test_sbml_round_trips_byte_for_byte(self, tmp_path):
         # The dominant oracle: a native SBML job exports -> imports (ADR-0036) -> re-exports,
         # reproducing every PEtab file byte-for-byte. Import needs the petab math layer.

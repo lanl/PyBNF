@@ -201,7 +201,12 @@ following all survive an import and an export:
   leading period at time ``-inf``; a fixed-duration one (``equil_t_end: T``) is a leading
   period at time ``-T``. The fixed-duration form is refused for a model that reads the
   simulation time, because PEtab runs that period from ``-T`` to 0 while PyBNF runs it from 0
-  to ``T``.
+  to ``T``. An exported dose-response whose
+  conditions also pin a fit-and-perturbed parameter (``p = p__REF``) comes back as
+  one conditioned experiment per dose instead. For a steady-state scan the fit is
+  the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)
+  scan of that kind does not yet load after re-import: each dose becomes a time
+  course with a single measurement time, which the simulator refuses.
 
 Tutorial lessons
 ----------------

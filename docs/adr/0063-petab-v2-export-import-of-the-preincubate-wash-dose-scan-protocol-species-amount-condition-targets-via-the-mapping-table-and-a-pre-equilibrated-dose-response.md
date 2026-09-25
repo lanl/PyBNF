@@ -136,3 +136,14 @@ at `time = 0` and the scan time are unchanged. The importer recognizes the shape
 every non-leading period starts at exactly 0, and requires all doses of a group to share one
 duration. See the ADR-0052 addendum of the same date for the mapping and the refusal of a
 model that reads time.
+
+## Addendum (2026-09-25): the surrogate split × a pre-equilibrated scan is lifted (#892)
+
+The first "Out" boundary above no longer holds. A pre-equilibrated scan now exports with a
+non-empty surrogate set M. The `-inf` period's pre-equilibration Condition sets all of M,
+PEtab v2 carries those values into the measurement period as the fitter does, and a wash
+Condition re-pins M like any other. Three cases are still refused: a wash that would re-pin a
+fit parameter the pre-equilibration Condition set (the fitter keeps the pre-equilibration value
+through the scan), a swept parameter in M beside a wash, and a wash that sets the swept
+parameter itself (two setters of one target in the measurement period). See ADR-0027's
+2026-09-25 addendum.
