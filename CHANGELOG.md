@@ -259,6 +259,18 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **PEtab export refuses `noise_location = mean` on an `lnnormal` fit (#898).** It used to
+  write the mean-centred fit as PEtab's median log-normal, byte-identical to the median job.
+  A `mean` on a linear Gaussian or Laplace, where the mean is the median, now exports by either
+  spelling.
+- **PEtab export refuses a job with a `postprocess` script (#899).** It used to write a problem
+  that scores the untransformed simulations.
+- **PEtab export refuses a BNGL model whose hand-written actions change what the fit's
+  experiments start from, such as `setParameter` or `saveConcentrations` (#900).** It used to
+  drop them silently; leftover `simulate` and `write*` lines are still dropped.
+- **PEtab export writes the job's `generate_network` cap into the exported BNGL model (#901).**
+  A model capped from the conf used to export uncapped, so PEtab consumers built a different or
+  unbounded network.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

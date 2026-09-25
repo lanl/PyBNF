@@ -523,7 +523,7 @@ class BNGLModel(Model):
     """
 
     def __init__(self, bngl_file, pset=None, suppress_free_param_error=False,
-                 generate_network_options=None):
+                 generate_network_options=None, text=None):
         """
         Loads the model from the given .bngl file
 
@@ -535,6 +535,8 @@ class BNGLModel(Model):
         ``generate_network`` conf key, #473) appended to the synthesized
         ``generate_network({overwrite=>1, <opts>})`` when the model carries no explicit
         ``generate_network`` line. None (default) yields the bare line.
+        :param text: The model text, when the caller already holds it (the PEtab exporter).
+        None (default) reads ``bngl_file``.
         """
         self.file_path = bngl_file
         # Model-scoped network-generation options (#473): read by
@@ -547,8 +549,11 @@ class BNGLModel(Model):
         self.bng_command = ''
 
         # Read the file
-        with open(self.file_path, encoding='utf-8', errors='replace') as file:
-            self.bngl_file_text = file.read()
+        if text is None:
+            with open(self.file_path, encoding='utf-8', errors='replace') as file:
+                self.bngl_file_text = file.read()
+        else:
+            self.bngl_file_text = text
 
         # Scan the file's lines
         # Check for various things to fill out all of the following attributes needed for model writing
@@ -564,6 +569,7 @@ class BNGLModel(Model):
         self.split_line_index = None  # for insertion of free parameters
         all_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
         skip_lines = set()  # Indices of lines that should not go into self.model_lines
+        protocol_lines = set()  # The subset of skip_lines that belongs to a protocol block
 
         in_action_block = False
         in_protocol_block = False
@@ -585,6 +591,7 @@ class BNGLModel(Model):
                 elif in_protocol_block:
                     self.protocol.append(rawline)
                     skip_lines.add(i)
+                    protocol_lines.add(i)
                 continue
 
             # Handle case where '\' is used to continue on the next line
@@ -635,15 +642,18 @@ class BNGLModel(Model):
                 in_protocol_block = True
                 in_no_block = False
                 skip_lines.update(indices)
+                protocol_lines.update(indices)
                 continue
             elif re.match(r'end\s+protocol', line.strip()):
                 in_protocol_block = False
                 in_no_block = True
                 skip_lines.update(indices)
+                protocol_lines.update(indices)
                 continue
 
             if in_protocol_block:
                 skip_lines.update(indices)
+                protocol_lines.update(indices)
                 self.protocol.append(rawline)
                 continue
 
@@ -686,6 +696,13 @@ class BNGLModel(Model):
         if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
         self.model_lines = [all_lines[i] for i in range(len(all_lines)) if i not in skip_lines]
+        # The indices (into ``bngl_file_text.splitlines()``) of every line this scan read as
+        # an action or as an actions-block delimiter -- the ``begin actions`` block and the
+        # loose lines outside any block alike, ``generate_network`` included, ``setOption``
+        # and its siblings excluded (those stay in ``model_lines``). The PEtab exporter
+        # removes exactly these lines, so it drops what the fitter reads as actions and
+        # nothing else (#900). Protocol lines are not actions and are left out.
+        self.action_line_indices = frozenset(skip_lines - protocol_lines)
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = self._synthesized_generate_network_line()
 
