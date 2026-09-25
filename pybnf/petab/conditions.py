@@ -425,14 +425,24 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     return condition_rows, experiment_rows, experiment_to_id
 
 
-def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
+def build_dose_response_conditions(stem, swept_param, dose_values, scan_time,
+                                   surrogate=frozenset()):
     """Build the conditions/experiments for a dose-response Parameter Scan.
 
-    Each measured dose (a ``.exp`` column-0 cell) becomes its own Condition setting the
+    Each dose of the exported dose axis ``dose_values`` becomes its own Condition setting the
     swept parameter and a single-period Experiment at ``time=0`` (the dose is an initial
-    condition; the measurement occurs later, at ``scan_time``). Returns
-    ``(condition_rows, experiment_rows, experiment_ids)`` where ``experiment_ids[i]`` is
-    the experimentId for dose row ``i`` (for tagging that row's measurements).
+    condition; the measurement occurs later, at ``scan_time``). ``dose_values`` is the axis the
+    fitter scans -- the sorted union of every replicate's doses (#895), built by the exporter --
+    not one data file's rows. Returns ``(condition_rows, experiment_rows, experiment_ids)`` where
+    ``experiment_ids[i]`` is the experimentId for ``dose_values[i]``; the exporter keys each data
+    row to the id of that row's own dose.
+
+    ``surrogate`` is the problem-global surrogate set M (ADR-0027). Its parameters are out of the
+    parameter table, so every simulation must re-supply them: each per-dose Condition therefore
+    also pins ``p = p__REF`` for every ``p`` in M, exactly as the time-course, wildtype and
+    pre-equilibration builders do (#892). Without the pin a PEtab tool simulates every dose at
+    ``p``'s model-file value instead of its estimate. The swept parameter is never pinned: the
+    dose sets it, as the fitter's scan does.
     """
     condition_rows = []
     experiment_rows = []
@@ -441,6 +451,8 @@ def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
         eid = f'{stem}_{i}'
         cid = f'cond_{eid}'
         condition_rows.append(PetabConditionRow(cid, swept_param, num(dose)))
+        condition_rows.extend(PetabConditionRow(cid, p, surrogate_name(p))
+                              for p in sorted(surrogate) if p != swept_param)
         experiment_rows.append(PetabExperimentRow(eid, 0.0, cid))
         experiment_ids.append(eid)
     return condition_rows, experiment_rows, experiment_ids
@@ -448,7 +460,8 @@ def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
 
 def build_preequilibrated_dose_response_conditions(experiments, conditions, nominal_of,
                                                    species_id_of=None,
-                                                   existing_condition_ids=frozenset()):
+                                                   existing_condition_ids=frozenset(),
+                                                   surrogate=frozenset()):
     """Build the conditions/experiments for **pre-equilibrated dose-response** experiments -- the
     preincubate -> wash -> dose-scan protocol (#477; ADR-0062), the combination of ADR-0052's
     two-period pre-equilibration and ADR-0046's dose-response scan.
@@ -466,13 +479,27 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
     :func:`~pybnf.petab.measurements.dose_response_measurement_rows` pivots them unchanged.
 
     ``experiments`` is a list of ``(name, preequilibrate_cond, wash_cond_or_None, swept_param,
-    dose_values, scan_time)`` in declaration order. This shape requires an **empty surrogate set
-    M** (the exporter refuses a fit-and-perturbed parameter in a pre-equilibration/wash/dose
-    condition of a pre-equilibrated scan -- the surrogate split x multi-condition dose period is a
-    deferred combination), so each shared condition is emitted with the fixed-parameter / species
-    machinery only (``surrogate=frozenset()``). ``species_id_of`` (``{pattern: petab_id}``) maps a
+    dose_values, scan_time)`` in declaration order; ``dose_values`` is the exported dose axis (the
+    sorted union of the replicates' doses, #895). ``species_id_of`` (``{pattern: petab_id}``) maps a
     species pattern to its mapping-table id; ``existing_condition_ids`` dedups a pre-equilibration
     or wash condition already emitted by another experiment shape.
+
+    ``surrogate`` is the problem-global surrogate set M (ADR-0027, #892). Its parameters are out of
+    the parameter table, so the simulation must be given them before it starts. The
+    pre-equilibration condition is emitted through :func:`_condition_rows_for`, so the ``-inf``
+    period sets every ``p`` in M: its own value where the condition perturbs ``p``, else the base
+    pin ``p = p__REF``. A later period keeps a value it does not change. That is PEtab v2's rule
+    (a period's changes persist; libpetab turns them into SBML events), and it is PyBNF's too: the
+    fitter applies the pre-equilibration condition as an inline ``setParameter`` and never undoes it,
+    so a fit parameter the pre-equilibration condition sets keeps that value through the scan. So
+    a wash-free measurement period carries only the per-dose condition. A synthesized base there
+    would re-pin such a parameter to its estimate, which the fit does not do. A wash condition is
+    emitted through :func:`_condition_rows_for` as well, so it also re-pins M. That is harmless
+    for a parameter the pre-equilibration left at its base, and wrong for one it set: the
+    orchestrator refuses the latter, and a swept parameter in M, whose pin would collide with the
+    dose. The per-dose condition sets only the swept parameter. PEtab v2 forbids two conditions of
+    one period from sharing a target (``CheckValidConditionTargets``), so it cannot carry the
+    wash's pins as well.
 
     Returns ``(condition_rows, experiment_rows, experiment_ids_by_name)`` where
     ``experiment_ids_by_name[name]`` is the ordered ``[<stem>_0, <stem>_1, ...]`` list (aligned
@@ -483,7 +510,8 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
     experiment_rows = []
     experiment_ids_by_name = {}
 
-    # The shared pre-equilibration + wash conditions, each emitted once across the whole job.
+    # The shared pre-equilibration + wash conditions, each emitted once across the whole job. A
+    # condition shared with another shape was already emitted under the same problem-global M.
     for _name, pre, wash, _sp, _dv, _st in experiments:
         for c in (pre, wash):
             if c is None:
@@ -491,7 +519,7 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
             cid = f'cond_{c}'
             if cid in emitted:
                 continue
-            condition_rows += _condition_rows_for(cid, conditions[c], frozenset(), nominal_of,
+            condition_rows += _condition_rows_for(cid, conditions[c], surrogate, nominal_of,
                                                   species_id_of=species_id_of)
             emitted.add(cid)
 
@@ -501,7 +529,8 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
             eid = f'{name}_{i}'
             dose_cid = f'cond_{eid}'
             condition_rows.append(PetabConditionRow(dose_cid, swept_param, num(dose)))
-            # Period 0: the -inf steady-state pre-equilibration period (unmeasured).
+            # Period 0: the -inf steady-state pre-equilibration period (unmeasured). Its condition
+            # sets all of M, and those values persist into the measurement period.
             experiment_rows.append(PetabExperimentRow(eid, float('-inf'), f'cond_{pre}'))
             # Period 1: the measurement period -- the shared wash condition (if any) plus the
             # per-dose swept-parameter condition, applied simultaneously (disjoint targets).

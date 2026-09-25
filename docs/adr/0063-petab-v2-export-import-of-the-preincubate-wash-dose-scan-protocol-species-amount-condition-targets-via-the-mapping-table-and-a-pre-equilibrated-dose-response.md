@@ -127,3 +127,12 @@ steady-state), and a config-load check that the imported conf synthesizes the
   export — extended here to a scan measured phase), 0046 (dose-response export —
   the fresh-from-seed sibling), 0027 (conditions/experiments), 0026
   (`register_bngl` / the `BnglModel` validation loader). Advances #477.
+
+## Addendum (2026-09-25): the surrogate split × a pre-equilibrated scan is lifted (#892)
+
+The first "Out" boundary above no longer holds. A pre-equilibrated scan now exports with a
+non-empty surrogate set M. The `-inf` period's pre-equilibration Condition sets all of M,
+PEtab v2 carries those values into the measurement period as the fitter does, and a wash
+Condition re-pins M like any other. Two cases are still refused: a wash that would re-pin a fit
+parameter the pre-equilibration Condition set (the fitter keeps the pre-equilibration value
+through the scan), and a swept parameter in M beside a wash. See ADR-0027's 2026-09-25 addendum.

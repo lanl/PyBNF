@@ -136,7 +136,10 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such.
+  **pre-equilibration** phase round-trips as such. An exported dose-response whose
+  conditions also pin a fit-and-perturbed parameter (``p = p__REF``) comes back as
+  one conditioned experiment per dose instead. The fit is the same; only the shape
+  of the job differs.
 
 Tutorial lessons
 ----------------
