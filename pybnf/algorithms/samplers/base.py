@@ -574,12 +574,30 @@ class BayesianAlgorithm(Algorithm):
                              '"# Name  Ln_probability  <parameters>" header PyBNF writes.'
                              % self.samples_file)
         names = header[2:]
-        missing = [v.name for v in self.variables if v.name not in names]
+        # The parameter columns must be exactly this fit's free parameters. A parameter
+        # with no column, a column that is not a parameter, or a name that heads two
+        # columns all mean the file does not belong to this configuration, so it is
+        # refused rather than read for whatever names happen to overlap.
+        column = {name: 2 + i for i, name in enumerate(names)}
+        declared = {v.name for v in self.variables}
+        problems = []
+        missing = [v.name for v in self.variables if v.name not in column]
         if missing:
+            problems.append('no column for %s' % ', '.join(missing))
+        extra = [name for name in names if name not in declared]
+        if len(extra) == 1:
+            problems.append('a column for %s, which is not a free parameter of this fit'
+                            % extra[0])
+        elif extra:
+            problems.append('columns for %s, which are not free parameters of this fit'
+                            % ', '.join(extra))
+        if len(column) < len(names):
+            repeated = sorted({name for name in names if names.count(name) > 1})
+            problems.append('more than one column for %s' % ', '.join(repeated))
+        if problems:
             raise PybnfError('Cannot write histograms or credible intervals: the samples '
-                             'file %s has no column for %s.'
-                             % (self.samples_file, ', '.join(missing)))
-        cols = [2 + names.index(v.name) for v in self.variables]
+                             'file %s has %s.' % (self.samples_file, '; '.join(problems)))
+        cols = [column[v.name] for v in self.variables]
         #
         # ndmin=2 because genfromtxt drops any axis of length one: one free parameter
         # reads back as a 1-D array of samples, a lone sample as a 1-D array of
