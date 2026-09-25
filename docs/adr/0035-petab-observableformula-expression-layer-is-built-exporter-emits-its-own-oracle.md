@@ -211,9 +211,12 @@ checked. `_assert_round_trips` stays for the PEtab-to-PEtab rewrites, whose inpu
 
 The reading that decides a fitted value is the simulators', not BNG2.pl's parser: BNG2.pl
 writes the body into the `.net`/XML file and `run_network`, NFsim and bngsim evaluate that
-text. They agree with the parser everywhere but one place, a negative literal as the base of
-`^`: `-2^x` and `(-2)^x` both reach the network file as `-2^x` and are evaluated as `-(2^x)`,
-while the parser means `(-2)^x`. That construct is refused (`NotImplementedError`), as are
+text. They agree with the parser everywhere but two places. A negative literal as the base
+of `^`: `-2^x` and `(-2)^x` both reach the network file as `-2^x` and are evaluated as
+`-(2^x)`, while the parser means `(-2)^x`. And `if(c, a, b)`: `run_network` takes `a` only
+when `c` exceeds 0.5, bngsim, NFsim and the parser whenever `c` is nonzero, which agree only
+when `c` is a comparison or `&&`/`||`. Both constructs are refused (`NotImplementedError`;
+the second unless `c` is a comparison or a logical expression), as are
 constructs with no exact PEtab reading PyBNF can import back (`rint`, `time()`, `mratio`,
 `TFUN`/`tfun`, a function or observable called with arguments). `**`, `~=`, `!` and `~` are
 accepted by BNG2.pl but no simulator compiles them, so a body using one is refused as

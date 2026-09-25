@@ -283,15 +283,16 @@ BNG_ORACLE = [
     # literals PEtab's lexer does not accept as written (.5, 5.)
     ('p14', '1e-3*obsA + .5 + 5. + 1E3 + 2.5e+1', 1030.51, 1030.509048375),
     ('p15', 'kA - -2', 4.0, 4.0),
-    # a comparison or a logical operator is the number 1 or 0; if() selects on nonzero
+    # a comparison or a logical operator is the number 1 or 0; if() selects on it (an if()
+    # whose condition is anything else is refused, see r3)
     ('c1', '(obsA > 9.5)*kA + (obsA < 9.5)*kB', 2.0, 3.0),
     ('c2', 'if(obsA > 9.5, kA, kB)', 2.0, 3.0),
-    ('c3', 'if(kA - 2, 1, 7)', 7.0, 7.0),
+    ('c3', 'if(kA - 2 != 0, 1, 7)', 7.0, 7.0),
     ('c4', 'kA > 1 && kB < 2 || kC == 2', 1.0, 1.0),
     ('c5', 'kA < kB < kC', 1.0, 1.0),
     ('c6', 'obsA >= 10 + kA', 0.0, 0.0),
     ('c7', 'kA != 2 || kB <= 3', 1.0, 1.0),
-    ('c8', 'if(kD, kA^2, 0)', 4.0, 4.0),
+    ('c8', 'if(kD != 0, kA^2, 0)', 4.0, 4.0),
     ('c9', '(kA == 2) + (kB != 3)', 1.0, 1.0),
     ('c10', 'kA && 0 || kE', 1.0, 1.0),
     # built-in functions and constants, and references to other functions and observables
@@ -308,14 +309,28 @@ BNG_ORACLE = [
     ('b8', 'b1()^2 - b3()', 7.830125517951, 7.830125517951),
     ('b9', '-b1()^2', 13.69, 13.69),
     ('b10', 'obsA()', 10.0, 9.048374519482),
+    # a negative constant raised to a parameter, which the network file brackets, so every
+    # simulator reads it alike (n2 is the form the refusal of '(-2)^x' recommends); and a
+    # fractional power of a quotient of several symbols (a Hill-type inverse, as in
+    # BNGL-Models' ATG_model_v12). The guard's random points left each without enough
+    # points where the body is defined, so all four were refused (review of #908).
+    ('n1', '-(2)^kC', 4.0, 4.0),
+    ('n2', '(-(2))^kC + obsA', 14.0, 13.04837451948),
+    ('n3', '(0-2)^kC', 4.0, 4.0),
+    ('n4', '(kA^kE*((kD*(obsA+kB)/(obsA+kB+kC))/(kE-kD*(obsA+kB)/(obsA+kB+kC))))^(1/kE)',
+     1.804765605123, 1.777822967906),
 ]
 
-#: Bodies the simulators evaluate differently from BNG2.pl's own parser, which the exporter
-#: therefore refuses: the network file carries ``-2^2`` (parentheses and all are dropped),
-#: which run_network and bngsim read as -(2^2), while BNG2.pl's parser means (-2)^2 = 4.
+#: Bodies the simulators evaluate differently from BNG2.pl's own parser, or from one another,
+#: which the exporter therefore refuses: the network file carries ``-2^2`` (parentheses and
+#: all are dropped), which run_network and bngsim read as -(2^2), while BNG2.pl's parser
+#: means (-2)^2 = 4; and run_network's if() takes the first branch only when the condition
+#: exceeds 0.5 (Network3's If()), where bngsim, NFsim and BNG2.pl's parser take it whenever
+#: the condition is nonzero, so r3 is kB = 3 here and kA = 2 in bngsim.
 BNG_ORACLE_SIMULATOR_ONLY = [
     ('r1', '-2^2 + obsA', 6.0, 5.048374519482),
     ('r2', '(-2)^2 + obsA', 6.0, 5.048374519482),
+    ('r3', 'if(kD - 0.5, kA, kB)', 3.0, 3.0),
 ]
 
 
@@ -415,6 +430,9 @@ class TestBioNetGenGrammar:
         ('-2^2 + obsA', NotImplementedError, 'negative number to a power'),
         ('(-2)^kA', NotImplementedError, 'negative number to a power'),
         ('kA*-3^2', NotImplementedError, 'negative number to a power'),
+        ('if(kD - 0.5, kA, kB)', NotImplementedError, r'if\(\) condition.*exceeds 0\.5'),
+        ('if(obsA, kA, kB) + 1', NotImplementedError, r'if\(\) condition.*exceeds 0\.5'),
+        ('if(-(kA > 1), kA, kB)', NotImplementedError, r'if\(\) condition.*exceeds 0\.5'),
         # valid BNGL with no exact PEtab reading, or none PyBNF can import back
         ('rint(kE) + obsA', NotImplementedError, r'rint\(\) rounds.*no rounding function'),
         ('time()*kA', NotImplementedError, r"time\(\).*measurement layer cannot evaluate"),
@@ -455,6 +473,48 @@ class TestBioNetGenGrammar:
             export_job(tmp_path / 'job.conf', tmp_path / 'out', inline_functions=True)
         # Without inlining the function is referenced by name and nothing is refused.
         export_job(tmp_path / 'job.conf', tmp_path / 'bare')
+
+    def test_the_forms_the_negative_base_refusal_suggests_are_exported(self):
+        # The refusal of '(-2)^x' tells the user to write '-(2^x)' or '(-(2))^x'. Following
+        # that advice must work: both forms export, to the values of the two readings worked
+        # by hand with kC = 2 (the second was refused by the guard, review of #908).
+        pytest.importorskip('petab')
+        ent = parse_model(_oracle_model_text())
+        with pytest.raises(NotImplementedError, match='negative number to a power') as excinfo:
+            bngl_body_to_petab_math('(-2)^kC', ent)
+        for form, expected in (('-(2^x)', -(2.0 ** 2)), ('(-(2))^x', (-2.0) ** 2)):
+            assert f"'{form}'" in str(excinfo.value)
+            formula = bngl_body_to_petab_math(form.replace('x', 'kC'), ent)
+            assert _petab_value(formula, BNG_ORACLE_PARAMS) == expected, formula
+
+    @pytest.mark.bionetgen
+    def test_simulators_disagree_on_an_if_whose_condition_is_not_a_comparison(self, tmp_path):
+        """Why if(c, a, b) is refused unless c is a comparison or a logical expression: BNG2.pl's
+        run_network and bngsim, reading the same network file, pick different branches when c
+        is 0.2, while with c written as a comparison they agree, and that form exports."""
+        import shutil
+        import subprocess
+        pytest.importorskip('petab')
+        bngsim = pytest.importorskip('bngsim')
+        functions = '  fi() = if(kD - 0.5, kA, kB)\n  fc() = if(kD - 0.5 != 0, kA, kB)'
+        (tmp_path / 'm.bngl').write_text(BNG_ORACLE_MODEL.format(functions=functions)
+                                         + BNG_ORACLE_ACTIONS)
+        proc = subprocess.run([shutil.which('BNG2.pl'), 'm.bngl'], check=False, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=300)
+        gdat = tmp_path / 'm.gdat'
+        assert gdat.exists(), f'BNG2.pl did not simulate:\n{proc.stdout}\n{proc.stderr}'
+        lines = gdat.read_text().splitlines()
+        run_network = dict(zip(lines[0].lstrip('#').split(), map(float, lines[1].split())))
+        result = bngsim.Simulator(bngsim.Model.from_net(str(tmp_path / 'm.net')),
+                                  method='ode').run(t_span=(0.0, 1.0), n_points=2)
+        by_bngsim = dict(zip(result.expression_names, np.asarray(result.expressions)[0]))
+        assert (run_network['fi'], by_bngsim['fi']) == (3.0, 2.0)   # kB, kA
+        assert (run_network['fc'], by_bngsim['fc']) == (2.0, 2.0)
+        ent = parse_model(BNG_ORACLE_MODEL.format(functions=functions))
+        with pytest.raises(NotImplementedError, match=r'if\(\) condition'):
+            bngl_body_to_petab_math(ent.function_bodies['fi'], ent)
+        formula = bngl_body_to_petab_math(ent.function_bodies['fc'], ent)
+        assert _petab_value(formula, BNG_ORACLE_PARAMS) == 2.0
 
     @pytest.mark.bionetgen
     def test_bng_oracle_table_matches_a_live_bng2pl(self, tmp_path):

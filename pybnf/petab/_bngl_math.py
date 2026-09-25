@@ -30,7 +30,7 @@ value a fit used, though, is what the *simulators* compute, and they do not read
 BNG2.pl writes it into the network (or XML) file through ``toString``, which brackets every
 nested operator, and ``run_network``, NFsim and bngsim parse that text. The constructs below
 were run through BNG2.pl with ``run_network`` and bngsim (and the refused ones also through
-NFsim); two findings shape the refusals:
+NFsim); three findings shape the refusals:
 
 * A negative numeric literal as the base of ``^`` is written unbracketed, because the sign
   is part of the number: ``-2^x`` and even ``(-2)^x`` (the parentheses are dropped at
@@ -38,6 +38,10 @@ NFsim); two findings shape the refusals:
   ``-(2^x)`` while BNG2.pl's own parser means ``(-2)^x``. The value depends on which part
   of BioNetGen is asked, so it is refused. ``-(2)^x`` and ``-(2^x)`` are unambiguous and
   are accepted.
+* ``if(c, a, b)`` is ``a`` in run_network only when ``c`` exceeds 0.5 (Network3's ``If``),
+  but whenever ``c`` is nonzero in bngsim, NFsim and BNG2.pl's parser. The two agree when
+  ``c`` is a comparison or ``&&``/``||``, which is exactly 1 or 0, so any other condition is
+  refused (review of #908).
 * ``**``, ``~=``, ``!`` and ``~`` are accepted by BNG2.pl but rejected by ``run_network``
   and NFsim (muParser) and bngsim (ExprTk), so a model whose function uses one cannot be
   simulated at all. They are refused as malformed rather than given a meaning no simulator
@@ -149,7 +153,8 @@ def parse(body, callable_names=frozenset()):
     Raises :class:`BnglBodyError` on a malformed body or on an operator no simulator
     accepts, and ``NotImplementedError`` on a construct PEtab math cannot express exactly
     (a built-in in ``_NO_PETAB_READING``, a function or observable called with arguments,
-    or a negative literal as the base of ``^``).
+    a negative literal as the base of ``^``, or an ``if()`` whose condition is not a
+    comparison or a logical expression).
     """
     # BNG2.pl pre-parses TFUN's quoted file argument before tokenizing, and bngsim's tfun
     # takes bracketed lists; neither survives this tokenizer, so name them first.
@@ -294,6 +299,16 @@ class _Parser:
             if (arity is None and not args) or (arity is not None and len(args) != arity):
                 wanted = 'at least one argument' if arity is None else f'{arity} argument(s)'
                 raise BnglBodyError(f"{name}() takes {wanted}, and is given {len(args)}")
+            if name == 'if' and args[0][0] not in ('cmp', 'and', 'or'):
+                # A comparison or a logical operator is exactly 1 or 0, where every simulator
+                # picks the same branch; any other condition value may not be.
+                raise NotImplementedError(
+                    "its if() condition is not a comparison or a logical expression. "
+                    "run_network (BNG2.pl's ODE and SSA simulator) takes the first branch only "
+                    "when the condition exceeds 0.5, while bngsim, NFsim and BNG2.pl's own "
+                    "parser take it whenever the condition is nonzero, so the value depends on "
+                    "which part of BioNetGen computes it. Write the condition as a comparison, "
+                    "such as 'if(x != 0, a, b)' or 'if(x > 0.5, a, b)', to say which is meant")
             return ('call', name, tuple(args))
         if name in self._callable:
             if args:

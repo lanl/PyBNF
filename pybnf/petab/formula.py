@@ -88,8 +88,8 @@ def bngl_body_to_petab_math(body, entities, *, function_name=None, model_file=No
     operator BioNetGen's simulators refuse, an unknown free symbol, or a formula that
     disagrees with the body; ``NotImplementedError`` on a construct PEtab math cannot
     express exactly (``rint``, ``time()``, ``mratio``, ``TFUN``, a call with arguments to a
-    local function, a negative literal raised to a power) and on a per-measurement
-    placeholder symbol.
+    local function, a negative literal raised to a power, an ``if()`` whose condition is not
+    a comparison) and on a per-measurement placeholder symbol.
     """
     from . import _bngl_math
     sympify_petab = _require_petab_math()
@@ -464,10 +464,12 @@ def _assert_matches_bngl(tree, expr, petab_math, body, where):
 
     The export-inline safety net (ADR-0035, "a wrong measurement model is worse than a
     refused one"; #908). ``tree`` is the body parsed with BioNetGen's grammar and ``expr`` is
-    PEtab's own parse of the printed ``petab_math``. At a fixed set of pseudo-random points
-    (three quarters positive, spread over six decades, so comparisons take both branches and
-    a logarithm or a square root of a shifted quantity finds its domain) the tree is
-    evaluated with BioNetGen's semantics in plain floating point
+    PEtab's own parse of the printed ``petab_math``. At a fixed sequence of pseudo-random
+    points, taken in turn from three kinds (three quarters positive, spread over six decades,
+    so comparisons take both branches and a logarithm or a square root of a shifted quantity
+    finds its domain; all positive, where a fractional power of a quotient of several
+    symbols is defined; and small integers of either sign, where a negative base has a real
+    power), the tree is evaluated with BioNetGen's semantics in plain floating point
     (:func:`._bngl_math.evaluate`), ``expr`` is evaluated the way the measurement layer will
     evaluate it (``lambdify`` to numpy, so both sides are IEEE doubles), and the two must
     agree. The two evaluations share nothing but the parse, so a printer that drops a
@@ -512,9 +514,13 @@ def _assert_matches_bngl(tree, expr, petab_math, body, where):
 
     # petab parses log10(x) and log2(x) unevaluated as sympy's two-argument log(x, 10), which
     # the numpy printer writes as numpy.log(x, 10) (the 10 lands in numpy's `out` slot and
-    # the call fails), so give lambdify a log that takes the base.
+    # the call fails), so give lambdify a log that takes the base. Bases 10 and 2 use numpy's
+    # own log10 and log2, which are exact where log(x)/log(10) is not (log10(0.1) is -1.0,
+    # not -0.9999999999999998), so a power or a comparison fed by one is not misjudged.
     def _log(x, base=None):
-        return np.log(x) if base is None else np.log(x) / np.log(base)
+        if base is None:
+            return np.log(x)
+        return {10: np.log10, 2: np.log2}.get(base, lambda v: np.log(v) / np.log(base))(x)
     try:
         func = sp.lambdify([by_name[n] for n in petab_names], expr,
                            modules=[{'log': _log}, 'numpy'])
@@ -522,10 +528,20 @@ def _assert_matches_bngl(tree, expr, petab_math, body, where):
         unverifiable(f"sympy could not compile it for numerical evaluation "
                      f"({type(e).__name__}: {e})")
 
+    # Mixed signs alone left too few defined points for a Hill-type inverse such as
+    # (k^n*x/(r-x))^(1/n), and none for (-(2))^x, the form the refusal of (-2)^x recommends,
+    # so both were refused as uncheckable; hence the all-positive and the integer points
+    # (review of #908).
     rng = random.Random(908)
     agreed = 0
-    for _ in range(64):
-        point = {n: rng.choice((1, 1, 1, -1)) * 10 ** rng.uniform(-3, 3) for n in names}
+    tries = 512
+    for i in range(tries):
+        if i % 3 == 0:
+            point = {n: rng.choice((1, 1, 1, -1)) * 10 ** rng.uniform(-3, 3) for n in names}
+        elif i % 3 == 1:
+            point = {n: 10 ** rng.uniform(-3, 3) for n in names}
+        else:
+            point = {n: float(rng.choice((1, 1, 1, -1)) * rng.randint(1, 4)) for n in names}
         want = _bngl_math.evaluate(tree, point)
         if want is None:
             continue
@@ -543,8 +559,8 @@ def _assert_matches_bngl(tree, expr, petab_math, body, where):
         agreed += 1
         if agreed >= 8:
             return
-    unverifiable('the body is undefined (a domain error, a division by zero or an overflow) '
-                 'at every sample point')
+    unverifiable(f'the body is undefined (a domain error, a division by zero or an overflow) '
+                 f'at all but {agreed} of {tries} sample points, and 8 are needed')
 
 
 def _assert_round_trips(sympify_petab, expr, petab_math, body):

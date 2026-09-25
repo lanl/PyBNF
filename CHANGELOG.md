@@ -263,7 +263,8 @@ All notable changes to PyBNF are documented below. This project adheres to
   BioNetGen gives it (#908).** The body was read as PEtab math, so `-k^2` (BNGL: `(-k)^2`) and
   `a^b^c` (BNGL: `(a^b)^c`) were exported as formulas with different values and no error. The
   body is now read with BioNetGen's grammar and checked against it numerically; a construct
-  with no exact PEtab reading, such as `rint`, `time()` or `(-2)^x`, is refused.
+  with no exact PEtab reading, or whose value depends on the simulator, such as `rint`,
+  `time()`, `(-2)^x` or an `if()` whose condition is not a comparison, is refused.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

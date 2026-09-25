@@ -346,8 +346,9 @@ end model
 #
 # The generator stays inside what a parameter and a function read alike: no negative literal
 # raised to a power (the simulators read a function's '-2^x' as -(2^x), BNG2.pl's Perl reads a
-# parameter's as (-2)^x, and the translator refuses it), and no '**', '~=' or rint, which only
-# a parameter can use.
+# parameter's as (-2)^x, and the translator refuses it), no '**', '~=' or rint, which only
+# a parameter can use, and no if() whose condition is not a comparison (run_network takes its
+# first branch only above 0.5, the others on nonzero, and the translator refuses it).
 
 _FUZZ_FUNCTIONS = ('exp', 'abs', 'sqrt', 'ln', 'log10', 'sin', 'atan', 'tanh')
 
@@ -377,8 +378,10 @@ def _random_body(rng, depth):
     if r < 0.92:
         return f'{rng.choice(_FUZZ_FUNCTIONS)}({sub()})'
     name = rng.choice(['min', 'max', 'if'])
-    count = 3 if name == 'if' else rng.choice([2, 3])
-    return f"{name}({', '.join(sub() for _ in range(count))})"
+    if name == 'if':     # a comparison as the condition; the translator refuses any other
+        cond = f"{sub()} {rng.choice(['<', '>', '<=', '>=', '==', '!='])} {sub()}"
+        return f'if({cond}, {sub()}, {sub()})'
+    return f"{name}({', '.join(sub() for _ in range(rng.choice([2, 3])))})"
 
 
 def test_function_body_translation_agrees_with_this_evaluator():
