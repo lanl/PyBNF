@@ -257,3 +257,20 @@ def test_snapshot_label(line, label):
 def test_snapshot_label_refuses_what_it_cannot_read(line):
     with pytest.raises(PybnfError, match='one quoted label'):
         parsing._snapshot_label(line)
+
+
+@pytest.mark.parametrize(
+    'line, label',
+    [
+        ('resetConcentrations() # Revert to the state after simulation 1', None),
+        ('saveParameters() # save parameter values specified in the parameters block', None),
+        ('saveConcentrations("washed")  # after the wash (see resetConcentrations("x"))',
+         'washed'),
+        ('resetParameters();# back', None),
+    ],
+)
+def test_snapshot_label_ignores_a_trailing_comment(line, label):
+    # BNG2.pl drops everything from the first '#' on a line, and shipped examples
+    # (examples/degranulation, examples/egfr_ode) comment their reset lines this way; the
+    # label reader refused them, so those jobs stopped at load on every backend.
+    assert parsing._snapshot_label(line) == label

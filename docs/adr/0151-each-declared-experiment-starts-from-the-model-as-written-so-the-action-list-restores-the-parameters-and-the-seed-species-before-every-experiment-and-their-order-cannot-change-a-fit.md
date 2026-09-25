@@ -54,7 +54,8 @@ only 2 of the 12 combinations of declaration order and backend scored the closed
    bngsim's labelled snapshots and leave the default one alone, `saveParameters("x")` /
    `resetParameters("x")` keep a snapshot per label, and a labelled reset with no save is
    refused by name, as BioNetGen stops on it. An argument that is not one quoted label is
-   refused rather than read as the default. `resetParameters` restores a derived parameter
+   refused rather than read as the default; a trailing `#` comment is dropped first, as
+   BioNetGen drops it. `resetParameters` restores a derived parameter
    as BioNetGen does, as its expression: primaries are written first, then each derived
    parameter that tracked its expression is re-attached (a `setParameter` on it had overridden
    the expression, bngsim #188), and a parameter that cannot be restored raises.
@@ -66,7 +67,9 @@ only 2 of the 12 combinations of declaration order and backend scored the closed
    both bridges.
 5. **A condition run on bngsim starts from the engine as `execute` received it** (#869): a
    clone taken before the base run's actions, from which each condition's model is cloned.
-   A relative perturbation of a non-free target reads its base value from that clone too. This
+   A relative perturbation of a non-free target reads its base value from the condition's
+   own clone once the trial point's free parameters are written into it, so a derived target
+   (`kd = koff/kon` with `kon` free) is read at the trial `kon`. This
    also covers an edition-1 job whose hand-written block sets a parameter before a `mutant =`
    line, which no reset in the synthesized list could reach.
 

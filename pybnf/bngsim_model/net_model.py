@@ -2579,9 +2579,20 @@ class BngsimModel(NetModel):
         :meth:`execute` received it, before the base run's actions changed any parameter (#869).
 
         The base value a relative perturbation of a non-free target starts from is read from
-        that engine too, so it is the model's declared value, not one the base run left."""
+        the mutant's clone once this point's free parameters are written into it, so it is the
+        model's declared value, not one the base run left -- and a derived target (``kd =
+        koff/kon`` with ``kon`` free) is read at this point's ``kon``, not at the value the
+        ``.net`` was generated with. The mutant's own execute writes the same values again."""
         mut_model = self._copy_with_engine(unrun_engine)
-        mut_model.param_set = _build_mutant_param_set(self.param_set, mut, unrun_engine)
+        base_engine = mut_model.__dict__.get('_engine_model')
+        if base_engine is not None and self.param_set is not None:
+            # A free parameter this model does not declare belongs to another model of a
+            # multi-model fit; execute warns about it when it applies the vector.
+            declared = set(base_engine.param_names)
+            for pname in self.param_set.keys():
+                if pname in declared:
+                    base_engine.set_param(pname, self.param_set[pname])
+        mut_model.param_set = _build_mutant_param_set(self.param_set, mut, base_engine)
         # A mutant's action output is scored under ``<action suffix><mut.suffix>``
         # in the parent's dataset, so fold its suffix onto each action's own suffix
         # when keying the scored set for the #475 gate (the shallow copy already

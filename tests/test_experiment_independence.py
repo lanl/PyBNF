@@ -483,3 +483,291 @@ def test_a_malformed_snapshot_label_is_refused_when_the_job_loads():
         classify_actions_for_bngsim([
             'resetConcentrations(seed)',
             'simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>2,suffix=>"a"})'])
+
+
+# ------------------------------------------- every experiment shape in one job, any order
+# A second, linear model the order tests above do not use: dA/dt = kp*S - kd*A and
+# dB/dt = kin - kB*B + c*A, with B seeded from a parameter. Every experiment shape a declared
+# experiment can take meets every other in one action list: a plain time course, a condition
+# run with a relative change of the fitted kp, two pre-equilibrations (steady state and a fixed
+# ``equil_t_end``) whose washes set a parameter and a species from an expression, a
+# pre-equilibrated dose scan of kd with a fixed read time, a plain dose scan of S, a steady
+# state, and a steady-state dose scan of kd. The oracle is the matrix exponential of the affine
+# system and a linear solve for each steady state, not a simulator.
+_MIXED_MODEL = """\
+begin model
+begin parameters
+  kp 2
+  kd 1
+  S 1
+  kB 0.5
+  c 0.3
+  B0 4
+  kin 1
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 0
+  B() B0
+end seed species
+begin observables
+  Molecules A_tot A()
+  Molecules B_tot B()
+end observables
+begin functions
+  prod() = kp*S
+end functions
+begin reaction rules
+  0 -> A() prod()
+  A() -> 0 kd
+  0 -> B() kin
+  B() -> 0 kB
+  A() -> A() + B() c
+end reaction rules
+end model
+"""
+_MIXED_BASE = dict(kp=2.0, kd=1.0, S=1.0, kB=0.5, c=0.3, B0=4.0, kin=1.0)
+_MIXED_T = [0.0, 0.5, 1.0, 2.0, 3.0]
+_MIXED_KD = [0.5, 2.0, 1.5]
+_MIXED_S = [0.0, 3.0, 1.0]
+_MIXED_EXPERIMENTS = {
+    'tc': 'experiment: tc, data: tc.exp',
+    'rel': 'experiment: rel, condition: hi, data: rel.exp',
+    'wash': 'experiment: wash, preequilibrate: on, condition: off, data: wash.exp',
+    'washfix': ('experiment: washfix, preequilibrate: on, equil_t_end: 2, condition: off, '
+                'data: washfix.exp'),
+    'prescan': ('experiment: prescan, preequilibrate: on, condition: off2, data: prescan.exp, '
+                't_end: 1'),
+    'scan': 'experiment: scan, data: scan.exp, t_end: 2',
+    'ss': 'experiment: ss, data: ss.exp',
+    'sscan': 'experiment: sscan, data: sscan.exp',
+}
+_MIXED_HEAD = ['edition = 2', 'model: m.bngl', 'job_type = de', 'objective = sos',
+               'population_size = 4', 'max_iterations = 1', 'uniform_var = kp 0.1 10',
+               'condition: hi, perturbations: kp * 3', 'condition: on, perturbations: S = 2',
+               'condition: off, perturbations: S = 0, "B()" = B0*2.5',
+               'condition: off2, perturbations: S = 0']
+
+
+def _mixed_data():
+    """Fixed, arbitrary measurements (two columns, A_tot and B_tot) for every experiment."""
+    rows = {'tc': 5, 'rel': 5, 'wash': 5, 'washfix': 5, 'prescan': 3, 'scan': 3, 'ss': 1,
+            'sscan': 3}
+    return {name: np.round(np.column_stack([np.linspace(0.3, 4.1, n) + i,
+                                            np.linspace(5.2, 1.7, n) - 0.1 * i]), 3)
+            for i, (name, n) in enumerate(rows.items())}
+
+
+def _mixed_files(data):
+    files = {'m.bngl': _MIXED_MODEL}
+    grids = {'tc': ('time', _MIXED_T), 'rel': ('time', _MIXED_T), 'wash': ('time', _MIXED_T),
+             'washfix': ('time', _MIXED_T), 'prescan': ('kd', _MIXED_KD),
+             'scan': ('S', _MIXED_S), 'ss': ('time', [float('inf')]),
+             'sscan': ('kd', _MIXED_KD)}
+    for name, (indvar, grid) in grids.items():
+        files[f'{name}.exp'] = f'# {indvar} A_tot B_tot\n' + ''.join(
+            f'{x!r} {float(a)!r} {float(b)!r}\n' for x, (a, b) in zip(grid, data[name]))
+    return files
+
+
+def _mixed_closed_form(kp, data):
+    from scipy.linalg import expm
+
+    def affine(p):
+        return (np.array([[-p['kd'], 0.0], [p['c'], -p['kB']]]),
+                np.array([p['kp'] * p['S'], p['kin']]))
+
+    def simulate(y0, p, times):
+        m, b = affine(p)
+        z = np.zeros((3, 3))
+        z[:2, :2], z[:2, 2] = m, b
+        return np.array([(expm(z * t) @ np.r_[y0, 1.0])[:2] for t in times])
+
+    def steady(p):
+        m, b = affine(p)
+        return np.linalg.solve(m, -b)
+
+    p = dict(_MIXED_BASE, kp=kp)
+    seed = np.array([0.0, p['B0']])
+    off = dict(p, S=0.0)
+    equilibrated = steady(dict(p, S=2.0))
+    after_two = simulate(seed, dict(p, S=2.0), [2.0])[0]
+    sim = {
+        'tc': simulate(seed, p, _MIXED_T),
+        'rel': simulate(seed, dict(p, kp=3 * kp), _MIXED_T),
+        'wash': simulate(np.array([equilibrated[0], 2.5 * p['B0']]), off, _MIXED_T),
+        'washfix': simulate(np.array([after_two[0], 2.5 * p['B0']]), off, _MIXED_T),
+        'prescan': np.array([simulate(equilibrated, dict(off, kd=d), [1.0])[0]
+                             for d in _MIXED_KD]),
+        'scan': np.array([simulate(seed, dict(p, S=s), [2.0])[0] for s in _MIXED_S]),
+        'ss': steady(p)[None, :],
+        'sscan': np.array([steady(dict(p, kd=d)) for d in _MIXED_KD]),
+    }
+    return sum(_sos(sim[name], data[name]) for name in sim)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_every_experiment_shape_in_one_job_scores_the_closed_form_in_any_order(
+        tmp_path, backend):
+    """Written by the independent review of ADR-0151. Beyond lesson 9: a relative condition on
+    a fitted parameter, a fixed-duration pre-equilibration, a wash that sets a species from a
+    parameter expression, a steady state and a steady-state dose scan, in the declared order,
+    reversed, and shuffled. Before ADR-0151 neither backend scored the closed form in these
+    orders."""
+    data = _mixed_data()
+    kp = 1.7
+    expected = _mixed_closed_form(kp, data)
+    names = list(_MIXED_EXPERIMENTS)
+    orders = [names, names[::-1], ['ss', 'sscan', 'wash', 'prescan', 'tc', 'washfix', 'rel',
+                                   'scan']]
+    for i, order in enumerate(orders):
+        workdir = tmp_path / f'order{i}'
+        workdir.mkdir()
+        for name, text in _mixed_files(data).items():
+            (workdir / name).write_text(text)
+        lines = ([f'output_dir = {workdir / "out"}', f'bngl_backend = {backend}']
+                 + _MIXED_HEAD + [_MIXED_EXPERIMENTS[name] for name in order])
+        home = os.getcwd()
+        os.chdir(workdir)
+        try:
+            conf = config_mod.Configuration(ploop([line + '\n' for line in lines]))
+            os.makedirs(conf.config['output_dir'], exist_ok=True)
+            model = algorithms.DifferentialEvolution(conf).model_list[0]
+            os.chdir(workdir)
+            point = PSet([conf.variables[0].set_value(kp)])
+            (workdir / 'sim').mkdir()
+            sims = {model.name: model.copy_with_param_set(point).execute(
+                str(workdir / 'sim'), 'x', 120)}
+            obj = conf.obj.evaluate_multiple(sims, conf.exp_data, point)
+        finally:
+            os.chdir(home)
+        assert obj == pytest.approx(expected, rel=1e-6), (order, obj, expected)
+
+
+# ------------------------------------- a condition run reads a relative base at the trial point
+_DERIVED_TARGET_MODEL = """\
+begin model
+begin parameters
+  kon 1
+  koff 2
+  kd koff/kon
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 0
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  0 -> A() kd
+  A() -> 0 1
+end reaction rules
+end model
+"""
+
+
+def test_a_relative_condition_on_a_derived_parameter_starts_from_the_trial_point(tmp_path):
+    """Written by the independent review of ADR-0151. ``kd = koff/kon`` is not fitted, but it
+    follows the fitted ``kon``; ``condition: dbl, perturbations: kd * 2`` doubles it. The #869
+    change cloned each condition run's engine before the base run wrote the fit vector into it,
+    and read the relative base from that clone, so the base was ``kd`` at the value the ``.net``
+    was generated with (``kon`` = 0.1, the prior's lower bound, so ``kd`` = 20 and the condition
+    ran at 40 instead of 1). The base run's pre-equilibration sets ``koff`` = 100 as well, and
+    must still not reach the condition run (#869). At ``kon`` = 4: ``kd`` = 0.5 and
+    ``A(t) = 2 kd (1 - e^{-t})`` under the condition."""
+    t = np.linspace(0, 2, 5)
+    kon = 4.0
+    (tmp_path / 'm.bngl').write_text(_DERIVED_TARGET_MODEL)
+    (tmp_path / 'mut.exp').write_text(_table('time A_tot', zip(t, np.ones_like(t))))
+    (tmp_path / 'pre.exp').write_text(_table('time A_tot', zip(t, np.ones_like(t))))
+    lines = ['edition = 2', f'output_dir = {tmp_path / "out"}', 'model: m.bngl',
+             'bngl_backend = bngsim', 'job_type = de', 'objective = sos', 'population_size = 4',
+             'max_iterations = 1', 'uniform_var = kon 0.1 10',
+             'condition: dbl, perturbations: kd * 2',
+             'condition: hk, perturbations: koff = 100',
+             'experiment: pre, preequilibrate: hk, condition: hk, data: pre.exp',
+             'experiment: mut, condition: dbl, data: mut.exp']
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        conf = config_mod.Configuration(ploop([line + '\n' for line in lines]))
+        os.makedirs(conf.config['output_dir'], exist_ok=True)
+        model = algorithms.DifferentialEvolution(conf).model_list[0]
+        os.chdir(tmp_path)
+        (tmp_path / 'sim').mkdir()
+        ds = model.copy_with_param_set(PSet([conf.variables[0].set_value(kon)])).execute(
+            str(tmp_path / 'sim'), 'x', 120)
+    finally:
+        os.chdir(home)
+    got = ds['mutdbl'].data[:, ds['mutdbl'].cols['A_tot']]
+    np.testing.assert_allclose(got, 2 * (2.0 / kon) * (1 - np.exp(-t)), rtol=1e-5, atol=1e-8)
+
+
+# --------------------------------------- a commented save/reset line in a hand-written block
+_COMMENTED_MODEL = """\
+begin model
+begin parameters
+  k k__FREE
+  A0 10
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() A0
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  A() -> 0 k
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveParameters() # the parameters as written
+simulate({method=>"ode",t_end=>2,n_steps=>4,suffix=>"a"})
+setParameter("k",3)
+resetConcentrations() # back to the seed species
+resetParameters() # k back to its fitted value
+simulate({method=>"ode",t_end=>2,n_steps=>4,suffix=>"b"})
+end actions
+"""
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_a_commented_reset_line_in_an_actions_block_is_still_read(tmp_path, backend):
+    """Written by the independent review of ADR-0151. BNG2.pl drops a trailing ``#`` comment,
+    and shipped examples (``examples/degranulation``, ``examples/egfr_ode``) write
+    ``resetConcentrations() # ...``. The new label reader refused those lines as unreadable, so
+    the jobs stopped at load on every backend. Both simulations here are the fitted decay
+    ``A = 10 e^{-t}`` at ``k`` = 1: the reset lines undo the ``setParameter`` between them."""
+    (tmp_path / 'm.bngl').write_text(_COMMENTED_MODEL)
+    t = np.linspace(0, 2, 5)
+    decay = 10 * np.exp(-t)
+    for name in ('a', 'b'):
+        (tmp_path / f'{name}.exp').write_text(_table('time A_tot', zip(t, decay)))
+    lines = [f'output_dir = {tmp_path / "out"}', 'model = m.bngl : a.exp, b.exp',
+             f'bngl_backend = {backend}', 'fit_type = de', 'objfunc = sos',
+             'population_size = 4', 'max_iterations = 1', 'uniform_var = k__FREE 0.1 10']
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        conf = config_mod.Configuration(ploop([line + '\n' for line in lines]))
+        os.makedirs(conf.config['output_dir'], exist_ok=True)
+        model = algorithms.DifferentialEvolution(conf).model_list[0]
+        os.chdir(tmp_path)
+        (tmp_path / 'sim').mkdir()
+        ds = model.copy_with_param_set(PSet([conf.variables[0].set_value(1.0)])).execute(
+            str(tmp_path / 'sim'), 'x', 120)
+    finally:
+        os.chdir(home)
+    for name in ('a', 'b'):
+        np.testing.assert_allclose(ds[name].data[:, ds[name].cols['A_tot']], decay, rtol=1e-5,
+                                   atol=1e-8, err_msg=name)

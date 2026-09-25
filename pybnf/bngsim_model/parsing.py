@@ -236,8 +236,13 @@ def _snapshot_label(action_line):
     saved and leaves the default snapshot alone. The bridges used to read every one of these
     lines as the default slot, which is how a labelled reset landed on the wrong state. An
     argument that is neither empty nor one quoted label is refused rather than read as the
-    default."""
-    match = _SNAPSHOT_ARGUMENT.match(_collapse_action_line_continuations(action_line).strip())
+    default.
+
+    A trailing ``#`` comment is dropped first, as BioNetGen drops it (``BNGModel.pm`` removes
+    everything from the first ``#`` on a line), so ``resetConcentrations() # back to the seed``
+    is the unlabelled reset it is on BNG2.pl, not an unreadable argument."""
+    line = _collapse_action_line_continuations(action_line).split('#', 1)[0]
+    match = _SNAPSHOT_ARGUMENT.match(line.strip())
     args = match.group('args') if match is not None else None
     if args is not None and not args.strip():
         return None
