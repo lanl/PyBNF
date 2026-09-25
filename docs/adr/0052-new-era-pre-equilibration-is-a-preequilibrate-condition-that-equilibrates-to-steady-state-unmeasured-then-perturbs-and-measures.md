@@ -159,3 +159,31 @@ rewriting a simulator. BNG2.pl honors `simulate({…,steady_state=>1})` natively
   0046/#426 (steady-state-default — the structural sibling), 0027 (conditions/experiments —
   whose `MutationSet`s this reads), 0034 (`edition >= 2 ⇒ bngsim`, what makes the
   steady-state default sound), 0025 (exporter — Phase 2 seam). Advances #440 (and #423).
+
+## Addendum (2026-09-25): a fixed-duration equilibration is a leading PEtab period at `-equil_t_end` (#896)
+
+The "Fixed-time equilibration" item under **Out** has since shipped on the fitter side as
+the experiment field `equil_t_end: T` (required for `method: nf`, which has no steady-state
+solve): the unmeasured phase runs `simulate({t_start=>0, t_end=>T})` with no `steady_state`,
+and the measured phase restarts the clock at 0. The PEtab exporter never read the field and
+wrote the `-inf` period of the table above, so a PEtab tool equilibrated to steady state
+instead of for `T`.
+
+The mapping gains one row, on both the time-course and the pre-equilibrated-scan (ADR-0063)
+shapes:
+
+| PEtab v2 | PyBNF new-era |
+| --- | --- |
+| `Experiment.periods[0] = (time = -T, preequilibrationConditionId)`, then a period at exactly `time = 0` | `preequilibrate: <cond_pre>` + `equil_t_end: T` |
+
+PEtab v2 runs a period from its start time until the next one starts, so a period at `-T`
+followed by one at `0` equilibrates for exactly `T`. The importer reads that shape back
+(`import_._fixed_equilibration_time`, `measurements.reconstruct_preequilibrated_dose_responses`)
+and still refuses any other finite leading period, a blank equilibration condition, and more
+than two periods. `equil_t_end` must be finite and positive to export.
+
+The one inexact case is a model that reads the simulation time (BNGL `time()` or a
+time-indexed `tfun`; an SBML `<csymbol>` for time): PEtab runs the equilibration on
+`[-T, 0]`, PyBNF on `[0, T]`, and PEtab has no way to restart the clock between periods. Both
+directions refuse it (`conditions.model_time_reads`). The steady-state `-inf` mapping is
+unchanged.

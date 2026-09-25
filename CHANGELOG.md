@@ -259,6 +259,15 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **The PEtab export keeps an experiment's `equil_t_end:` (#896).** A fixed-duration
+  equilibration was exported as PEtab's steady-state (`-inf`) period, a different protocol from
+  the one the fit scores. It now exports as a leading period at time `-equil_t_end` and imports
+  back as `equil_t_end:`. A model that reads the simulation time is refused, because PEtab runs
+  that period on `[-T, 0]` while PyBNF runs it on `[0, T]`.
+- **In a multi-model job, the PEtab export computes a relative condition on a fixed parameter
+  from the condition's own model (#897).** It used the first declared model that defines the
+  parameter, so the exported problem could have a different best fit. A multi-model condition
+  with no `model:`, or applied to another model's experiment, is now refused, as the fitter does.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration
