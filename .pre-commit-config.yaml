@@ -3,12 +3,15 @@
 # After cloning, run once:
 #   pre-commit install --hook-type pre-push
 #
-# Two complementary hooks run before every `git push`:
+# Three hooks run before every `git push`:
 #   1. ruff-ci-mirror -- the *exact* lint command CI's lint.yml runs (pinned
 #      `ruff@0.15.14 check .`). Runs FIRST and takes seconds, so a lint failure
 #      aborts the push immediately instead of after the pytest gate (the pytest
 #      hook does NOT run ruff -- that gap let an F401 reach CI once).
-#   2. pytest-bngsim -- the simulation-backend tests, as a fast local smoke.
+#   2. changelog-fragments -- `tools/changelog.py check` over changelog.d/
+#      (#800). It takes milliseconds, so it also runs at commit time for anyone
+#      who additionally runs a plain `pre-commit install`.
+#   3. pytest-bngsim -- the simulation-backend tests, as a fast local smoke.
 #      These are no longer CI-exclusive: bngsim is on public PyPI and tests.yml
 #      installs it, so hosted runners now run these files too (#514). The hook
 #      stays because it is the shortest path from "I broke the backend seam" to
@@ -43,6 +46,20 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+      - id: changelog-fragments
+        name: changelog fragments (names, shape, length)
+        # Fragment names, shape and the 1,200-character limit (#800; see
+        # changelog.d/README.md). Reads the handful of files in changelog.d/ and
+        # nothing else. `pass_filenames: false` and `always_run: true` because the
+        # check is about the directory as a whole -- a duplicate fragment is a
+        # relationship between two files. Stdlib-only, so the system python3 runs
+        # it with no environment. The `changelog` workflow runs the same check in
+        # CI and adds the half a hook cannot see: whether THIS branch staged one.
+        entry: python3 tools/changelog.py check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
       - id: pytest-bngsim
         name: pytest (bngsim test suite)
         # Every bngsim-area test file, as a pre-push smoke (CI runs them too --
