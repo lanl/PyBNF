@@ -166,7 +166,9 @@ following all survive an import and an export:
   pre-equilibration writes a blank ``-inf`` ``conditionId``, or the synthesized base
   condition ``cond_wildtype`` when fit-and-perturbed parameters must be re-pinned there,
   and a ``none`` measured ``condition:`` exports exactly as an omitted one. A blank
-  ``conditionId`` on a measured period stays "no condition" (ADR-0150).
+  ``conditionId`` on a measured period stays "no condition" (ADR-0150). A ``none``
+  pre-equilibration with ``equil_t_end:`` exports as a blank ``-T`` period, which the
+  importer does not read back yet.
 
 Tutorial lessons
 ----------------
