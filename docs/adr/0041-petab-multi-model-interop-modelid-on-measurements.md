@@ -155,3 +155,21 @@ the exported PEtab (conditions are model-agnostic), so `conditions.tsv` is ident
 without it. Tested in `tests/test_petab_import.py::TestImportMultiModelCondition` (a
 fixed-target and a fit-target/surrogate condition round-trip + load, and the cross-model
 refusal). Closes #444 item 4.
+
+## Addendum (2026-09-25): a fixed target's nominal is read from the condition's own model (#897)
+
+Decision 7's "read from whichever model defines it" assumed one model defines the parameter,
+or that all models agree on its value. When two models give a same-named fixed parameter
+different values, the exporter folded a relative op (`L * 2`) against the first declared model
+that defines `L`, even for a condition on the other model, while the fitter uses the
+condition's own model (`bngsim_model/expressions.py::_nominal_param_value`). The exported
+problem then had a different best fit.
+
+The exporter now keeps each condition's model (`export._read_conditions` returns it alongside
+the perturbations) and the condition builders take `nominal_of(condition, var)`, so every
+builder that folds a relative op -- time course, pre-equilibration, pre-equilibrated scan --
+reads the condition's own model. The exporter also applies the fitter's two rules that make
+"the condition's own model" well defined: a multi-model condition must name its model, and an
+experiment may apply only conditions of its own model. A condition's targets are validated
+against its own model rather than the union. For a single-model job the condition's model is
+the only model, so its export does not change.

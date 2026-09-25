@@ -131,6 +131,25 @@ def test_experiments_sharing_a_preequilibration_condition_do_not_collapse(tmp_pa
                 f'doses {doses[i]} and {doses[j]} simulated identically')
 
 
+def test_an_experiment_after_a_preequilibration_starts_from_the_model_as_written(tmp_path):
+    """The SBML sibling of #830/#831 (ADR-0151). The BNGL path wrote its experiments into one
+    action list and leaked a pre-equilibration's measurement condition, and a scan's last
+    dose, into every experiment after it. This backend builds each experiment's engine afresh,
+    so a plain growth curve (A(0) = 0, flag = 1: ``1.5(1 - e^{-2t})``) must read the same in
+    both declaration orders, after a washout that ends at flag = 0 and a dose scan whose last
+    dose leaves k_deg at 4."""
+    growth = pset.TimeCourse({'suffix': 'growth', 'method': 'ode'}, explicit_points=_TIMES)
+    scan = pset.ParamScan({'suffix': 'scan', 'method': 'ode', 'param': 'k_deg', 'time': '1'},
+                          explicit_points=[1.0, 4.0])
+    expected = _A_SS * (1 - np.exp(-_K_DEG * np.array(_TIMES)))
+    for order in ([growth, _time_course('washout', 0.0), scan],
+                  [_time_course('washout', 0.0), scan, growth]):
+        result = _run(tmp_path, order, name='order')
+        np.testing.assert_allclose(result['growth']['A'], expected, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(result['washout']['A'], _analytic(0.0, _TIMES),
+                                   rtol=1e-6, atol=1e-8)
+
+
 def test_the_measured_phase_starts_from_the_equilibrated_state(tmp_path):
     """The carry-over invariant: the measured phase's ``t = 0`` row is the equilibration's
     steady state (A_ss = 1.5), not the model's seed initial condition (A(0) = 0)."""

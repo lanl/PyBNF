@@ -159,6 +159,10 @@ Required Keys
       column of the data supplies the simulation's output grid (the BNGL ``begin actions``
       block is no longer needed for fitting); PyBNF synthesizes the ``simulate`` action
       from the data, so the scoring grid always lines up with the measurements.
+    * **Each experiment starts from the model as written:** the model's parameters with the
+      trial values of the free ones, and its seed species, whatever the experiments declared
+      before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
+      order of the ``experiment:`` lines never changes a fit. (ADR-0151)
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
       "model as is").
     * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
@@ -629,8 +633,9 @@ Required Keys
      so the noise scales with the measurement (``cv`` defaults to 1). This is the
      heteroscedastic model the legacy ``norm_sos`` fits.
    - ``column_mean`` - ``sigma`` is the mean of the observable's measured experimental
-     values (one scale per column; ``nan`` entries are missing data and do not enter the
-     mean). This is the model the legacy ``ave_norm_sos`` fits.
+     values (one scale per column in each experiment, its replicate files pooled; ``nan``
+     entries are missing data and do not enter the mean). This is the model the legacy
+     ``ave_norm_sos`` fits.
    - ``formula <expr>`` - an arithmetic expression over free parameters (and constants),
      evaluated per point against the current fit; the PEtab ``noiseFormula`` source.
    - ``prediction_formula <expr>`` - an expression whose ``sigma`` scales with the

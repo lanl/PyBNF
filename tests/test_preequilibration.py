@@ -22,7 +22,7 @@ import pytest
 from pybnf.config import Configuration
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
-from pybnf.pset import SbmlModel, TimeCourse
+from pybnf.pset import EXPERIMENT_START_LABEL, SbmlModel, TimeCourse
 
 # A birth-death model with a 0/1 flag gating production -- the receptor func()*Ligand_isPresent
 # idiom that makes a mid-protocol setParameter switch a reaction on/off. k_deg is the bare-id
@@ -156,6 +156,33 @@ class TestSynthesis:
         # Regression companion: the default (ODE) pre-equilibration must NOT set the flag.
         assert not self._conf(tmp_path).models["m"].stochastic
 
+    def test_every_experiment_starts_from_the_saved_parameters_and_the_seed(self, tmp_path):
+        # #830/#831/#875 (ADR-0151): each experiment's block opens with the experiment start --
+        # the first saves the parameters under PyBNF's label, every later one restores them --
+        # then resetConcentrations(), on the network-free path too. Nothing redefines the
+        # default species snapshot those resets return to.
+        (tmp_path / "dose.exp").write_text("# k_prod\tA_tot\n1\t1\n2\t2\n4\t4\n")
+        conf = _build(tmp_path, _BASE + [
+            "condition: prod_on, perturbations: flag = 1",
+            "condition: prod_off, perturbations: flag = 0",
+            "experiment: relax, preequilibrate: prod_on, condition: prod_off, data: relax.exp",
+            f"experiment: scan, preequilibrate: prod_on, t_end: 5, data: {tmp_path / 'dose.exp'}",
+            "experiment: plain, data: relax.exp",
+            "experiment: noisy, method: nf, data: relax.exp",
+        ])
+        acts = conf.models["m"].actions
+        save = f'saveParameters("{EXPERIMENT_START_LABEL}")'
+        reset = f'resetParameters("{EXPERIMENT_START_LABEL}")'
+        starts = [i for i, a in enumerate(acts) if a in (save, reset)]
+        assert [acts[i] for i in starts] == [save, reset, reset, reset], acts
+        assert all(acts[i + 1] == "resetConcentrations()" for i in starts), acts
+        # each experiment's own lines follow its start, in declaration order
+        blocks = [acts[i:j] for i, j in zip(starts, starts[1:] + [len(acts)])]
+        for block, name in zip(blocks, ["relax", "scan", "plain", "noisy"]):
+            assert any(f'suffix=>"{name}"' in a for a in block), (name, block)
+        assert "saveConcentrations()" not in acts
+        assert 'saveConcentrations("scan_scan_start")' in blocks[1]
+
 
 # --------------------------------------------------------------------------- #
 # Error boundaries
@@ -185,8 +212,10 @@ class TestBoundaries:
     def test_parameter_scan_preequilibration_emits_scan_block(self, tmp_path):
         # A parameter_scan measured phase of a pre-equilibration experiment (#474, the
         # preincubate->wash->dose-scan protocol): the equilibration runs (fixed equil_t_end),
-        # the intervention perturbs, the post-intervention state is SAVED, and the scan resets
-        # each dose to it (reset_conc=>1). The swept parameter is the data's indvar column.
+        # the intervention perturbs, the post-intervention state is SAVED under the experiment's
+        # own label (so it never becomes what a later experiment's resetConcentrations()
+        # restores, #830), and the scan resets each dose to it (reset_conc=>1). The swept
+        # parameter is the data's indvar column.
         (tmp_path / "dose.exp").write_text("# k_prod\tA_tot\n1\t1\n2\t2\n4\t4\n")
         conf = _build(tmp_path, _BASE + [
             "condition: prod_on, perturbations: flag = 1",
@@ -198,7 +227,8 @@ class TestBoundaries:
         i_flag = next(i for i, a in enumerate(acts) if a == 'setParameter("flag",1)')
         i_equil = next(i for i, a in enumerate(acts)
                        if a.startswith("simulate(") and "relax_preequil" in a)
-        i_save = acts.index("saveConcentrations()")
+        i_save = acts.index('saveConcentrations("relax_scan_start")')
+        assert "saveConcentrations()" not in acts
         i_scan = next(i for i, a in enumerate(acts) if a.startswith("parameter_scan("))
         # reset -> setParameter(equil) -> equilibration simulate -> saveConcentrations -> scan
         assert i_reset < i_flag < i_equil < i_save < i_scan
@@ -229,7 +259,7 @@ class TestBoundaries:
         assert 'setConcentration("A()","k_prod*2")' in acts
         assert 'setParameter("k_deg",5)' in acts
         i_equil = next(i for i, a in enumerate(acts) if "relax_preequil" in a)
-        i_save = acts.index("saveConcentrations()")
+        i_save = acts.index('saveConcentrations("relax_scan_start")')
         for line in ('setConcentration("A()",0)', 'setConcentration("A()","k_prod*2")',
                      'setParameter("k_deg",5)'):
             assert i_equil < acts.index(line) < i_save, (line, acts)
@@ -498,16 +528,20 @@ class TestUnperturbedConditionSynthesis:
             "condition: basal, perturbations: flag = 1",
             *_UNPERTURBED_RELAX[1:], after]).models["relax"]
         assert none.actions == [a for a in named.actions if a != 'setParameter("flag",1)']
-        assert none.actions[0] == "resetConcentrations()"
-        assert "steady_state=>1" in none.actions[1] and "relax_preequil" in none.actions[1]
-        assert none.actions[2] == 'setParameter("flag",2)'
+        assert none.actions[:2] == ['saveParameters("pybnf_experiment_start")',
+                                    "resetConcentrations()"]
+        assert "steady_state=>1" in none.actions[2] and "relax_preequil" in none.actions[2]
+        assert none.actions[3] == 'setParameter("flag",2)'
+        assert none.actions[5:7] == ['resetParameters("pybnf_experiment_start")',
+                                     "resetConcentrations()"]
         # both conditions are consumed (applied inline), and the data key is the experiment name
         assert not none.mutants
         assert [s[1] for s in none.suffixes] == ["relax", "after"]
 
     def test_network_free_none_preequilibration_runs_for_its_fixed_duration(self, tmp_path):
         # NFsim has no steady-state solve, so a `none` pre-equilibration on `method: nf` needs
-        # `equil_t_end:` like any other, and emits no reset (the NF bridge rejects one).
+        # `equil_t_end:` like any other; the block opens with the experiment start (ADR-0151)
+        # and then runs the fixed-duration equilibration with nothing set before it.
         with pytest.raises(PybnfError, match="equil_t_end"):
             _issue_conf(tmp_path / "no_time", [
                 *_UNPERTURBED_RELAX[:2],
@@ -517,9 +551,10 @@ class TestUnperturbedConditionSynthesis:
             *_UNPERTURBED_RELAX[:2],
             "experiment: relax, preequilibrate: basal, condition: stim, method: nf, "
             "equil_t_end: 20, data: relax.exp"]).models["relax"].actions
-        assert acts[0].startswith('simulate({method=>"nf"') and "t_end=>20" in acts[0]
-        assert "relax_preequil" in acts[0] and "steady_state" not in acts[0]
-        assert acts[1:2] == ['setParameter("flag",2)']
+        assert acts[:2] == ['saveParameters("pybnf_experiment_start")', "resetConcentrations()"]
+        assert acts[2].startswith('simulate({method=>"nf"') and "t_end=>20" in acts[2]
+        assert "relax_preequil" in acts[2] and "steady_state" not in acts[2]
+        assert acts[3:4] == ['setParameter("flag",2)']
 
     def test_none_measured_condition_is_an_omitted_condition(self, tmp_path):
         # As a measured condition, `none` is read exactly as `condition:` omitted: the same

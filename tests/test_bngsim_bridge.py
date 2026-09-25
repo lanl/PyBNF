@@ -1726,6 +1726,7 @@ class TestContinueFlag:
 
         # Build a minimal BngsimModel without going through __init__
         obj = object.__new__(bngsim_model.BngsimModel)
+        obj.name = 'fake'
         obj.actions = actions
         obj._net_species_initializers = []
         obj._codegen_so = ''
@@ -2211,43 +2212,125 @@ class TestSsMethodRouting:
 
 # ── Gap 7: codegen tests ─────────────────────────────────────���──────────────────
 
-def test_try_prepare_codegen_returns_empty_when_disabled(monkeypatch):
+def _fake_simulator_runtime(monkeypatch, simulator):
+    """Route net_model's ``_runtime.bngsim.Simulator`` to ``simulator``."""
+    import types
+
+    from pybnf.bngsim_model import _runtime
+
+    monkeypatch.setattr(_runtime, 'bngsim', types.SimpleNamespace(Simulator=simulator),
+                        raising=False)
+
+
+class _FakeEngine:
+    _codegen_so_path = ''
+    _codegen_c_source = ''
+
+
+def test_attach_codegen_is_off_under_pybnf_no_codegen(monkeypatch):
     monkeypatch.setenv('PYBNF_NO_CODEGEN', '1')
-    assert bngsim_model._try_prepare_codegen('/tmp/fake.net') == ''
+
+    def never(*a, **k):
+        raise AssertionError('no Simulator may be built with codegen disabled')
+
+    _fake_simulator_runtime(monkeypatch, never)
+    assert bngsim_model._attach_codegen(_FakeEngine()) == ''
 
 
-def test_try_prepare_codegen_returns_empty_when_bngsim_no_codegen(monkeypatch):
+def test_attach_codegen_is_off_under_bngsim_no_codegen(monkeypatch):
+    monkeypatch.delenv('PYBNF_NO_CODEGEN', raising=False)
     monkeypatch.setenv('BNGSIM_NO_CODEGEN', '1')
-    assert bngsim_model._try_prepare_codegen('/tmp/fake.net') == ''
+
+    def never(*a, **k):
+        raise AssertionError('no Simulator may be built with codegen disabled')
+
+    _fake_simulator_runtime(monkeypatch, never)
+    assert bngsim_model._attach_codegen(_FakeEngine()) == ''
 
 
-def test_try_prepare_codegen_returns_empty_on_import_error(monkeypatch):
+def test_attach_codegen_falls_back_with_a_warning_when_the_build_fails(monkeypatch, caplog):
+    """A failed build is a speed loss, not a wrong result: the interpreted RHS integrates
+    the same model. So it warns, names the cause, and reports no artifact."""
     monkeypatch.delenv('PYBNF_NO_CODEGEN', raising=False)
     monkeypatch.delenv('BNGSIM_NO_CODEGEN', raising=False)
-    # No bngsim.prepare_codegen available → should return ""
-    assert bngsim_model._try_prepare_codegen('/tmp/nonexistent.net') == ''
+
+    def boom(*a, **k):
+        raise RuntimeError('simulated compile timeout')
+
+    _fake_simulator_runtime(monkeypatch, boom)
+    with caplog.at_level('WARNING'):
+        assert bngsim_model._attach_codegen(_FakeEngine()) == ''
+    assert any('simulated compile timeout' in r.getMessage() for r in caplog.records)
 
 
-def test_codegen_kwargs_returns_empty_without_codegen():
+@pytest.mark.parametrize('attr', ['_codegen_so_path', '_codegen_c_source'])
+def test_attach_codegen_builds_once_on_the_engine_model_and_returns_its_artifact(
+        monkeypatch, attr):
+    """One ``Simulator(engine, method='ode', codegen=True)``: bngsim attaches the artifact
+    (a library path, or C source under the MIR JIT backend) to the model it was built
+    for, which is what the clones inherit. No ``net_path``, which bngsim deprecates."""
+    monkeypatch.delenv('PYBNF_NO_CODEGEN', raising=False)
+    monkeypatch.delenv('BNGSIM_NO_CODEGEN', raising=False)
+    calls = []
+
+    def build(model, **kwargs):
+        calls.append(kwargs)
+        setattr(model, attr, 'ARTIFACT')
+
+    _fake_simulator_runtime(monkeypatch, build)
+    engine = _FakeEngine()
+    assert bngsim_model._attach_codegen(engine) == 'ARTIFACT'
+    assert calls == [{'method': 'ode', 'codegen': True}]
+
+
+@pytest.mark.parametrize(
+    ('built', 'sens', 'method', 'expected'),
+    [
+        (True, False, 'ode', {}),                     # inherit the attached artifact
+        (False, False, 'ode', {'codegen': False}),    # no artifact: never retry per run
+        (True, True, 'ode', {'codegen': True}),       # rebuild against the model as it is
+        (False, True, 'ode', {'codegen': True}),      # ...whatever was built (review, #708)
+        (True, False, 'ssa', {}),
+        (False, False, 'ssa', {}),
+    ],
+    ids=['plain-built', 'plain-none', 'sens-built', 'sens-none', 'ssa-built', 'ssa-none'],
+)
+def test_codegen_kwargs(monkeypatch, built, sens, method, expected):
+    from pybnf.bngsim_model.net_model import _SensitivityRequest
+
+    monkeypatch.delenv('BNGSIM_NO_CODEGEN', raising=False)
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj._codegen_so = '/tmp/fake.so' if built else ''
+    obj._net_path = '/tmp/fake.net'
+    if sens:
+        obj._sensitivity_request = _SensitivityRequest(params=['k'], ic=[])
+    assert obj._codegen_kwargs(method) == expected
+
+
+def test_codegen_kwargs_leaves_a_sensitivity_run_to_bngsim_under_bngsim_no_codegen(
+        monkeypatch):
+    """bngsim refuses a sensitivity run under ``BNGSIM_NO_CODEGEN`` with its own
+    explanation; ``codegen=True`` would ask it to ignore the switch."""
+    from pybnf.bngsim_model.net_model import _SensitivityRequest
+
+    monkeypatch.setenv('BNGSIM_NO_CODEGEN', '1')
     obj = object.__new__(bngsim_model.BngsimModel)
     obj._codegen_so = ''
-    obj._net_path = '/tmp/fake.net'
-    assert obj._codegen_kwargs() == {}
+    obj._sensitivity_request = _SensitivityRequest(params=['k'], ic=[])
+    assert obj._codegen_kwargs('ode') == {}
 
 
-def test_codegen_kwargs_returns_dict_with_codegen():
+def test_codegen_kwargs_follows_the_construction_not_the_request():
+    """An unscored carried-state scan drops the request (#475), so its plain
+    Simulator must get the plain answer, not a sensitivity run's rebuild."""
+    from pybnf.bngsim_model.net_model import _SensitivityRequest
+
     obj = object.__new__(bngsim_model.BngsimModel)
     obj._codegen_so = '/tmp/fake.so'
-    obj._net_path = '/tmp/fake.net'
-    kw = obj._codegen_kwargs('ode')
-    assert kw == {'codegen': True, 'net_path': '/tmp/fake.net'}
-
-
-def test_codegen_kwargs_empty_for_non_ode():
-    obj = object.__new__(bngsim_model.BngsimModel)
-    obj._codegen_so = '/tmp/fake.so'
-    obj._net_path = '/tmp/fake.net'
-    assert obj._codegen_kwargs('ssa') == {}
+    obj._sensitivity_request = _SensitivityRequest(params=['k'], ic=[])
+    assert obj._codegen_kwargs('ode', sensitivities=False) == {}
+    obj._codegen_so = ''
+    assert obj._codegen_kwargs('ode', sensitivities=False) == {'codegen': False}
 
 
 # ── Gap 6: addConcentration in network-backed path (verification) ────────────────
@@ -2716,9 +2799,12 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
         actions = ['simulate({method=>"ode",t_end=>10,n_steps=>2})']
         obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
 
-        # Give the model trackable param names and values
+        # Give the model trackable param names and values (two primaries: neither is
+        # bngsim-internal nor derived from an expression)
         param_vals = {'k1': 0.1, 'k2': 0.5}
         model.param_names = ['k1', 'k2']
+        model.param_is_internal = [False, False]
+        model.param_is_expression = [False, False]
         model.get_param = lambda n: param_vals[n]
         set_calls = []
         def mock_set_param(name, val):
@@ -2735,10 +2821,8 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
 
         # First call: setParameter("k1", 99.0)
         assert set_calls[0] == ('k1', 99.0)
-        # resetParameters restores both k1=0.1 and k2=0.5
-        restore = {name: val for name, val in set_calls[1:]}
-        assert restore['k1'] == 0.1
-        assert restore['k2'] == 0.5
+        # resetParameters puts back what saveParameters saved: k1=0.1 (k2 never moved)
+        assert param_vals == {'k1': 0.1, 'k2': 0.5}
 
     def test_protocol_simulate_continue_uses_current_time(self, monkeypatch):
         # CQ-2: _run_protocol shares the simulate() handling with _execute_actions

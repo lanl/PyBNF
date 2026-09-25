@@ -206,3 +206,53 @@ requirements here; full-task `Problem.from_yaml` oracle), **0019/0023** (neutral
 discipline reused for `conditions.py`; dependency-free core). Issues: **#422** (this chunk),
 **#407** (umbrella). Follow-ups: Mutants + dose-response in one job; the PEtab → BNGL
 importer reading this correspondence backwards; a possible Constraint (`.prop`) extension.
+
+## Addendum (2026-09-25): conditions and dose-response combine; dose Conditions re-pin M (#892, #895)
+
+**The coupling boundary no longer exists, and neither does its refusal.** The xor check went
+with the legacy reader (c708ff3d, #423) and the edition-2 exporter never replaced it. A job
+with a fit-and-perturbed parameter and a dose-response therefore exported without complaint,
+and its dose Conditions set only the swept parameter, so every PEtab tool simulated every
+dose at the parameter's model-file value, whatever the estimate of `p__REF` (#892). The
+exporter now does the mechanical step this section described.
+`build_dose_response_conditions` takes the problem-global M and adds the base pin
+`p = p__REF` for every `p ∈ M` to each per-dose Condition. The swept parameter is the
+exception, because the dose sets it. A condition and a dose-response in one job now export
+exactly, and the "Mutants **and** dose-response in one job" entry under "Still raised" no
+longer applies.
+
+**The pre-equilibrated dose-response (ADR-0063) takes a non-empty M too, with the pins in a
+different place.** Its refusal of any fit-and-perturbed parameter is lifted. The pins cannot
+go into the per-dose Conditions, for two reasons:
+
+- PEtab v2 forbids two Conditions of one period from setting the same target
+  (`CheckValidConditionTargets`), and the wash Condition already pins M.
+- PyBNF applies a pre-equilibration condition as an inline `setParameter` that stays in force
+  through the measured phase. PEtab v2 also keeps a period's changes in later periods (libpetab
+  turns them into SBML events). A re-pin in the measurement period would therefore undo the
+  pre-equilibration value of a fit parameter.
+
+So the `-inf` period's pre-equilibration Condition sets all of M, a wash Condition re-pins M
+as every Condition does, and a wash-free scan's measurement period applies only the per-dose
+Condition. Three cases are still refused, each with a message: a wash that would re-pin a fit
+parameter the pre-equilibration Condition set, a swept parameter in M beside a wash, whose
+pin would collide with the dose, and a wash that sets the swept parameter itself, which
+collides the same way whether or not the parameter is in M. The plain pre-equilibration
+builder (ADR-0052, #443) still re-pins M on its measurement period, which undoes a carried
+value in the same way. That is reported separately.
+
+**The dose axis is the fitter's scan grid (#895).** "Dose-response Parameter Scan" above maps
+dose *row* `i` to `cond_<stem>_i`, reading the first data file only, and each replicate's
+rows were tagged by position. The axis is now the sorted union of every replicate's doses,
+which is exactly the grid the fitter scans. `cond_<stem>_<i>` indexes that axis, and each
+measurement row is tagged with the experiment of its own dose, as `Objective._sim_row_for`
+pairs a row with the simulation at its own dose. A single file of ascending, distinct doses
+exports byte for byte as before. A replicate with no swept-parameter column, a non-finite
+dose, and two distinct doses within the fitter's matching tolerance (relative 1e-5, which the
+fitter may score against one simulation) are refused.
+
+**Round trip.** The importer detects a dose point by a Condition that sets exactly one
+numeric target. A pinned dose Condition therefore imports as one conditioned experiment per
+dose (a steady-state or single-time experiment) rather than as one scan. The fit is the same
+(checked on the #892 reproduction: `kd = 2`, objective 1.2e-14, natively and after the round
+trip), but the shape differs.

@@ -185,3 +185,70 @@ Two seams moved to make this honest:
   grows, with no importer edit per new method (the ADR-0012 payoff, now bidirectional).
 - See ADR-0019 (parameters), 0023 (observables), 0025 (exporter-first), 0026 (BNGL model),
   0027 (conditions/experiments), 0028 (new-era config), 0031 (objective surface).
+
+## Addendum (2026-09-25): every file under a `*_files` key is read, and the yaml reader refuses what it cannot read (issue #902)
+
+The importer read element `[0]` of each `problem.yaml` table list and nothing else. PEtab v2
+types every `*_files` key as a list, libpetab reads a problem by chaining every listed file's
+rows in list order, and `petab1to2` keeps a v1 problem's several measurement, observable and
+condition files as such a list. So a split problem imported silently as part of itself: the
+rows of the later measurement files were not fitted, and a parameter declared only in a later
+parameter file stayed fixed at its model value. `import_job` now reads every listed file and
+concatenates the rows in list order (`_read_problem_tables`).
+
+An id that names one table entity must then be defined once across the files, exactly where
+libpetab's `lint_problem` reports a duplicate: a `parameterId`, `observableId` or mapping
+`petabEntityId` repeated anywhere, and a `conditionId` or `experimentId` whose rows sit in two
+files (one file legitimately holds several rows of one condition or experiment). Each is a
+`PybnfError` naming the id and the files, not a last-row-wins merge. Measurement rows carry no
+id; a repeated row is a replicate, kept as libpetab keeps it.
+
+The hand-parsed reader stays dependency-free (PyYAML is present only as a transitive dependency
+of dask, and this ADR's reason for the hand parse still holds), but it no longer skips what it
+does not recognize. It reads the one-line flow list (`condition_files: [conditions.tsv]`, which
+it used to read as no condition table at all), quoted items and `#` comments, and it refuses a
+scalar where a list belongs, a flow list continued over several lines, a flow-form
+`model_files` entry, a key the PEtab v2 schema does not define (the v1 `condition_file`
+spelling, say), a key or model given twice, a file listed twice under one key, and a
+`format_version` other than 2. The tests compare the reader's lists with PyYAML's on every
+accepted shape.
+
+## Addendum (2026-09-25): a column-mean sigma is per experiment, on both sides (issue #894)
+
+The directive recovery above says a constant "equal to each observable's column mean" comes
+back as `ave_norm_sos`. The mean it compared against was pooled over every experiment, and the
+exporter wrote that same pooled mean. The fit uses neither. `Objective.evaluate_multiple`
+scores one experiment at a time, and `ColumnMeanSigma` (like the legacy `ave_norm_sos`) takes
+the mean of **that experiment's** observed values, with its replicate files stacked (ADR-0039).
+So when one observable was measured in experiments of different magnitude, the exported
+problem weighted them differently from the fit and had a different optimum. The import then
+matched the pooled constant and restored `ave_norm_sos`, which hid the mismatch.
+
+- **Export.** A `column_mean` sigma (`objective = ave_norm_sos`, or `<family>, <param> =
+  column_mean` on a whole-fit or per-observable `noise_model` line) is written as the fit's
+  number. If every experiment measuring the column has the same mean (always true for one
+  experiment), the noiseFormula is that constant, and the export is unchanged. Otherwise the
+  observable declares a noise placeholder, and each measurement row carries its own
+  experiment's mean in `noiseParameters`. A dose-response scan is one PyBNF experiment, so all
+  of its N PEtab experiments carry the scan's single mean. A sidecar noise token for such a
+  column would bind the same placeholder, so the export refuses that pairing.
+- **Import.** `_ColumnMeans` recovers `column_mean` only when every scored point's sigma
+  (the constant, or the row's rebuilt `_SD` cell) equals the mean of the experiment that
+  point belongs to **in the imported job**. For a time course that experiment is its
+  `(experimentId, modelId)` group with its replicates. For a scan it is the reconstructed
+  scan. The comparison is purely relative (1e-9). The former `max(1, |mean|)` floor let a sigma
+  several times too large "match" for data below 1. Anything that fails the test stays a
+  fixed sigma (`fix_at`, or the per-point `_SD` column), which is always exact. Two PyBNF
+  experiments that PEtab cannot tell apart (two wildtype time courses on one model share
+  experimentId `''`) re-import as one experiment, so their per-row means stay per-point.
+- **`_SD` companions.** The measurement pivot rebuilds an `_SD` column for every column of an
+  experiment in which some row has a numeric `noiseParameters`. The importer now keeps only the
+  companions that a recovered sigma reads. A recovered `column_mean` reads none. An
+  observable that shares an experiment with a per-row sigma got an all-NaN companion, and the
+  fitter refused it as an unmatched column.
+
+Oracles: `test_petab_export.py::TestColumnMeanSigmaIsPerExperiment`, which checks libpetab's
+likelihood of the exported tables against a numpy hand calculation and PyBNF's objective, and
+`test_petab_import.py::TestColumnMeanSigmaImport`, which covers the round trip in every
+experiment shape, a pooled constant, a row off its experiment's mean, and a small-magnitude
+sigma.

@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass
 
 from ..printing import PybnfError
+from ._bngl import _block_lines as bngl_block_lines
 from ._tsv import num, write_tsv
 
 _CONDITION_COLUMNS = ['conditionId', 'targetId', 'targetValue']
@@ -211,6 +212,8 @@ def mutation_target_value(op, val, *, nominal=None, surrogate=None, target=None)
 def _condition_rows_for(cid, perturbations, surrogate, nominal_of, species_id_of=None):
     """The condition rows for one PEtab Condition ``cid`` from its ``perturbations``
     (``[(var, op, val), ...]``), under the problem-global surrogate set ``surrogate``.
+    ``nominal_of(var)`` is already bound to this condition (the builders bind the
+    ``nominal_of(condition, var)`` they take to the condition being emitted -- #897).
 
     The shared per-condition emission of the surrogate-base machinery (ADR-0027), extracted
     so :func:`build_experiment_conditions` (time-course / wildtype),
@@ -268,8 +271,10 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of,
     ``experiments`` is a list of ``(experiment_name, condition_name_or_None)`` in
     declaration order. ``conditions`` maps a condition name to its perturbations
     ``[(var, op, val), ...]`` (``val`` a float). ``fit_params`` is the set of
-    model-parameter names that are *fit*; ``nominal_of(var)`` returns a fixed parameter's
-    numeric nominal (or ``None`` for an expression/unknown).
+    model-parameter names that are *fit*; ``nominal_of(condition, var)`` returns a fixed
+    parameter's numeric nominal in the model ``condition`` belongs to (or ``None`` for an
+    expression/unknown) -- per condition, because two models of a multi-model job may give a
+    same-named fixed parameter different values (#897).
 
     Returns ``(condition_rows, experiment_rows, surrogate_params, experiment_to_id)``:
 
@@ -304,7 +309,7 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of,
     # Each referenced condition, emitted once (deterministic order).
     for c in sorted(referenced):
         condition_rows += _condition_rows_for(
-            f'cond_{c}', conditions[c], surrogate, nominal_of)
+            f'cond_{c}', conditions[c], surrogate, lambda v, c=c: nominal_of(c, v))
 
     # A shared synthesized base condition for wildtype experiments when M is non-empty
     # (they too must re-supply every removed fit param at its base value).
@@ -334,6 +339,122 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of,
     return condition_rows, experiment_rows, surrogate, experiment_to_id
 
 
+# ---------------------------------------------------------------------------
+# Fixed-duration equilibration (#896): the equilibration period's start time
+# ---------------------------------------------------------------------------
+
+def equilibration_period_time(equil_t_end):
+    """The PEtab v2 start time of a pre-equilibration experiment's leading (unmeasured) period.
+
+    ``None`` (no ``equil_t_end:``, the ADR-0052 default) is ``-inf``: equilibrate to steady
+    state. A fixed duration ``T`` is the finite time ``-T``: PEtab v2 runs a period from its
+    start time until the next period starts, and the measured period starts at 0, so the
+    equilibration runs for exactly ``T`` (#896). The exporter has already checked ``T`` is
+    finite and positive (``export._read_experiments``)."""
+    return float('-inf') if equil_t_end is None else -float(equil_t_end)
+
+
+def equil_t_end_from_period_time(time):
+    """The inverse of :func:`equilibration_period_time`: ``-inf`` -> ``None`` (steady state), a
+    finite ``-T < 0`` -> ``T``. The caller checks that the period is followed by one at exactly
+    ``0`` (the measured period); anything else raises ``ValueError``."""
+    if math.isinf(time) and time < 0:
+        return None
+    if math.isfinite(time) and time < 0:
+        return -time
+    raise ValueError(f'not a pre-equilibration period start time: {time!r}')
+
+
+def refuse_measurements_inside_fixed_equilibration(experiment, equil_t_end, times):
+    """Refuse an imported measurement taken during a fixed-duration equilibration period.
+
+    A PEtab v2 experiment can be measured at any time from its first period's start, so a
+    problem whose leading period starts at ``-T`` may carry measurements at times in ``[-T, 0)``,
+    taken while the system equilibrates. PyBNF's ``preequilibrate:`` + ``equil_t_end: T``
+    equilibration is unmeasured, and its measured phase starts at the intervention (``t = 0``),
+    so such a measurement has no PyBNF representation. Imported as it is, it would land on the
+    measured phase's time grid, where bngsim starts integrating at the earliest sample time and
+    so scores every measurement of the experiment late (#896). ``times`` are the experiment's
+    measurement times."""
+    early = sorted({float(t) for t in times if t < 0})
+    if early:
+        raise NotImplementedError(
+            f"Experiment '{experiment}' is measured at time(s) "
+            f"{', '.join(num(t) for t in early)}, inside its fixed-duration equilibration period "
+            f"(time -{num(equil_t_end)} to 0). PyBNF runs that equilibration (preequilibrate: "
+            f"with equil_t_end: {num(equil_t_end)}) unmeasured and measures only from the "
+            f"intervention at time 0, so a measurement taken during the equilibration has no "
+            f"PyBNF representation (#896). Remove those measurement rows to import the rest.")
+
+
+# The BNGL blocks whose expressions can read the simulation time: a function body, an inline
+# rate-law expression, a parameter or compartment-volume expression. Actions (inside or outside a
+# ``begin actions`` block) are simulation directives, not model structure, so they are not read.
+_BNGL_EXPRESSION_BLOCKS = ('parameters', 'functions', 'reaction rules', 'compartments')
+_BNGL_TIME = re.compile(r'\btime\b')
+_BNGL_TFUN_CALL = re.compile(r'\btfun\s*\(')
+# An SBML ``<csymbol>`` for the simulation time (Level 2 and Level 3 share the URL).
+_SBML_TIME_CSYMBOL = re.compile(
+    r'definitionURL\s*=\s*["\']http://www\.sbml\.org/sbml/symbols/time["\']')
+
+
+def _tfun_arguments(text, start):
+    """The top-level comma-separated arguments of the ``tfun(`` call whose ``(`` is at
+    ``start - 1``, or ``None`` when the call is unterminated."""
+    depth, args, current = 0, [], []
+    for ch in text[start:]:
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            if depth == 0:
+                args.append(''.join(current).strip())
+                return args
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            args.append(''.join(current).strip())
+            current = []
+            continue
+        current.append(ch)
+    return None
+
+
+def model_time_reads(text, language):
+    """How a model reads the simulation time, as a list of short descriptions (empty when it
+    does not): what makes it **non-autonomous**, so that shifting its clock changes its result.
+
+    PyBNF runs a fixed-duration equilibration (``equil_t_end: T``) on ``t`` in ``[0, T]`` and
+    restarts the clock at 0 for the measured phase (``pset.py::_append_preequilibration_actions``
+    and the bngsim SBML backend's ``_begin_preequilibration``); a PEtab v2 leading period at
+    ``-T`` runs on ``[-T, 0]``. The two are the same simulation exactly when nothing in the model
+    reads the time (#896), which is what this checks:
+
+    * **BNGL** -- the ``time`` symbol in a parameters, functions, reaction rules, or compartments
+      block (``time()`` in a function or rate law, or the index of a ``tfun(..., time)`` table
+      function), and a lowercase ``tfun`` call with no index at all (bngsim indexes it by time by
+      default). The legacy uppercase ``TFUN(counter, 'file')`` is indexed by an observable, so it
+      is a state read, not a time read.
+    * **SBML** -- a ``<csymbol>`` for time anywhere in the document (a kinetic law, rule,
+      initial assignment, or event trigger).
+    """
+    if language == 'sbml':
+        return ['a <csymbol> for time'] if _SBML_TIME_CSYMBOL.search(text) else []
+    body = '\n'.join(line for block in _BNGL_EXPRESSION_BLOCKS
+                     for line in bngl_block_lines(text, block))
+    reads = []
+    if _BNGL_TIME.search(body):
+        reads.append("the 'time' symbol (time() or a time-indexed tfun)")
+    for m in _BNGL_TFUN_CALL.finditer(body):
+        args = _tfun_arguments(body, m.end())
+        if args is None:
+            continue
+        positional = [a for a in args if '=>' not in a]
+        index_at = 2 if positional and positional[0].startswith('[') else 1
+        if len(positional) <= index_at:
+            reads.append('a tfun table function with no index (indexed by time by default)')
+            break
+    return reads
+
+
 def build_preequilibration_conditions(experiments, conditions, nominal_of,
                                       surrogate=frozenset(), existing_condition_ids=frozenset(),
                                       species_id_of=None):
@@ -344,11 +465,16 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     A pre-equilibration experiment maps to a PEtab v2 **two-period** Experiment (ADR-0052's
     bidirectional rule): a leading ``time = -inf`` period under the pre-equilibration condition
     (equilibrate to steady state, unmeasured) followed by a ``time = 0`` period under the
-    measurement condition (the data grid is measured there). ``experiments`` is a list of
-    ``(name, preequil_cond, measurement_cond_or_None)``; ``conditions`` maps a condition name to
-    its perturbations ``[(var, op, val), ...]``; ``nominal_of(var)`` returns a fixed parameter's
-    numeric nominal (the fit-vs-fixed split a target needs is carried by ``surrogate``, below --
-    a target in ``M`` is a surrogate-handled fit param, the rest are fixed).
+    measurement condition (the data grid is measured there). A **fixed-duration** equilibration
+    (``equil_t_end: T``) leads with a finite ``time = -T`` period instead, so the equilibration
+    runs for exactly ``T`` before the measured period starts at 0 (#896,
+    :func:`equilibration_period_time`). ``experiments`` is a list of
+    ``(name, preequil_cond, measurement_cond_or_None, equil_t_end_or_None)``; ``conditions`` maps a condition name to
+    its perturbations ``[(var, op, val), ...]``; ``nominal_of(condition, var)`` returns a fixed
+    parameter's numeric nominal in the model the condition belongs to, as for
+    :func:`build_experiment_conditions` (the fit-vs-fixed split a target needs is carried by
+    ``surrogate``, below -- a target in ``M`` is a surrogate-handled fit param, the rest are
+    fixed).
 
     ``surrogate`` is the problem-global ``M`` -- the *full* fit-and-perturbed set, already split
     to ``<p>__REF``, including any param a **pre-equilibration** condition itself perturbs (the
@@ -385,7 +511,7 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     v2's "the model as is"), else :data:`WILDTYPE_CONDITION_ID`, which re-pins ``M`` at base.
     """
     referenced = set()
-    for _name, pre, meas in experiments:
+    for _name, pre, meas, _equil in experiments:
         if conditions[pre]:
             referenced.add(pre)
         if meas is not None:
@@ -401,15 +527,17 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
         cid = f'cond_{c}'
         if cid in emitted:
             continue
-        condition_rows += _condition_rows_for(cid, conditions[c], surrogate, nominal_of,
+        condition_rows += _condition_rows_for(cid, conditions[c], surrogate,
+                                              lambda v, c=c: nominal_of(c, v),
                                               species_id_of=species_id_of)
         emitted.add(cid)
 
     # A wash-out (no measurement condition) with a non-empty M re-pins M at base on its time=0
     # measurement period via the synthesized base condition cond_wildtype (the same base
     # build_experiment_conditions pins for wildtype time courses) -- emitted once, shared (#443).
-    # A `none` pre-equilibration re-pins M on its -inf period the same way (#906).
-    has_washout = any(meas is None or not conditions[pre] for _name, pre, meas in experiments)
+    # A `none` pre-equilibration re-pins M on its equilibration period the same way (#906).
+    has_washout = any(meas is None or not conditions[pre]
+                      for _name, pre, meas, _equil in experiments)
     if surrogate and has_washout:
         if WILDTYPE_CONDITION_ID in {f'cond_{c}' for c in referenced}:
             raise PybnfError(
@@ -424,17 +552,19 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
 
     experiment_rows = []
     experiment_to_id = {}
-    for name, pre, meas in experiments:
+    for name, pre, meas, equil_t_end in experiments:
         experiment_to_id[name] = name
-        # Period 0: the -inf pre-equilibration period (steady state, unmeasured). A `none`
-        # condition is the model as is: blank, or the M re-pin cond_wildtype (#906).
+        # Period 0: the unmeasured pre-equilibration period -- -inf (steady state), or -T for a
+        # fixed equil_t_end: T (#896). A `none` condition is the model as is: blank, or the M
+        # re-pin cond_wildtype (#906).
         if conditions[pre]:
             pre_cid = f'cond_{pre}'
         elif surrogate:
             pre_cid = WILDTYPE_CONDITION_ID
         else:
             pre_cid = ''
-        experiment_rows.append(PetabExperimentRow(name, float('-inf'), pre_cid))
+        experiment_rows.append(PetabExperimentRow(
+            name, equilibration_period_time(equil_t_end), pre_cid))
         # Period 1: the time=0 measurement period. A measurement condition -> its cond id; a
         # wash-out -> the synthesized base cond_wildtype when M is non-empty (re-pin M at base),
         # else an empty conditionId (M empty -> the model default).
@@ -448,14 +578,24 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     return condition_rows, experiment_rows, experiment_to_id
 
 
-def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
+def build_dose_response_conditions(stem, swept_param, dose_values, scan_time,
+                                   surrogate=frozenset()):
     """Build the conditions/experiments for a dose-response Parameter Scan.
 
-    Each measured dose (a ``.exp`` column-0 cell) becomes its own Condition setting the
+    Each dose of the exported dose axis ``dose_values`` becomes its own Condition setting the
     swept parameter and a single-period Experiment at ``time=0`` (the dose is an initial
-    condition; the measurement occurs later, at ``scan_time``). Returns
-    ``(condition_rows, experiment_rows, experiment_ids)`` where ``experiment_ids[i]`` is
-    the experimentId for dose row ``i`` (for tagging that row's measurements).
+    condition; the measurement occurs later, at ``scan_time``). ``dose_values`` is the axis the
+    fitter scans -- the sorted union of every replicate's doses (#895), built by the exporter --
+    not one data file's rows. Returns ``(condition_rows, experiment_rows, experiment_ids)`` where
+    ``experiment_ids[i]`` is the experimentId for ``dose_values[i]``; the exporter keys each data
+    row to the id of that row's own dose.
+
+    ``surrogate`` is the problem-global surrogate set M (ADR-0027). Its parameters are out of the
+    parameter table, so every simulation must re-supply them: each per-dose Condition therefore
+    also pins ``p = p__REF`` for every ``p`` in M, exactly as the time-course, wildtype and
+    pre-equilibration builders do (#892). Without the pin a PEtab tool simulates every dose at
+    ``p``'s model-file value instead of its estimate. The swept parameter is never pinned: the
+    dose sets it, as the fitter's scan does.
     """
     condition_rows = []
     experiment_rows = []
@@ -464,6 +604,8 @@ def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
         eid = f'{stem}_{i}'
         cid = f'cond_{eid}'
         condition_rows.append(PetabConditionRow(cid, swept_param, num(dose)))
+        condition_rows.extend(PetabConditionRow(cid, p, surrogate_name(p))
+                              for p in sorted(surrogate) if p != swept_param)
         experiment_rows.append(PetabExperimentRow(eid, 0.0, cid))
         experiment_ids.append(eid)
     return condition_rows, experiment_rows, experiment_ids
@@ -471,7 +613,8 @@ def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
 
 def build_preequilibrated_dose_response_conditions(experiments, conditions, nominal_of,
                                                    species_id_of=None,
-                                                   existing_condition_ids=frozenset()):
+                                                   existing_condition_ids=frozenset(),
+                                                   surrogate=frozenset()):
     """Build the conditions/experiments for **pre-equilibrated dose-response** experiments -- the
     preincubate -> wash -> dose-scan protocol (#477; ADR-0062), the combination of ADR-0052's
     two-period pre-equilibration and ADR-0046's dose-response scan.
@@ -489,13 +632,30 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
     :func:`~pybnf.petab.measurements.dose_response_measurement_rows` pivots them unchanged.
 
     ``experiments`` is a list of ``(name, preequilibrate_cond, wash_cond_or_None, swept_param,
-    dose_values, scan_time)`` in declaration order. This shape requires an **empty surrogate set
-    M** (the exporter refuses a fit-and-perturbed parameter in a pre-equilibration/wash/dose
-    condition of a pre-equilibrated scan -- the surrogate split x multi-condition dose period is a
-    deferred combination), so each shared condition is emitted with the fixed-parameter / species
-    machinery only (``surrogate=frozenset()``). ``species_id_of`` (``{pattern: petab_id}``) maps a
+    dose_values, scan_time, equil_t_end_or_None)`` in declaration order; ``dose_values`` is the
+    exported dose axis (the sorted union of the replicates' doses, #895), and a fixed-duration
+    equilibration (``equil_t_end: T``) leads each dose's experiment with a ``time = -T`` period in
+    place of ``-inf`` (#896, :func:`equilibration_period_time`). ``species_id_of``
+    (``{pattern: petab_id}``) maps a
     species pattern to its mapping-table id; ``existing_condition_ids`` dedups a pre-equilibration
     or wash condition already emitted by another experiment shape.
+
+    ``surrogate`` is the problem-global surrogate set M (ADR-0027, #892). Its parameters are out of
+    the parameter table, so the simulation must be given them before it starts. The
+    pre-equilibration condition is emitted through :func:`_condition_rows_for`, so the ``-inf``
+    period sets every ``p`` in M: its own value where the condition perturbs ``p``, else the base
+    pin ``p = p__REF``. A later period keeps a value it does not change. That is PEtab v2's rule
+    (a period's changes persist; libpetab turns them into SBML events), and it is PyBNF's too: the
+    fitter applies the pre-equilibration condition as an inline ``setParameter`` and never undoes it,
+    so a fit parameter the pre-equilibration condition sets keeps that value through the scan. So
+    a wash-free measurement period carries only the per-dose condition. A synthesized base there
+    would re-pin such a parameter to its estimate, which the fit does not do. A wash condition is
+    emitted through :func:`_condition_rows_for` as well, so it also re-pins M. That is harmless
+    for a parameter the pre-equilibration left at its base, and wrong for one it set: the
+    orchestrator refuses the latter, and a swept parameter in M, whose pin would collide with the
+    dose. The per-dose condition sets only the swept parameter. PEtab v2 forbids two conditions of
+    one period from sharing a target (``CheckValidConditionTargets``), so it cannot carry the
+    wash's pins as well.
 
     Returns ``(condition_rows, experiment_rows, experiment_ids_by_name)`` where
     ``experiment_ids_by_name[name]`` is the ordered ``[<stem>_0, <stem>_1, ...]`` list (aligned
@@ -507,28 +667,49 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
     experiment_ids_by_name = {}
 
     # The shared pre-equilibration + wash conditions, each emitted once across the whole job. A
-    # `perturbations: none` pre-equilibration (#906, ADR-0150) has no rows: its -inf period is
-    # blank, PEtab v2's "the model as is" (M is empty for this shape, so nothing to re-pin).
-    for _name, pre, wash, _sp, _dv, _st in experiments:
+    # condition shared with another shape was already emitted under the same problem-global M.
+    # A `perturbations: none` pre-equilibration (#906, ADR-0150) has no rows of its own: its
+    # equilibration period is the model as is -- blank, or, when M is non-empty, the base
+    # condition cond_wildtype, which pins all of M at base and so sets M before the simulation
+    # starts, as any other pre-equilibration condition here does.
+    for _name, pre, wash, _sp, _dv, _st, _equil in experiments:
         for c in (pre, wash):
             if c is None or not conditions[c]:
                 continue
             cid = f'cond_{c}'
             if cid in emitted:
                 continue
-            condition_rows += _condition_rows_for(cid, conditions[c], frozenset(), nominal_of,
+            condition_rows += _condition_rows_for(cid, conditions[c], surrogate,
+                                                  lambda v, c=c: nominal_of(c, v),
                                                   species_id_of=species_id_of)
             emitted.add(cid)
+    base_cid = ''
+    if surrogate and any(not conditions[pre] for _n, pre, *_rest in experiments):
+        base_cid = WILDTYPE_CONDITION_ID
+        if any(f'cond_{c}' == WILDTYPE_CONDITION_ID for _n, pre, wash, *_rest in experiments
+               for c in (pre, wash) if c is not None and conditions[c]):
+            raise PybnfError(
+                "A condition named 'wildtype' clashes with the synthesized base condition the "
+                "exporter uses to re-pin fit-and-perturbed parameters on a `perturbations: "
+                "none` equilibration period. Rename the 'wildtype' condition.")
+        if WILDTYPE_CONDITION_ID not in emitted:
+            condition_rows.extend(
+                PetabConditionRow(WILDTYPE_CONDITION_ID, p, surrogate_name(p))
+                for p in sorted(surrogate))
+            emitted.add(WILDTYPE_CONDITION_ID)
 
-    for name, pre, wash, swept_param, dose_values, _scan_time in experiments:
+    for name, pre, wash, swept_param, dose_values, _scan_time, equil_t_end in experiments:
         eids = []
         for i, dose in enumerate(dose_values):
             eid = f'{name}_{i}'
             dose_cid = f'cond_{eid}'
             condition_rows.append(PetabConditionRow(dose_cid, swept_param, num(dose)))
-            # Period 0: the -inf steady-state pre-equilibration period (unmeasured).
+            # Period 0: the unmeasured pre-equilibration period -- -inf (steady state), or -T for
+            # a fixed equil_t_end: T (#896). Its condition sets all of M, and those values persist
+            # into the measurement period.
             experiment_rows.append(PetabExperimentRow(
-                eid, float('-inf'), f'cond_{pre}' if conditions[pre] else ''))
+                eid, equilibration_period_time(equil_t_end),
+                f'cond_{pre}' if conditions[pre] else base_cid))
             # Period 1: the measurement period -- the shared wash condition (if any) plus the
             # per-dose swept-parameter condition, applied simultaneously (disjoint targets).
             if wash is not None and conditions[wash]:

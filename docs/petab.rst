@@ -45,7 +45,14 @@ Then run the emitted configuration with the ``pybnf`` command line::
   pybnf -c imported/imported_de.conf
 
 The *problem* — parameters and priors, observables and noise, measurements, and
-conditions/experiments — is recovered exactly. The *run recipe* is supplied by the
+conditions/experiments — is recovered exactly. A table split over several files (more
+than one entry under a ``*_files`` key of ``problem.yaml``) is read in full: the files
+are concatenated in list order, as libpetab reads them, and an id defined in two places
+(a parameter, observable, condition, experiment, or mapping id) is refused with an error
+naming the id and the files. ``problem.yaml`` is read without a YAML library; it accepts
+indented or column-0 ``- file`` lists and the one-line ``[a.tsv, b.tsv]`` form, and any
+other shape (a single file name where a list belongs, a key PEtab v2 does not define, a
+key given twice) is refused rather than skipped. The *run recipe* is supplied by the
 caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 ``imported_<job_type>.conf`` per registered optimizer and sampler), ``method``
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``
@@ -120,7 +127,11 @@ following all survive an import and an export:
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by
-  measurement row.
+  measurement row. A column-mean sigma (``ave_norm_sos`` or ``column_mean``) is the
+  mean of each experiment's own data. When an observable's experiments have different
+  means, each measurement row carries its own experiment's mean in
+  ``noiseParameters``. The import restores ``column_mean`` only when every value
+  equals its experiment's mean.
 - **Observable and noise parameters** — a constant-per-observable
   ``observableParameters`` scale/offset is substituted in, and the Boehm-style
   ``sd_*`` pattern (a parameter id in the ``noiseParameters`` column, e.g.
@@ -136,7 +147,16 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such.
+  **pre-equilibration** phase round-trips as such. An equilibration to steady state is a
+  leading period at time ``-inf``; a fixed-duration one (``equil_t_end: T``) is a leading
+  period at time ``-T``. The fixed-duration form is refused for a model that reads the
+  simulation time, because PEtab runs that period from ``-T`` to 0 while PyBNF runs it from 0
+  to ``T``. An exported dose-response whose
+  conditions also pin a fit-and-perturbed parameter (``p = p__REF``) comes back as
+  one conditioned experiment per dose instead. For a steady-state scan the fit is
+  the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)
+  scan of that kind does not yet load after re-import: each dose becomes a time
+  course with a single measurement time, which the simulator refuses.
 - **Equilibrating the model as is** — a ``time = -inf`` period with a blank
   ``conditionId`` (PEtab v2's "the model as is") imports as ``preequilibrate:`` a
   synthesized ``condition: unperturbed, perturbations: none`` (``unperturbed_2``, … when

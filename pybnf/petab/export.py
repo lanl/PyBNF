@@ -58,13 +58,15 @@ code, not silent): an objective PEtab cannot represent (``neg_bin*`` -- removed 
 ``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a ``u``-flagged
 Uniform, whose box seeds the draw without constraining the search (#736); a ``time_error``
 measurement-time marginalization, whose latent sampling time a PEtab measurement row's single
-exact ``time`` cannot carry (#738); a ``.con``/``.prop``
-Constraint; an Antimony (``.ant``) model. The
+exact ``time`` cannot carry (#738); a fixed-duration equilibration (``equil_t_end:``) on a
+model that reads the simulation time, whose clock a PEtab period cannot restart (#896); a
+``.con``/``.prop`` Constraint; an Antimony (``.ant``) model. The
 oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
 ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
 """
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,6 +90,7 @@ from .conditions import (
     build_preequilibrated_dose_response_conditions,
     build_preequilibration_conditions,
     is_species_target,
+    model_time_reads,
     species_target_id,
     surrogate_name,
     write_condition_table,
@@ -95,6 +98,7 @@ from .conditions import (
     write_mapping_table,
 )
 from ._measurement_params import measurement_params_for_replicate, read_measurement_params
+from ._tsv import num
 from .formula import bngl_body_to_petab_math
 from .measurements import (
     dose_response_measurement_rows,
@@ -318,8 +322,9 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     :func:`~pybnf.petab.conditions.build_experiment_conditions`): a fit-and-perturbed
     parameter is renamed to ``<p>__REF`` in the parameter table and pinned in every
     experiment's Condition. A **parameter-scan** (dose-response) experiment takes the
-    dual shape (ADR-0046): each dose of its swept-axis ``.exp`` becomes a Condition
-    setting the swept parameter + an Experiment, measured at the scan time (``inf`` for the
+    dual shape (ADR-0046): each dose of its dose axis (the sorted union of its replicates'
+    doses, #895) becomes a Condition setting the swept parameter (and re-pinning M, #892) + an
+    Experiment, measured at the scan time (``inf`` for the
     steady-state default => PEtab time=inf, or a finite ``t_end:``), via
     :func:`~pybnf.petab.conditions.build_dose_response_conditions` +
     :func:`~pybnf.petab.measurements.dose_response_measurement_rows`. With no referenced
@@ -328,7 +333,8 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
 
     A **pre-equilibration** experiment (``preequilibrate:``, ADR-0052) takes a third shape: a
     two-period Experiment (a ``time = -inf`` steady-state period under the pre-equilibration
-    condition + a ``time = 0`` period under the measurement condition), built by
+    condition -- or a ``time = -T`` period for a fixed-duration ``equil_t_end: T``, #896 -- + a
+    ``time = 0`` period under the measurement condition), built by
     :func:`~pybnf.petab.conditions.build_preequilibration_conditions`. Its measurements are
     tagged exactly like a time course's (the data grid at times >= 0; the equilibration period
     carries no measurements).
@@ -352,8 +358,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     _apply_observable_overrides(all_datas, overrides)
 
     measurement_models = _read_measurement_models(conf)
-    observable_rows, column_to_observable_id = _observable_rows(
+    observable_rows, column_to_observable_id, column_means = _observable_rows(
         experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
+
+    def _noise_values_for(exp):
+        # A column-mean sigma that differs between experiments (#894) is written row by row:
+        # every measurement row of this experiment carries this experiment's own mean.
+        return {col: means[exp['name']] for col, means in column_means.items()
+                if exp['name'] in means}
 
     # Four PEtab experiment shapes (ADR-0046/0052/0062): a time course is one Experiment over a
     # referenced Condition; a dose-response (parameter_scan) is N Conditions (each sets the swept
@@ -373,8 +385,10 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                       if exp['type'] == 'time_course' and exp['preequilibrate'] is None]
     dr_experiments = [exp for exp in experiments
                       if exp['type'] == 'parameter_scan' and exp['preequilibrate'] is None]
+    _refuse_fixed_equilibration_of_time_dependent_models(pe_experiments + pdr_experiments,
+                                                         registry)
 
-    conditions = _read_conditions(conf, models, registry)
+    conditions, condition_models = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in tc_experiments if exp['condition'] is not None}
     # A pre-equilibration / pre-equilibrated-scan experiment references its pre-equilibration
     # condition AND (optionally) its measurement (wash) condition NOT via the time-course
@@ -389,6 +403,20 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         raise PybnfError(
             f"Experiment(s) reference undefined condition(s) {sorted(undefined)}; define "
             f"each with a 'condition:' line.")
+    # A condition belongs to one model (ADR-0041 addendum), and the fitter looks an experiment's
+    # conditions up on the experiment's OWN model only (config.py::_resolve_experiment_data_key /
+    # _preequilibration_perturbations), so an experiment applying another model's condition is a
+    # job the fitter refuses. Refuse it here too: the condition's model is what its fixed-target
+    # relative ops are computed against (#897), so there is no single right base otherwise.
+    for exp in experiments:
+        for c in (exp['condition'], exp['preequilibrate']):
+            if c is not None and c in condition_models and condition_models[c] != exp['model']:
+                raise PybnfError(
+                    f"Experiment '{exp['name']}' simulates model '{exp['model']}' but applies "
+                    f"condition '{c}', which belongs to model '{condition_models[c]}'. A "
+                    f"condition perturbs only the model it names (ADR-0041); declare the "
+                    f"condition for '{exp['model']}' or apply it to an experiment on that model.")
+    nominal_of = _condition_nominal_of(registry, condition_models)
     # A species-target condition (setConcentration -- a wash/bolus, ADR-0062) exports to a PEtab v2
     # condition whose target is a species *amount*: a BNGL pattern is not a valid PEtab id, so each
     # referenced species pattern is aliased to a synthesized ``species_<...>`` id via the mapping
@@ -418,12 +446,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                      sorted(unused))
 
     # The surrogate set M (ADR-0027) is problem-global: removing a fit-and-perturbed param from
-    # the parameter table makes its model name a pure condition target, so EVERY condition in
-    # EVERY experiment shape must re-pin it. A pre-equilibration condition that perturbs a fit
-    # param therefore contributes to M too (#443); thread that contribution into the time-course
-    # builder's M via extra_surrogate, so the time-course/wildtype conditions re-pin it as well.
+    # the parameter table makes its model name a pure condition target, so EVERY experiment of
+    # EVERY shape must set it before its simulation starts -- the time-course, wildtype,
+    # pre-equilibration, dose-response and pre-equilibrated dose-response conditions alike (#443,
+    # #892). A pre-equilibration or pre-equilibrated-scan condition that perturbs a fit param
+    # therefore contributes to M too; thread that contribution into the time-course builder's M
+    # via extra_surrogate, so every builder below pins the same M.
     pe_surrogate = {
-        var for exp in pe_experiments
+        var for exp in pe_experiments + pdr_experiments
         for c in ([exp['preequilibrate']]
                   + ([exp['condition']] if exp['condition'] is not None else []))
         for var, _op, _val in conditions[c] if var in fit_model_params}
@@ -431,21 +461,22 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
         build_experiment_conditions(
             [(exp['name'], exp['condition']) for exp in tc_experiments],
-            conditions, fit_model_params, lambda v: _nominal_of(registry, v),
+            conditions, fit_model_params, nominal_of,
             extra_surrogate=pe_surrogate)
 
     # Pre-equilibration experiments -> two-period Experiments (ADR-0052): a -inf steady-state
-    # period under the pre-equilibration condition + a time=0 period under the measurement
-    # condition. They share the problem-global M (every period re-pins M -- #443): a
-    # fit-parameter perturbation in a pre-equilibration period emits its surrogate op and every
-    # other period re-pins the base; a wash-out re-pins M via the synthesized cond_wildtype base.
+    # period (or a -T period for a fixed equil_t_end: T, #896) under the pre-equilibration
+    # condition + a time=0 period under the measurement condition. They share the
+    # problem-global M (every period re-pins M -- #443): a fit-parameter perturbation in a
+    # pre-equilibration period emits its surrogate op and every other period re-pins the base;
+    # a wash-out re-pins M via the synthesized cond_wildtype base.
     # existing_condition_ids dedups a condition shared with a time course and the wildtype base.
     if pe_experiments:
         pe_condition_rows, pe_experiment_rows, pe_experiment_to_id = \
             build_preequilibration_conditions(
-                [(exp['name'], exp['preequilibrate'], exp['condition'])
+                [(exp['name'], exp['preequilibrate'], exp['condition'], exp['equil_t_end'])
                  for exp in pe_experiments],
-                conditions, lambda v: _nominal_of(registry, v),
+                conditions, nominal_of,
                 surrogate=surrogate_params,
                 existing_condition_ids={r.condition_id for r in condition_rows},
                 species_id_of=species_id_of)
@@ -454,43 +485,34 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         experiment_to_id.update(pe_experiment_to_id)
 
     # Pre-equilibrated dose-response experiments (ADR-0062): N two-period Experiments per scan, a
-    # -inf pre-equilibration period + a measurement period applying the shared wash condition and a
-    # per-dose swept-parameter condition. The surrogate split (a fit-and-perturbed parameter) is not
-    # yet combined with this multi-condition dose-period shape, so the shape requires an EMPTY M --
-    # neither the pre-equilibrated scans' own conditions nor any other experiment may fit-and-perturb
-    # a parameter. Refuse the combination with a clear boundary rather than emit an under-pinned
-    # problem.
+    # -inf (or -equil_t_end, #896) pre-equilibration period + a measurement period applying the
+    # shared wash condition and a per-dose swept-parameter condition. They share the
+    # problem-global M (#892): the pre-equilibration condition sets all of M in its leading
+    # period, and PEtab v2, like the fitter, carries those values into the measurement period. A
+    # wash condition re-pins M as every other condition does, and _refuse_wash_re_pins refuses
+    # the cases where that re-pin is wrong.
     if pdr_experiments:
-        pdr_fit_perturbed = sorted(
-            var for exp in pdr_experiments
-            for c in ([exp['preequilibrate']]
-                      + ([exp['condition']] if exp['condition'] is not None else []))
-            for var, _op, _val in conditions[c] if var in fit_model_params)
-        if surrogate_params or pdr_fit_perturbed:
-            raise NotImplementedError(
-                "A pre-equilibrated dose-response export (ADR-0062) requires that no parameter is "
-                "both fit and perturbed by a condition (an empty surrogate set M): the surrogate "
-                f"split is not yet combined with the multi-condition dose period. Offending fit "
-                f"parameters: {sorted(set(surrogate_params) | set(pdr_fit_perturbed))}. Run the "
-                "job natively, or keep the pre-equilibration/wash conditions to fixed parameters "
-                "and species amounts.")
+        _refuse_wash_re_pins(pdr_experiments, conditions, surrogate_params)
         pdr_condition_rows, pdr_experiment_rows, pdr_ids_by_name = \
             build_preequilibrated_dose_response_conditions(
                 [(exp['name'], exp['preequilibrate'], exp['condition'],
-                  _swept_param(exp), _dose_values(exp), exp['scan_time'])
+                  _swept_param(exp), _dose_axis(exp), exp['scan_time'], exp['equil_t_end'])
                  for exp in pdr_experiments],
-                conditions, lambda v: _nominal_of(registry, v),
+                conditions, nominal_of,
                 species_id_of=species_id_of,
-                existing_condition_ids={r.condition_id for r in condition_rows})
+                existing_condition_ids={r.condition_id for r in condition_rows},
+                surrogate=surrogate_params)
         condition_rows += pdr_condition_rows
         experiment_rows += pdr_experiment_rows
 
     # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
-    # data column (the read_exp_file placeholder source); a fixed / column-mean / formula sigma
-    # is carried inline in noiseFormula, so the measurement export must not read _SD then (it
-    # would leave a noiseParameters override with no placeholder to bind to). With per-observable
-    # overrides the suffix is **per column** (ADR-0045): each column uses its own sigma source
-    # (its override, else the whole-fit base) to decide whether it reads a _SD companion.
+    # data column (the read_exp_file placeholder source) or is a column mean that differs
+    # between experiments (_noise_values_for above, #894); a fixed / single-mean column-mean /
+    # formula sigma is carried inline in noiseFormula, so the measurement export must not read
+    # _SD then (it would leave a noiseParameters override with no placeholder to bind to).
+    # With per-observable overrides the suffix is **per column** (ADR-0045): each column uses
+    # its own sigma source (its override, else the whole-fit base) to decide whether it reads
+    # a _SD companion.
     def _sd_suffix_for(col):
         _dist, verb, arg = per_obs_noise.get(col, noise)
         return arg if verb == 'read_exp_file' else None
@@ -516,40 +538,54 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             measurement_rows += measurement_rows_from_data(
                 data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id,
                 measurement_params=measurement_params_for_replicate(
-                    exp['measurement_params'], replicate))
+                    exp['measurement_params'], replicate),
+                noise_values=_noise_values_for(exp))
 
-    # Dose-response (ADR-0046): each dose row of the swept-axis .exp becomes its own Condition
-    # (setting the swept parameter) + Experiment, and the observable columns become measurements
-    # at the scan time (inf => steady state). The swept-parameter column (the data's indvar) is
-    # the scan axis, not a measurement, so it is dropped from the column map.
+    # Dose-response (ADR-0046): each dose of the experiment's dose axis -- the sorted union of its
+    # replicates' doses, the grid the fitter scans (#895) -- becomes its own Condition (setting the
+    # swept parameter, and re-pinning M, #892) + Experiment, and the observable columns become
+    # measurements at the scan time (inf => steady state). Each data row is tagged with the
+    # experiment of its OWN dose, never by its row position, so a replicate whose doses are
+    # reordered, missing or extra pairs every measurement with the dose it was taken at, as the
+    # fitter does. The swept-parameter column is the scan axis, not a measurement, so it is
+    # dropped from the column map.
     for exp in dr_experiments:
         stem = exp['name']
         model_id = Path(exp['model']).stem if multi_model else ''
         scan_time = exp['scan_time']
         swept_param = _swept_param(exp)
+        dose_axis = _dose_axis(exp)
         dr_conditions, dr_experiment_rows, experiment_ids = build_dose_response_conditions(
-            stem, swept_param, _dose_values(exp), scan_time)
+            stem, swept_param, dose_axis, scan_time, surrogate=surrogate_params)
         condition_rows += dr_conditions
         experiment_rows += dr_experiment_rows
+        experiment_id_of_dose = dict(zip(dose_axis, experiment_ids))
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items()
                     if c in data.cols and c != swept_param}
+            # A column-mean sigma is the whole scan's mean, not a per-dose one: the scan is
+            # ONE PyBNF experiment however many PEtab experiments its doses become (#894).
             measurement_rows += dose_response_measurement_rows(
-                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id)
+                data, cmap, swept_param, experiment_id_of_dose, scan_time,
+                sd_suffix=sd_suffix, model_id=model_id,
+                noise_values=_noise_values_for(exp))
 
     # Pre-equilibrated dose-response measurements (ADR-0062): tagged <stem>_<i> at the scan time,
-    # exactly like a plain dose-response, so the same pivot applies. The per-experiment experiment
-    # ids come from the builder above; the swept-parameter column is the scan axis, not a measurement.
+    # exactly like a plain dose-response, so the same pivot applies -- each row by its own dose
+    # (#895). The per-experiment experiment ids come from the builder above, aligned with the same
+    # dose axis; the swept-parameter column is the scan axis, not a measurement.
     for exp in pdr_experiments:
         model_id = Path(exp['model']).stem if multi_model else ''
         scan_time = exp['scan_time']
         swept_param = _swept_param(exp)
-        experiment_ids = pdr_ids_by_name[exp['name']]
+        experiment_id_of_dose = dict(zip(_dose_axis(exp), pdr_ids_by_name[exp['name']]))
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items()
                     if c in data.cols and c != swept_param}
             measurement_rows += dose_response_measurement_rows(
-                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id)
+                data, cmap, swept_param, experiment_id_of_dose, scan_time,
+                sd_suffix=sd_suffix, model_id=model_id,
+                noise_values=_noise_values_for(exp))
 
     # The species-amount mapping table (ADR-0062): one row per referenced species pattern, in
     # first-appearance order (petabEntityId -> the BNGL pattern). Empty for a job with no species
@@ -564,10 +600,12 @@ def _read_experiments(conf, conf_path, models):
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
     mf?, 'type': t?, 'method': m?, 't_end': t?, 'preequilibrate': p?, 'measurement_params':
-    mp?}``. ``models`` is the ordered list of the job's model files. Returns a list (declaration
-    order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data, ...], 'type',
-    'scan_time', 'preequilibrate': cond?, 'measurement_params': table?}`` -- the ``data:`` files
-    read as individual
+    mp?, 'equil_t_end': T?}``. ``models`` is the ordered list of the job's model files. Returns a
+    list (declaration order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data,
+    ...], 'data_files': [str, ...], 'type', 'scan_time', 'preequilibrate': cond?,
+    'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed equilibration duration,
+    :func:`_equil_t_end`) -- the ``data:`` files (``data_files``, as written in the conf, for
+    error messages) read as individual
     :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
     rows, so they are not pre-stacked), each experiment's resolved model
     (:func:`_resolve_experiment_model`, ADR-0041), the inferred ``type`` (``'time_course'`` or
@@ -645,10 +683,61 @@ def _read_experiments(conf, conf_path, models):
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': condition,
-                            'model': model_file, 'datas': datas, 'type': exp_type,
+                            'model': model_file, 'datas': datas, 'data_files': list(data_files),
+                            'type': exp_type,
                             'scan_time': scan_time, 'preequilibrate': preequilibrate,
-                            'measurement_params': measurement_params})
+                            'measurement_params': measurement_params,
+                            'equil_t_end': _equil_t_end(name, fields, preequilibrate)})
     return experiments
+
+
+def _equil_t_end(name, fields, preequilibrate):
+    """An experiment's fixed equilibration duration (``equil_t_end:``) as a float, or ``None``.
+
+    The fitter runs a ``preequilibrate:`` experiment's unmeasured phase for exactly this long
+    instead of to steady state (``config.py::_build_preequilibration_action`` ->
+    ``pset.py::_append_preequilibration_actions``), so it exports as a leading PEtab period at
+    ``time = -equil_t_end`` rather than ``-inf`` (#896). That period is distinct from the
+    measured one at 0 only for a finite, positive duration: a zero duration would start the two
+    periods at the same time (PEtab would apply both conditions at once), and a negative or
+    infinite one is no duration at all -- each is refused with the experiment named. Without
+    ``preequilibrate:`` the fitter never reads the field, so neither does the export."""
+    raw = fields.get('equil_t_end')
+    if raw is None or preequilibrate is None:
+        return None
+    t = float(raw)
+    if not (math.isfinite(t) and t > 0):
+        raise PybnfError(
+            f"Experiment '{name}' sets equil_t_end: {raw}, but a fixed equilibration duration must "
+            f"be a finite positive time. Omit equil_t_end to equilibrate to steady state, or give "
+            f"the duration of the unmeasured equilibration phase.")
+    return t
+
+
+def _refuse_fixed_equilibration_of_time_dependent_models(experiments, registry):
+    """Refuse a fixed-duration equilibration (``equil_t_end: T``) on a model that reads time.
+
+    The exported leading period runs on ``t`` in ``[-T, 0]`` (PEtab v2: a period lasts from its
+    start time to the next period's), but the fitter runs the same phase on ``[0, T]`` and
+    restarts the clock at 0 for the measured phase. For an autonomous model the two are the same
+    simulation; for one whose rates, functions, or events read the time they are not, and PEtab
+    v2 has no way to restart the clock between periods, so there is no exact representation
+    (#896). ``experiments`` are the pre-equilibration / pre-equilibrated-scan experiment dicts."""
+    for exp in experiments:
+        if exp['equil_t_end'] is None:
+            continue
+        model_file = exp['model']
+        reads = model_time_reads(registry[model_file].text, _model_language(model_file))
+        if reads:
+            raise NotImplementedError(
+                f"Experiment '{exp['name']}' equilibrates for a fixed duration "
+                f"(equil_t_end: {num(exp['equil_t_end'])}) on model '{model_file}', which reads "
+                f"the simulation time ({'; '.join(reads)}). PyBNF runs that equilibration from "
+                f"t = 0 to t = {num(exp['equil_t_end'])} and restarts the clock at 0 for the "
+                f"measured phase, but a PEtab v2 equilibration period runs from "
+                f"t = -{num(exp['equil_t_end'])} to 0, so the model sees different times and the "
+                f"exported problem would not reproduce the fit. Run the job natively, or export "
+                f"it with a model that does not read time (#896).")
 
 
 def _resolve_experiment_model(name, ref, models, stem_to_model):
@@ -748,25 +837,44 @@ def _read_conditions(conf, models, registry):
 
     Each ``('condition', name)`` entry is ``(model_ref_or_None, [(var, op, val_str), ...])``
     (a named set of parameter perturbations -- a PyBNF Mutant = a PEtab Condition). Returns
-    ``{condition_name: [(var, op, float(val)), ...]}``. A PEtab condition is model-agnostic
-    (no modelId column; ADR-0041), so a perturbation target must be a parameter / compartment
-    of **some** model in the job (the union); an explicit ``model:`` ref, when given, must
-    name a declared model. The single-model job validates against its one model exactly as
-    before."""
-    union_params = set().union(*(set(v.parameters) for v in registry.values()))
-    union_comparts = set().union(*(set(v.compartment_names) for v in registry.values()))
+    ``(conditions, condition_models)``: ``conditions`` is ``{condition_name: [(var, op,
+    float(val)), ...]}`` and ``condition_models`` is ``{condition_name: model_file}``, the one
+    model the condition belongs to.
+
+    A PEtab condition is model-agnostic (no modelId column; ADR-0041), but a PyBNF condition
+    belongs to exactly one model (ADR-0041 addendum): its ``model:`` ref, or the sole model of
+    a single-model job. The fitter attaches the condition to that model only and reads a fixed
+    target's base value from it (``bngsim_model/expressions.py::_nominal_param_value``), so the
+    exporter resolves the same model here -- a multi-model condition with no ``model:`` ref is
+    refused exactly as ``config.py::_load_conditions`` refuses it -- and validates each
+    perturbation target against **that** model's parameters / compartments. Two models may
+    give a fixed parameter of the same name different values, so the model a relative op is
+    computed against matters (#897). The single-model job validates against its one model
+    exactly as before."""
     stem_to_model = {Path(mf).stem: mf for mf in models}
     conditions = {}
+    condition_models = {}
     for key, value in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'condition'):
             continue
         name = key[1]
         model_ref, perts = value
-        if model_ref is not None and Path(model_ref).stem not in stem_to_model:
+        if model_ref is not None:
+            if Path(model_ref).stem not in stem_to_model:
+                raise PybnfError(
+                    f"Condition '{name}' is declared for model '{model_ref}', but the job "
+                    f"declares no model with id '{Path(model_ref).stem}' (declared model ids: "
+                    f"{sorted(stem_to_model)}).")
+            model_file = stem_to_model[Path(model_ref).stem]
+        elif len(models) == 1:
+            model_file = models[0]
+        else:
             raise PybnfError(
-                f"Condition '{name}' is declared for model '{model_ref}', but the job "
-                f"declares no model with id '{Path(model_ref).stem}' (declared model ids: "
-                f"{sorted(stem_to_model)}).")
+                f"Condition '{name}' does not name a model, but the job declares {len(models)} "
+                f"models ({models}). Add 'model: <file>' to the condition to say which model it "
+                f"perturbs (ADR-0041); the fitter refuses this condition for the same reason.")
+        condition_models[name] = model_file
+        view = registry[model_file]
         muts = []
         for var, op, val in perts:
             # A species-target perturbation (setConcentration -- a wash/bolus, #474) has a BNGL
@@ -777,11 +885,13 @@ def _read_conditions(conf, models, registry):
             if '(' in var:
                 muts.append((var, op, val))
                 continue
-            if var not in union_params and var not in union_comparts:
+            if var not in view.parameters and var not in view.compartment_names:
+                where = (f"model '{model_file}', the model the condition belongs to"
+                         if len(models) > 1 else 'the model')
                 raise PybnfError(
                     f"Condition '{name}' perturbs '{var}', which is not a parameter or "
-                    f"compartment of any model in the job (a PEtab condition target must "
-                    f"be a model entity).")
+                    f"compartment of {where} (a PEtab condition target must be a model "
+                    f"entity).")
             try:
                 muts.append((var, op, float(val)))
             except (TypeError, ValueError):
@@ -790,7 +900,7 @@ def _read_conditions(conf, models, registry):
                 # builder emits it verbatim as the PEtab targetValue (mutation_target_value).
                 muts.append((var, op, val))
         conditions[name] = muts
-    return conditions
+    return conditions, condition_models
 
 
 # ---------------------------------------------------------------------------
@@ -1055,10 +1165,120 @@ def _swept_param(exp):
     return data0.indvar if data0.indvar is not None else _independent_variable(data0)
 
 
-def _dose_values(exp):
-    """The dose values of a parameter_scan experiment -- its swept-axis column, as floats."""
-    data0 = exp['datas'][0]
-    return [float(v) for v in data0[_swept_param(exp)]]
+def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):
+    """Refuse a pre-equilibrated dose-response whose wash condition would re-pin a parameter it
+    must leave alone (#892).
+
+    A wash (measurement) condition is emitted like every other condition: it carries a base pin
+    ``p = p__REF`` for each ``p`` in the surrogate set M that it does not set itself (ADR-0027).
+    On this shape two such pins are wrong:
+
+    * ``p`` is set by the pre-equilibration condition. The fitter applies that condition as an
+      inline ``setParameter`` and never undoes it, so ``p`` keeps the pre-equilibration value
+      through the dose scan. PEtab v2 keeps it too, unless a later period sets it again, which is
+      exactly what the wash's pin would do.
+    * ``p`` is the swept parameter. The per-dose condition sets it in the same period, and PEtab
+      v2 forbids two conditions of one period from setting the same target.
+
+    For the same reason a wash that sets the swept parameter itself is refused, whether or not
+    the parameter is in M. The fitter's scan overrides the wash's value at every dose, but the
+    exported measurement period would give the swept parameter two setters.
+
+    A wash-free scan has no such pin (its measurement period carries only the per-dose
+    condition), so it is never refused here.
+    """
+    for exp in pdr_experiments:
+        wash = exp['condition']
+        if wash is None:
+            continue
+        wash_targets = {var for var, _op, _val in conditions[wash]}
+        swept = _swept_param(exp)
+        if swept in wash_targets:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', and "
+                f"its wash condition '{wash}' also sets '{swept}'. Both conditions apply in the "
+                f"exported measurement period, and PEtab v2 forbids two conditions of one period "
+                f"from setting the same target. PyBNF's scan sets '{swept}' to each dose over the "
+                f"wash's value, so remove '{swept}' from '{wash}' to export this job, or run it "
+                f"natively.")
+        pre = exp['preequilibrate']
+        # The swept parameter is left to the check below: the dose, not the pre-equilibration
+        # value, is what the scan runs at.
+        carried = sorted(p for p in surrogate
+                         if p != swept and p not in wash_targets
+                         and any(var == p for var, _op, _val in conditions[pre]))
+        if carried:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}': its "
+                f"pre-equilibration condition '{pre}' sets the fit parameter(s) {carried}, and "
+                f"PyBNF keeps that value through the dose scan (the pre-equilibration setParameter "
+                f"is never undone). In the exported problem the wash condition '{wash}' must re-pin "
+                f"every fit-and-perturbed parameter it does not set to its estimate "
+                f"({carried[0]} = {surrogate_name(carried[0])}, ADR-0027), which would undo that "
+                f"value. Repeat the pre-equilibration value in '{wash}' so the scan's value is "
+                f"stated there too, or run the job natively.")
+        if swept in surrogate:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', a fit "
+                f"parameter that a condition also perturbs, so its wash condition '{wash}' re-pins "
+                f"'{swept}' to its estimate ({swept} = {surrogate_name(swept)}, ADR-0027) in the "
+                f"same period in which the per-dose condition sets it to the dose. PEtab v2 forbids "
+                f"two conditions of one period from setting the same target. Fix '{swept}' (do not "
+                f"fit it) to export this job, or run it natively.")
+
+
+# The relative tolerance the fitter matches a data row's dose with: ``Objective._sim_row_for``
+# takes the first simulated row where ``np.isclose(sim_dose, dose, atol=0.)`` holds, i.e. numpy's
+# default ``rtol``. Two distinct doses this close can be scored against one simulation.
+_FITTER_DOSE_RTOL = 1e-5
+
+
+def _dose_axis(exp):
+    """The exported dose axis of a parameter_scan experiment: the sorted union of every
+    replicate's doses, as floats (#895).
+
+    This is exactly the grid the fitter scans (``config.py`` stacks the ``data:`` replicates and
+    passes ``sorted({float(x) for x in stacked[indvar]})`` to the scan), so the exported problem
+    has one Experiment per dose the fitter simulates. The exporter then tags each data row with
+    the experiment of its own dose (:func:`~pybnf.petab.measurements.dose_response_measurement_rows`),
+    as the fitter pairs each row with the simulation at its own dose. The swept column is read by
+    name, as the fitter's replicate stacking reads it.
+
+    Refuses (``PybnfError``, naming the experiment, file and dose) a data file the fitter could not
+    score correctly either: a replicate with no swept-parameter column (its doses stack as NaN); a
+    non-finite dose; and two distinct doses within the fitter's dose-matching tolerance
+    (:data:`_FITTER_DOSE_RTOL`), which the fitter may score against a single simulation while PEtab
+    would simulate each separately.
+    """
+    swept = _swept_param(exp)
+    first_file = {}
+    for data, data_file in zip(exp['datas'], exp['data_files']):
+        if swept not in data.cols:
+            raise PybnfError(
+                f"Experiment '{exp['name']}' is a dose-response scan over '{swept}' (the first "
+                f"column of its first data file), but data file '{data_file}' has no '{swept}' "
+                f"column (its columns: {list(data.cols)}). Every replicate of a dose-response "
+                f"must give each row's dose in a '{swept}' column.")
+        for value in data[swept]:
+            dose = float(value)
+            if not np.isfinite(dose):
+                raise PybnfError(
+                    f"Experiment '{exp['name']}', data file '{data_file}': the dose "
+                    f"{swept} = {dose!r} is not a finite number, so no simulation can be run or "
+                    f"matched at it. Give every row a finite dose.")
+            first_file.setdefault(dose, data_file)
+    axis = sorted(first_file)
+    for low, high in zip(axis, axis[1:]):
+        if np.isclose(low, high, rtol=_FITTER_DOSE_RTOL, atol=0.0):
+            raise PybnfError(
+                f"Experiment '{exp['name']}' has two distinct doses {swept} = {low!r} (in "
+                f"'{first_file[low]}') and {swept} = {high!r} (in '{first_file[high]}') that "
+                f"differ by less than the fitter's dose-matching tolerance (relative "
+                f"{_FITTER_DOSE_RTOL:g}). The fitter can score measurements at one of them against "
+                f"the simulation of the other, while the exported PEtab problem would simulate "
+                f"each separately. If they are the same dose, write it identically in every data "
+                f"file.")
+    return axis
 
 
 def _species_id_map(patterns):
@@ -1109,9 +1329,13 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
     ``measurement_models`` (``{id: formula}``, ADR-0036) are conf-declared measurement models
     (model-agnostic): a column matching one is emitted with that formula as its
     ``observableFormula`` and its id verbatim (the inverse of the importer's ``observable: ...
-    formula:`` line)."""
+    formula:`` line).
+
+    Returns ``(observable_rows, column_to_observable_id, column_means)``. ``column_means`` is
+    ``{column: {experiment name: mean}}`` for each ``column_mean`` column whose experiments
+    have different means (#894): its observable row declares a noise placeholder, and the
+    caller writes each measurement row's own experiment mean into ``noiseParameters``."""
     measurement_models = measurement_models or {}
-    all_datas = [d for exp in experiments for d in exp['datas']]
 
     # Gather the fitted columns in first-appearance order, each tagged with the model
     # file(s) that measure it (distinct, declaration order). A measurement-model column is
@@ -1133,6 +1357,7 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
 
     observable_rows = []
     column_to_observable_id = {}
+    column_means = {}
     for col in columns:
         classes = [(mf, _classify_column(col, registry[mf], mf, measurement_models,
                                          inline_functions))
@@ -1149,7 +1374,13 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
         # A column's noise is its per-observable override if one is declared, else the
         # whole-fit base (ADR-0021/0045); the override carries its own family + sigma source.
         distribution, verb, arg = per_obs_noise.get(col, noise)
-        noise_source = _noise_source_for_column(verb, arg, col, all_datas)
+        noise_source = _noise_source_for_column(verb, arg, col, experiments)
+        if noise_source[0] == 'experiment_means':
+            # A column-mean sigma that differs between experiments (#894): the observable
+            # declares a noise placeholder and each measurement row carries its own
+            # experiment's mean in noiseParameters -- the fit's per-experiment sigma, exactly.
+            column_means[col] = noise_source[1]
+            noise_source = ('placeholder', None)
         row = petab_observable_row(col, kind, distribution, noise_source,
                                    observable_formula=formula)
         observable_rows.append(row)
@@ -1158,7 +1389,7 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
         raise PybnfError(
             "The job's experiment data has no fittable observable/function columns "
             "(only an independent variable and/or _SD columns).")
-    return observable_rows, column_to_observable_id
+    return observable_rows, column_to_observable_id, column_means
 
 
 def _classify_column(col, model, model_file, measurement_models, inline_functions):
@@ -1207,7 +1438,7 @@ def _inlined_formula(col, kind, model, model_file):
     return bngl_body_to_petab_math(body, model)
 
 
-def _noise_source_for_column(verb, arg, col, datas):
+def _noise_source_for_column(verb, arg, col, experiments):
     """The PEtab noise representation for one fitted column, from the desugared sigma
     source verb (ADR-0021 reversed) -- evaluated across every experiment's ``datas``:
 
@@ -1216,7 +1447,10 @@ def _noise_source_for_column(verb, arg, col, datas):
       carry its ``<col><suffix>`` companion (else a measurement row would lack the noise
       value its declared placeholder binds to).
     * ``fix_at`` -> a constant noiseFormula (the fixed sigma).
-    * ``column_mean`` -> a constant noiseFormula = the column's mean across all data.
+    * ``column_mean`` -> the column's mean **per experiment** (:func:`_column_mean_noise_source`,
+      #894): a constant noiseFormula when every experiment measuring the column has the same
+      mean (always so for one experiment), else ``('experiment_means', {name: mean})``, which
+      the caller turns into a noise placeholder fed row by row.
     * ``formula`` -> the expression noiseFormula verbatim (a ``FormulaSigma``, ADR-0044/0045):
       a PEtab-math expression over free-parameter ids + constants. The expression's symbols are
       PEtab parameter ids (exported as estimated parameters); a noise nuisance that is not a
@@ -1237,7 +1471,7 @@ def _noise_source_for_column(verb, arg, col, datas):
     A relative sigma (``relative``) is still a deferred boundary: it is a ``noiseFormula``
     expression (the sympy layer, mirroring the importer's expression boundary).
     """
-    holders = [data for data in datas if col in data.cols]
+    holders = [data for exp in experiments for data in exp['datas'] if col in data.cols]
     if verb == 'formula':
         return ('per_measurement', arg) if _PLACEHOLDER.search(arg) else ('formula', arg)
     if verb == 'prediction_formula':
@@ -1262,10 +1496,7 @@ def _noise_source_for_column(verb, arg, col, datas):
     if verb == 'fix_at':
         return ('constant', float(arg))
     if verb == 'column_mean':
-        # Over the OBSERVED values only (#707), matching what ColumnMeanSigma computes at
-        # fit time: a sparse multi-observable column carries NaN in its unmeasured rows, and
-        # a plain average would export 'nan' as this observable's noiseFormula constant.
-        return ('constant', float(observed_mean(np.concatenate([d[col] for d in holders]))))
+        return _column_mean_noise_source(col, experiments)
     if verb == 'fit':
         # A free-parameter (estimated) sigma -> a bare-id noiseFormula naming the noise
         # parameter (declared estimated in parameters.tsv; admitted as an observation-layer
@@ -1277,6 +1508,58 @@ def _noise_source_for_column(verb, arg, col, datas):
         f"Observable column '{col}': the '{verb}' sigma source is a later export chunk "
         f"-- a relative sigma is a noiseFormula expression (the sympy layer, mirroring "
         f"the importer boundary). ADR-0021/0023, #423.")
+
+
+def _experiment_column_means(col, experiments):
+    """``{experiment name: mean}`` -- the ``column_mean`` sigma the fit gives column ``col`` in
+    each experiment that has at least one observed value of it (#894).
+
+    This is the fit's own number. ``Objective.evaluate_multiple`` scores one experiment at a
+    time, and ``ColumnMeanSigma`` (like the legacy ``ave_norm_sos``) takes
+    ``Data.column_mean`` of *that* experiment's Data. The Data is the experiment's replicate
+    files stacked in ``data:`` order (``config._stack_replicates``, ADR-0039), so its observed
+    values are these ``datas`` concatenated in the same order. The mean is therefore the same
+    float. It is taken over observed values only, since NaN means unmeasured (#707). A
+    dose-response is one PyBNF experiment even though its doses become N PEtab experiments, so
+    all of its doses share one mean. An experiment with no observed value of the column
+    contributes no scored point and no measurement row, so it has no sigma to export."""
+    means = {}
+    for exp in experiments:
+        values = [d[col] for d in exp['datas'] if col in d.cols]
+        if not values:
+            continue
+        mean = float(observed_mean(np.concatenate(values)))
+        if not np.isnan(mean):
+            means[exp['name']] = mean
+    return means
+
+
+def _column_mean_noise_source(col, experiments):
+    """The PEtab noise source for a ``column_mean`` sigma on column ``col`` (#894).
+
+    The fit normalizes each experiment by **its own** column mean
+    (:func:`_experiment_column_means`), so a single mean pooled over every experiment is the
+    wrong sigma as soon as two experiments measure the column at different magnitudes: it
+    reweights the experiments against each other and moves the optimum. PEtab has no
+    data-derived sigma, but the mean is a constant of the data, so it can be written exactly:
+
+    * every experiment has the same mean (in particular, only one experiment measures the
+      column) -> ``('constant', mean)``, the inline numeric noiseFormula (unchanged from the
+      pre-#894 export for a single experiment);
+    * the means differ -> ``('experiment_means', {name: mean})``: the observable declares a
+      noise placeholder (``noiseParameter1_<id>``) and every measurement row carries its own
+      experiment's mean in ``noiseParameters``. PEtab then gives each point the fit's sigma.
+
+    The importer reads either form back to ``column_mean`` only when each value equals its
+    experiment's own mean (``import_._ColumnMeans``), so the round trip restores the job.
+    """
+    means = _experiment_column_means(col, experiments)
+    distinct = set(means.values())
+    if len(distinct) > 1:
+        return ('experiment_means', means)
+    # No observed value anywhere: no measurement row scores this column, so the constant is
+    # inert; keep the historical NaN (observed_mean of nothing) rather than invent a sigma.
+    return ('constant', distinct.pop() if distinct else float('nan'))
 
 
 def _resolve_free_to_model(free_params, registry, models, nuisances=()):
@@ -1416,15 +1699,21 @@ def _parameter_rows(free_params, free_to_model, surrogate_params, registry, mode
     return parameter_rows
 
 
-def _nominal_of(registry, var):
-    """A fixed parameter's numeric nominal value across the job's models (ADR-0041), or
-    ``None``: the value from the first model view that declares ``var`` (a fixed target's
-    nominal is read from whichever model defines it, since a PEtab condition is
-    model-agnostic). A free target never reaches here (the surrogate path handles it)."""
-    for view in registry.values():
-        if var in view.parameters:
-            return _numeric_nominal(view, var)
-    return None
+def _condition_nominal_of(registry, condition_models):
+    """The ``nominal_of(condition, var)`` callable the condition builders take: a fixed
+    parameter's numeric nominal value in the model **the condition belongs to**, or ``None``.
+
+    A relative op (``* / + -``) on a fixed target is folded to a number on export
+    (:func:`~pybnf.petab.conditions.mutation_target_value`), so the base it is folded against
+    must be the one the fitter uses: the condition's own model's value
+    (``bngsim_model/expressions.py::_nominal_param_value`` reads the experiment's engine model,
+    and an experiment can only apply a condition of its own model). Two models of a multi-model
+    job may give a same-named fixed parameter different values, so reading "the first model
+    that declares it" computed the condition against the wrong model (#897). A free target
+    never reaches here (the surrogate path handles it)."""
+    def nominal_of(condition, var):
+        return _numeric_nominal(registry[condition_models[condition]], var)
+    return nominal_of
 
 
 def _numeric_nominal(model, var):

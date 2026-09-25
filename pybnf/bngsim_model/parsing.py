@@ -10,6 +10,7 @@ and unit-testable on the bngsim-less CI tier.
 import logging
 import re
 
+from ..printing import PybnfError
 from .expressions import _eval_numeric
 
 
@@ -217,6 +218,41 @@ def _is_save_concentrations(action_line):
 
 def _is_save_parameters(action_line):
     return bool(re.match(r'\s*saveParameters\s*\(', action_line))
+
+
+# The argument list of a save/reset action: empty, or one quoted label.
+_SNAPSHOT_ARGUMENT = re.compile(
+    r'\s*(?:saveConcentrations|resetConcentrations|saveParameters|resetParameters)'
+    r'\s*\((?P<args>.*)\)\s*;?\s*$', re.DOTALL)
+_SNAPSHOT_LABEL = re.compile(r'\s*(?:"(?P<dq>[^"]*)"|\'(?P<sq>[^\']*)\')\s*$')
+
+
+def _snapshot_label(action_line):
+    """The label of a ``saveConcentrations`` / ``resetConcentrations`` / ``saveParameters`` /
+    ``resetParameters`` action, or ``None`` for the default (unlabelled) slot.
+
+    BioNetGen keeps one snapshot per label and a default one (``Cache::DEFAULT_LABEL``,
+    ``BNGModel.pm``), so ``resetConcentrations("a")`` restores what ``saveConcentrations("a")``
+    saved and leaves the default snapshot alone. The bridges used to read every one of these
+    lines as the default slot, which is how a labelled reset landed on the wrong state. An
+    argument that is neither empty nor one quoted label is refused rather than read as the
+    default.
+
+    A trailing ``#`` comment is dropped first, as BioNetGen drops it (``BNGModel.pm`` removes
+    everything from the first ``#`` on a line), so ``resetConcentrations() # back to the seed``
+    is the unlabelled reset it is on BNG2.pl, not an unreadable argument."""
+    line = _collapse_action_line_continuations(action_line).split('#', 1)[0]
+    match = _SNAPSHOT_ARGUMENT.match(line.strip())
+    args = match.group('args') if match is not None else None
+    if args is not None and not args.strip():
+        return None
+    label = _SNAPSHOT_LABEL.match(args) if args is not None else None
+    if label is None:
+        raise PybnfError(
+            f'The action {action_line.strip()!r} cannot be read: saveConcentrations, '
+            'resetConcentrations, saveParameters and resetParameters take either no argument '
+            'or one quoted label, e.g. saveConcentrations("equilibrated").')
+    return label.group('dq') if label.group('dq') is not None else label.group('sq')
 
 
 def _parse_set_concentration_nf(action_line):

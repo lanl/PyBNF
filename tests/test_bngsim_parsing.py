@@ -10,6 +10,7 @@ setConcentration disambiguation are the highest-value targets.
 import pytest
 
 from pybnf.bngsim_model import parsing
+from pybnf.printing import PybnfError
 
 
 # ---------------------------------------------------------------- continuations
@@ -231,3 +232,45 @@ def test_parse_add_concentration(line, expected):
 def test_action_predicates(predicate, matching, non_matching):
     assert predicate(matching) is True
     assert predicate(non_matching) is False
+
+
+@pytest.mark.parametrize(
+    'line, label',
+    [
+        ('resetConcentrations()', None),
+        ('  saveParameters( )  ', None),
+        ('saveConcentrations("equilibrated")', 'equilibrated'),
+        ("resetParameters('pybnf_experiment_start')", 'pybnf_experiment_start'),
+        ('resetConcentrations( "t=0" );', 't=0'),
+    ],
+)
+def test_snapshot_label(line, label):
+    # BioNetGen keeps a default snapshot and one per label; the bridges must tell them apart
+    # (#830) rather than read every save/reset line as the default slot.
+    assert parsing._snapshot_label(line) == label
+
+
+@pytest.mark.parametrize(
+    'line',
+    ['resetConcentrations(seed)', 'saveParameters("a","b")', 'resetParameters({label=>"x"})'],
+)
+def test_snapshot_label_refuses_what_it_cannot_read(line):
+    with pytest.raises(PybnfError, match='one quoted label'):
+        parsing._snapshot_label(line)
+
+
+@pytest.mark.parametrize(
+    'line, label',
+    [
+        ('resetConcentrations() # Revert to the state after simulation 1', None),
+        ('saveParameters() # save parameter values specified in the parameters block', None),
+        ('saveConcentrations("washed")  # after the wash (see resetConcentrations("x"))',
+         'washed'),
+        ('resetParameters();# back', None),
+    ],
+)
+def test_snapshot_label_ignores_a_trailing_comment(line, label):
+    # BNG2.pl drops everything from the first '#' on a line, and shipped examples
+    # (examples/degranulation, examples/egfr_ode) comment their reset lines this way; the
+    # label reader refused them, so those jobs stopped at load on every backend.
+    assert parsing._snapshot_label(line) == label

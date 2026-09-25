@@ -16,7 +16,8 @@ model) but deliberately says nothing about *how to search it* -- no optimizer/sa
 algorithm settings, no simulation method, no seed -- because PEtab is a cross-tool
 exchange format and the *method* belongs to the tool. So ``import = PEtab problem +
 a supplied run-recipe``. The *problem* half is recovered exactly (and round-trips
-byte-for-byte through a re-export); the *recipe* half -- ``job_type`` + that fit's
+byte-for-byte through a re-export; a table the problem splits over several files is read in
+full and re-exports as one file, #902); the *recipe* half -- ``job_type`` + that fit's
 algorithm settings (SEARCH), the per-experiment ``method:`` (SIMULATION), and
 ``output_dir`` / ``verbosity`` / required keys (PLUMBING) -- is **supplied, not
 recovered**, and is excluded from the round-trip identity. The recipe is not a new
@@ -43,8 +44,9 @@ Concretely, the recipe is supplied through :func:`import_job`'s parameters:
 
 **Dependency-free + simulator-free on the bare-name path.** Like the other read-path
 chunks, the import path uses only stdlib + ``pybnf.data.Data`` + the asset mappers, so the
-bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-parsed (the
-exporter emits a fixed, simple shape). The ``petab`` library is the test-only oracle for the
+bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-parsed: block
+and one-line flow lists, every file a key lists, and a refusal for any shape it cannot read
+(#902). The ``petab`` library is the test-only oracle for the
 bare-name path, and the optional ``pybnf[petab]`` extra for an expression ``observableFormula``.
 
 **Scope (read path: BNGL and SBML, one or many models).** Both model languages import
@@ -82,7 +84,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data import observed_mean
+from ..data import Data, observed_mean
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
 from .conditions import (
@@ -90,12 +92,15 @@ from .conditions import (
     condition_name_from_id,
     condition_names_and_ids,
     conditions_from_rows,
+    equil_t_end_from_period_time,
     free_condition_name,
     is_species_target,
+    model_time_reads,
     name_unperturbed_equilibrations,
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
+    refuse_measurements_inside_fixed_equilibration,
 )
 from .measurements import (
     data_from_measurement_rows,
@@ -201,7 +206,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     new-era PyBNF job: the ``.exp`` data files, a verbatim copy of the BNGL model (new-era
     binds free parameters by id, so the model needs no re-instrumentation -- ADR-0034), and
     one or more ``.conf`` files. The *problem* (parameters/priors, observables/noise,
-    measurements, conditions/experiments) is recovered exactly; the *run-recipe*
+    measurements, conditions/experiments) is recovered exactly, from every file each
+    ``problem.yaml`` key lists (#902); the *run-recipe*
     (``job_type``, ``method``, ``settings``) is supplied by the caller (see the module
     docstring). Returns the ``out_dir`` path.
 
@@ -232,8 +238,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``targetValue`` is a per-condition estimated initial condition and imports, ADR-0076; a
     **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder;
     replicate rows) and ``PybnfError``
-    for a malformed problem (an ``observableFormula`` symbol that is not a model entity, or an
-    ambiguous dose-response group).
+    for a malformed problem (an ``observableFormula`` symbol that is not a model entity, an
+    ambiguous dose-response group, an id defined twice across a table's files, or a
+    ``problem.yaml`` shape the reader cannot read -- #902).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -244,17 +251,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     _require_supported_model(problem, problem_yaml_path)
     models = problem['models']
 
-    parameter_rows = read_parameter_table(base / problem['parameter_files'][0])
-    observable_rows = read_observable_table(base / problem['observable_files'][0])
-    measurement_rows = read_measurement_table(base / problem['measurement_files'][0])
-    condition_rows = (read_condition_table(base / problem['condition_files'][0])
-                      if problem['condition_files'] else [])
-    experiment_rows = (read_experiment_table(base / problem['experiment_files'][0])
-                       if problem['experiment_files'] else [])
+    # Every file listed under each table key, concatenated in list order (#902). The condition,
+    # experiment and mapping tables are optional (an empty list reads as no rows).
+    (parameter_rows, observable_rows, measurement_rows, condition_rows, experiment_rows,
+     mapping_rows) = _read_problem_tables(problem, base)
     # The species-amount mapping table (ADR-0062): a {petab_id: BNGL pattern} inversion of the
     # exporter's species setConcentration aliasing. Absent for a job with no species conditions.
-    mapping_rows = (read_mapping_table(base / problem['mapping_files'][0])
-                    if problem['mapping_files'] else [])
     species_by_id = {r.petab_id: r.model_id for r in mapping_rows}
 
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
@@ -360,19 +362,35 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # carries no per-measurement sidecar).
     param_bindings = measurement_param_bindings(
         tc_rows, observable_id_to_column, row_varying_noise, row_varying_obs_params)
-    # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
-    # time courses and dose-response scans (plain + pre-equilibrated) alike.
-    dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
-    pdr_datas = {(s['name'], s['model_id']): [s['data']] for s in preequil_scans}
+    # The column-mean check (#894) compares a sigma with each IMPORTED experiment's own mean --
+    # the one the imported fit will use: every time-course (experimentId, modelId) group with
+    # its replicates, and each dose-response scan (plain + pre-equilibrated) as ONE experiment.
+    # A list, not a merged dict: a time course and a scan can share a name key.
+    column_means = _ColumnMeans(
+        list(datas.values()) + [[dr['data']] for dr in dose_responses]
+        + [[s['data']] for s in preequil_scans],
+        observable_id_to_column)
     # A noiseFormula symbol is prediction-dependent (a simulated column) only if it is a model
     # entity that is NOT a declared free parameter: a fit parameter (even one that binds a model
     # parameter by id, ADR-0034) resolves from the PSet, not the trajectory. So the σ scales with
     # the simulation only when it names a model entity outside the free-parameter set (ADR-0075).
     prediction_entities = namespace - free_names
-    objective_directives = _objective_directives(
-        observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver({**datas, **dr_datas, **pdr_datas}, observable_id_to_column),
+    objective_directives, sd_readers = _objective_directives(
+        observable_rows, observable_id_to_column, noise_param_ids, column_means,
         obs_params, noise_subs, row_varying_noise, fixed_params, prediction_entities)
+    # The pivot rebuilds an _SD companion for EVERY column of an experiment in which some row
+    # carries a numeric noiseParameters. Keep it only for the observables whose recovered sigma
+    # reads it (sd_readers): the fitter refuses a data column nothing reads. This matters for a
+    # per-row column-mean sigma (#894), which comes back as column_mean and reads no data, and
+    # for any observable sharing an experiment with one (its rebuilt companion is all NaN).
+    sd_columns = ({col + '_SD' for oid, col in observable_id_to_column.items()
+                   if oid not in sd_readers}
+                  - set(observable_id_to_column.values()))
+    if sd_columns:
+        datas = {key: [_without_columns(d, sd_columns) for d in group]
+                 for key, group in datas.items()}
+        for scan in dose_responses + preequil_scans:
+            scan['data'] = _without_columns(scan['data'], sd_columns)
     # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis, not
     # a condition: line); a pre-equilibrated scan's per-dose conditions are absorbed too, but its
     # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
@@ -405,6 +423,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # The `perturbations: none` conditions the experiments apply (#906, ADR-0150).
     experiments = _declare_unperturbed_conditions(
         conditions, experiments, tc_condition_rows, experiment_rows, unperturbed)
+    _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -424,6 +443,80 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
             method_overrides=method_overrides or {}, settings=merged_settings,
             multi=len(job_types) > 1)
     return out_dir
+
+
+# ---------------------------------------------------------------------------
+# Tables: every file under each problem.yaml key, concatenated (#902)
+# ---------------------------------------------------------------------------
+
+def _read_problem_tables(problem, base):
+    """Read every table file the ``problem.yaml`` lists, concatenated in list order (#902).
+
+    PEtab v2 types each ``*_files`` key as a *list*, and libpetab reads a problem by reading
+    every listed file and chaining their rows in list order (``Problem.from_yaml``; the
+    ``measurements`` / ``parameters`` / ... properties). A problem may therefore split its
+    measurements (or any other table) over several files, and ``petab1to2`` keeps a v1
+    problem's several measurement/observable/condition files as such a list. The importer used
+    to read element ``[0]`` of each list and nothing else, so a split problem was fitted to
+    part of its data, and a parameter declared only in a later file stayed fixed at its
+    model-file value, with no message.
+
+    Returns ``(parameter_rows, observable_rows, measurement_rows, condition_rows,
+    experiment_rows, mapping_rows)``. An id that identifies one table entity may be defined in
+    only one place, exactly where libpetab's ``lint_problem`` reports a duplicate
+    (``CheckUniquePrimaryKeys`` / ``CheckMappingTable``); :func:`_require_unique_ids` refuses
+    it with a ``PybnfError`` naming the id and the file(s). Concatenating instead would let the
+    later row silently win, or double-declare a free parameter. Measurement rows carry no id:
+    a repeated row is a replicate in PEtab and is kept, as libpetab keeps it.
+    """
+    def read_all(key, reader):
+        return [(name, row) for name in problem[key] for row in reader(base / name)]
+
+    parameters = read_all('parameter_files', read_parameter_table)
+    observables = read_all('observable_files', read_observable_table)
+    measurements = read_all('measurement_files', read_measurement_table)
+    conditions = read_all('condition_files', read_condition_table)
+    experiments = read_all('experiment_files', read_experiment_table)
+    mappings = read_all('mapping_files', read_mapping_table)
+
+    # One row per parameter / observable / mapping alias, wherever it sits: a repeat inside
+    # one file is the same lint error as a repeat across two.
+    _require_unique_ids(parameters, lambda r: r.parameter_id, 'parameter', 'parameterId')
+    _require_unique_ids(observables, lambda r: r.observable_id, 'observable', 'observableId')
+    _require_unique_ids(mappings, lambda r: r.petab_id, 'mapping', 'petabEntityId')
+    # A condition (or experiment) is SEVERAL rows of one file -- one per target (or period)
+    # -- so only a second file defining the same id is a duplicate. libpetab groups each
+    # file's rows by id into one Condition/Experiment, so the id then occurs twice.
+    _require_unique_ids(conditions, lambda r: r.condition_id, 'condition', 'conditionId',
+                        across_files_only=True)
+    _require_unique_ids(experiments, lambda r: r.experiment_id, 'experiment', 'experimentId',
+                        across_files_only=True)
+    return tuple([row for _name, row in table] for table in
+                 (parameters, observables, measurements, conditions, experiments, mappings))
+
+
+def _require_unique_ids(sourced_rows, id_of, table, column, across_files_only=False):
+    """Refuse an id defined more than once in one table kind (#902).
+
+    ``sourced_rows`` is ``[(file_name, row), ...]`` over every file of the table, in list
+    order. With ``across_files_only`` a repeat inside one file is allowed (a condition's or an
+    experiment's several rows) and only the same id in a second file is refused. The message
+    names the id and the file(s) so the user knows which rows to merge or delete."""
+    first_file = {}
+    for name, row in sourced_rows:
+        rid = id_of(row)
+        if rid not in first_file:
+            first_file[rid] = name
+            continue
+        prev = first_file[rid]
+        if prev == name and across_files_only:
+            continue
+        where = f'twice in {prev}' if prev == name else f'in both {prev} and {name}'
+        raise PybnfError(
+            f"The PEtab {table} tables define {column} '{rid}' more than once ({where}). "
+            f"PEtab allows each {column} to be defined in one place only (libpetab's "
+            f"lint_problem reports it as a duplicate), and the importer cannot tell which "
+            f"definition is meant. Keep one definition and delete or merge the other.")
 
 
 # ---------------------------------------------------------------------------
@@ -715,23 +808,89 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     return mapping, measurement_models
 
 
-def _column_mean_resolver(datas, observable_id_to_column):
-    """A ``observableId -> column mean across all experiments`` closure (for distinguishing
-    ``sos`` from ``ave_norm_sos``; mirrors the export's column-mean sigma over all data).
+class _ColumnMeans:
+    """Decides whether an observable's sigma is a PyBNF ``column_mean`` sigma (#894).
 
-    ``datas`` is ``{experiment_id: [Data, ...]}`` (the replicate grids per experiment), so
-    the mean is taken over every replicate's column -- the same set of values the forward
-    export's column-mean sigma averaged over."""
-    def column_mean_of(observable_id):
-        col = observable_id_to_column[observable_id]
-        values = [data[col] for group in datas.values() for data in group
-                  if col in data.cols]
-        # Observed values only (#707) -- the same mean the export wrote. A plain average
-        # over a sparse column is NaN, which compares equal to nothing, so the sigma
-        # constant would fail to match and a round-tripped ave_norm_sos would silently
-        # come back as sos.
-        return float(observed_mean(np.concatenate(values)))
-    return column_mean_of
+    PyBNF's ``column_mean`` sigma (``objective = ave_norm_sos``, or ``sigma = column_mean``)
+    is **per experiment**. The fit scores one experiment at a time and gives each point the
+    mean of its own experiment's observed values, replicates pooled. PEtab has no such
+    source. The exporter writes that number either as a constant noiseFormula (when every
+    experiment has the same mean) or as each measurement row's numeric ``noiseParameters``.
+    This class reads either form back to ``column_mean`` **only** when every scored point's
+    sigma equals the mean of the experiment it will belong to in the imported job. Then the
+    imported fit gives every point exactly the sigma the PEtab problem gives it. Anything
+    else stays a fixed sigma (``fix_at``, or the per-point ``_SD`` column). Those are always
+    exact, only less tidy.
+
+    ``groups`` lists the imported job's experiments as their replicate ``Data`` lists: each
+    time-course ``(experimentId, modelId)`` group and each reconstructed dose-response or
+    pre-equilibrated scan (one experiment however many PEtab experiments its doses were).
+    The old check compared one mean pooled over every experiment, so a problem whose
+    experiments differ in magnitude re-imported as a column mean that no experiment has.
+    """
+
+    def __init__(self, groups, observable_id_to_column, sd_suffix='_SD'):
+        self._groups = groups
+        self._column_of = observable_id_to_column
+        self._sd_suffix = sd_suffix
+
+    def _experiment_means(self, observable_id):
+        """``[(datas, mean), ...]`` for each experiment with an observed value of the column --
+        the mean ``Data.column_mean`` gives that experiment's stacked Data at fit time. It is
+        taken over observed values only (#707); an experiment with none scores no point."""
+        col = self._column_of[observable_id]
+        out = []
+        for group in self._groups:
+            present = [data for data in group if col in data.cols]
+            if not present:
+                continue
+            mean = float(observed_mean(np.concatenate([data[col] for data in present])))
+            if not np.isnan(mean):
+                out.append((present, mean))
+        return out
+
+    def constant_matches(self, observable_id, sigma):
+        """True iff the constant ``sigma`` is the column mean of **every** experiment that
+        measures the observable."""
+        means = self._experiment_means(observable_id)
+        return bool(means) and all(_approx(sigma, mean) for _datas, mean in means)
+
+    def per_row_matches(self, observable_id):
+        """True iff every observed point's per-row sigma (its rebuilt ``<col>_SD`` cell) is the
+        column mean of its own experiment."""
+        col = self._column_of[observable_id]
+        sd_col = col + self._sd_suffix
+        means = self._experiment_means(observable_id)
+        if not means:
+            return False
+        for datas, mean in means:
+            for data in datas:
+                if sd_col not in data.cols:
+                    return False
+                observed = ~np.isnan(data[col])
+                if not all(_approx(float(sd), mean) for sd in data[sd_col][observed]):
+                    return False
+        return True
+
+    def matches(self, observable_id, source):
+        """Whether the resolved sigma ``source`` (a :func:`_resolve_noise` source) is this
+        observable's per-experiment column mean. Only a fixed number can be: a constant
+        noiseFormula, or a per-point numeric placeholder."""
+        kind, value = source
+        if kind == 'constant':
+            return self.constant_matches(observable_id, value)
+        if kind == 'placeholder':
+            return self.per_row_matches(observable_id)
+        return False
+
+
+def _without_columns(data, names):
+    """``data`` without the columns in ``names`` (the same object when it has none of them)."""
+    keep = [header for _i, header in sorted(data.headers.items()) if header not in names]
+    if len(keep) == len(data.headers):
+        return data
+    arr = data.data[:, [data.cols[header] for header in keep]]
+    return Data.from_columns(arr, keep, indvar=data.indvar)
 
 
 # PEtab noiseDistribution -> (PyBNF base noise family, its additive scale). The v2
@@ -769,12 +928,16 @@ _NOISE_MODEL_PARAM = {
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
-                          column_mean_of, obs_params, noise_subs=None, row_varying_obs=(),
+                          column_means, obs_params, noise_subs=None, row_varying_obs=(),
                           fixed_params=None, namespace=frozenset()):
     """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
     The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
-    Returns a **list** of conf lines:
+    Returns ``(lines, sd_readers)``: ``sd_readers`` is the set of observableIds whose recovered
+    sigma reads the per-point ``<col>_SD`` data column; the caller drops every other rebuilt
+    ``_SD`` companion. A fixed sigma that is exactly each experiment's own column mean
+    (``column_means``, a :class:`_ColumnMeans` -- #894) is recovered as ``column_mean``, which
+    reads no data column. ``lines`` is a **list** of conf lines:
 
     * **Uniform** (one family + one sigma source across all observables) -- a single line, the
       tidy common case (:func:`_try_uniform_directive`): one of the four sugar tokens
@@ -800,10 +963,20 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
                     _placeholder_subs(row.observable_id, obs_params, noise_subs, fixed_params),
                     row.observable_id in row_varying_obs, fixed_params, namespace))
                for row in observable_rows]
-    single = _try_uniform_directive(per_obs, column_mean_of)
+    # Which observables' fixed sigma is exactly their per-experiment column mean (#894).
+    is_column_mean = {row.observable_id: column_means.matches(row.observable_id, src)
+                      for row, _family, src in per_obs}
+    single = _try_uniform_directive(per_obs, is_column_mean)
     if single is not None:
-        return [single]
-    return _per_observable_directives(per_obs, observable_id_to_column)
+        lines, via_column_mean = [single[0]], single[1]
+    else:
+        # The per-observable lines give every column-mean observable a column_mean source.
+        lines, via_column_mean = (
+            _per_observable_directives(per_obs, observable_id_to_column, is_column_mean), True)
+    sd_readers = {row.observable_id for row, _family, src in per_obs
+                  if src[0] == 'placeholder'
+                  and not (via_column_mean and is_column_mean[row.observable_id])}
+    return lines, sd_readers
 
 
 def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
@@ -939,20 +1112,43 @@ def _native_noise_family(row):
     return token
 
 
-def _try_uniform_directive(per_obs, column_mean_of):
-    """A single whole-fit directive line if the table is one PyBNF objective, else ``None``.
+def _try_uniform_directive(per_obs, is_column_mean):
+    """A single whole-fit directive if the table is one PyBNF objective, else ``None``.
 
+    Returns ``(line, via_column_mean)``; ``via_column_mean`` is True when the line's sigma is
+    ``column_mean`` (``objective = ave_norm_sos`` or a whole-fit ``... = column_mean`` line).
     ``None`` signals a genuinely per-observable table (a mix of families or sigma sources, or
     a distinct ``fit``/``fix_at`` sigma per observable) -> :func:`_per_observable_directives`.
     The uniform cases are exactly the objective-family / whole-fit ``noise_model`` export
-    inverse (preserved byte-for-byte)."""
+    inverse (preserved byte-for-byte).
+
+    ``is_column_mean`` (``{observable_id: bool}``, from :class:`_ColumnMeans`) marks the
+    observables whose fixed sigma is exactly each experiment's own column mean (#894). When
+    every observable is marked, the table is one column-mean objective whatever mix of a
+    constant noiseFormula and a per-row placeholder carried it. A unit sigma is read as
+    ``sos`` / ``sod`` first, as before, even if some column's mean happens to be 1."""
     families = {family for _row, family, _src in per_obs}
-    kinds = {src[0] for _row, _family, src in per_obs}
-    if len(families) != 1 or len(kinds) != 1:
-        return None     # mixed family (incl. a log10 vs linear scale) or source -> per-observable
-    family = families.pop()     # native token: gaussian / lognormal / lnnormal / laplace
-    kind = kinds.pop()
+    if len(families) != 1:
+        return None     # mixed family (incl. a log10 vs linear scale) -> per-observable
+    family = next(iter(families))     # native token: gaussian / lognormal / lnnormal / laplace
     param = _NOISE_MODEL_PARAM[family]
+
+    # All-unit constant sigma: the sos / sod sugar tokens.
+    unit = all(src == ('constant', 1.0) for _row, _family, src in per_obs)
+    if unit and family == 'gaussian':
+        return 'objective = sos', False
+    if unit and family == 'laplace':
+        return 'objective = sod', False
+    # Every observable's sigma is its per-experiment column mean (#894).
+    if not unit and all(is_column_mean[row.observable_id] for row, _family, _src in per_obs):
+        if family == 'gaussian':
+            return 'objective = ave_norm_sos', True
+        return f'noise_model = {family}, {param} = column_mean', True
+
+    kinds = {src[0] for _row, _family, src in per_obs}
+    if len(kinds) != 1:
+        return None     # mixed source -> per-observable
+    kind = next(iter(kinds))
 
     if kind == 'per_measurement':
         # A row-varying placeholder sigma (ADR-0045) is inherently per-observable -- its
@@ -974,16 +1170,16 @@ def _try_uniform_directive(per_obs, column_mean_of):
         exprs = {src[1] for _row, _family, src in per_obs}
         if len(exprs) != 1:
             return None
-        return f'noise_model = {family}, {param} = formula {exprs.pop()}'
+        return f'noise_model = {family}, {param} = formula {exprs.pop()}', False
     if kind == 'placeholder':
         # Per-point _SD sigma: the Gaussian families have an objective token (chi_sq linear,
         # lognormal log10, lnnormal natural log); Laplace has no per-point token (#407).
         if family == 'gaussian':
-            return 'objective = chi_sq'
+            return 'objective = chi_sq', False
         if family == 'lognormal':
-            return 'objective = lognormal'
+            return 'objective = lognormal', False
         if family == 'lnnormal':
-            return 'objective = lnnormal'
+            return 'objective = lnnormal', False
         raise NotImplementedError(
             f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective token "
             f"(only the Gaussian per-point _SD cases -- chi_sq, lognormal, lnnormal -- are "
@@ -993,25 +1189,16 @@ def _try_uniform_directive(per_obs, column_mean_of):
         ids = {src[1] for _row, _family, src in per_obs}
         if len(ids) != 1:
             return None     # distinct free sigma per observable -> per-observable
-        return f'noise_model = {family}, {param} = fit {ids.pop()}'
-    # All-constant sigma: the sugar tokens (sos/sod unit, ave_norm_sos column-mean, all linear
-    # families) or a uniform fix_at; a different fixed sigma per observable is per-observable.
-    constants = [src[1] for _row, _family, src in per_obs]
-    if family == 'gaussian' and all(c == 1.0 for c in constants):
-        return 'objective = sos'
-    if family == 'laplace' and all(c == 1.0 for c in constants):
-        return 'objective = sod'
-    if family == 'gaussian' and all(
-            _approx(c, column_mean_of(row.observable_id))
-            for (row, _family, _src), c in zip(per_obs, constants)):
-        return 'objective = ave_norm_sos'
-    uniq = set(constants)
+        return f'noise_model = {family}, {param} = fit {ids.pop()}', False
+    # All-constant sigma (the unit and column-mean cases are handled above): a uniform fix_at;
+    # a different fixed sigma per observable is per-observable.
+    uniq = {src[1] for _row, _family, src in per_obs}
     if len(uniq) != 1:
         return None     # distinct fixed sigma per observable -> per-observable
-    return f'noise_model = {family}, {param} = fix_at {num(uniq.pop())}'
+    return f'noise_model = {family}, {param} = fix_at {num(uniq.pop())}', False
 
 
-def _per_observable_directives(per_obs, observable_id_to_column):
+def _per_observable_directives(per_obs, observable_id_to_column, is_column_mean=None):
     """A structural base objective + one ``noise_model <obs> = ...`` override per observable.
 
     The Boehm shape (ADR-0037): each observable has its own sigma source, so PyBNF expresses
@@ -1022,13 +1209,18 @@ def _per_observable_directives(per_obs, observable_id_to_column):
     override names the **column** the objective compares (the measurement-model column =
     ``observableId`` for an expression observable, else the model entity); a ``fit`` sigma binds
     its estimated parameter as a nuisance (ADR-0034), a ``fix_at`` a constant, a per-point
-    placeholder reads the ``<col>_SD`` companion."""
+    placeholder reads the ``<col>_SD`` companion. An observable marked in ``is_column_mean``
+    (its fixed sigma is exactly each experiment's own column mean, :class:`_ColumnMeans`, #894)
+    takes a ``column_mean`` source instead of either fixed form."""
+    is_column_mean = is_column_mean or {}
     lines = ['objective = chi_sq']   # whole-fit default; every observable overridden below
     for row, family, src in per_obs:
         param = _NOISE_MODEL_PARAM[family]
         column = observable_id_to_column[row.observable_id]
         kind = src[0]
-        if kind == 'free':
+        if is_column_mean.get(row.observable_id):
+            lines.append(f'noise_model {column} = {family}, {param} = column_mean')
+        elif kind == 'free':
             lines.append(f'noise_model {column} = {family}, {param} = fit {src[1]}')
         elif kind in ('formula', 'per_measurement'):
             # Both emit a 'formula' source; for 'per_measurement' the expression keeps its
@@ -1058,24 +1250,32 @@ def _per_observable_directives(per_obs, observable_id_to_column):
 
 
 def _approx(a, b):
-    """Two sigmas are equal up to a relative tolerance (the column-mean comparison)."""
-    return abs(a - b) <= 1e-9 * max(1.0, abs(b))
+    """Two sigmas are equal up to a relative tolerance (the column-mean comparison).
+
+    Purely relative (#894): it only has to absorb the round-off of averaging the same numbers
+    in another order. The former ``max(1, |b|)`` floor made it an absolute 1e-9 below 1, so
+    for small-magnitude data (a mean of 1e-10, say) a sigma several times the mean matched."""
+    return abs(a - b) <= 1e-9 * abs(b)
 
 
 # ---------------------------------------------------------------------------
 # Experiments: measurement groups + experiment rows -> conf experiment entries
 # ---------------------------------------------------------------------------
 
-# One reconstructed conf experiment. A 7-wide record shared by :func:`_experiments`,
+# One reconstructed conf experiment. A record shared by :func:`_experiments`,
 # :func:`_dose_response_experiments`, and :func:`_write_conf` -- a namedtuple (not a bare
 # tuple) so the three sites bind by field name and a new field can't silently mis-align a
 # positional unpack. ``preequilibrate`` (ADR-0052) is the unmeasured steady-state condition a
 # pre-equilibration experiment equilibrates under before the ``condition:`` measurement period;
-# ``None`` for a plain time course or a dose-response scan.
+# ``None`` for a plain time course or a dose-response scan. ``equil_t_end`` is the fixed duration
+# of that equilibration when the PEtab problem gives its leading period a finite start time
+# ``-T`` rather than ``-inf`` (#896); ``None`` (the default) for a steady-state equilibration and
+# for every experiment without one.
 ImportedExperiment = namedtuple(
     'ImportedExperiment',
     ['name', 'condition', 'preequilibrate', 'data_files', 'model_location',
-     'measparams_file', 't_end'])
+     'measparams_file', 't_end', 'equil_t_end'],
+    defaults=(None,))
 
 
 def _condition_and_preequilibrate(periods, name):
@@ -1091,9 +1291,12 @@ def _condition_and_preequilibrate(periods, name):
     = a wash-out measured at the model default). Returns ``(condition, preequilibrate)``, each a
     condition name or ``None``.
 
-    Only steady-state (``time = -inf``) equilibration is in scope -- Phase 1 deferred fixed-time
-    equilibration -- so a finite leading period, an experiment of more than two periods, or a
-    non-leading ``-inf`` raises :class:`NotImplementedError` rather than silently flattening the
+    A two-period experiment whose leading period starts at a finite ``time = -T < 0`` and whose
+    measurement period starts at exactly ``time = 0`` is a **fixed-duration** pre-equilibration
+    (#896): the same ``(condition, preequilibrate)``, with the duration ``T`` read separately by
+    :func:`_fixed_equilibration_time` (the conf's ``equil_t_end: T``). Any other finite leading
+    period (one not followed by a period at exactly 0), an experiment of more than two periods, or
+    a non-leading ``-inf`` raises :class:`NotImplementedError` rather than silently flattening the
     experiment to its last period (the pre-#442 bug).
     """
     if len(periods) <= 1:
@@ -1103,13 +1306,41 @@ def _condition_and_preequilibrate(periods, name):
             and math.isfinite(periods[1].time)):
         return (condition_name_from_id(periods[1].condition_id),
                 condition_name_from_id(periods[0].condition_id))
+    if _fixed_equilibration_time(periods) is not None:
+        # A FIXED-duration equilibration (#896): a finite leading period at -T followed by the
+        # measured period at exactly 0 -- `preequilibrate:` + `equil_t_end: T` (read by
+        # _fixed_equilibration_time). The leading period must name its condition: a blank one
+        # (equilibrate at the model defaults) has no `preequilibrate:` to carry the duration.
+        pre = condition_name_from_id(periods[0].condition_id)
+        if pre is None:
+            raise NotImplementedError(
+                f"Experiment '{name}' has a fixed-duration equilibration period (time "
+                f"{periods[0].time}) with no condition. PyBNF carries an equilibration duration "
+                f"on a 'preequilibrate:' condition, so an equilibration at the model defaults "
+                f"has no PyBNF representation yet.")
+        return condition_name_from_id(periods[1].condition_id), pre
     raise NotImplementedError(
         f"Experiment '{name}' has a {len(periods)}-period PEtab experiments-table structure "
         f"(times {[r.time for r in periods]}) the importer does not recover. Only a "
         f"single-period time course or a two-period pre-equilibration (a leading time=-inf "
-        f"steady-state period + a finite measurement period, ADR-0052) is supported; a finite "
-        f"leading equilibration period (fixed-time equilibration) and experiments of more than "
-        f"two periods are deferred (Phase 1/2 cover steady-state -inf only).")
+        f"steady-state period + a finite measurement period, ADR-0052, or a leading finite "
+        f"time=-T fixed-duration period + a measurement period at exactly time=0, #896) is "
+        f"supported; experiments of more than two periods are deferred.")
+
+
+def _fixed_equilibration_time(periods):
+    """The fixed equilibration duration ``T`` of a two-period experiment whose leading period
+    starts at a finite time ``-T < 0`` and whose measured period starts at exactly 0 -- the
+    exporter's ``equil_t_end: T`` shape (#896, ``conditions.equilibration_period_time``) -- else
+    ``None``. ``periods`` are the experiment's rows, sorted by time.
+
+    PEtab v2 runs the leading period from ``-T`` until the next period starts, so only a next
+    period at 0 makes ``T`` the equilibration's duration and the data times relative to the
+    intervention, which is what PyBNF's measured phase assumes (its clock restarts at 0)."""
+    if (len(periods) == 2 and math.isfinite(periods[0].time) and periods[0].time < 0
+            and periods[1].time == 0):
+        return equil_t_end_from_period_time(periods[0].time)
+    return None
 
 
 def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None):
@@ -1159,6 +1390,11 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
         else:
             name = 'experiment1'
         condition, preequilibrate = _condition_and_preequilibrate(periods_of.get(eid, []), name)
+        equil_t_end = _fixed_equilibration_time(periods_of.get(eid, []))   # #896
+        if equil_t_end is not None:
+            # A measurement inside the -T period has no PyBNF home (the equilibration is unmeasured).
+            refuse_measurements_inside_fixed_equilibration(
+                name, equil_t_end, (t for data in group for t in data[data.indvar]))
         model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
         data_files = []
         for k, data in enumerate(group):
@@ -1171,7 +1407,8 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
             measparams_file = f'{name}_measparams.tsv'
             write_measurement_params(binding, out_dir / measparams_file)
         experiments.append(ImportedExperiment(
-            name, condition, preequilibrate, data_files, model_location, measparams_file, None))
+            name, condition, preequilibrate, data_files, model_location, measparams_file, None,
+            equil_t_end=equil_t_end))
     return experiments
 
 
@@ -1216,8 +1453,34 @@ def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of
         model_location = model_location_of.get(s['model_id'])
         t_end = None if math.isinf(s['scan_time']) else s['scan_time']
         experiments.append(ImportedExperiment(
-            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end))
+            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end,
+            equil_t_end=s['equil_t_end']))
     return experiments
+
+
+def _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts):
+    """Refuse a fixed-duration equilibration period (``equil_t_end``) on a model that reads time.
+
+    The import peer of ``export._refuse_fixed_equilibration_of_time_dependent_models`` (#896): the
+    PEtab leading period runs on ``[-T, 0]``, but PyBNF would run the ``equil_t_end: T`` phase on
+    ``[0, T]`` and restart the clock at 0, so for a model whose rates, functions, or events read
+    the time the imported job would simulate a different protocol. ``models`` are the problem's
+    ``model_files`` entries; ``model_texts`` maps each location to its text. A single-model job's
+    experiments carry no ``model_location`` (their model is the sole one)."""
+    language_of = {m['location']: (m['language'] or 'bngl').lower() for m in models}
+    for exp in experiments:
+        if exp.equil_t_end is None:
+            continue
+        location = exp.model_location or models[0]['location']
+        reads = model_time_reads(model_texts[location], language_of[location])
+        if reads:
+            raise NotImplementedError(
+                f"Experiment '{exp.name}' starts with a fixed-duration equilibration period "
+                f"(time -{num(exp.equil_t_end)}) on model '{location}', which reads the simulation "
+                f"time ({'; '.join(reads)}). PEtab runs that period from t = "
+                f"-{num(exp.equil_t_end)} to 0, but PyBNF would run it from t = 0 to "
+                f"{num(exp.equil_t_end)} and restart the clock at 0, so the imported job would "
+                f"simulate a different protocol (#896).")
 
 
 def _write_exp(path, data):
@@ -1353,6 +1616,9 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
         # A fixed-endpoint dose-response scan's endpoint time (ADR-0046); a steady-state scan
         # and a time course carry none (the scan runs to steady state / the data drives the grid).
         tend_field = f', t_end: {num(exp.t_end)}' if exp.t_end is not None else ''
+        # A fixed-duration equilibration (#896): the leading period's finite start time -T.
+        equil_field = (f', equil_t_end: {num(exp.equil_t_end)}'
+                       if exp.equil_t_end is not None else '')
         # The row-varying per-measurement binding sidecar (ADR-0045), when this experiment
         # carries one; config.py attaches it to the experiment's exp Data.
         mp_field = f', measurement_params: {exp.measparams_file}' if exp.measparams_file else ''
@@ -1360,7 +1626,7 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
                                for i, f in enumerate(exp.data_files))
         lines.append(
             f'experiment: {exp.name}{preequil_field}{cond_field}{model_field}, '
-            f'method: {sim_method}{tend_field}{mp_field}, {data_field}')
+            f'method: {sim_method}{tend_field}{equil_field}{mp_field}, {data_field}')
     lines.append('')
     lines.extend(free_param_lines)
     lines.append('')
@@ -1398,74 +1664,272 @@ def _emit_all_job_types():
 
 
 # ---------------------------------------------------------------------------
-# problem.yaml reader (hand-parsed; the exporter emits a fixed, simple shape)
+# problem.yaml reader (hand-parsed, dependency-free; refuses what it cannot read)
 # ---------------------------------------------------------------------------
 
+# The six table keys of a PEtab v2 problem.yaml. The schema types each one as a LIST of files,
+# and libpetab reads every file in the list (#902).
+_TABLE_FILE_KEYS = ('parameter_files', 'observable_files', 'measurement_files',
+                    'condition_files', 'experiment_files', 'mapping_files')
+
+# Every top-level key the PEtab v2 schema allows (its additionalProperties is false). ``id`` and
+# ``extensions`` carry nothing the importer reads.
+_PROBLEM_YAML_KEYS = (*_TABLE_FILE_KEYS, 'format_version', 'id', 'model_files', 'extensions')
+
+# A leading character that makes a YAML scalar something other than a plain name: a nested flow
+# collection, an anchor, alias or tag, a block scalar, or a reserved indicator.
+_YAML_NON_PLAIN = frozenset('[]{}&*!|>%@`')
+
+
 def read_problem_yaml(path):
-    """Hand-parse the minimal ``problem.yaml`` shape :func:`write_problem_yaml` emits.
+    """Read a PEtab v2 ``problem.yaml`` without a YAML library.
 
     Returns a dict with the table-file lists (``parameter_files`` / ``observable_files`` /
-    ``measurement_files`` / ``condition_files`` / ``experiment_files`` / ``mapping_files``) and a ``models`` list
-    -- one ``{model_id, location, language}`` entry per ``model_files`` entry, in declaration
-    order (one or many, ADR-0041). For single-model convenience the first model is also
-    surfaced as ``model_file`` / ``model_id`` / ``model_language``. Dependency-free (no YAML
-    library): the writer emits a flat ``key:`` + ``  - item`` list shape and a two-level
-    ``model_files`` block, which a small indentation-aware scan reads exactly. The scan is
-    **order-independent** (a real v2 ``problem.yaml`` that lists ``model_files`` first, where
-    our writer emits it last, reads identically) **and list-indent-independent**: a
-    column-0 ``- item`` list -- YAML-legal, and what the official ``petab.v2.petab1to2``
-    converter emits -- reads the same as our own two-space-indented items.
+    ``measurement_files`` / ``condition_files`` / ``experiment_files`` / ``mapping_files``, each
+    holding every file listed, in order) and a ``models`` list -- one ``{model_id, location,
+    language}`` entry per ``model_files`` entry, in declaration order (one or many, ADR-0041).
+    For single-model convenience the first model is also surfaced as ``model_file`` /
+    ``model_id`` / ``model_language``.
+
+    A small indentation-aware scan reads the shapes a problem file is written in: our own
+    writer's (``key:`` then two-space-indented ``- item`` lines, ``model_files`` last), the
+    column-0 ``- item`` lists ``petab.v2.petab1to2`` writes, keys in any order, and the one-line
+    flow list ``key: [a.tsv, b.tsv]`` (``[]`` included). Items may be quoted, ``#`` comments
+    are dropped, a model entry's fields other than location and language are passed over with
+    everything nested beneath them, and a leading directive or ``---`` and a closing ``...``
+    are allowed. Whatever else it meets raises ``PybnfError`` naming the line or key rather than
+    being skipped: a scalar where a list belongs, a flow list continued over several lines, a
+    flow-form ``model_files`` entry, a key the PEtab v2 schema does not allow, a key or model
+    given twice, a file listed twice under one key, a ``format_version`` other than 2 (#902).
+    The scan used to skip what it did not recognize, so ``condition_files: [conditions.tsv]``
+    read as no condition table at all.
 
     This is a pure *reader*: it records each model's ``language`` but does not enforce a
     policy on it. The supported-language scope (BNGL or SBML, ADR-0036) is enforced by the
     importer (:func:`_require_supported_model`), not here.
     """
-    file_keys = ('parameter_files', 'observable_files', 'measurement_files',
-                 'condition_files', 'experiment_files', 'mapping_files')
-    files = {k: [] for k in file_keys}
+    files = {k: [] for k in _TABLE_FILE_KEYS}
     models = []         # [{model_id, location, language}, ...] in declaration order
     current = None      # the model entry being filled (set by a `<modelId>:` line)
+    model_indent = None   # the indentation of the `<modelId>:` lines
+    field_indent = None   # the indentation of the current model entry's own fields
+    field = None          # the model entry's field whose value nested lines belong to
 
-    section = None      # the current top-level *_files key (list items follow)
+    seen_keys, unknown_keys = set(), []
+    format_version = None
+    section = None      # the current top-level *_files key (block list items follow)
     in_model = False    # inside the model_files: block
-    for raw in path.read_text().splitlines():
-        if not raw.strip() or raw.lstrip().startswith('#'):
+    in_other = False    # inside a key whose nested content the importer does not read
+    started = ended = False
+    # utf-8-sig drops a byte-order mark, which PyYAML (libpetab's reader) also ignores.
+    for raw in path.read_text(encoding='utf-8-sig').splitlines():
+        line = _strip_yaml_comment(raw).rstrip()
+        if not line.strip():
             continue
-        indent = len(raw) - len(raw.lstrip())
-        stripped = raw.strip()
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if not started and (stripped == '---' or stripped.startswith('%')):
+            continue            # a directive (%YAML, %TAG) or the document-start marker
+        if stripped == '...' and indent == 0:
+            ended = True        # the document-end marker PyYAML writes with explicit_end
+            continue
+        if ended:
+            raise PybnfError(f"problem.yaml at {path} holds more than one YAML document: "
+                             f"the line {stripped!r} follows the '...' end marker.")
+        started = True
+        is_item = stripped == '-' or stripped.startswith(('- ', '-\t'))
         # A column-0 list item (`- item`) is YAML-legal and is exactly what the official
         # petab v1->v2 converter emits (`petab.v2.petab1to2`); it belongs to the *current*
         # section, not a new key, so it must not reset the scan. Only a non-list line at
         # column 0 opens/closes a section -- our own writer indents its list items, so
         # honoring the unindented shape too makes the reader a strict superset of both.
-        if indent == 0 and not stripped.startswith('-'):
-            section, in_model, current = None, False, None
-            if stripped.endswith(':') and stripped[:-1] in files:
-                section = stripped[:-1]
-            elif stripped == 'model_files:':
-                in_model = True
-            # format_version and any other scalar top-level key: ignored
+        if indent == 0 and not is_item:
+            section, in_model, in_other, current = None, False, False, None
+            key, colon, rest = stripped.partition(':')
+            if not colon:
+                raise PybnfError(f"problem.yaml at {path}: cannot read the line {stripped!r} "
+                                 f"(expected '<key>: <value>').")
+            key, rest = _yaml_scalar(key, 'a top-level key', path), rest.strip()
+            if key in seen_keys:
+                raise PybnfError(f"problem.yaml at {path} gives the key '{key}' twice.")
+            seen_keys.add(key)
+            if key in files:
+                if rest:
+                    files[key] = _yaml_flow_list(rest, key, path)
+                else:
+                    section = key         # block `- item` lines follow
+            elif key == 'model_files':
+                if rest and rest != '{}':
+                    raise PybnfError(
+                        f"problem.yaml at {path}: model_files is written in YAML flow form "
+                        f"({rest!r}), which this reader does not read. Write each model as an "
+                        f"indented block: '<modelId>:' with 'location:' and 'language:' lines "
+                        f"beneath it.")
+                in_model, model_indent = True, None
+            elif key == 'format_version':
+                format_version = _yaml_scalar(rest, key, path)
+            else:
+                # `id` / `extensions` carry nothing the importer reads; any other key is not
+                # PEtab v2 and is refused after the scan (a v1 problem is named as such first).
+                in_other = True
+                if key not in _PROBLEM_YAML_KEYS:
+                    unknown_keys.append(key)
             continue
-        if section is not None and stripped.startswith('-'):
-            files[section].append(stripped[1:].strip())
+        if section is not None:
+            if not is_item:
+                raise PybnfError(
+                    f"problem.yaml at {path}: '{section}' must be a list of files, one "
+                    f"'- <file>' line each; cannot read the line {stripped!r}.")
+            files[section].append(_yaml_scalar(stripped[1:], section, path))
         elif in_model:
-            if stripped.startswith('location:') and current is not None:
-                current['location'] = stripped.split(':', 1)[1].strip()
-            elif stripped.startswith('language:') and current is not None:
-                current['language'] = stripped.split(':', 1)[1].strip()
-            elif stripped.endswith(':'):
-                # A new `<modelId>:` block (the location/language lines follow, indented).
-                current = {'model_id': stripped[:-1].strip(), 'location': None,
-                           'language': None}
+            key, colon, rest = stripped.partition(':')
+            key, rest = key.strip(), rest.strip()
+            if model_indent is None or indent <= model_indent:
+                # A `<modelId>:` line: the entry's fields follow on deeper-indented lines.
+                if model_indent is not None and indent < model_indent:
+                    raise PybnfError(f"problem.yaml at {path}: the model_files entry "
+                                     f"{stripped!r} is not indented like the entries before it.")
+                model_indent = indent
+                if is_item or not colon or rest:
+                    raise PybnfError(
+                        f"problem.yaml at {path}: cannot read the model_files entry "
+                        f"{stripped!r}. Write each model as '<modelId>:' with indented "
+                        f"'location:' and 'language:' lines beneath it (a list, or a "
+                        f"flow-form entry such as '{{location: ..., language: ...}}', is not "
+                        f"read).")
+                model_id = _yaml_scalar(key, 'model_files', path)
+                if any(m['model_id'] == model_id for m in models):
+                    raise PybnfError(
+                        f"problem.yaml at {path} declares the model '{model_id}' twice.")
+                current = {'model_id': model_id, 'location': None, 'language': None}
                 models.append(current)
+                field_indent = field = None
+            elif field_indent is None or indent == field_indent:
+                # One of the entry's own fields. The schema allows fields beyond location and
+                # language on a model entry; they carry nothing the importer reads.
+                field_indent, field = indent, (key if colon else None)
+                if key in ('location', 'language') and colon:
+                    current[key] = _yaml_scalar(
+                        rest, f'model_files: {current["model_id"]}: {key}', path)
+            elif indent > field_indent:
+                # The nested value of the field above. It is never this model's location or
+                # language, even when it holds a `location:` key of its own; only the value
+                # of location or language itself continuing on this line is unreadable.
+                if field in ('location', 'language'):
+                    raise PybnfError(
+                        f"problem.yaml at {path}: the {field} of model '{current['model_id']}' "
+                        f"continues on the line {stripped!r}. Write it on one line.")
+            else:
+                raise PybnfError(
+                    f"problem.yaml at {path}: the line {stripped!r} of model "
+                    f"'{current['model_id']}' is not indented like the fields before it.")
+        elif not in_other:
+            raise PybnfError(
+                f"problem.yaml at {path}: cannot read the line {stripped!r}; it is not part of "
+                f"a list of files or of model_files.")
 
-    _require_problem(files, models, path)
+    _require_problem(files, models, path, format_version, unknown_keys)
     first = models[0]
     return {**files, 'models': models, 'model_file': first['location'],
             'model_id': first['model_id'], 'model_language': first['language']}
 
 
-def _require_problem(files, models, path):
+def _strip_yaml_comment(line):
+    """``line`` without its YAML comment: a ``#`` at the start of the line or after
+    whitespace, outside a quoted scalar (a ``#`` inside a plain word, as in ``a#b.tsv``, is
+    part of the word, as it is in YAML)."""
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if quote == '"' and ch == '\\':
+                i += 1                      # skip the escaped character
+            elif ch == quote:
+                quote = None
+        elif ch in '"\'' and (i == 0 or line[i - 1] in ' \t[,'):
+            quote = ch                      # a quote opens only at the start of a scalar
+        elif ch == '#' and (i == 0 or line[i - 1] in ' \t'):
+            return line[:i]
+        i += 1
+    return line
+
+
+def _yaml_scalar(text, key, path):
+    """One YAML scalar (a file name, a model id or field, a key), with its quotes removed.
+
+    A plain or quoted string is returned as its value. An empty entry, an unterminated quote,
+    a backslash escape, and any construct that is not a plain string (a nested list, an
+    anchor, a block scalar, ...) raise ``PybnfError`` naming ``key`` -- never a guess."""
+    text = text.strip()
+    if not text:
+        raise PybnfError(f"problem.yaml at {path}: '{key}' has an empty entry.")
+    if text[0] in '"\'':
+        quote = text[0]
+        if len(text) < 2 or text[-1] != quote:
+            raise PybnfError(
+                f"problem.yaml at {path}: '{key}' has an unterminated quoted entry {text!r}.")
+        inner = text[1:-1]
+        if quote == "'":
+            return inner.replace("''", "'")
+        if '\\' in inner:
+            raise PybnfError(
+                f"problem.yaml at {path}: '{key}' has the entry {text!r}, whose backslash "
+                f"escape this reader does not interpret. Write the name without escapes.")
+        return inner
+    if text[0] in _YAML_NON_PLAIN:
+        raise PybnfError(
+            f"problem.yaml at {path}: '{key}' has the entry {text!r}, which uses YAML syntax "
+            f"this reader does not read. Write a plain file name or id.")
+    return text
+
+
+def _yaml_flow_list(text, key, path):
+    """The items of a one-line YAML flow list, ``[a.tsv, 'b.tsv']`` (``[]`` is empty).
+
+    A value that is not a complete one-line ``[...]`` -- a bare scalar (the PEtab v2 schema
+    types every ``*_files`` key as a list) or a flow list continued on the next line -- raises
+    ``PybnfError`` naming ``key``. A trailing comma is allowed, as YAML allows it."""
+    if not (text.startswith('[') and text.endswith(']')):
+        raise PybnfError(
+            f"problem.yaml at {path}: '{key}' must be a list of files, written either as "
+            f"'- <file>' lines beneath the key or as '[<file>, <file>]' on the key's own line; "
+            f"got {text!r}.")
+    items, start, quote = [], 1, None
+    for i in range(1, len(text) - 1):
+        ch = text[i]
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in '"\'' and not text[start:i].strip():
+            quote = ch
+        elif ch == ',':
+            items.append(text[start:i])
+            start = i + 1
+    items.append(text[start:-1])
+    if not items[-1].strip():
+        items.pop()         # `[]`, or a trailing comma
+    return [_yaml_scalar(item, key, path) for item in items]
+
+
+def _require_problem(files, models, path, format_version=None, unknown_keys=()):
+    """Refuse a ``problem.yaml`` that is not a readable PEtab v2 problem (#902)."""
+    if format_version is not None and format_version.split('.')[0] != '2':
+        raise PybnfError(
+            f"problem.yaml at {path} declares format_version {format_version}, but the "
+            f"importer reads PEtab v2 problems.",
+            hint="Convert a PEtab v1 problem first with pybnf.petab.petab1to2_preserve_scale.")
+    if unknown_keys:
+        raise PybnfError(
+            f"problem.yaml at {path} has the key(s) {unknown_keys}, which PEtab v2 does not "
+            f"define; the importer would ignore them. The allowed keys are "
+            f"{list(_PROBLEM_YAML_KEYS)}.")
+    for key, listed in files.items():
+        repeated = sorted(name for name, n in Counter(listed).items() if n > 1)
+        if repeated:
+            raise PybnfError(
+                f"problem.yaml at {path} lists {repeated} more than once under {key}, which "
+                f"would read the same rows twice. List each file once.")
     for key in ('parameter_files', 'observable_files', 'measurement_files'):
         if not files[key]:
             raise PybnfError(f"problem.yaml at {path} has no {key}.")
