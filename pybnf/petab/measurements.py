@@ -504,7 +504,10 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     * ``consumed_experiment_ids`` -- every ``<stem>_<i>`` experiment id (dropped from the
       time-course / plain-pre-equilibration reconstruction).
     """
-    from .conditions import condition_name_from_id
+    from .conditions import (
+        condition_name_from_id,
+        refuse_measurements_inside_fixed_equilibration,
+    )
 
     periods_of = {}
     for row in experiment_rows:
@@ -574,6 +577,10 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
                 f"{periods[0][0]}) with no condition. PyBNF carries an equilibration duration on "
                 f"a 'preequilibrate:' condition, so an equilibration at the model defaults has no "
                 f"PyBNF representation yet.")
+        if equil_t_end is not None:
+            # A dose read inside the -T period (before the wash and the dose are applied) would
+            # import as a negative scan t_end, which the fitter cannot run as PEtab reads it.
+            refuse_measurements_inside_fixed_equilibration(eid, equil_t_end, [scan_time])
         wash_names = [condition_name_from_id(c) for c in meas_cids if c != dose_cid]
         wash_names = [w for w in wash_names if w is not None]
         buckets.setdefault((stem, mid), []).append(

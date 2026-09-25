@@ -2037,6 +2037,185 @@ class TestExportFixedDurationEquilibration:
         assert [r['time'] for r in _tsv_rows(out / 'experiments.tsv')] == ['-inf', '0']
 
 
+# A two-species sibling of the #896 model, for the protocol shapes the birth-death oracle above
+# does not reach: a pre-equilibrated scan, a parameter the equilibration condition sets that the
+# measured condition does not (so it carries into the measured phase), and a species wash.
+# dA/dt = kp*g - k*flag*A - kab*A, dB/dt = kab*A - kb*B, A(0) = 10, B(0) = 1.
+_TWO_SPECIES_MODEL = """begin model
+begin parameters
+  kp    5
+  k     1.0
+  flag  1
+  g     1
+  kab   0.3
+  kb    0.2
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 10
+  B() 1
+end seed species
+begin observables
+  Molecules A_tot A()
+  Molecules B_tot B()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  0 -> A() kp*g
+  A() -> 0 deg()
+  A() -> B() kab
+  B() -> 0 kb
+end reaction rules
+end model
+"""
+_TWO_SPECIES_DEFAULTS = {'kp': 5.0, 'k': 1.0, 'flag': 1.0, 'g': 1.0, 'kab': 0.3, 'kb': 0.2}
+
+
+def _simulate_exported_two_species(petab_dir, experiment_id, fit):
+    """An independent reading of an exported problem of ``_TWO_SPECIES_MODEL`` the PEtab v2 way.
+
+    The experiment's periods run from their start time until the next one starts. At each
+    period's start its conditions set parameters (which then persist until another condition
+    changes them) and species amounts (through the mapping table). A model parameter that stays
+    in the parameter table takes its fit value, and a surrogate symbol (``k__REF``) in a
+    targetValue is read from ``fit``. Integrates with scipy and returns ``{time: (A, B)}`` at the
+    experiment's measurement times."""
+    import math
+    from scipy.integrate import solve_ivp
+    changes = {}
+    for r in _tsv_rows(petab_dir / 'conditions.tsv'):
+        changes.setdefault(r['conditionId'], []).append((r['targetId'], r['targetValue']))
+    species = {'A()': 0, 'B()': 1}
+    mapping = {}
+    if (petab_dir / 'mapping.tsv').exists():
+        mapping = {r['petabEntityId']: r['modelEntityId']
+                   for r in _tsv_rows(petab_dir / 'mapping.tsv')}
+    starts = {}
+    for r in _tsv_rows(petab_dir / 'experiments.tsv'):
+        if r['experimentId'] == experiment_id:
+            starts.setdefault(float(r['time']), []).append(r['conditionId'])
+    times = sorted({float(m['time']) for m in _tsv_rows(petab_dir / 'measurements.tsv')
+                    if m['experimentId'] == experiment_id})
+    p = dict(_TWO_SPECIES_DEFAULTS)
+    for r in _tsv_rows(petab_dir / 'parameters.tsv'):
+        if r['parameterId'] in p:
+            p[r['parameterId']] = fit[r['parameterId']]
+
+    def value(text):
+        try:
+            return float(text)
+        except ValueError:
+            return fit[text]                  # a bare surrogate symbol, e.g. k__REF
+
+    def rhs(_t, y):
+        return [p['kp'] * p['g'] - p['k'] * p['flag'] * y[0] - p['kab'] * y[0],
+                p['kab'] * y[0] - p['kb'] * y[1]]
+
+    y = [10.0, 1.0]
+    order = sorted(starts)
+    for i, start in enumerate(order):
+        for cid in starts[start]:
+            for target, text in changes.get(cid, []):
+                target = mapping.get(target, target)
+                if target in species:
+                    y[species[target]] = value(text)
+                else:
+                    p[target] = value(text)
+        assert math.isfinite(start)
+        if i + 1 < len(order):
+            y = list(solve_ivp(rhs, (start, order[i + 1]), y, rtol=1e-11, atol=1e-12).y[:, -1])
+    sol = solve_ivp(rhs, (order[-1], times[-1]), y, t_eval=times, rtol=1e-11, atol=1e-12)
+    return {t: tuple(sol.y[:, j]) for j, t in enumerate(times)}
+
+
+def _pybnf_simulation(src, conf_text, k):
+    """PyBNF's own simulation (BNG2.pl) of ``conf_text`` in ``src`` at the fit value ``k``: the
+    fitter's synthesized pre-equilibration action block, run once."""
+    import os
+    from pybnf.parse import load_config
+    from pybnf.pset import PSet
+    from .recovery_harness import require_bng2pl
+    require_bng2pl()
+    (src / 'sim.conf').write_text(conf_text + 'population_size = 4\nmax_iterations = 1\n')
+    cwd = os.getcwd()
+    os.chdir(src)
+    try:
+        conf = load_config('sim.conf')
+        model = conf.models['m']
+        folder = src / f'sim_{k}'
+        folder.mkdir()
+        return model.copy_with_param_set(PSet([v.set_value(k) for v in conf.variables])).execute(
+            str(folder), f'sim_{k}', 60)
+    finally:
+        os.chdir(cwd)
+
+
+class TestExportFixedDurationEquilibrationTwoSpecies:
+
+    def test_preequilibrated_scan_simulates_the_exported_protocol(self, tmp_path):
+        # Every dose of a pre-equilibrated scan with equil_t_end: 0.5 and t_end: 2.5: PyBNF's
+        # simulation (equilibrate for 0.5 under flag = 2, g = 3; wash B to 0; scan kab from the
+        # saved state) equals the independent integration of the exported periods (-0.5 under
+        # cond_pre, then the wash and the dose at 0, read at 2.5). g is set only in the
+        # equilibration condition, so both sides must carry it into the measured phase.
+        import shutil
+        conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                'condition: pre,  perturbations: flag = 2, g = 3\n'
+                'condition: wash, perturbations: "B()" = 0\n'
+                'experiment: scan, preequilibrate: pre, condition: wash, type: parameter_scan, '
+                't_end: 2.5, equil_t_end: 0.5, data: dose.exp\n'
+                'uniform_var = k 0.1 10\n')
+        (tmp_path / 'm.bngl').write_text(_TWO_SPECIES_MODEL)
+        (tmp_path / 'dose.exp').write_text('# kab B_tot\n0.1\t1\n0.3\t2\n1\t3\n')
+        (tmp_path / 'job.conf').write_text(conf)
+        out = export_job(tmp_path / 'job.conf', tmp_path / 'petab')
+        assert {(r['experimentId'], r['time']) for r in _tsv_rows(out / 'experiments.tsv')
+                if r['conditionId'] == 'cond_pre'} == {(f'scan_{i}', '-0.5') for i in range(3)}
+        # The same tables with a longer equilibration, to show the comparison can tell them apart.
+        longer = tmp_path / 'petab_longer'
+        shutil.copytree(out, longer)
+        (longer / 'experiments.tsv').write_text(
+            (out / 'experiments.tsv').read_text().replace('\t-0.5\t', '\t-5\t'))
+        for k in (1.0, 0.4):
+            scan = _pybnf_simulation(tmp_path, conf, k)['scan']
+            pybnf_b = scan.data[:, scan.cols['B_tot']]
+            exported_b = [_simulate_exported_two_species(out, f'scan_{i}', {'k': k})[2.5][1]
+                          for i in range(3)]
+            np.testing.assert_allclose(pybnf_b, exported_b, rtol=1e-5)
+            longer_b = [_simulate_exported_two_species(longer, f'scan_{i}', {'k': k})[2.5][1]
+                        for i in range(3)]
+            assert np.max(np.abs(np.array(longer_b) / pybnf_b - 1)) > 1e-2
+
+    @pytest.mark.xfail(strict=True, reason=(
+        'A FIT parameter set in the equilibration condition but not in the measured condition '
+        'keeps its equilibration value in the fitter (setParameter persists), but the export '
+        're-pins it to its surrogate base <p>__REF on the measured period (#443), so a PEtab '
+        'tool simulates the measured phase at the fit value instead. Pre-existing (the -inf '
+        'period does the same); found in review of #896.'))
+    def test_fit_parameter_set_only_in_the_equilibration_carries_into_the_measured_phase(
+            self, tmp_path):
+        conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                'condition: pre,  perturbations: k = 2, g = 3\n'
+                'condition: meas, perturbations: flag = 1.5\n'
+                'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 0.7, '
+                'data: relax.exp\n'
+                'uniform_var = k 0.1 10\n')
+        (tmp_path / 'm.bngl').write_text(_TWO_SPECIES_MODEL)
+        (tmp_path / 'relax.exp').write_text('# time A_tot B_tot\n0\t8\t1\n1\t6\t2\n2\t5\t2\n')
+        (tmp_path / 'job.conf').write_text(conf)
+        out = export_job(tmp_path / 'job.conf', tmp_path / 'petab')
+        for k in (1.0, 0.4):
+            relax = _pybnf_simulation(tmp_path, conf, k)['relax']
+            exported = _simulate_exported_two_species(out, 'relax', {'k': k, 'k__REF': k})
+            np.testing.assert_allclose(relax.data[:, relax.cols['A_tot']],
+                                       [exported[t][0] for t in (0.0, 1.0, 2.0)], rtol=1e-5)
+
+
 # The model_time_reads detector (#896): what makes a model non-autonomous, per language.
 _SBML_TIME_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">

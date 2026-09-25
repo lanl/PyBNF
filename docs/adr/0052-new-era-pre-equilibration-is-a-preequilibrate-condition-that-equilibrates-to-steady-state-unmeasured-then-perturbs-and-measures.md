@@ -180,7 +180,9 @@ PEtab v2 runs a period from its start time until the next one starts, so a perio
 followed by one at `0` equilibrates for exactly `T`. The importer reads that shape back
 (`import_._fixed_equilibration_time`, `measurements.reconstruct_preequilibrated_dose_responses`)
 and still refuses any other finite leading period, a blank equilibration condition, and more
-than two periods. `equil_t_end` must be finite and positive to export.
+than two periods. It also refuses a measurement at a time in `[-T, 0)`: PEtab can measure during
+the equilibration period, but PyBNF's equilibration is unmeasured. `equil_t_end` must be finite
+and positive to export.
 
 The one inexact case is a model that reads the simulation time (BNGL `time()` or a
 time-indexed `tfun`; an SBML `<csymbol>` for time): PEtab runs the equilibration on

@@ -1061,6 +1061,53 @@ class TestImportFixedDurationEquilibrationRoundTrip:
         with pytest.raises(PybnfError, match='ONE duration'):
             reconstruct_preequilibrated_dose_responses(meas, conds, exps, {'obs_resp': 'resp'})
 
+    @staticmethod
+    def _retime_measurements(petab_dir, retime):
+        """Rewrite measurements.tsv, mapping each row's time string through ``retime`` (a row it
+        maps to ``None`` is kept unchanged)."""
+        rows = _tsv_rows(petab_dir / 'measurements.tsv')
+        header = list(rows[0])
+        lines = ['\t'.join(header)]
+        for r in rows:
+            r = dict(r, time=retime(r['time']) or r['time'])
+            lines.append('\t'.join(r[h] for h in header))
+        (petab_dir / 'measurements.tsv').write_text('\n'.join(lines) + '\n')
+
+    def test_measurement_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # A PEtab measurement at a time in [-T, 0) is taken DURING the equilibration period, which
+        # PEtab lint accepts. PyBNF's `preequilibrate:` + `equil_t_end:` equilibration is
+        # unmeasured and its measured phase starts at the intervention (t = 0), so the point has
+        # no PyBNF representation. Imported as-is it landed on the measured phase's time grid,
+        # where bngsim starts integrating at the earliest sample time: every measurement of the
+        # experiment was then scored 0.05 time units late, with no error. Refused instead.
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_early'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-0.05' if t == '0' else None)
+        assert '-0.05' in [r['time'] for r in _tsv_rows(petab1 / 'measurements.tsv')]
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'relax'.*-0\.05.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+        # A measurement at exactly 0 is the post-intervention state PyBNF measures: still imported.
+        self._retime_measurements(petab1, lambda t: '0' if t == '-0.05' else None)
+        import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_zero')
+
+    def test_scan_measured_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # The pre-equilibrated scan sibling: every dose read at t = -100, inside the -7200
+        # equilibration (before the wash and the dose are even applied). It imported as a scan
+        # with `t_end: -100`, which BNG2.pl runs as no integration at all and bngsim rejects.
+        conf = _PDR_CONF.replace(', t_end: 500,', ', t_end: 500, equil_t_end: 7200,')
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('pdr_fixed_early'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-100' if t == '500' else None)
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'scan_0'.*-100.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+
 
 class TestPreequilibrationPeriodGrouping:
     """White-box on the multi-period resolver (`_condition_and_preequilibrate`, ADR-0052/#442):

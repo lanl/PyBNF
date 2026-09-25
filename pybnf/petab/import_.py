@@ -95,6 +95,7 @@ from .conditions import (
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
+    refuse_measurements_inside_fixed_equilibration,
 )
 from .measurements import (
     data_from_measurement_rows,
@@ -1187,6 +1188,10 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
             name = 'experiment1'
         condition, preequilibrate = _condition_and_preequilibrate(periods_of.get(eid, []), name)
         equil_t_end = _fixed_equilibration_time(periods_of.get(eid, []))   # #896
+        if equil_t_end is not None:
+            # A measurement inside the -T period has no PyBNF home (the equilibration is unmeasured).
+            refuse_measurements_inside_fixed_equilibration(
+                name, equil_t_end, (t for data in group for t in data[data.indvar]))
         model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
         data_files = []
         for k, data in enumerate(group):

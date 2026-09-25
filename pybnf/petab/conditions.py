@@ -357,6 +357,28 @@ def equil_t_end_from_period_time(time):
     raise ValueError(f'not a pre-equilibration period start time: {time!r}')
 
 
+def refuse_measurements_inside_fixed_equilibration(experiment, equil_t_end, times):
+    """Refuse an imported measurement taken during a fixed-duration equilibration period.
+
+    A PEtab v2 experiment can be measured at any time from its first period's start, so a
+    problem whose leading period starts at ``-T`` may carry measurements at times in ``[-T, 0)``,
+    taken while the system equilibrates. PyBNF's ``preequilibrate:`` + ``equil_t_end: T``
+    equilibration is unmeasured, and its measured phase starts at the intervention (``t = 0``),
+    so such a measurement has no PyBNF representation. Imported as it is, it would land on the
+    measured phase's time grid, where bngsim starts integrating at the earliest sample time and
+    so scores every measurement of the experiment late (#896). ``times`` are the experiment's
+    measurement times."""
+    early = sorted({float(t) for t in times if t < 0})
+    if early:
+        raise NotImplementedError(
+            f"Experiment '{experiment}' is measured at time(s) "
+            f"{', '.join(num(t) for t in early)}, inside its fixed-duration equilibration period "
+            f"(time -{num(equil_t_end)} to 0). PyBNF runs that equilibration (preequilibrate: "
+            f"with equil_t_end: {num(equil_t_end)}) unmeasured and measures only from the "
+            f"intervention at time 0, so a measurement taken during the equilibration has no "
+            f"PyBNF representation (#896). Remove those measurement rows to import the rest.")
+
+
 # The BNGL blocks whose expressions can read the simulation time: a function body, an inline
 # rate-law expression, a parameter or compartment-volume expression. Actions (inside or outside a
 # ``begin actions`` block) are simulation directives, not model structure, so they are not read.
