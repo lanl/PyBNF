@@ -1081,6 +1081,38 @@ class TestImportUnperturbedEquilibration:
         np.testing.assert_allclose(data.data[:, data.cols['A_tot']], _relax_closed_form(0.37),
                                    rtol=1e-6)
 
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    @pytest.mark.xfail(strict=True, reason=(
+        "#830: relax now imports as a pre-equilibration whose measured condition sets flag = 2 "
+        "inline, and PyBNF does not restore parameters between the experiments of one action "
+        "list, so plain, declared after it, runs at flag = 2. On main relax was the wrong one "
+        "(no equilibration) and plain was right. Nothing refuses the imported conf at load."))
+    def test_an_experiment_after_a_blank_equilibration_is_simulated_as_declared(
+            self, tmp_path, monkeypatch):
+        # A lint-clean problem: relax equilibrates the model as is and then measures at flag = 2;
+        # plain, listed after it, is a single period with no condition, so it starts from the seed
+        # at flag = 1: A = 1/k + (10 - 1/k) exp(-k t). Refusing the imported conf at load is an
+        # acceptable outcome; simulating either experiment under the other's parameters is not.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\nplain\t0\t\n')
+        with open(tmp_path / 'problem' / 'measurements.tsv', 'a') as fh:
+            fh.write(''.join(f'obs_A_tot\tplain\t{t}\t{1 + 9 * np.exp(-t):.7f}\n'
+                             for t in _RELAX_TIMES))
+        out = import_job(yaml, tmp_path / 'imported')
+        try:
+            _load_imported(out, monkeypatch)
+        except PybnfError:
+            return
+        k = 0.37
+        _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
+        relax, plain = sims['relax']['relax'], sims['relax']['plain']
+        np.testing.assert_allclose(relax.data[:, relax.cols['A_tot']], _relax_closed_form(k),
+                                   rtol=1e-6)
+        np.testing.assert_allclose(plain.data[:, plain.cols['A_tot']],
+                                   [1 / k + (10 - 1 / k) * np.exp(-k * t) for t in _RELAX_TIMES],
+                                   rtol=1e-6)
+
     def test_a_condition_of_only_base_pins_is_a_none_condition(self, tmp_path, monkeypatch):
         # k is fit AND perturbed (k__REF), so every condition re-pins it; cond_basal does nothing
         # else. Once k__REF is renamed back to k its rows are the identity: a `none` condition,

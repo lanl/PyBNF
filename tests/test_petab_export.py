@@ -23,6 +23,7 @@ Its contracts, by strength of oracle:
    refused, non-uniform prior, no-``_SD`` noise, SBML model, PEtab-inexpressible objective).
 """
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -1919,6 +1920,94 @@ class TestExportUnperturbedCondition:
         from pybnf.petab.conditions import _condition_rows_for
         with pytest.raises(PybnfError, match="would be exported with no rows"):
             _condition_rows_for('cond_basal', [], set(), lambda v: None)
+
+    # The #906 model: A' = p - k*flag*A, seed A = 10, p = k = flag = 1.
+    _RELAX_MODEL = _PREEQUIL_MODEL.replace('  k     1.0\n', '  p     1\n  k     1.0\n').replace(
+        'A() -> 0 deg()', '0 -> A() p\n  A() -> 0 deg()')
+    _RELAX_TIMES = (0.0, 0.5, 1.0, 2.0)
+
+    @staticmethod
+    def _petab_sos(out, estimates, defaults):
+        """Half the sum of squared residuals of the exported problem at ``estimates``, computed
+        from its TSVs alone for the one-species model A' = p - k*flag*A (seed 10), under PEtab
+        v2 period semantics: each period assigns its conditions' targets at its start (the rest
+        keep their values), a ``-inf`` period relaxes to the steady state p/(k*flag), and the
+        state carries into the next period, integrated with scipy."""
+        import re
+        from scipy.integrate import solve_ivp
+
+        def value(expr):
+            m = re.fullmatch(r'\s*([A-Za-z_]\w*)\s*(?:([*/+-])\s*([0-9.eE+-]+))?\s*', expr)
+            if not m:
+                return float(expr)
+            x = estimates[m.group(1)]
+            if m.group(2):
+                y = float(m.group(3))
+                x = {'*': x * y, '/': x / y, '+': x + y, '-': x - y}[m.group(2)]
+            return x
+
+        conditions = {}
+        for r in _tsv_rows(out / 'conditions.tsv'):
+            conditions.setdefault(r['conditionId'], []).append((r['targetId'], r['targetValue']))
+        periods = {}
+        for r in _tsv_rows(out / 'experiments.tsv'):
+            periods.setdefault(r['experimentId'], []).append((float(r['time']), r['conditionId']))
+        measured = {}
+        for r in _tsv_rows(out / 'measurements.tsv'):
+            measured.setdefault(r['experimentId'], []).append(
+                (float(r['time']), float(r['measurement'])))
+        total = 0.0
+        for eid, rows in periods.items():
+            entity, a = dict(defaults), 10.0
+            for t0, cid in sorted(rows):
+                for target, expr in conditions.get(cid, []):
+                    entity[target] = value(expr)
+                if t0 == float('-inf'):
+                    a = entity['p'] / (entity['k'] * entity['flag'])
+            times = sorted({t for t, _y in measured[eid]})
+            sol = solve_ivp(lambda _t, y, e=entity: [e['p'] - e['k'] * e['flag'] * y[0]],
+                            (0.0, times[-1]), [a], t_eval=times, rtol=1e-11, atol=1e-13)
+            sim = dict(zip(times, sol.y[0]))
+            total += sum(0.5 * (sim[t] - y) ** 2 for t, y in measured[eid])
+        return total
+
+    def test_exported_problem_scores_the_declared_protocol(self, tmp_path_factory):
+        # An oracle for the export with a fit-and-perturbed k (M = {k}, `fast`): the `none`
+        # pre-equilibration's -inf period must re-pin k at its estimate (cond_wildtype), and a
+        # `none` measured condition after a named pre-equilibration is a wash-out whose measured
+        # period re-pins k and keeps flag = 3. The exported TSVs, evaluated independently of
+        # PyBNF's simulators, must score what the conf declares, in closed form:
+        #   other: seed 10 at 2k      -> 1/(2k) + (10 - 1/(2k)) exp(-2kt)
+        #   relax: 1/k, then flag = 2 -> 1/(2k) + (1/k - 1/(2k)) exp(-2kt)
+        #   wash:  1/(3k), unchanged  -> 1/(3k)
+        # A blank -inf period would equilibrate relax at the model file's k = 1 instead.
+        data = [1 / 2 + 1 / 2 * math.exp(-2 * t) for t in self._RELAX_TIMES]
+        src = tmp_path_factory.mktemp('none_oracle')
+        (src / 'm.bngl').write_text(self._RELAX_MODEL)
+        (src / 'relax.exp').write_text(
+            '# time A_tot\n' + ''.join(f'{t}\t{y}\n' for t, y in zip(self._RELAX_TIMES, data)))
+        (src / 'job.conf').write_text(self._HEAD + (
+            'condition: basal, perturbations: none\n'
+            'condition: stim, perturbations: flag = 2\n'
+            'condition: hiflag, perturbations: flag = 3\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: other, condition: fast, data: relax.exp\n'
+            'experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp\n'
+            'experiment: wash, preequilibrate: hiflag, condition: basal, data: relax.exp\n')
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        for k in (0.6, 1.7):
+            want = 0.0
+            for curve in ([1 / (2 * k) + (10 - 1 / (2 * k)) * math.exp(-2 * k * t)
+                           for t in self._RELAX_TIMES],
+                          [1 / (2 * k) + (1 / k - 1 / (2 * k)) * math.exp(-2 * k * t)
+                           for t in self._RELAX_TIMES],
+                          [1 / (3 * k)] * len(self._RELAX_TIMES)):
+                want += sum(0.5 * (s - y) ** 2 for s, y in zip(curve, data))
+            got = self._petab_sos(out, {'k__REF': k}, {'p': 1.0, 'k': 1.0, 'flag': 1.0})
+            assert got == pytest.approx(want, rel=1e-8), k
 
 
 # ---------------------------------------------------------------------------

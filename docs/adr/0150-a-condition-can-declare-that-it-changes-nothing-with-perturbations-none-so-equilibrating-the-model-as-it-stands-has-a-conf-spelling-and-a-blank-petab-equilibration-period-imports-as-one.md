@@ -79,9 +79,12 @@ still changed, which is a different protocol from the one declared.
 So a `none` pre-equilibration is refused at load when any line written before it on the same
 model's action list changes a parameter: an inline `setParameter`, or a `parameter_scan` or
 `bifurcate` over a parameter. The error names the parameters and says to give the condition
-their model values explicitly. An SBML model builds each experiment's simulation afresh, so the
-check does not apply there. The refusal is conservative (bngsim restores a scanned parameter,
-BNG2.pl does not), and it can be lifted when #830 and #831 are fixed.
+the model values of the fixed ones explicitly. A free parameter has no constant to restore
+(`k = 1` would pin it for the whole experiment instead of equilibrating at its trial value), so
+for a free one the error says to declare the experiment before the one that changes it. An
+SBML model builds each experiment's simulation afresh, so the check does not apply there. The
+refusal is conservative (bngsim restores a scanned parameter, BNG2.pl does not), and it can be
+lifted when #830 and #831 are fixed.
 
 ## Why not the alternatives
 

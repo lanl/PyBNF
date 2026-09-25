@@ -172,8 +172,11 @@ Required Keys
       To equilibrate with nothing changed, name a ``perturbations: none`` condition. PyBNF
       does not yet restore parameters between the experiments it writes into one BNGL model's
       action list (#830, #831), so such an experiment is refused when an experiment before it
-      on the same model changes a parameter inline; the error names the parameters, and
-      giving the condition their model values explicitly (``flag = 1``) resolves it.
+      on the same model changes a parameter inline; the error names the parameters. For a
+      fixed parameter, giving the condition its model value explicitly (``flag = 1``)
+      resolves it. A free parameter cannot be restored that way (the condition would pin it
+      to a constant, not its trial value), so declare the experiment before the one that
+      changes it.
     * **model:** names the base model by filename stem; omittable when the job declares a
       single model, required when it declares more than one.
     * **type:** is **inferred** from the data — a ``time`` column ⇒ a time course, a ``time``

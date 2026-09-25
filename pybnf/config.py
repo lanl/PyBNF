@@ -1870,7 +1870,25 @@ class Configuration:
                     changed.append(pname)
         if not changed:
             return
-        example = ', '.join(f'{p} = <its value in the model>' for p in changed)
+        # A free parameter has no constant to restore: `k = 1` in the condition would pin k at 1
+        # for the whole experiment instead of equilibrating at its trial value, a silently
+        # different fit. So the explicit-values remedy is offered for fixed parameters only.
+        free = {k[1] for k in self.config if self._is_free_param_key(k)}
+        fixed = [p for p in changed if p not in free]
+        fitted = [p for p in changed if p in free]
+        remedies = []
+        if fixed:
+            example = ', '.join(f'{p} = <its value in the model>' for p in fixed)
+            remedies.append(
+                f"Give the condition the model's values for {', '.join(fixed)} explicitly -- "
+                f"'condition: {condition_name}, perturbations: {example}' -- which sets them "
+                f"before the equilibration whatever ran first.")
+        if fitted:
+            what = 'is a free parameter' if len(fitted) == 1 else 'are free parameters'
+            remedies.append(
+                f"{', '.join(fitted)} {what}, which a condition cannot restore: '= <value>' "
+                f"would pin it to that constant instead of its trial value. Declare "
+                f"'{exp_name}' before the experiment(s) that change it.")
         raise PybnfError(
             f"Experiment '{exp_name}' pre-equilibrates under condition '{condition_name}' "
             f"(perturbations: none), which equilibrates model '{base}' as it stands. But an "
@@ -1878,9 +1896,7 @@ class Configuration:
             f"{', '.join(changed)}, and PyBNF does not yet restore parameters between the "
             f"experiments it writes into one action list (#830, #831), so '{exp_name}' would "
             f"equilibrate with them still changed.",
-            hint=f"Give the condition the model's values for those parameters explicitly -- "
-                 f"'condition: {condition_name}, perturbations: {example}' -- which sets them "
-                 f"before the equilibration whatever ran first.")
+            hint=remedies)
 
     @staticmethod
     def _steady_state_action(name, method, fields):

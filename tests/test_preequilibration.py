@@ -567,6 +567,24 @@ class TestUnperturbedConditionSynthesis:
                                              r"condition 'basal'.*changes parameter\(s\) flag.*#830"):
             _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [earlier, _UNPERTURBED_RELAX[2]])
 
+    def test_refusal_does_not_tell_the_user_to_pin_a_free_parameter(self, tmp_path):
+        # The remedy for a fixed parameter is to name its model value in the condition. For the
+        # free k that would pin k = 1 for the whole experiment instead of equilibrating at the
+        # trial value: following that advice made `relax` simulate A = 0.5 + 0.5 exp(-2t) at
+        # every trial k, a silently different fit. So the explicit value is offered for the fixed
+        # flag only, and the free k gets the reordering remedy.
+        with pytest.raises(PybnfError) as info:
+            _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [
+                "condition: fast, perturbations: k = 2, flag = 3",
+                "experiment: first, preequilibrate: basal, condition: fast, data: relax.exp",
+                _UNPERTURBED_RELAX[2]])
+        message = info.value.message
+        assert "changes parameter(s) k, flag" in message
+        assert "k = <its value in the model>" not in message
+        assert "'condition: basal, perturbations: flag = <its value in the model>'" in message
+        assert "k is a free parameter, which a condition cannot restore" in message
+        assert "Declare 'relax' before the experiment(s) that change it" in message
+
     def test_none_preequilibration_after_an_unperturbed_time_course_is_accepted(self, tmp_path):
         # A plain time course changes no parameter, so nothing reaches the equilibration.
         conf = _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [
@@ -657,3 +675,29 @@ class TestUnperturbedPreequilibrationOracle:
             np.testing.assert_allclose(
                 data.output_sensitivities.slice_for("observable:A_tot")[:, 0],
                 _issue_closed_form_dk(k), rtol=1e-5, atol=1e-7)
+
+    @pytest.mark.parametrize("backend", [
+        pytest.param("bionetgen", marks=pytest.mark.bionetgen),
+        pytest.param("bngsim", marks=[
+            pytest.mark.bionetgen, pytest.mark.bngsim,
+            pytest.mark.xfail(strict=True, reason=(
+                "#869: on bngsim a condition mutant's engine is cloned from the base run after "
+                "that run, so the empty `basal` mutant starts with relax's inline "
+                "setParameter(flag, 2) still in force; the same experiment with its condition "
+                "omitted runs in the base run and is right"))]),
+    ])
+    def test_measured_none_condition_beside_an_inline_perturbation_is_no_condition(
+            self, tmp_path, backend):
+        # ADR-0150 says a measured `none` condition is the same as omitting `condition:`. Here
+        # `plain` applies one and is declared first, so nothing written before it changes a
+        # parameter: omitted, it is the seed-started A = 1/k + (10 - 1/k) exp(-k t) at flag = 1.
+        # `relax`, declared after it, sets flag = 2 inline for its measured phase.
+        _conf, alg = _issue_algorithm(tmp_path, [
+            _UNPERTURBED_RELAX[0], "experiment: plain, condition: basal, data: relax.exp",
+            *_UNPERTURBED_RELAX[1:]], backend)
+        k = 0.37
+        sims = _simulate_at(alg, tmp_path, k, "m")
+        t = np.array(_ISSUE_TIMES)
+        np.testing.assert_allclose(_a_tot(sims["relax"]), _issue_closed_form(k), rtol=1e-6)
+        np.testing.assert_allclose(_a_tot(sims["plainbasal"]),
+                                   1 / k + (10 - 1 / k) * np.exp(-k * t), rtol=1e-6)
