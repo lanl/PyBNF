@@ -133,3 +133,35 @@ because the fit stacks an experiment's replicate files into one Data. But the ex
 check both also pooled **across experiments**, and the fit never does that. The resolver is
 now `_ColumnMeans`. It compares each sigma with its own experiment's mean (replicates pooled),
 and the exporter writes that per-experiment mean. See the ADR-0032 addendum of the same date.
+
+## Addendum: dose-response replicates are dealt the same way (issue #903)
+
+**Accepted and implemented 2026-09-25.** The dealing above ran only on the time-course pivot. A
+dose-response point is one PEtab experiment measured at one time, so its replicates are repeated
+observable rows under one dose experimentId (the exporter tags every replicate `.exp` of a scan
+with the same `<stem>_<i>` ids). `_dose_response_data` pivoted each point into a single row, so
+each replicate overwrote the one before it and only the last reached the fit — for the plain
+and the pre-equilibrated (ADR-0063) scans alike. The pivot is now `_dose_response_datas`: each
+point's rows go through `_deal_replicates`, grid k takes the k-th occurrence of each point's
+cells (one row per dose measured at least k+1 times), and the importer writes the grids as
+`<name>.exp`, `<name>_rep2.exp`, ... on the scan's `data:` list, the naming this ADR gives a time
+course. Per-point `noiseParameters` travel with their rows, as here. A homogeneous replicate set
+round-trips byte for byte; a ragged one (a dose measured more often than the others) yields a
+later grid holding only the repeated doses, which is fit-preserving. Oracles:
+`test_petab_import.py::TestDoseResponseReplicates` — the closed-form least-squares `kd` over all
+six rows of the issue's scan, the imported objective against a hand sum over every measurement
+row, the issue's external triplicates, and the pre-equilibrated scan with per-replicate sigmas.
+
+The review of that change found that the `<name>_rep<k>.exp` naming this ADR chose is not
+unique: a replicated experiment `s` and an experiment whose experimentId is literally `s_rep2`
+both wrote `s_rep2.exp`, the later write won, and one experiment was fitted to the other's
+measurements with no error. Two time courses could always collide that way; #903 let a scan do
+it too. Every file the importer writes is now named from one registry (`_DataFileNames` in
+`import_.py`): each experiment's `<name>.exp` is claimed first, in conf order, then its
+replicates and its per-measurement sidecar as it is written, and a name already taken —
+compared case-insensitively, since `S.exp` and `s.exp` are one file on macOS and Windows, and
+including the model files — moves to the first free `_<n>` suffix (`s_rep2_2.exp`). The
+`data:` line names the file actually written. Two experiments that would take one conf name (a
+scan whose stem is another experiment's id) are refused, naming both. Oracle:
+`TestReplicateFileNamesAreDistinct`, which scores both collision cases through bngsim against a
+closed-form objective over every measurement row.

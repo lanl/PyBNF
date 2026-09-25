@@ -15,7 +15,8 @@ surrogate name) is dropped, a relative op in the surrogate (``v1__REF * 2``) rec
 fit-parameter perturbation (``v1 * 2``), a bare-number target recovers an absolute set
 (a fixed parameter's relative op was lossily precomputed on export, so it round-trips as
 ``var = <num>`` -- the same PEtab value either way), and the synthesized ``cond_wildtype``
-maps back to a wildtype experiment (no ``condition:``), not a ``condition:`` line.
+maps back to a wildtype experiment (no ``condition:``), not a ``condition:`` line -- when it
+holds only base pins; one with real targets imports under its literal id (#905).
 
 **The surrogate-base parameter (the crux, ADR-0027).** PEtab forbids one id from
 appearing in *both* the parameter table and a condition target. A PyBNF condition
@@ -685,13 +686,8 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
             emitted.add(cid)
     base_cid = ''
     if surrogate and any(not conditions[pre] for _n, pre, *_rest in experiments):
+        # (A job condition named 'wildtype' is refused before any builder runs, #905.)
         base_cid = WILDTYPE_CONDITION_ID
-        if any(f'cond_{c}' == WILDTYPE_CONDITION_ID for _n, pre, wash, *_rest in experiments
-               for c in (pre, wash) if c is not None and conditions[c]):
-            raise PybnfError(
-                "A condition named 'wildtype' clashes with the synthesized base condition the "
-                "exporter uses to re-pin fit-and-perturbed parameters on a `perturbations: "
-                "none` equilibration period. Rename the 'wildtype' condition.")
         if WILDTYPE_CONDITION_ID not in emitted:
             condition_rows.extend(
                 PetabConditionRow(WILDTYPE_CONDITION_ID, p, surrogate_name(p))
@@ -724,16 +720,60 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
 # Import: PEtab conditions -> new-era condition: perturbations (the reverse asset)
 # ---------------------------------------------------------------------------
 
+def _is_base_pin(row, surrogate_params):
+    """True iff a condition row is a surrogate base pin ``p = p__REF`` -- machinery re-supplying
+    a removed fit parameter at its estimated value (the row :func:`_perturbation_from_row`
+    drops). The importer reads a pin as the identity once ``p__REF`` is renamed back to ``p``;
+    that is exact only when no earlier period of the experiment changed ``p``, which is left to
+    the issue that handles pins exactly."""
+    return (row.target_id in surrogate_params
+            and row.target_value.strip() == surrogate_name(row.target_id))
+
+
+def drop_synthesized_wildtype(condition_rows, experiment_rows, surrogate_params):
+    """Remove the exporter's synthesized base condition from an imported problem (#905).
+
+    The exporter writes :data:`WILDTYPE_CONDITION_ID` to re-pin every fit-and-perturbed parameter
+    at its base value (``p = p__REF``) on a wildtype time course or a wash-out measurement period
+    (ADR-0027/0052). The importer has always read those rows as "no condition" (see
+    :func:`_is_base_pin` for when that is exact), so a ``cond_wildtype`` made **only** of base
+    pins (or with no rows at all) means "no condition": its rows are dropped and
+    every experiments-table period that applies it gets a blank ``conditionId``, the PEtab
+    spelling of "the model as is" that the reconstruction below already reads. A
+    ``cond_wildtype`` with any other row carries real targets -- a condition some other tool
+    wrote, or a PyBNF condition named ``wildtype`` exported before the exporter reserved that name
+    -- and is left in place, to import under its literal id (:func:`condition_name_from_id`).
+    Before #905 every ``cond_wildtype`` was treated as the base, so a real one was dropped whole
+    and its experiments were fitted against the unperturbed model.
+
+    Returns ``(condition_rows, experiment_rows)``, the inputs unchanged unless the base was
+    dropped. ``surrogate_params`` is the set of model parameters with a ``<p>__REF`` surrogate.
+    """
+    wildtype_rows = [r for r in condition_rows if r.condition_id == WILDTYPE_CONDITION_ID]
+    if not all(_is_base_pin(r, surrogate_params) for r in wildtype_rows):
+        return condition_rows, experiment_rows
+    return ([r for r in condition_rows if r.condition_id != WILDTYPE_CONDITION_ID],
+            [PetabExperimentRow(r.experiment_id, r.time, '')
+             if r.condition_id == WILDTYPE_CONDITION_ID else r
+             for r in experiment_rows])
+
+
 def condition_name_from_id(condition_id):
     """The new-era ``condition:`` name for a PEtab ``conditionId``, or ``None``.
 
-    ``None`` for the synthesized :data:`WILDTYPE_CONDITION_ID` (which maps back to a
-    wildtype experiment with no ``condition:``) and for an absent/blank id. Otherwise the
-    ``cond_`` prefix is stripped (an externally-authored id without the prefix passes
-    through unchanged, defensively).
+    ``None`` for an absent/blank id (the model as is). Otherwise the ``cond_`` prefix is
+    stripped (an externally-authored id without the prefix passes through unchanged,
+    defensively) -- except for :data:`WILDTYPE_CONDITION_ID`, which keeps its literal id. By the
+    time an id reaches here the importer has dropped a ``cond_wildtype`` that is only the
+    exporter's synthesized base (:func:`drop_synthesized_wildtype`), so one that is still present
+    carries real targets. It is not named ``wildtype``: the exporter reserves that name and would
+    refuse to export the imported job, whereas a condition named ``cond_wildtype`` re-exports as
+    ``cond_cond_wildtype`` and imports back under the same name (#905).
     """
-    if not condition_id or condition_id == WILDTYPE_CONDITION_ID:
+    if not condition_id:
         return None
+    if condition_id == WILDTYPE_CONDITION_ID:
+        return condition_id
     if condition_id.startswith(CONDITION_ID_PREFIX):
         return condition_id[len(CONDITION_ID_PREFIX):]
     return condition_id
@@ -774,9 +814,11 @@ def name_unperturbed_equilibrations(condition_rows, experiment_rows):
     (:func:`free_condition_name`) that collides with no condition name or id in the problem;
     every reader downstream then sees an ordinary named pre-equilibration, and the importer
     declares ``name`` as a ``none`` condition. A period whose id :func:`condition_name_from_id`
-    maps to ``None`` counts as applying no condition; that includes the exporter's base
-    condition, whose rows only re-pin fit parameters at their own values. A blank id on a finite
-    period is left alone: there it is simply the absence of a ``condition:`` (a wash-out).
+    maps to ``None`` counts as applying no condition: a blank id, which includes the exporter's
+    base condition once :func:`drop_synthesized_wildtype` has blanked it (only when every row is a
+    base pin). A ``cond_wildtype`` with a real target keeps its id and stays a named
+    pre-equilibration (#905). A blank id on a finite period is left alone: there it is simply the
+    absence of a ``condition:`` (a wash-out).
 
     Returns ``(experiment_rows, name)``; ``name`` is ``None``, and the rows are unchanged, when no
     period applies no condition.
@@ -794,16 +836,25 @@ def name_unperturbed_equilibrations(condition_rows, experiment_rows):
 
 
 def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
-                         free_names=frozenset(), fixed_params=None):
+                         free_names=frozenset(), fixed_params=None, applied=None):
     """Invert :func:`build_experiment_conditions`' condition rows to new-era
     perturbations ``{condition_name: [(var, op, val), ...]}``.
 
     ``surrogate_params`` is the set of model-parameter names that are fit-and-perturbed
     (the ``<p>__REF`` surrogates, recovered from the parameter table by the orchestrator).
-    Rows of the synthesized wildtype base are skipped; base pins (a row whose
-    ``targetValue`` is exactly a surrogate name) are dropped as machinery; the rest map to
+    Base pins (a row whose ``targetValue`` is exactly a surrogate name) are dropped as
+    machinery, so the synthesized wildtype base -- only pins -- yields no condition (the
+    importer has already dropped it, :func:`drop_synthesized_wildtype`); the rest map to
     ``(var, op, val)`` perturbations (see :func:`_perturbation_from_row`). Declaration
     order within a condition is preserved (the wide<->long byte-equal round trip).
+
+    Two conditionIds can map to one name (``cond_a`` and ``a``, or ``cond_cond_wildtype`` and
+    ``cond_wildtype``). ``applied`` is the set of conditionIds some measured experiment applies
+    (``None``: treat every id as applied). If two or more of the colliding ids are applied,
+    ``PybnfError`` is raised rather than merging their targets into one condition. Otherwise one
+    id is kept under the shared name -- the applied one, or with none applied the first in
+    table order -- and the others are left out: a condition no experiment applies cannot change
+    the fit (libpetab only warns about one).
 
     ``species_by_id`` (``{petab_id: pattern}``, ADR-0062) inverts the mapping table: a target
     that is a mapping species id recovers its BNGL pattern and a verbatim ``=`` value (a species
@@ -815,16 +866,42 @@ def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
     reference (``val`` a *string* naming that free parameter), a target set to a fixed one inlines
     its numeric value."""
     species_by_id = species_by_id or {}
+    kept = _kept_condition_ids(condition_rows, applied)
     conditions = {}
     for row in condition_rows:
         name = condition_name_from_id(row.condition_id)
-        if name is None:
+        if name is None or row.condition_id not in kept:
             continue
         pert = _perturbation_from_row(row, surrogate_params, species_by_id,
                                       free_names, fixed_params or {})
         if pert is not None:
             conditions.setdefault(name, []).append(pert)
     return conditions
+
+
+def _kept_condition_ids(condition_rows, applied):
+    """The conditionIds :func:`conditions_from_rows` imports: one per PyBNF condition name.
+
+    Where several ids map to one name, the applied one is kept (``applied=None`` counts every id
+    as applied); with none applied, the first in table order. Two or more applied ids raise
+    ``PybnfError`` naming them, since importing them would merge their targets (#905)."""
+    ids_of_name = {}
+    for row in condition_rows:
+        name = condition_name_from_id(row.condition_id)
+        if name is not None and row.condition_id not in ids_of_name.setdefault(name, []):
+            ids_of_name[name].append(row.condition_id)
+    kept = set()
+    for name, ids in ids_of_name.items():
+        used = [cid for cid in ids if applied is None or cid in applied]
+        if len(used) > 1:
+            listed = ', '.join(repr(cid) for cid in used[:-1]) + f' and {used[-1]!r}'
+            raise PybnfError(
+                f"PEtab conditions {listed} {'both' if len(used) == 2 else 'all'} import as the "
+                f"PyBNF condition {name!r}, and experiments apply each of them, so their targets "
+                f"would be merged into one condition. Rename one of them in the conditions and "
+                f"experiments tables.")
+        kept.add(used[0] if used else ids[0])
+    return kept
 
 
 #: A bare PEtab identifier (a parameter-valued ``targetValue`` names exactly one parameter;

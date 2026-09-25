@@ -7,9 +7,10 @@ string approach -- operator precedence, the ``^`` power operator, and the
 ``ln``/``log10``/``sqrt`` spellings are where it would silently go wrong):
 
 * :func:`bngl_body_to_petab_math` -- a BNGL function body -> a PEtab math expression
-  (the exporter's opt-in inlining mode, which generates the round-trip oracle). The hard
-  semantic part (precedence, ``^``, ``sqrt``) is written once and guarded by a numeric
-  self-check (:func:`_assert_round_trips`).
+  (the exporter's opt-in inlining mode, which generates the round-trip oracle). The body is
+  BNGL, not PEtab math, so it is read with BioNetGen's grammar (:mod:`._bngl_math`, #908),
+  printed as PEtab math with explicit parentheses, and guarded by a numeric check of the
+  printed formula against BioNetGen's reading of the body (:func:`_assert_matches_bngl`).
 * :func:`compile_petab_formula` -- a PEtab math expression -> a vectorized ``numpy``
   callable (the **measurement-model observation layer**, ADR-0036): the formula is evaluated
   *post-simulation* over the output trajectory + the PSet, never by editing a model file.
@@ -47,9 +48,10 @@ def _require_petab_math():
 
     ``petab``/``sympy`` is the optional ``pybnf[petab]`` extra (ADR-0035): only the
     expression path imports it. A missing install surfaces as a ``PybnfError`` naming the
-    extra, never a bare ``ImportError`` from deep in the call stack. The forward (export)
-    serialization is owned by our own printer (:func:`_petab_printer_cls`), not
-    ``petab_math_str`` -- see :func:`_petab_printer_cls` for why.
+    extra, never a bare ``ImportError`` from deep in the call stack. Serialization is owned
+    by our own printers (:func:`._bngl_math.to_petab` for a BNGL body,
+    :func:`_petab_printer_cls` for a rewritten PEtab formula), not ``petab_math_str`` -- see
+    :func:`_petab_printer_cls` for why.
     """
     try:
         from petab.v2.math import sympify_petab
@@ -67,30 +69,48 @@ def _require_petab_math():
 # The translator pair
 # ---------------------------------------------------------------------------
 
-def bngl_body_to_petab_math(body, entities):
+def bngl_body_to_petab_math(body, entities, *, function_name=None, model_file=None):
     """Translate a BNGL function ``body`` to a PEtab math expression string.
 
     The exporter's inlining mode (ADR-0035): a fitted **function** column emits its body
-    as ``observableFormula`` instead of the bare name. Every free symbol is validated
-    against the model namespace (parameters u observables u functions), then the parsed
-    tree is serialized by our own precedence-safe PEtab printer (:func:`_petab_printer_cls`)
-    so the emitted formula is math the PEtab oracle accepts *and* re-parses to itself. A
-    final round-trip self-check (:func:`_assert_round_trips`) refuses to emit any string
-    that does not parse back to the same expression -- a wrong observableFormula is worse
-    than a refused one (ADR-0035). A BNGL ``func()`` reference to another global function is
-    rewritten to a bare symbol first (PEtab math has no user zero-arg functions); the
-    function set is closed and known, so this is a bounded rename, not a tokenizer.
+    as ``observableFormula`` instead of the bare name. The body is BNGL, and BNGL does not
+    read arithmetic the way PEtab math does (``-k^2`` is ``(-k)^2`` and ``a^b^c`` is
+    ``(a^b)^c`` in BNGL, the opposite in PEtab), so it is parsed with BioNetGen's grammar and
+    printed as PEtab math with explicit parentheses (:mod:`._bngl_math`, #908). A ``g()``
+    reference to another global function or an observable becomes the bare symbol ``g``
+    (PEtab math has no user zero-argument functions). Every free symbol is validated against
+    the model namespace (parameters u observables u functions), and the printed formula is
+    checked numerically against BioNetGen's reading of the body
+    (:func:`_assert_matches_bngl`) -- a wrong observableFormula is worse than a refused one
+    (ADR-0035). ``function_name``/``model_file`` only name the function in error messages.
 
-    Raises ``PybnfError`` on a missing ``petab`` extra, an unknown free symbol, an
-    unparseable body, or a body that does not survive the serialize/re-parse round trip;
-    ``NotImplementedError`` on a per-measurement placeholder symbol.
+    Raises ``PybnfError`` on a missing ``petab`` extra, a malformed body, a body using an
+    operator BioNetGen's simulators refuse, an unknown free symbol, or a formula that
+    disagrees with the body; ``NotImplementedError`` on a construct PEtab math cannot
+    express exactly (``rint``, ``time()``, ``mratio``, ``TFUN``, a call with arguments to a
+    local function, a negative literal raised to a power, an ``if()`` whose condition is not
+    a comparison) and on a per-measurement placeholder symbol.
     """
+    from . import _bngl_math
     sympify_petab = _require_petab_math()
-    expr = _parse(sympify_petab, _strip_function_calls(body, entities),
-                  source='BNGL function body')
+    where = (f"BNGL function '{function_name}'" if function_name else 'BNGL function body')
+    if model_file:
+        where += f" in model '{model_file}'"
+    try:
+        tree = _bngl_math.parse(
+            body, callable_names=set(entities.observable_names) | set(entities.function_names))
+    except _bngl_math.BnglBodyError as e:
+        raise PybnfError(f"Could not read the {where}, {body!r}: {e}.") from e
+    except NotImplementedError as e:
+        raise NotImplementedError(
+            f"The {where}, {body!r}, cannot be inlined as a PEtab observableFormula: {e}. "
+            f"Export without inline_functions to reference the function by name instead "
+            f"(ADR-0035, #908).") from e
+    petab_math = _bngl_math.to_petab(tree)
+    expr = _parse(sympify_petab, petab_math,
+                  source=f'observableFormula printed for the {where}, {body!r}, which is')
     _validate_symbols(expr, entities)
-    petab_math = _petab_printer_cls()().doprint(expr)
-    _assert_round_trips(sympify_petab, expr, petab_math, body)
+    _assert_matches_bngl(tree, expr, petab_math, body, where)
     return petab_math
 
 
@@ -439,15 +459,122 @@ def _parse(sympify_petab, text, *, source):
             f"Could not parse the {source} {text!r} as PEtab math: {e}") from e
 
 
+def _assert_matches_bngl(tree, expr, petab_math, body, where):
+    """Refuse to emit a PEtab formula whose value differs from BioNetGen's reading of the body.
+
+    The export-inline safety net (ADR-0035, "a wrong measurement model is worse than a
+    refused one"; #908). ``tree`` is the body parsed with BioNetGen's grammar and ``expr`` is
+    PEtab's own parse of the printed ``petab_math``. At a fixed sequence of pseudo-random
+    points, taken in turn from three kinds (three quarters positive, spread over six decades,
+    so comparisons take both branches and a logarithm or a square root of a shifted quantity
+    finds its domain; all positive, where a fractional power of a quotient of several
+    symbols is defined; and small integers of either sign, where a negative base has a real
+    power), the tree is evaluated with BioNetGen's semantics in plain floating point
+    (:func:`._bngl_math.evaluate`), ``expr`` is evaluated the way the measurement layer will
+    evaluate it (``lambdify`` to numpy, so both sides are IEEE doubles), and the two must
+    agree. The two evaluations share nothing but the parse, so a printer that drops a
+    parenthesis PEtab needs, misspells a function, or mistranslates a comparison is caught
+    here, and so is a formula that petab's own reader would evaluate wrongly. (The guard this
+    replaced compared PEtab's parse of the body with PEtab's parse of the output, so a body
+    PEtab had misread in the first place passed it.)
+
+    A point where BioNetGen's value is undefined or already lost to double precision (a
+    domain error, a division by zero, an overflow, an underflow) is skipped. A point where
+    BioNetGen's value is finite and PEtab's is not, or where they differ, refuses the
+    formula; so does a body that is undefined at every point, since nothing could then be
+    checked.
+    """
+    import random
+
+    import numpy as np
+    import sympy as sp
+
+    from . import _bngl_math
+    by_name = {str(s): s for s in expr.free_symbols}
+    names = sorted(_bngl_math.symbols(tree))
+    petab_names = sorted(by_name)
+
+    def refuse(detail):
+        raise PybnfError(
+            f"Refusing to emit the observableFormula {petab_math!r} for the {where}, "
+            f"{body!r}: {detail}, so emitting it would silently change the measurement model "
+            f"(a wrong observableFormula is worse than a refused one, ADR-0035, #908). Please "
+            f"report it, and export without inline_functions meanwhile.")
+
+    def unverifiable(detail):
+        raise PybnfError(
+            f"Could not check the observableFormula {petab_math!r} printed for the {where}, "
+            f"{body!r}, against the body, because {detail}. An unchecked formula is not "
+            f"emitted (ADR-0035, #908); export without inline_functions to reference the "
+            f"function by name.")
+
+    extra = sorted(set(by_name) - set(names))
+    if extra:
+        refuse(f"it names {extra}, which the body does not")
+
+    # petab parses log10(x) and log2(x) unevaluated as sympy's two-argument log(x, 10), which
+    # the numpy printer writes as numpy.log(x, 10) (the 10 lands in numpy's `out` slot and
+    # the call fails), so give lambdify a log that takes the base. Bases 10 and 2 use numpy's
+    # own log10 and log2, which are exact where log(x)/log(10) is not (log10(0.1) is -1.0,
+    # not -0.9999999999999998), so a power or a comparison fed by one is not misjudged.
+    def _log(x, base=None):
+        if base is None:
+            return np.log(x)
+        return {10: np.log10, 2: np.log2}.get(base, lambda v: np.log(v) / np.log(base))(x)
+    try:
+        func = sp.lambdify([by_name[n] for n in petab_names], expr,
+                           modules=[{'log': _log}, 'numpy'])
+    except Exception as e:  # noqa: BLE001 -- every failure here is a refusal, never a pass
+        unverifiable(f"sympy could not compile it for numerical evaluation "
+                     f"({type(e).__name__}: {e})")
+
+    # Mixed signs alone left too few defined points for a Hill-type inverse such as
+    # (k^n*x/(r-x))^(1/n), and none for (-(2))^x, the form the refusal of (-2)^x recommends,
+    # so both were refused as uncheckable; hence the all-positive and the integer points
+    # (review of #908).
+    rng = random.Random(908)
+    agreed = 0
+    tries = 512
+    for i in range(tries):
+        if i % 3 == 0:
+            point = {n: rng.choice((1, 1, 1, -1)) * 10 ** rng.uniform(-3, 3) for n in names}
+        elif i % 3 == 1:
+            point = {n: 10 ** rng.uniform(-3, 3) for n in names}
+        else:
+            point = {n: float(rng.choice((1, 1, 1, -1)) * rng.randint(1, 4)) for n in names}
+        want = _bngl_math.evaluate(tree, point)
+        if want is None:
+            continue
+        try:
+            # numpy scalars, as the measurement layer passes arrays: Python floats would raise
+            # OverflowError where numpy (and a simulator) overflows to inf.
+            with np.errstate(all='ignore'):
+                got = float(func(*[np.float64(point[n]) for n in petab_names]))
+        except (ArithmeticError, TypeError, ValueError):
+            got = float('nan')
+        if not np.isfinite(got) or abs(got - want) > 1e-9 * max(1.0, abs(want)):
+            refuse(f"at {point} BioNetGen's value of the body is {want!r}, but petab's reading "
+                   f"of the formula, evaluated as PyBNF's measurement layer evaluates it, is "
+                   f"{got!r}")
+        agreed += 1
+        if agreed >= 8:
+            return
+    unverifiable(f'the body is undefined (a domain error, a division by zero or an overflow) '
+                 f'at all but {agreed} of {tries} sample points, and 8 are needed')
+
+
 def _assert_round_trips(sympify_petab, expr, petab_math, body):
     """Refuse to emit a PEtab serialization that does not parse back to ``expr``.
 
-    The exporter-side safety net (ADR-0035, "a wrong measurement model is worse than a
-    refused one"): re-parse the emitted ``petab_math`` and assert it denotes the same
-    function as ``expr``. :func:`_petab_printer_cls` already parenthesizes the one petab
-    serializer defect we know of (the unparenthesized ``x ^ 1/2`` from a ``sqrt``); this
-    guard is the standing tripwire for *any* future serializer surprise, so corruption is
-    always loud, never silent.
+    The safety net of the PEtab-to-PEtab rewrites (:func:`inline_constants`,
+    :func:`substitute_placeholders`, :func:`inline_derived_symbols`), whose input is already
+    PEtab math (ADR-0035, "a wrong measurement model is worse than a refused one"): re-parse
+    the emitted ``petab_math`` and assert it denotes the same function as ``expr``.
+    :func:`_petab_printer_cls` already parenthesizes the one petab serializer defect we know
+    of (the unparenthesized ``x ^ 1/2`` from a ``sqrt``); this guard is the standing tripwire
+    for *any* future serializer surprise, so corruption is always loud, never silent. It
+    cannot catch a misreading of the input, since both sides are read with PEtab's grammar;
+    that is why the BNGL export direction uses :func:`_assert_matches_bngl` instead (#908).
 
     Equality is by **numeric sampling at several distinct positive points**, not symbolic
     ``simplify``/``equals``: petab floatifies literals (``sqrt`` parses back with a ``1.0/2.0``
@@ -458,8 +585,8 @@ def _assert_round_trips(sympify_petab, expr, petab_math, body):
     """
     if not _same_function(sympify_petab, expr, sympify_petab(petab_math, evaluate=False)):
         raise PybnfError(
-            f"Refusing to emit the observableFormula {petab_math!r} for the BNGL function "
-            f"body {body!r}: it does not parse back to the same function, so emitting it "
+            f"Refusing to emit the observableFormula {petab_math!r} for "
+            f"{body!r}: it does not parse back to the same function, so emitting it "
             f"would silently corrupt the measurement model (a wrong observableFormula is "
             f"worse than a refused one, ADR-0035). This indicates a PEtab math-serializer "
             f"defect; please report it.")
@@ -540,24 +667,9 @@ def _check_symbols(expr, allowed, *, unknown, detail):
         raise PybnfError(unknown(name), detail)
 
 
-def _strip_function_calls(body, entities):
-    """Rewrite each BNGL ``func()`` zero-arg reference to a bare ``func`` symbol.
-
-    PEtab math has no user-defined zero-arg functions, so its grammar rejects ``func()``;
-    BNGL references a global function that way. The function set is closed and known
-    (``entities.function_names``), so this is a bounded, anchored rename of known names --
-    not a general math tokenizer (ADR-0033's warning is about *parsing* the math, which we
-    still hand to ``sympify_petab``). Used only by the export-inline direction
-    (:func:`bngl_body_to_petab_math`).
-    """
-    out = body
-    for name in sorted(entities.function_names, key=len, reverse=True):
-        out = re.sub(rf'\b{re.escape(name)}\s*\(\s*\)', name, out)
-    return out
-
-
 # Cached printer class. Defined lazily (it subclasses petab's printer) so this module
-# imports with petab/sympy absent -- only the export-inline path builds it.
+# imports with petab/sympy absent -- only the PEtab-to-PEtab rewrites build it. (The BNGL
+# export direction prints with :func:`._bngl_math.to_petab` instead, #908.)
 _PETAB_PRINTER = None
 
 

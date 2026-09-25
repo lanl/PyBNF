@@ -140,5 +140,25 @@ need can add the knob.)
 - See ADR-0028 (the new-era surface this completes), 0027 (conditions/experiments — dose-response
   reuses the Condition/Experiment machinery), 0025 (exporter), 0032 (importer read path). Advances
   #426 (and #423, whose last open child this was).
-</content>
-</invoke>
+
+## Addendum: a plain dose point is one period applying one condition (issue #904)
+
+**Accepted and implemented 2026-09-25.** The importer's plain dose detector
+(`reconstruct_dose_responses`) mapped each experiment to a condition through a flat
+`{experimentId: conditionId}` dict in which the last experiments-table row won, the flattening
+that issue #442 removed from the time-course path. An experiment with a `time = -inf`
+pre-equilibration period, or with two conditions applied at the same time, was therefore read by
+its last row and imported as a plain scan, dropping the pre-equilibration or the other condition.
+The detector now claims only an experiment with exactly one experiments-table row. Anything else
+is left to the pre-equilibrated detector (ADR-0063 addendum) or to the time-course path, which
+recovers a `-inf` + finite pair as `preequilibrate:` + `condition:` and now refuses two conditions
+applied at the same time with an error naming the experiment and its conditions.
+
+A dose condition is classified with its surrogate base pins (`kd = kd__REF`) still in place, so a
+per-dose condition that the #892 exporter pins, because a fit parameter is perturbed elsewhere in
+the job, has two targets and is not read as a dose. Each such dose re-imports as its own
+conditioned experiment: at steady state that is the same fit, and a `t_end:` scan fails at load
+(BNG2.pl needs three sample times). Dropping the pins first was tried and withdrawn: a pin is
+the identity only when the parameter's surrogate is estimated and no earlier period of the
+experiment changed it, so dropping it can change the problem. Pins will be handled exactly in a
+separate issue.

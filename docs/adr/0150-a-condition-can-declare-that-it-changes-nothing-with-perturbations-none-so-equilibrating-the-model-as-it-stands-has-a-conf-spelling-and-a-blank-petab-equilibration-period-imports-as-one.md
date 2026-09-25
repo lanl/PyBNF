@@ -61,19 +61,24 @@ or, when fit-and-perturbed parameters must be re-pinned on every period (the set
 ADR-0027), as the base condition `cond_wildtype` the exporter already writes for a wildtype
 experiment. A `none` measured condition exports exactly as an omitted one. A `none` condition
 never becomes a `conditionId` of its own, since PEtab has no zero-row condition, and the
-condition builder now refuses to emit one. A job condition named `wildtype` is exported under
-that same id, so export refuses one wherever the base condition is also needed, on a `none`
-equilibration, a wash-out or a wildtype time course alike; before, whichever was written first
-silently supplied the other's rows. The exporter also checks a measured `none` condition's
-model, as the fitter does, before reading it as omitted.
+condition builder now refuses to emit one. A job condition named `wildtype` would be exported
+under that same id, and where the base condition is also needed (a `none` equilibration, a
+wash-out or a wildtype time course) whichever was written first silently supplied the other's
+rows. Export refuses the name whenever an experiment applies such a condition (#905), a `none`
+one included. The exporter also checks a measured `none` condition's model, as the fitter does,
+before reading it as omitted.
 
 PEtab import is the inverse. A `-inf` period that applies no condition is pointed at one
 synthesized condition, `unperturbed` (or `unperturbed_2`, ... when the problem already uses the
 name), written as `perturbations: none`, before any reader sees the period. A multi-model job
 gets one such condition per model, because a PyBNF condition belongs to one model. A named
 condition whose rows are all base pins `p = p__REF`, the identity once `p__REF` is renamed back
-to `p`, imports as a `none` condition under its own name. A blank id on a measured period is
-still "no condition".
+to `p`, imports as a `none` condition under its own name. The exporter's own base condition,
+`cond_wildtype`, follows #905's rule: made only of pins, it is dropped and its periods blanked
+before the rewrite, so on a `-inf` period it becomes the synthesized `none` condition; with any
+real target it imports as the condition `cond_wildtype`, so a `-inf` period applying it imports
+as `preequilibrate: cond_wildtype` with those targets. A blank id on a measured period is still
+"no condition".
 
 ## Experiments written before a `none` equilibration
 

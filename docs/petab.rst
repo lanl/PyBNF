@@ -84,6 +84,18 @@ concern a job that otherwise looks perfectly exportable:
   sampling time. A PEtab measurement carries one exact ``time``, so the job is refused
   rather than silently exported as an exact-time fit.
 
+Job-wide settings and the model's own actions are checked too. ``noise_location = mean``
+on an ``lnnormal`` fit is refused like a ``location = mean`` field (on a linear Gaussian or
+Laplace the mean is the median, so either spelling exports), and a ``postprocess`` script is
+refused because PEtab cannot run a Python transform of the prediction. A BNGL model is
+exported as the model the fit ran: its leftover ``simulate`` / ``resetConcentrations`` /
+``write*`` / ``visualize`` actions are dropped, its network definition is kept (the model's own
+``generate_network`` line, or the one the job's ``generate_network`` key synthesizes), and an
+action that would change what the experiments start from (``setParameter``,
+``setConcentration``, ``saveConcentrations``, a ``parameter_scan``, and any action not listed
+here) is refused with the model file and the action named. Move such a change into the model
+itself or into a ``condition:``, or delete the line.
+
 .. _petab_bngl_loader:
 
 The BNGL model loader
@@ -156,13 +168,23 @@ following all survive an import and an export:
   one conditioned experiment per dose instead. For a steady-state scan the fit is
   the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)
   scan of that kind does not yet load after re-import: each dose becomes a time
-  course with a single measurement time, which the simulator refuses.
+  course with a single measurement time, which the simulator refuses. Replicate measurements at a dose
+  import as replicate ``.exp`` files, as a time course's do. A dose applied after a
+  pre-equilibration imports as a pre-equilibrated scan, including the
+  ``experiment__<pre>___<sim>`` experiments that ``petab1to2`` writes from a v1
+  ``preequilibrationConditionId``. An experiment that applies two conditions at the
+  same time is refused on import. The condition name ``wildtype`` is reserved: the
+  exporter writes its own base condition as ``cond_wildtype``, so a condition of that
+  name is refused on export.
 - **Equilibrating the model as is** — a ``time = -inf`` period with a blank
   ``conditionId`` (PEtab v2's "the model as is") imports as ``preequilibrate:`` a
   synthesized ``condition: unperturbed, perturbations: none`` (``unperturbed_2``, … when
   the name is taken, and one per model in a multi-model job), and a condition whose rows
   only re-pin fit parameters at their own values (``p = p__REF``) imports as a ``none``
-  condition under its own name. The export is the inverse: a ``perturbations: none``
+  condition under its own name. On a ``-inf`` period the exporter's ``cond_wildtype``
+  follows the same rule: made only of such pins it becomes the synthesized ``none``
+  condition, and with a real target it imports as ``preequilibrate: cond_wildtype``. The
+  export is the inverse: a ``perturbations: none``
   pre-equilibration writes a blank ``-inf`` ``conditionId``, or the synthesized base
   condition ``cond_wildtype`` when fit-and-perturbed parameters must be re-pinned there,
   and a ``none`` measured ``condition:`` exports exactly as an omitted one. A blank
