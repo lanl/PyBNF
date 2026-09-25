@@ -358,8 +358,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     _apply_observable_overrides(all_datas, overrides)
 
     measurement_models = _read_measurement_models(conf)
-    observable_rows, column_to_observable_id = _observable_rows(
+    observable_rows, column_to_observable_id, column_means = _observable_rows(
         experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
+
+    def _noise_values_for(exp):
+        # A column-mean sigma that differs between experiments (#894) is written row by row:
+        # every measurement row of this experiment carries this experiment's own mean.
+        return {col: means[exp['name']] for col, means in column_means.items()
+                if exp['name'] in means}
 
     # Four PEtab experiment shapes (ADR-0046/0052/0062): a time course is one Experiment over a
     # referenced Condition; a dose-response (parameter_scan) is N Conditions (each sets the swept
@@ -500,11 +506,13 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         experiment_rows += pdr_experiment_rows
 
     # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
-    # data column (the read_exp_file placeholder source); a fixed / column-mean / formula sigma
-    # is carried inline in noiseFormula, so the measurement export must not read _SD then (it
-    # would leave a noiseParameters override with no placeholder to bind to). With per-observable
-    # overrides the suffix is **per column** (ADR-0045): each column uses its own sigma source
-    # (its override, else the whole-fit base) to decide whether it reads a _SD companion.
+    # data column (the read_exp_file placeholder source) or is a column mean that differs
+    # between experiments (_noise_values_for above, #894); a fixed / single-mean column-mean /
+    # formula sigma is carried inline in noiseFormula, so the measurement export must not read
+    # _SD then (it would leave a noiseParameters override with no placeholder to bind to).
+    # With per-observable overrides the suffix is **per column** (ADR-0045): each column uses
+    # its own sigma source (its override, else the whole-fit base) to decide whether it reads
+    # a _SD companion.
     def _sd_suffix_for(col):
         _dist, verb, arg = per_obs_noise.get(col, noise)
         return arg if verb == 'read_exp_file' else None
@@ -530,7 +538,8 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             measurement_rows += measurement_rows_from_data(
                 data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id,
                 measurement_params=measurement_params_for_replicate(
-                    exp['measurement_params'], replicate))
+                    exp['measurement_params'], replicate),
+                noise_values=_noise_values_for(exp))
 
     # Dose-response (ADR-0046): each dose of the experiment's dose axis -- the sorted union of its
     # replicates' doses, the grid the fitter scans (#895) -- becomes its own Condition (setting the
@@ -554,9 +563,12 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items()
                     if c in data.cols and c != swept_param}
+            # A column-mean sigma is the whole scan's mean, not a per-dose one: the scan is
+            # ONE PyBNF experiment however many PEtab experiments its doses become (#894).
             measurement_rows += dose_response_measurement_rows(
                 data, cmap, swept_param, experiment_id_of_dose, scan_time,
-                sd_suffix=sd_suffix, model_id=model_id)
+                sd_suffix=sd_suffix, model_id=model_id,
+                noise_values=_noise_values_for(exp))
 
     # Pre-equilibrated dose-response measurements (ADR-0062): tagged <stem>_<i> at the scan time,
     # exactly like a plain dose-response, so the same pivot applies -- each row by its own dose
@@ -572,7 +584,8 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                     if c in data.cols and c != swept_param}
             measurement_rows += dose_response_measurement_rows(
                 data, cmap, swept_param, experiment_id_of_dose, scan_time,
-                sd_suffix=sd_suffix, model_id=model_id)
+                sd_suffix=sd_suffix, model_id=model_id,
+                noise_values=_noise_values_for(exp))
 
     # The species-amount mapping table (ADR-0062): one row per referenced species pattern, in
     # first-appearance order (petabEntityId -> the BNGL pattern). Empty for a job with no species
@@ -1307,9 +1320,13 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
     ``measurement_models`` (``{id: formula}``, ADR-0036) are conf-declared measurement models
     (model-agnostic): a column matching one is emitted with that formula as its
     ``observableFormula`` and its id verbatim (the inverse of the importer's ``observable: ...
-    formula:`` line)."""
+    formula:`` line).
+
+    Returns ``(observable_rows, column_to_observable_id, column_means)``. ``column_means`` is
+    ``{column: {experiment name: mean}}`` for each ``column_mean`` column whose experiments
+    have different means (#894): its observable row declares a noise placeholder, and the
+    caller writes each measurement row's own experiment mean into ``noiseParameters``."""
     measurement_models = measurement_models or {}
-    all_datas = [d for exp in experiments for d in exp['datas']]
 
     # Gather the fitted columns in first-appearance order, each tagged with the model
     # file(s) that measure it (distinct, declaration order). A measurement-model column is
@@ -1331,6 +1348,7 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
 
     observable_rows = []
     column_to_observable_id = {}
+    column_means = {}
     for col in columns:
         classes = [(mf, _classify_column(col, registry[mf], mf, measurement_models,
                                          inline_functions))
@@ -1347,7 +1365,13 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
         # A column's noise is its per-observable override if one is declared, else the
         # whole-fit base (ADR-0021/0045); the override carries its own family + sigma source.
         distribution, verb, arg = per_obs_noise.get(col, noise)
-        noise_source = _noise_source_for_column(verb, arg, col, all_datas)
+        noise_source = _noise_source_for_column(verb, arg, col, experiments)
+        if noise_source[0] == 'experiment_means':
+            # A column-mean sigma that differs between experiments (#894): the observable
+            # declares a noise placeholder and each measurement row carries its own
+            # experiment's mean in noiseParameters -- the fit's per-experiment sigma, exactly.
+            column_means[col] = noise_source[1]
+            noise_source = ('placeholder', None)
         row = petab_observable_row(col, kind, distribution, noise_source,
                                    observable_formula=formula)
         observable_rows.append(row)
@@ -1356,7 +1380,7 @@ def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functio
         raise PybnfError(
             "The job's experiment data has no fittable observable/function columns "
             "(only an independent variable and/or _SD columns).")
-    return observable_rows, column_to_observable_id
+    return observable_rows, column_to_observable_id, column_means
 
 
 def _classify_column(col, model, model_file, measurement_models, inline_functions):
@@ -1405,7 +1429,7 @@ def _inlined_formula(col, kind, model, model_file):
     return bngl_body_to_petab_math(body, model)
 
 
-def _noise_source_for_column(verb, arg, col, datas):
+def _noise_source_for_column(verb, arg, col, experiments):
     """The PEtab noise representation for one fitted column, from the desugared sigma
     source verb (ADR-0021 reversed) -- evaluated across every experiment's ``datas``:
 
@@ -1414,7 +1438,10 @@ def _noise_source_for_column(verb, arg, col, datas):
       carry its ``<col><suffix>`` companion (else a measurement row would lack the noise
       value its declared placeholder binds to).
     * ``fix_at`` -> a constant noiseFormula (the fixed sigma).
-    * ``column_mean`` -> a constant noiseFormula = the column's mean across all data.
+    * ``column_mean`` -> the column's mean **per experiment** (:func:`_column_mean_noise_source`,
+      #894): a constant noiseFormula when every experiment measuring the column has the same
+      mean (always so for one experiment), else ``('experiment_means', {name: mean})``, which
+      the caller turns into a noise placeholder fed row by row.
     * ``formula`` -> the expression noiseFormula verbatim (a ``FormulaSigma``, ADR-0044/0045):
       a PEtab-math expression over free-parameter ids + constants. The expression's symbols are
       PEtab parameter ids (exported as estimated parameters); a noise nuisance that is not a
@@ -1435,7 +1462,7 @@ def _noise_source_for_column(verb, arg, col, datas):
     A relative sigma (``relative``) is still a deferred boundary: it is a ``noiseFormula``
     expression (the sympy layer, mirroring the importer's expression boundary).
     """
-    holders = [data for data in datas if col in data.cols]
+    holders = [data for exp in experiments for data in exp['datas'] if col in data.cols]
     if verb == 'formula':
         return ('per_measurement', arg) if _PLACEHOLDER.search(arg) else ('formula', arg)
     if verb == 'prediction_formula':
@@ -1460,10 +1487,7 @@ def _noise_source_for_column(verb, arg, col, datas):
     if verb == 'fix_at':
         return ('constant', float(arg))
     if verb == 'column_mean':
-        # Over the OBSERVED values only (#707), matching what ColumnMeanSigma computes at
-        # fit time: a sparse multi-observable column carries NaN in its unmeasured rows, and
-        # a plain average would export 'nan' as this observable's noiseFormula constant.
-        return ('constant', float(observed_mean(np.concatenate([d[col] for d in holders]))))
+        return _column_mean_noise_source(col, experiments)
     if verb == 'fit':
         # A free-parameter (estimated) sigma -> a bare-id noiseFormula naming the noise
         # parameter (declared estimated in parameters.tsv; admitted as an observation-layer
@@ -1475,6 +1499,58 @@ def _noise_source_for_column(verb, arg, col, datas):
         f"Observable column '{col}': the '{verb}' sigma source is a later export chunk "
         f"-- a relative sigma is a noiseFormula expression (the sympy layer, mirroring "
         f"the importer boundary). ADR-0021/0023, #423.")
+
+
+def _experiment_column_means(col, experiments):
+    """``{experiment name: mean}`` -- the ``column_mean`` sigma the fit gives column ``col`` in
+    each experiment that has at least one observed value of it (#894).
+
+    This is the fit's own number. ``Objective.evaluate_multiple`` scores one experiment at a
+    time, and ``ColumnMeanSigma`` (like the legacy ``ave_norm_sos``) takes
+    ``Data.column_mean`` of *that* experiment's Data. The Data is the experiment's replicate
+    files stacked in ``data:`` order (``config._stack_replicates``, ADR-0039), so its observed
+    values are these ``datas`` concatenated in the same order. The mean is therefore the same
+    float. It is taken over observed values only, since NaN means unmeasured (#707). A
+    dose-response is one PyBNF experiment even though its doses become N PEtab experiments, so
+    all of its doses share one mean. An experiment with no observed value of the column
+    contributes no scored point and no measurement row, so it has no sigma to export."""
+    means = {}
+    for exp in experiments:
+        values = [d[col] for d in exp['datas'] if col in d.cols]
+        if not values:
+            continue
+        mean = float(observed_mean(np.concatenate(values)))
+        if not np.isnan(mean):
+            means[exp['name']] = mean
+    return means
+
+
+def _column_mean_noise_source(col, experiments):
+    """The PEtab noise source for a ``column_mean`` sigma on column ``col`` (#894).
+
+    The fit normalizes each experiment by **its own** column mean
+    (:func:`_experiment_column_means`), so a single mean pooled over every experiment is the
+    wrong sigma as soon as two experiments measure the column at different magnitudes: it
+    reweights the experiments against each other and moves the optimum. PEtab has no
+    data-derived sigma, but the mean is a constant of the data, so it can be written exactly:
+
+    * every experiment has the same mean (in particular, only one experiment measures the
+      column) -> ``('constant', mean)``, the inline numeric noiseFormula (unchanged from the
+      pre-#894 export for a single experiment);
+    * the means differ -> ``('experiment_means', {name: mean})``: the observable declares a
+      noise placeholder (``noiseParameter1_<id>``) and every measurement row carries its own
+      experiment's mean in ``noiseParameters``. PEtab then gives each point the fit's sigma.
+
+    The importer reads either form back to ``column_mean`` only when each value equals its
+    experiment's own mean (``import_._ColumnMeans``), so the round trip restores the job.
+    """
+    means = _experiment_column_means(col, experiments)
+    distinct = set(means.values())
+    if len(distinct) > 1:
+        return ('experiment_means', means)
+    # No observed value anywhere: no measurement row scores this column, so the constant is
+    # inert; keep the historical NaN (observed_mean of nothing) rather than invent a sigma.
+    return ('constant', distinct.pop() if distinct else float('nan'))
 
 
 def _resolve_free_to_model(free_params, registry, models, nuisances=()):

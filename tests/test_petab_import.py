@@ -39,6 +39,7 @@ from pybnf.petab import (
     read_problem_yaml,
 )
 from pybnf.petab._bngl import parse_model
+from pybnf.petab._tsv import num
 from pybnf.petab.import_ import _condition_and_preequilibrate
 from pybnf.petab.conditions import (
     PetabConditionRow,
@@ -58,6 +59,19 @@ from pybnf.petab.measurements import (
     read_measurement_table,
     row_varying_noise_ids,
     row_varying_observable_ids,
+)
+
+# The #894 column-mean fixture and its three objective oracles live with the exporter tests.
+from .test_petab_export import (
+    _COLUMN_MEAN_SPELLINGS,
+    _DECAY_MODEL,
+    _DECAY_TIMES,
+    _decay_series,
+    _exp_text,
+    _petab_nll,
+    _pybnf_objective,
+    _write_decay_job,
+    _write_ragged_job,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -1719,6 +1733,321 @@ class TestPerObservableNoiseImport:
         # And it parses + binds (the sigma ids are recognized nuisances, ADR-0034).
         conf = ploop(text.splitlines(keepends=True))
         assert ('uniform_var', 'sd_x') in conf and ('uniform_var', 'sd_y') in conf
+
+
+# ---------------------------------------------------------------------------
+# A column-mean sigma comes back as column_mean only when it IS each experiment's own mean
+# (#894). The exporter writes it per experiment (a constant, or each row's noiseParameters);
+# the importer compares every value with the mean of the experiment it will belong to in the
+# imported job, and anything else stays a fixed sigma. The old check compared a constant with
+# one mean pooled over every experiment, so a problem with a pooled sigma (the pre-#894
+# export, or any foreign problem that happens to use one) came back as ave_norm_sos and was
+# fitted with per-experiment weights it never had.
+# ---------------------------------------------------------------------------
+
+_CM_SS_MODEL = _SS_MODEL.replace('  k_deg   2.0\n', '  k_deg   2.0\n  u       1\n')
+
+# Each experiment shape with two experiments of different magnitude under ave_norm_sos:
+# (conf, extra files, model file, {petab experimentId -> the .exp files of its PyBNF experiment}).
+_CM_SHAPES = {
+    'preequilibration': (
+        _PREEQUIL_CONF.replace('objective = sos', 'objective = ave_norm_sos')
+        + 'experiment: relax10, preequilibrate: pre, condition: meas, data: relax10.exp\n',
+        {'m.bngl': _PREEQUIL_MODEL, 'relax.exp': _PREEQUIL_EXP,
+         'relax10.exp': '# time A_tot\n0\t100\n1\t60\n2\t40\n'},
+        'm.bngl', lambda row: {'relax': ['relax.exp'], 'relax10': ['relax10.exp']}[
+            row['experimentId']]),
+    # A two-target condition, so the conditioned steady state is not read as a one-dose scan.
+    'steady_state': (
+        'edition = 2\njob_type = de\nobjective = ave_norm_sos\nmodel: ss.bngl\n'
+        'condition: slow, perturbations: k_deg = 0.2, u = 2\n'
+        'experiment: eq, data: eq.exp\nexperiment: eq_slow, condition: slow, data: slow.exp\n'
+        'uniform_var = k_prod 0.1 10\n',
+        {'ss.bngl': _CM_SS_MODEL, 'eq.exp': _SS_EXP, 'slow.exp': '# time A_tot\ninf\t15\n'},
+        'ss.bngl', lambda row: {'': ['eq.exp'], 'eq_slow': ['slow.exp']}[row['experimentId']]),
+    'preequilibrated_dose_response': (
+        _PDR_CONF.replace('objective = sos', 'objective = ave_norm_sos')
+        + 'experiment: scan2, preequilibrate: incubate, condition: wash, '
+          'type: parameter_scan, t_end: 500, data: dose2.exp\n',
+        {'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP,
+         'dose2.exp': '# L resp\n1\t5\n2\t10\n5\t25\n'},
+        'm.bngl', lambda row: {'scan': ['dose.exp'], 'scan2': ['dose2.exp']}[
+            row['experimentId'].rsplit('_', 1)[0]]),
+    # Two wildtype experiments on two models share experimentId ''; the modelId tells them apart.
+    'multi_model': (
+        'edition = 2\njob_type = de\nobjective = ave_norm_sos\n'
+        'model: decay.bngl\nmodel: decay2.bngl\n'
+        'experiment: lo, model: decay.bngl, data: lo.exp\n'
+        'experiment: big, model: decay2.bngl, data: hi.exp\n'
+        'uniform_var = k 0.05 3.0\n',
+        {'decay.bngl': _DECAY_MODEL, 'decay2.bngl': _DECAY_MODEL,
+         'lo.exp': _exp_text('time', _DECAY_TIMES, _decay_series(100, 0.5)),
+         'hi.exp': _exp_text('time', _DECAY_TIMES, _decay_series(1000, 0.7))},
+        'decay.bngl', lambda row: {'decay': ['lo.exp'], 'decay2': ['hi.exp']}[row['modelId']]),
+}
+
+
+def _column_mean_of_files(src, files):
+    """The mean of the measured column (column 1) over an experiment's .exp files, by numpy."""
+    return np.concatenate([np.atleast_2d(np.loadtxt(src / f))[:, 1] for f in files]).mean()
+
+
+def _pooled_form(petab, sigma):
+    """Rewrite an exported problem so its one observable carries the constant ``sigma`` and
+    no per-row noise -- what the pre-#894 exporter wrote."""
+    obs = _tsv_rows(petab / 'observables.tsv')
+    header = list(obs[0])
+    for r in obs:
+        r['noiseFormula'], r['noisePlaceholders'] = repr(float(sigma)), ''
+    (petab / 'observables.tsv').write_text(
+        '\t'.join(header) + '\n' + ''.join('\t'.join(r[h] for h in header) + '\n' for r in obs))
+    lines = (petab / 'measurements.tsv').read_text().splitlines()
+    assert lines[0].split('\t')[-1] == 'noiseParameters'
+    (petab / 'measurements.tsv').write_text(
+        '\n'.join([lines[0]] + [ln.rsplit('\t', 1)[0] + '\t' for ln in lines[1:]]) + '\n')
+
+
+class TestColumnMeanSigmaImport:
+    """#894: the importer's side of the per-experiment column-mean sigma."""
+
+    RECOVERED = {
+        'ave_norm_sos': 'objective = ave_norm_sos',
+        'gaussian_override': 'objective = ave_norm_sos',    # its only observable -> uniform
+        'laplace_whole_fit': 'noise_model = laplace, scale = column_mean',
+        'lnnormal_whole_fit': 'noise_model = lnnormal, sigma = column_mean',
+    }
+
+    def _decay_round_trip(self, tmp_path, noise_lines):
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_decay_job(src, noise_lines)
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        return conf, petab1, imported, petab2
+
+    @pytest.mark.parametrize('spelling', sorted(RECOVERED))
+    def test_round_trip_restores_the_column_mean(self, tmp_path, spelling, monkeypatch):
+        # Time courses (one with two replicate files), a conditioned time course and a
+        # dose-response scan: the per-row export comes back as a column_mean sigma, the
+        # rebuilt _SD companions are gone (column_mean reads no data column, and the fitter
+        # refuses one nothing reads), the re-export is byte-identical, and the imported job
+        # scores exactly as the source job does at three k.
+        noise_lines = _COLUMN_MEAN_SPELLINGS[spelling][0]
+        conf, petab1, imported, petab2 = self._decay_round_trip(tmp_path, noise_lines)
+        text = (imported / 'imported.conf').read_text()
+        assert self.RECOVERED[spelling] in text.splitlines()
+        assert 'fix_at' not in text and 'read_exp_file' not in text
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+        for k in (0.4, 0.6, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
+
+    @pytest.mark.parametrize('shape', sorted(_CM_SHAPES))
+    def test_every_experiment_shape_round_trips(self, tmp_path, shape):
+        # Each row carries its own PyBNF experiment's mean (numpy over that experiment's .exp
+        # files: a pre-equilibrated scan's doses all share the scan's mean, two models' wildtype
+        # experiments keep theirs), and the import restores ave_norm_sos byte-for-byte.
+        conf_text, files, model_name, files_of = _CM_SHAPES[shape]
+        petab1, imported, petab2, conf = _roundtrip(
+            tmp_path, conf_text, extra_files=files, model_name=model_name)
+        src = tmp_path / 'src'
+        rows = _tsv_rows(petab1 / 'measurements.tsv')
+        means = {float(r['noiseParameters']) for r in rows}
+        assert len(means) == 2           # two experiments, two different means
+        for r in rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                _column_mean_of_files(src, files_of(r)), rel=1e-15)
+        assert 'objective = ave_norm_sos' in conf.read_text().splitlines()
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_per_observable_column_mean_comes_back_as_its_own_line(self, tmp_path, monkeypatch):
+        # Two observables: Obs_A's sigma is its column mean (per row -- the experiments differ),
+        # Obs_B keeps the unit sigma of sos. The import restores one line per observable and
+        # drops both rebuilt _SD companions -- Obs_B's is all NaN, and a leftover one would
+        # make the fitter refuse the data -- so the imported job scores like the source.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL.replace(
+            '  Molecules  Obs_A  A()\n', '  Molecules  Obs_A  A()\n  Molecules  Obs_B  A()\n'))
+        for name, amp, rate in (('lo', 100, 0.5), ('hi', 1000, 0.7)):
+            a, b = _decay_series(amp, rate), _decay_series(1.1 * amp, rate)
+            (src / f'{name}.exp').write_text('# time Obs_A Obs_B\n' + ''.join(
+                f'{t!r}\t{float(x)!r}\t{float(y)!r}\n' for t, x, y in zip(_DECAY_TIMES, a, b)))
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = sos\n'
+            'noise_model Obs_A = gaussian, sigma = column_mean\n'
+            'condition: high, perturbations: scale = 10\n'
+            'experiment: lo, data: lo.exp\nexperiment: hi, condition: high, data: hi.exp\n'
+            'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'noise_model Obs_A = gaussian, sigma = column_mean' in lines
+        assert 'noise_model Obs_B = gaussian, sigma = fix_at 1' in lines
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+        for k in (0.4, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
+
+    def test_a_pooled_constant_is_a_fixed_sigma_not_a_column_mean(self, tmp_path, monkeypatch):
+        # A constant sigma equal to the mean pooled over experiments of different magnitude
+        # (the pre-#894 export; a foreign problem could carry one too) is NO experiment's
+        # column mean. It must import as that fixed sigma: libpetab's likelihood of the problem
+        # and the imported job's objective then differ only by a constant. Imported as
+        # ave_norm_sos, the job would weight each experiment by its own mean instead.
+        pytest.importorskip('petab.v2')
+        conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        values = [np.atleast_2d(np.loadtxt(conf.parent / f))[:, 1]
+                  for f in ('lo.exp', 'lo_rep.exp', 'hi.exp', 'scan.exp')]
+        pooled = float(np.concatenate(values).mean())
+        _pooled_form(petab1, pooled)
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'pooled_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'ave_norm_sos' not in text and 'column_mean' not in text
+        assert f'noise_model = gaussian, sigma = fix_at {num(pooled)}' in text.splitlines()
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_a_row_off_its_experiment_mean_stays_a_per_point_sigma(self, tmp_path, monkeypatch):
+        # Every number must match: one row's noiseParameters 1% off its experiment's mean and
+        # the observable is not a column mean. It stays a per-point sigma (chi_sq, reading
+        # the rebuilt _SD column), which scores exactly what the PEtab problem says.
+        pytest.importorskip('petab.v2')
+        _conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        lines = (petab1 / 'measurements.tsv').read_text().splitlines()
+        head, sigma = lines[5].rsplit('\t', 1)
+        lines[5] = f'{head}\t{float(sigma) * 1.01!r}'
+        (petab1 / 'measurements.tsv').write_text('\n'.join(lines) + '\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'off_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        assert any('Obs_A_SD' in Data(file_name=str(p)).cols for p in out.glob('*.exp'))
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_two_wildtype_experiments_merge_and_stay_per_point(self, tmp_path, monkeypatch):
+        # Two wildtype time courses on one model share PEtab experimentId '' (nothing tells
+        # them apart), so the import rebuilds them as ONE experiment with two replicates, whose
+        # mean is neither of theirs. Their per-row means are therefore not that experiment's
+        # column mean: they stay per-point sigmas, and the imported job still scores exactly
+        # what the exported problem and the source fit do.
+        pytest.importorskip('petab.v2')
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL)
+        (src / 'lo.exp').write_text(_exp_text('time', _DECAY_TIMES, _decay_series(100, 0.5)))
+        (src / 'lo2.exp').write_text(_exp_text('time', _DECAY_TIMES, _decay_series(30, 0.4)))
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+            'experiment: lo, data: lo.exp\nexperiment: lo2, data: lo2.exp\n'
+            'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        text = (imported / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        _assert_problem_round_trips(petab1, petab2)
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        back = [_pybnf_objective(imported / 'imported.conf', k, monkeypatch) for k in ks]
+        assert back == pytest.approx(fit, rel=1e-12)
+        offsets = [_petab_nll(petab1, k) - f for k, f in zip(ks, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_a_small_magnitude_sigma_is_compared_relatively(self, tmp_path):
+        # Data of order 1e-11 with a fixed sigma five times their mean. The old comparison
+        # had an absolute floor of 1e-9, under which the two "matched" and the problem came
+        # back as ave_norm_sos -- a sigma five times too small, weights 25 times too large.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL)
+        ys = [1e-12 * y for y in _decay_series(100, 0.5)]
+        (src / 'lo.exp').write_text(_exp_text('time', _DECAY_TIMES, ys))
+        sigma = 5 * float(np.mean(ys))
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\n'
+            f'noise_model = gaussian, sigma = fix_at {sigma!r}\n'
+            'experiment: lo, data: lo.exp\nuniform_var = k 0.05 3.0\n')
+        petab1, petab2 = tmp_path / 'petab1', tmp_path / 'petab2'
+        export_job(src / 'job.conf', petab1)
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'ave_norm_sos' not in text
+        assert f'noise_model = gaussian, sigma = fix_at {num(sigma)}' in text.splitlines()
+        export_job(out / 'imported.conf', petab2)
+        _assert_problem_round_trips(petab1, petab2)
+
+    @pytest.mark.parametrize('edit', ['each_dose_its_own_value', 'one_dose_off'])
+    def test_doses_with_different_sigmas_stay_per_point(self, tmp_path, edit, monkeypatch):
+        # Added in independent review. The doses of a scan are separate PEtab experiments that
+        # import into ONE PyBNF experiment, so their sigmas must all equal that one scan's mean
+        # before the import may say column_mean. Two edits of the scan rows break that: every
+        # dose carries its own measurement (the mean of its own one-row PEtab experiment), or
+        # one dose is 1% off the scan mean while the others keep it. Either way the scan stays
+        # a per-point sigma, and libpetab's likelihood of the problem and the imported job's
+        # objective differ only by a constant.
+        pytest.importorskip('petab.v2')
+        _conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        lines = (petab1 / 'measurements.tsv').read_text().splitlines()
+        head = lines[0].split('\t')
+        rows = [ln.split('\t') for ln in lines[1:]]
+        eid, meas = head.index('experimentId'), head.index('measurement')
+        scan_rows = [r for r in rows if r[eid].startswith('scan_')]
+        assert len(scan_rows) == 3
+        if edit == 'each_dose_its_own_value':
+            for r in scan_rows:
+                r[-1] = r[meas]
+        else:
+            scan_rows[1][-1] = repr(float(scan_rows[1][-1]) * 1.01)
+        (petab1 / 'measurements.tsv').write_text(
+            '\n'.join(['\t'.join(head)] + ['\t'.join(r) for r in rows]) + '\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'edited_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        assert 'Obs_A_SD' in Data(file_name=str(out / 'scan.exp')).cols
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_ragged_replicates_round_trip_to_the_column_mean(self, tmp_path, monkeypatch):
+        # Added in independent review. Ragged replicates on different time grids, NaN cells, and
+        # one table mixing the constant form (Obs_A, one experiment) with the per-row form
+        # (Obs_B, two experiments). The import regroups the replicate rows by time, so its mean
+        # is summed in another order than the export's; both observables must still come back
+        # as ONE ave_norm_sos line, with no _SD companion left for the fitter to refuse, and the
+        # imported job must score exactly like the source job.
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_ragged_job(src)
+        petab1, imported = tmp_path / 'petab1', tmp_path / 'imported'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'objective = ave_norm_sos' in lines
+        assert not any('noise_model' in ln for ln in lines)
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        for k in (0.4, 0.6, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
 
 
 # ---------------------------------------------------------------------------

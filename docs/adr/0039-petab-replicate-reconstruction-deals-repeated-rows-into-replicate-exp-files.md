@@ -124,3 +124,12 @@ not just PEtab imports. Also affected in the benchmark collection: `Blasi_CellSy
 preservation on `_stack_replicates` directly) and
 `test_petab_import.py::TestRaggedReplicateImport` (a ragged measurement table imports and its
 conf loads end to end).
+
+## Addendum (2026-09-25): the column mean is per experiment, not pooled (issue #894)
+
+The contract-change paragraph above says `_column_mean_resolver` averages over every
+replicate, "matching the forward export's column-mean sigma". Replicates are still pooled,
+because the fit stacks an experiment's replicate files into one Data. But the export and this
+check both also pooled **across experiments**, and the fit never does that. The resolver is
+now `_ColumnMeans`. It compares each sigma with its own experiment's mean (replicates pooled),
+and the exporter writes that per-experiment mean. See the ADR-0032 addendum of the same date.

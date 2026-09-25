@@ -84,7 +84,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data import observed_mean
+from ..data import Data, observed_mean
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
 from .conditions import (
@@ -354,19 +354,35 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # carries no per-measurement sidecar).
     param_bindings = measurement_param_bindings(
         tc_rows, observable_id_to_column, row_varying_noise, row_varying_obs_params)
-    # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
-    # time courses and dose-response scans (plain + pre-equilibrated) alike.
-    dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
-    pdr_datas = {(s['name'], s['model_id']): [s['data']] for s in preequil_scans}
+    # The column-mean check (#894) compares a sigma with each IMPORTED experiment's own mean --
+    # the one the imported fit will use: every time-course (experimentId, modelId) group with
+    # its replicates, and each dose-response scan (plain + pre-equilibrated) as ONE experiment.
+    # A list, not a merged dict: a time course and a scan can share a name key.
+    column_means = _ColumnMeans(
+        list(datas.values()) + [[dr['data']] for dr in dose_responses]
+        + [[s['data']] for s in preequil_scans],
+        observable_id_to_column)
     # A noiseFormula symbol is prediction-dependent (a simulated column) only if it is a model
     # entity that is NOT a declared free parameter: a fit parameter (even one that binds a model
     # parameter by id, ADR-0034) resolves from the PSet, not the trajectory. So the σ scales with
     # the simulation only when it names a model entity outside the free-parameter set (ADR-0075).
     prediction_entities = namespace - free_names
-    objective_directives = _objective_directives(
-        observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver({**datas, **dr_datas, **pdr_datas}, observable_id_to_column),
+    objective_directives, sd_readers = _objective_directives(
+        observable_rows, observable_id_to_column, noise_param_ids, column_means,
         obs_params, noise_subs, row_varying_noise, fixed_params, prediction_entities)
+    # The pivot rebuilds an _SD companion for EVERY column of an experiment in which some row
+    # carries a numeric noiseParameters. Keep it only for the observables whose recovered sigma
+    # reads it (sd_readers): the fitter refuses a data column nothing reads. This matters for a
+    # per-row column-mean sigma (#894), which comes back as column_mean and reads no data, and
+    # for any observable sharing an experiment with one (its rebuilt companion is all NaN).
+    sd_columns = ({col + '_SD' for oid, col in observable_id_to_column.items()
+                   if oid not in sd_readers}
+                  - set(observable_id_to_column.values()))
+    if sd_columns:
+        datas = {key: [_without_columns(d, sd_columns) for d in group]
+                 for key, group in datas.items()}
+        for scan in dose_responses + preequil_scans:
+            scan['data'] = _without_columns(scan['data'], sd_columns)
     # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis, not
     # a condition: line); a pre-equilibrated scan's per-dose conditions are absorbed too, but its
     # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
@@ -781,23 +797,89 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     return mapping, measurement_models
 
 
-def _column_mean_resolver(datas, observable_id_to_column):
-    """A ``observableId -> column mean across all experiments`` closure (for distinguishing
-    ``sos`` from ``ave_norm_sos``; mirrors the export's column-mean sigma over all data).
+class _ColumnMeans:
+    """Decides whether an observable's sigma is a PyBNF ``column_mean`` sigma (#894).
 
-    ``datas`` is ``{experiment_id: [Data, ...]}`` (the replicate grids per experiment), so
-    the mean is taken over every replicate's column -- the same set of values the forward
-    export's column-mean sigma averaged over."""
-    def column_mean_of(observable_id):
-        col = observable_id_to_column[observable_id]
-        values = [data[col] for group in datas.values() for data in group
-                  if col in data.cols]
-        # Observed values only (#707) -- the same mean the export wrote. A plain average
-        # over a sparse column is NaN, which compares equal to nothing, so the sigma
-        # constant would fail to match and a round-tripped ave_norm_sos would silently
-        # come back as sos.
-        return float(observed_mean(np.concatenate(values)))
-    return column_mean_of
+    PyBNF's ``column_mean`` sigma (``objective = ave_norm_sos``, or ``sigma = column_mean``)
+    is **per experiment**. The fit scores one experiment at a time and gives each point the
+    mean of its own experiment's observed values, replicates pooled. PEtab has no such
+    source. The exporter writes that number either as a constant noiseFormula (when every
+    experiment has the same mean) or as each measurement row's numeric ``noiseParameters``.
+    This class reads either form back to ``column_mean`` **only** when every scored point's
+    sigma equals the mean of the experiment it will belong to in the imported job. Then the
+    imported fit gives every point exactly the sigma the PEtab problem gives it. Anything
+    else stays a fixed sigma (``fix_at``, or the per-point ``_SD`` column). Those are always
+    exact, only less tidy.
+
+    ``groups`` lists the imported job's experiments as their replicate ``Data`` lists: each
+    time-course ``(experimentId, modelId)`` group and each reconstructed dose-response or
+    pre-equilibrated scan (one experiment however many PEtab experiments its doses were).
+    The old check compared one mean pooled over every experiment, so a problem whose
+    experiments differ in magnitude re-imported as a column mean that no experiment has.
+    """
+
+    def __init__(self, groups, observable_id_to_column, sd_suffix='_SD'):
+        self._groups = groups
+        self._column_of = observable_id_to_column
+        self._sd_suffix = sd_suffix
+
+    def _experiment_means(self, observable_id):
+        """``[(datas, mean), ...]`` for each experiment with an observed value of the column --
+        the mean ``Data.column_mean`` gives that experiment's stacked Data at fit time. It is
+        taken over observed values only (#707); an experiment with none scores no point."""
+        col = self._column_of[observable_id]
+        out = []
+        for group in self._groups:
+            present = [data for data in group if col in data.cols]
+            if not present:
+                continue
+            mean = float(observed_mean(np.concatenate([data[col] for data in present])))
+            if not np.isnan(mean):
+                out.append((present, mean))
+        return out
+
+    def constant_matches(self, observable_id, sigma):
+        """True iff the constant ``sigma`` is the column mean of **every** experiment that
+        measures the observable."""
+        means = self._experiment_means(observable_id)
+        return bool(means) and all(_approx(sigma, mean) for _datas, mean in means)
+
+    def per_row_matches(self, observable_id):
+        """True iff every observed point's per-row sigma (its rebuilt ``<col>_SD`` cell) is the
+        column mean of its own experiment."""
+        col = self._column_of[observable_id]
+        sd_col = col + self._sd_suffix
+        means = self._experiment_means(observable_id)
+        if not means:
+            return False
+        for datas, mean in means:
+            for data in datas:
+                if sd_col not in data.cols:
+                    return False
+                observed = ~np.isnan(data[col])
+                if not all(_approx(float(sd), mean) for sd in data[sd_col][observed]):
+                    return False
+        return True
+
+    def matches(self, observable_id, source):
+        """Whether the resolved sigma ``source`` (a :func:`_resolve_noise` source) is this
+        observable's per-experiment column mean. Only a fixed number can be: a constant
+        noiseFormula, or a per-point numeric placeholder."""
+        kind, value = source
+        if kind == 'constant':
+            return self.constant_matches(observable_id, value)
+        if kind == 'placeholder':
+            return self.per_row_matches(observable_id)
+        return False
+
+
+def _without_columns(data, names):
+    """``data`` without the columns in ``names`` (the same object when it has none of them)."""
+    keep = [header for _i, header in sorted(data.headers.items()) if header not in names]
+    if len(keep) == len(data.headers):
+        return data
+    arr = data.data[:, [data.cols[header] for header in keep]]
+    return Data.from_columns(arr, keep, indvar=data.indvar)
 
 
 # PEtab noiseDistribution -> (PyBNF base noise family, its additive scale). The v2
@@ -835,12 +917,16 @@ _NOISE_MODEL_PARAM = {
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
-                          column_mean_of, obs_params, noise_subs=None, row_varying_obs=(),
+                          column_means, obs_params, noise_subs=None, row_varying_obs=(),
                           fixed_params=None, namespace=frozenset()):
     """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
     The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
-    Returns a **list** of conf lines:
+    Returns ``(lines, sd_readers)``: ``sd_readers`` is the set of observableIds whose recovered
+    sigma reads the per-point ``<col>_SD`` data column; the caller drops every other rebuilt
+    ``_SD`` companion. A fixed sigma that is exactly each experiment's own column mean
+    (``column_means``, a :class:`_ColumnMeans` -- #894) is recovered as ``column_mean``, which
+    reads no data column. ``lines`` is a **list** of conf lines:
 
     * **Uniform** (one family + one sigma source across all observables) -- a single line, the
       tidy common case (:func:`_try_uniform_directive`): one of the four sugar tokens
@@ -866,10 +952,20 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
                     _placeholder_subs(row.observable_id, obs_params, noise_subs, fixed_params),
                     row.observable_id in row_varying_obs, fixed_params, namespace))
                for row in observable_rows]
-    single = _try_uniform_directive(per_obs, column_mean_of)
+    # Which observables' fixed sigma is exactly their per-experiment column mean (#894).
+    is_column_mean = {row.observable_id: column_means.matches(row.observable_id, src)
+                      for row, _family, src in per_obs}
+    single = _try_uniform_directive(per_obs, is_column_mean)
     if single is not None:
-        return [single]
-    return _per_observable_directives(per_obs, observable_id_to_column)
+        lines, via_column_mean = [single[0]], single[1]
+    else:
+        # The per-observable lines give every column-mean observable a column_mean source.
+        lines, via_column_mean = (
+            _per_observable_directives(per_obs, observable_id_to_column, is_column_mean), True)
+    sd_readers = {row.observable_id for row, _family, src in per_obs
+                  if src[0] == 'placeholder'
+                  and not (via_column_mean and is_column_mean[row.observable_id])}
+    return lines, sd_readers
 
 
 def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False,
@@ -1005,20 +1101,43 @@ def _native_noise_family(row):
     return token
 
 
-def _try_uniform_directive(per_obs, column_mean_of):
-    """A single whole-fit directive line if the table is one PyBNF objective, else ``None``.
+def _try_uniform_directive(per_obs, is_column_mean):
+    """A single whole-fit directive if the table is one PyBNF objective, else ``None``.
 
+    Returns ``(line, via_column_mean)``; ``via_column_mean`` is True when the line's sigma is
+    ``column_mean`` (``objective = ave_norm_sos`` or a whole-fit ``... = column_mean`` line).
     ``None`` signals a genuinely per-observable table (a mix of families or sigma sources, or
     a distinct ``fit``/``fix_at`` sigma per observable) -> :func:`_per_observable_directives`.
     The uniform cases are exactly the objective-family / whole-fit ``noise_model`` export
-    inverse (preserved byte-for-byte)."""
+    inverse (preserved byte-for-byte).
+
+    ``is_column_mean`` (``{observable_id: bool}``, from :class:`_ColumnMeans`) marks the
+    observables whose fixed sigma is exactly each experiment's own column mean (#894). When
+    every observable is marked, the table is one column-mean objective whatever mix of a
+    constant noiseFormula and a per-row placeholder carried it. A unit sigma is read as
+    ``sos`` / ``sod`` first, as before, even if some column's mean happens to be 1."""
     families = {family for _row, family, _src in per_obs}
-    kinds = {src[0] for _row, _family, src in per_obs}
-    if len(families) != 1 or len(kinds) != 1:
-        return None     # mixed family (incl. a log10 vs linear scale) or source -> per-observable
-    family = families.pop()     # native token: gaussian / lognormal / lnnormal / laplace
-    kind = kinds.pop()
+    if len(families) != 1:
+        return None     # mixed family (incl. a log10 vs linear scale) -> per-observable
+    family = next(iter(families))     # native token: gaussian / lognormal / lnnormal / laplace
     param = _NOISE_MODEL_PARAM[family]
+
+    # All-unit constant sigma: the sos / sod sugar tokens.
+    unit = all(src == ('constant', 1.0) for _row, _family, src in per_obs)
+    if unit and family == 'gaussian':
+        return 'objective = sos', False
+    if unit and family == 'laplace':
+        return 'objective = sod', False
+    # Every observable's sigma is its per-experiment column mean (#894).
+    if not unit and all(is_column_mean[row.observable_id] for row, _family, _src in per_obs):
+        if family == 'gaussian':
+            return 'objective = ave_norm_sos', True
+        return f'noise_model = {family}, {param} = column_mean', True
+
+    kinds = {src[0] for _row, _family, src in per_obs}
+    if len(kinds) != 1:
+        return None     # mixed source -> per-observable
+    kind = next(iter(kinds))
 
     if kind == 'per_measurement':
         # A row-varying placeholder sigma (ADR-0045) is inherently per-observable -- its
@@ -1040,16 +1159,16 @@ def _try_uniform_directive(per_obs, column_mean_of):
         exprs = {src[1] for _row, _family, src in per_obs}
         if len(exprs) != 1:
             return None
-        return f'noise_model = {family}, {param} = formula {exprs.pop()}'
+        return f'noise_model = {family}, {param} = formula {exprs.pop()}', False
     if kind == 'placeholder':
         # Per-point _SD sigma: the Gaussian families have an objective token (chi_sq linear,
         # lognormal log10, lnnormal natural log); Laplace has no per-point token (#407).
         if family == 'gaussian':
-            return 'objective = chi_sq'
+            return 'objective = chi_sq', False
         if family == 'lognormal':
-            return 'objective = lognormal'
+            return 'objective = lognormal', False
         if family == 'lnnormal':
-            return 'objective = lnnormal'
+            return 'objective = lnnormal', False
         raise NotImplementedError(
             f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective token "
             f"(only the Gaussian per-point _SD cases -- chi_sq, lognormal, lnnormal -- are "
@@ -1059,25 +1178,16 @@ def _try_uniform_directive(per_obs, column_mean_of):
         ids = {src[1] for _row, _family, src in per_obs}
         if len(ids) != 1:
             return None     # distinct free sigma per observable -> per-observable
-        return f'noise_model = {family}, {param} = fit {ids.pop()}'
-    # All-constant sigma: the sugar tokens (sos/sod unit, ave_norm_sos column-mean, all linear
-    # families) or a uniform fix_at; a different fixed sigma per observable is per-observable.
-    constants = [src[1] for _row, _family, src in per_obs]
-    if family == 'gaussian' and all(c == 1.0 for c in constants):
-        return 'objective = sos'
-    if family == 'laplace' and all(c == 1.0 for c in constants):
-        return 'objective = sod'
-    if family == 'gaussian' and all(
-            _approx(c, column_mean_of(row.observable_id))
-            for (row, _family, _src), c in zip(per_obs, constants)):
-        return 'objective = ave_norm_sos'
-    uniq = set(constants)
+        return f'noise_model = {family}, {param} = fit {ids.pop()}', False
+    # All-constant sigma (the unit and column-mean cases are handled above): a uniform fix_at;
+    # a different fixed sigma per observable is per-observable.
+    uniq = {src[1] for _row, _family, src in per_obs}
     if len(uniq) != 1:
         return None     # distinct fixed sigma per observable -> per-observable
-    return f'noise_model = {family}, {param} = fix_at {num(uniq.pop())}'
+    return f'noise_model = {family}, {param} = fix_at {num(uniq.pop())}', False
 
 
-def _per_observable_directives(per_obs, observable_id_to_column):
+def _per_observable_directives(per_obs, observable_id_to_column, is_column_mean=None):
     """A structural base objective + one ``noise_model <obs> = ...`` override per observable.
 
     The Boehm shape (ADR-0037): each observable has its own sigma source, so PyBNF expresses
@@ -1088,13 +1198,18 @@ def _per_observable_directives(per_obs, observable_id_to_column):
     override names the **column** the objective compares (the measurement-model column =
     ``observableId`` for an expression observable, else the model entity); a ``fit`` sigma binds
     its estimated parameter as a nuisance (ADR-0034), a ``fix_at`` a constant, a per-point
-    placeholder reads the ``<col>_SD`` companion."""
+    placeholder reads the ``<col>_SD`` companion. An observable marked in ``is_column_mean``
+    (its fixed sigma is exactly each experiment's own column mean, :class:`_ColumnMeans`, #894)
+    takes a ``column_mean`` source instead of either fixed form."""
+    is_column_mean = is_column_mean or {}
     lines = ['objective = chi_sq']   # whole-fit default; every observable overridden below
     for row, family, src in per_obs:
         param = _NOISE_MODEL_PARAM[family]
         column = observable_id_to_column[row.observable_id]
         kind = src[0]
-        if kind == 'free':
+        if is_column_mean.get(row.observable_id):
+            lines.append(f'noise_model {column} = {family}, {param} = column_mean')
+        elif kind == 'free':
             lines.append(f'noise_model {column} = {family}, {param} = fit {src[1]}')
         elif kind in ('formula', 'per_measurement'):
             # Both emit a 'formula' source; for 'per_measurement' the expression keeps its
@@ -1124,8 +1239,12 @@ def _per_observable_directives(per_obs, observable_id_to_column):
 
 
 def _approx(a, b):
-    """Two sigmas are equal up to a relative tolerance (the column-mean comparison)."""
-    return abs(a - b) <= 1e-9 * max(1.0, abs(b))
+    """Two sigmas are equal up to a relative tolerance (the column-mean comparison).
+
+    Purely relative (#894): it only has to absorb the round-off of averaging the same numbers
+    in another order. The former ``max(1, |b|)`` floor made it an absolute 1e-9 below 1, so
+    for small-magnitude data (a mean of 1e-10, say) a sigma several times the mean matched."""
+    return abs(a - b) <= 1e-9 * abs(b)
 
 
 # ---------------------------------------------------------------------------

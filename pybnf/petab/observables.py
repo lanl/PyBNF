@@ -338,10 +338,12 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
     * ``('placeholder', None)`` -- a per-point ``_SD`` data column: a declared noise
       **placeholder** (``noiseFormula`` = ``noisePlaceholders`` =
       ``noiseParameter1_<id>``) whose per-point value the measurements'
-      ``noiseParameters`` column supplies (``chi_sq``).
+      ``noiseParameters`` column supplies (``chi_sq``). A column mean that differs
+      between experiments uses it too, each row carrying its experiment's mean (#894).
     * ``('constant', value)`` -- a fixed sigma written inline as a numeric
       ``noiseFormula`` with no placeholder: a ``fix_at`` constant (``sos`` -> 1,
-      ``sod`` -> 1) or an observable's column mean (``ave_norm_sos``).
+      ``sod`` -> 1) or an observable's column mean when every experiment has the same
+      one (``ave_norm_sos``).
     * ``('formula', expr)`` -- an expression sigma (``FormulaSigma``, ADR-0044/0045): the
       PEtab-math ``noiseFormula`` over free-parameter ids + constants, emitted verbatim with
       no placeholder. The inverse of the importer's expression-``noiseFormula`` classification,
