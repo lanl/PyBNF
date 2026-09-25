@@ -1833,10 +1833,6 @@ class TestExportDoseResponse:
         with pytest.raises(PybnfError, match=match):
             export_job(src / 'job.conf', src / 'out')
 
-    @pytest.mark.xfail(strict=True, reason=(
-        '#903: the importer keeps only the last measurement at each dose experiment. Keying rows '
-        'by dose (#895) puts a single file\'s repeated dose under one experiment, so this round '
-        'trip, exact before #895, now loses rows until #903 is fixed.'))
     def test_a_file_that_repeats_a_dose_round_trips(self, tmp_path_factory):
         # Reviewer's test. One data file measures L = 1 and L = 2 twice (technical replicates
         # written as repeated rows). The export is the same fit either way. Before #895 each row
@@ -3617,6 +3613,62 @@ class TestBuildExperimentConditions:
         with pytest.raises(PybnfError, match='wildtype'):
             build_experiment_conditions(exps, conds, fit_params={'v1'},
                                         nominal_of=lambda _c, _v: 1.0)
+
+
+class TestReservedWildtypeConditionName:
+    """A condition named ``wildtype`` would be written as ``cond_wildtype``, the id the exporter
+    reserves for its synthesized base condition, and PyBNF 1.8.1's importer dropped every
+    ``cond_wildtype`` row (#905). The builders caught the clash only when a fit parameter is
+    perturbed AND the base is emitted; the export now refuses the name whenever such a
+    condition is exported. ``k`` is fit, ``L`` fixed, so no fit parameter is perturbed here."""
+
+    _MODEL = ('begin model\nbegin parameters\n  k 1\n  L 1\nend parameters\n'
+              'begin molecule types\n  A()\nend molecule types\n'
+              'begin seed species\n  A() 10\nend seed species\n'
+              'begin observables\n  Molecules Atot A()\nend observables\n'
+              'begin functions\n  rate() = k*L\nend functions\n'
+              'begin reaction rules\n  A() -> 0 rate()\nend reaction rules\nend model\n')
+
+    def _conf(self, tmp_path, conditions, experiments):
+        (tmp_path / 'm.bngl').write_text(self._MODEL)
+        (tmp_path / 'e.exp').write_text('# time Atot\n0\t10\n1\t5\n2\t2.5\n')
+        conf = tmp_path / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                        + conditions + experiments + 'loguniform_var = k 0.01 100\n')
+        return conf
+
+    def test_wildtype_condition_with_no_fit_parameter_perturbed_is_refused(self, tmp_path):
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n',
+                          'experiment: wt, condition: wildtype, data: e.exp\n')
+        with pytest.raises(PybnfError, match=r"Condition 'wildtype' cannot be exported to PEtab"
+                                             r".*conditionId 'cond_wildtype'.*Rename the "
+                                             r"condition"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_wildtype_preequilibration_condition_is_refused(self, tmp_path):
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n'
+                                    'condition: meas, perturbations: L = 1\n',
+                          'experiment: e, preequilibrate: wildtype, condition: meas, '
+                          'data: e.exp\n')
+        with pytest.raises(PybnfError, match="Condition 'wildtype' cannot be exported"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_unused_wildtype_condition_does_not_block_the_export(self, tmp_path):
+        # An unreferenced condition emits no PEtab rows, so its name clashes with nothing.
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n',
+                          'experiment: e, data: e.exp\n')
+        export_job(conf, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'conditions.tsv').exists()
+
+    def test_a_condition_named_cond_wildtype_exports_without_clashing(self, tmp_path):
+        # The importer's name for a real-target cond_wildtype (#905) re-exports as
+        # cond_cond_wildtype, clear of the reserved id.
+        conf = self._conf(tmp_path, 'condition: cond_wildtype, perturbations: L = 2\n',
+                          'experiment: wt, condition: cond_wildtype, data: e.exp\n')
+        export_job(conf, tmp_path / 'out')
+        cells = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(tmp_path / 'out' / 'conditions.tsv')}
+        assert cells == {('cond_cond_wildtype', 'L', '2')}
 
 
 # ---------------------------------------------------------------------------

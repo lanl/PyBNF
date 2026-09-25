@@ -22,7 +22,7 @@ conditions/experiments tables (each dose a Condition setting the swept parameter
 Experiment, measured at a constant time -- ``inf`` for steady state). ``measurement_rows_from_data``
 still refuses such an ``.exp`` (export routes it through ``dose_response_measurement_rows``
 instead), and ``reconstruct_dose_responses`` is the import inverse: it detects those experiment
-groups and rebuilds each as a single swept-axis ``Data``.
+groups and rebuilds each as a swept-axis ``Data`` (one per replicate, #903).
 """
 
 import csv
@@ -420,12 +420,13 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
     A dose-response is represented in PEtab v2 as N Conditions (each setting one swept
     parameter to a distinct dose) + N Experiments measured at a **constant** time -- ``inf``
     for the steady-state default (the common case), or a finite ``t_end``. This recovers each
-    such group back to a single swept-axis :class:`~pybnf.data.Data` (column 0 = the swept
+    such group back to a swept-axis :class:`~pybnf.data.Data` per replicate (column 0 = the swept
     parameter, its values the doses; the observable columns the per-dose measurements) plus the
     scan endpoint, the form a new-era ``experiment:`` (its ``.exp`` driving the parameter_scan
     type inference) re-exports.
 
-    **Detection heuristic.** A PEtab experiment is a dose-response *point* when its condition
+    **Detection heuristic.** A PEtab experiment is a dose-response *point* when it has exactly
+    **one** experiments-table row (a single period applying a single condition), that condition
     sets exactly **one** target to a **numeric** value (a dose -- a surrogate ``<p>__REF``
     expression is not numeric, so a conditioned time course is excluded) **and** all its
     measurements share **one** time. Points group by their experimentId stem (``<stem>_<i>``
@@ -436,10 +437,21 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
     a one-target condition, but an ordinary name) is **not** misread. Within a stem group the
     swept parameter and scan time must agree -- a mixed group raises (ambiguous).
 
+    **One period, one condition (#904).** A dose point is a *single* period: an experiment with a
+    ``time = -inf`` pre-equilibration period, or with two conditions applied at the same time, is
+    never a plain dose point, whatever its last row sets. Such an experiment is either claimed by
+    :func:`reconstruct_preequilibrated_dose_responses` (which runs first) or left to the
+    time-course reconstruction, which recovers a ``-inf`` + finite pair as ``preequilibrate:`` +
+    ``condition:`` and refuses the shapes it cannot express. Before #904 the detector read a flat
+    ``{experimentId: conditionId}`` map in which the last row won -- the pre-#442 flattening bug of
+    ``_experiments`` -- and imported a pre-equilibrated dose as a plain one, or a two-condition
+    period as its last condition alone.
+
     Returns ``(dose_responses, remaining_rows, consumed_condition_ids, consumed_experiment_ids)``:
 
-    * ``dose_responses`` -- a list of ``{name, model_id, swept_param, scan_time, data}`` (one
-      per reconstructed scan; ``scan_time`` is ``inf`` for steady state);
+    * ``dose_responses`` -- a list of ``{name, model_id, swept_param, scan_time, datas}`` (one
+      per reconstructed scan; ``datas`` is its list of replicate grids, :func:`_dose_response_datas`;
+      ``scan_time`` is ``inf`` for steady state);
     * ``remaining_rows`` -- the measurement rows NOT in any dose-response (the time-course
       pivot handles them);
     * ``consumed_condition_ids`` / ``consumed_experiment_ids`` -- the condition/experiment ids
@@ -460,7 +472,13 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
         except (TypeError, ValueError):
             return None   # a surrogate __REF expression etc -- not a dose
 
-    condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
+    # Each experiment's experiments-table rows (its periods). A plain dose point has exactly one;
+    # condition_of maps only such experiments, so a multi-row experiment is never a flat dose (#904).
+    periods_of = {}
+    for row in experiment_rows:
+        periods_of.setdefault(row.experiment_id, []).append(row)
+    condition_of = {eid: rows[0].condition_id
+                    for eid, rows in periods_of.items() if len(rows) == 1}
 
     by_group = {}
     for row in measurement_rows:
@@ -476,7 +494,7 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
         (scan_time,) = times
         dose = numeric_dose(condition_of.get(eid))
         if dose is None:
-            continue                       # no single-numeric-target condition -> not a dose
+            continue                       # not one period setting one numeric target -> not a dose
         swept_param, dose_value = dose
         m = _DOSE_EID.match(eid)
         if not math.isinf(scan_time) and m is None:
@@ -502,9 +520,9 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
         swept_param = next(iter(swept))
         scan_time = next(iter(scan_times))
         points.sort(key=lambda p: (p['index'], p['dose']))
-        data = _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix)
+        datas = _dose_response_datas(stem, swept_param, points, observable_id_to_column, sd_suffix)
         dose_responses.append({'name': stem, 'model_id': mid, 'swept_param': swept_param,
-                               'scan_time': scan_time, 'data': data})
+                               'scan_time': scan_time, 'datas': datas})
         for p in points:
             consumed_experiment_ids.add(p['eid'])
             cid = condition_of.get(p['eid'])
@@ -517,7 +535,8 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
 
 
 def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows, experiment_rows,
-                                               observable_id_to_column, sd_suffix='_SD'):
+                                               observable_id_to_column, sd_suffix='_SD', *,
+                                               sweepable):
     """Detect + reconstruct **pre-equilibrated dose-response** groups -- the inverse of the
     exporter's ``build_preequilibrated_dose_response_conditions`` (#477; ADR-0062), the combination
     of ADR-0052 pre-equilibration and ADR-0046 dose-response.
@@ -526,8 +545,8 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     ``<stem>_<i>``: a leading ``time = -inf`` steady-state period under a shared pre-equilibration
     condition, then a ``time = 0`` measurement period applying an optional shared **wash** condition
     plus a per-dose condition ``cond_<stem>_<i>`` that sets one swept parameter to dose ``i``. This
-    recovers each such group back to a single swept-axis :class:`~pybnf.data.Data` (column 0 = the
-    swept parameter, its values the doses) plus the pre-equilibration + wash condition names and the
+    recovers each such group back to a swept-axis :class:`~pybnf.data.Data` per replicate (column 0 =
+    the swept parameter, its values the doses) plus the pre-equilibration + wash condition names and the
     scan endpoint -- the form a new-era ``experiment: <stem>, preequilibrate: <pre>[, condition:
     <wash>], type: parameter_scan[, t_end: <t>]`` re-exports.
 
@@ -546,16 +565,33 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     raises). A steady-state (``time = inf``) point is always a scan; a finite-time point needs the
     ``<stem>_<i>`` name (mirroring :func:`reconstruct_dose_responses`).
 
+    **Other sources (#904).** A problem PyBNF did not write names its dose conditions freely --
+    ``petab.v2.petab1to2`` turns a v1 ``preequilibrationConditionId`` + ``simulationConditionId``
+    pair into experiment ``experiment__<pre>___<sim>`` with periods ``-inf -> <pre>`` and
+    ``0 -> <sim>``. So when ``cond_<eid>`` is absent, the measurement period's **lone** condition,
+    applied at ``time = 0``, is the dose if it sets exactly one numeric target -- the rule
+    :func:`reconstruct_dose_responses` applies to a plain dose (there is no wash to tell apart) --
+    and that target is in ``sweepable``, the model parameters (a condition setting a species
+    amount is a bolus, which a ``parameter_scan`` cannot sweep). Such a group is claimed only when
+    it is one scan; otherwise its experiments are left to the time-course reconstruction, which
+    imports each one exactly as its own ``preequilibrate:`` + ``condition:`` experiment. A dose
+    condition that any other experiments-table row also applies (another experiment, or a scan's
+    own pre-equilibration) is kept as a ``condition:`` line rather than consumed. Before #904 these
+    experiments fell through to the plain dose detector, which read only their last row and
+    dropped the pre-equilibration.
+
     Returns ``(scans, remaining_rows, consumed_condition_ids, consumed_experiment_ids)``:
 
-    * ``scans`` -- a list of ``{name, model_id, preequilibrate, wash, swept_param, scan_time,
-      equil_t_end, data}`` (``preequilibrate`` / ``wash`` are condition names, ``wash`` ``None``
-      when the measurement period applies no shared condition; ``scan_time`` is ``inf`` for steady
-      state; ``equil_t_end`` is ``None`` for a steady-state equilibration);
+    * ``scans`` -- a list of
+      ``{name, model_id, preequilibrate, wash, swept_param, scan_time, equil_t_end, datas}``
+      (``preequilibrate`` / ``wash`` are condition names, ``wash`` ``None`` when the measurement
+      period applies no shared condition; ``scan_time`` is ``inf`` for steady state;
+      ``equil_t_end`` is ``None`` for a steady-state equilibration; ``datas`` is the list of
+      replicate grids, :func:`_dose_response_datas`);
     * ``remaining_rows`` -- the measurement rows NOT in any pre-equilibrated scan;
-    * ``consumed_condition_ids`` -- only the per-dose ``cond_<stem>_<i>`` ids (the shared
-      pre-equilibration + wash conditions are NOT consumed: they become ``preequilibrate:`` /
-      ``condition:`` lines via ``conditions_from_rows``);
+    * ``consumed_condition_ids`` -- only the per-dose condition ids no other experiments-table
+      row applies (the shared pre-equilibration + wash conditions are NOT consumed: they become
+      ``preequilibrate:`` / ``condition:`` lines via ``conditions_from_rows``);
     * ``consumed_experiment_ids`` -- every ``<stem>_<i>`` experiment id (dropped from the
       time-course / plain-pre-equilibration reconstruction).
     """
@@ -588,7 +624,6 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         by_group.setdefault((row.experiment_id, row.model_id), []).append(row)
 
     buckets = {}
-    consumed = set()
     for (eid, mid), rows in by_group.items():
         periods = sorted(periods_of.get(eid, []), key=lambda p: p[0])
         if periods and math.isfinite(periods[0][0]) and periods[0][0] < 0:
@@ -614,8 +649,14 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         (scan_time,) = obs_times
         dose_cid = f'cond_{eid}'           # the exporter's per-dose condition id
         meas_cids = [c for _t, c in meas_periods]
-        dose = numeric_dose(dose_cid) if dose_cid in meas_cids else None
-        if dose is None:
+        exporter_shape = dose_cid in meas_cids
+        if not exporter_shape:
+            # Another source's naming (#904): the lone time-0 measurement condition is the dose.
+            if len(meas_cids) != 1 or meas_time != 0:
+                continue
+            dose_cid = meas_cids[0]
+        dose = numeric_dose(dose_cid)
+        if dose is None or not (exporter_shape or dose[0] in sweepable):
             continue                       # no per-dose single-numeric condition -> not a scan
         m = _DOSE_EID.match(eid)
         if not math.isinf(scan_time) and m is None:
@@ -641,12 +682,12 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         buckets.setdefault((stem, mid), []).append(
             {'index': index, 'eid': eid, 'swept_param': swept_param, 'dose': dose_value,
              'scan_time': scan_time, 'preequilibrate': condition_name_from_id(pre_cid),
-             'wash_names': wash_names, 'dose_cid': dose_cid, 'rows': rows,
-             'equil_t_end': equil_t_end})
-        consumed.add((eid, mid))
+             'wash_names': wash_names, 'dose_cid': dose_cid, 'meas_time': meas_time,
+             'rows': rows, 'exporter_shape': exporter_shape, 'equil_t_end': equil_t_end})
 
     scans = []
-    consumed_condition_ids = set()
+    consumed = set()
+    dose_rows = set()                      # (experimentId, time, conditionId) of each claimed dose
     consumed_experiment_ids = set()
     for (stem, mid), points in buckets.items():
         swept = {p['swept_param'] for p in points}
@@ -656,6 +697,8 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         equils = {p['equil_t_end'] for p in points}
         if (len(swept) != 1 or len(scan_times) != 1 or len(pres) != 1 or len(washes) != 1
                 or len(equils) != 1):
+            if not any(p['exporter_shape'] for p in points):
+                continue                   # not one scan: each imports as its own time course
             raise PybnfError(
                 f"Pre-equilibrated dose-response group '{stem}' is ambiguous: its experiments set "
                 f"swept parameter(s) {sorted(swept)} at scan time(s) {sorted(scan_times)} under "
@@ -673,49 +716,78 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
                 f"(wash) condition has no PyBNF representation (ADR-0062).")
         swept_param = next(iter(swept))
         points.sort(key=lambda p: (p['index'], p['dose']))
-        data = _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix)
+        datas = _dose_response_datas(stem, swept_param, points, observable_id_to_column, sd_suffix)
         scans.append({'name': stem, 'model_id': mid, 'preequilibrate': next(iter(pres)),
                       'wash': wash_names[0] if wash_names else None, 'swept_param': swept_param,
                       'scan_time': next(iter(scan_times)), 'equil_t_end': next(iter(equils)),
-                      'data': data})
+                      'datas': datas})
         for p in points:
+            consumed.add((p['eid'], mid))
             consumed_experiment_ids.add(p['eid'])
-            consumed_condition_ids.add(p['dose_cid'])
+            dose_rows.add((p['eid'], p['meas_time'], p['dose_cid']))
 
+    # A dose condition is consumed only if every experiments-table row applying it is a claimed
+    # dose; one that also serves another role (another experiment's condition, or a scan's own
+    # pre-equilibration) stays a condition: line (#904).
+    consumed_condition_ids = {cid for _eid, _time, cid in dose_rows} - {
+        row.condition_id for row in experiment_rows
+        if (row.experiment_id, row.time, row.condition_id) not in dose_rows}
     remaining_rows = [row for row in measurement_rows
                       if (row.experiment_id, row.model_id) not in consumed]
     return scans, remaining_rows, consumed_condition_ids, consumed_experiment_ids
 
 
-def _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix):
-    """Pivot a dose-response group's per-dose rows to a wide swept-axis :class:`~pybnf.data.Data`.
+def _dose_response_datas(stem, swept_param, points, observable_id_to_column, sd_suffix):
+    """Pivot a dose-response group's per-dose rows to wide swept-axis replicate grids.
 
-    Column 0 is the swept parameter (its values the doses, in the points' order); then each
-    measured observable's column in observables-table order (so a re-export reproduces it), with
-    its ``<col><sd_suffix>`` companion when the rows carry ``noiseParameters``. Each point (one
-    dose / one PEtab experiment) contributes one row."""
-    present = set()
-    has_noise = False
-    for p in points:
-        for row in p['rows']:
-            present.add(row.observable_id)
-            if row.noise_parameters is not None:
-                has_noise = True
+    Returns a list of :class:`~pybnf.data.Data`, one per replicate (length 1 when nothing
+    repeats). In each grid column 0 is the swept parameter (its values the doses, in the points'
+    order); then each measured observable's column in observables-table order (so a re-export
+    reproduces it), with its ``<col><sd_suffix>`` companion when the grid's rows carry
+    ``noiseParameters``. A point (one dose / one PEtab experiment) contributes at most one row
+    to each grid.
+
+    **Replicates (#903, ADR-0039).** PEtab records a replicate as a repeated
+    ``(observable, time)`` row under one experimentId; every row of a dose point shares the scan
+    time, so here a replicate is a repeated observable under one dose experiment. Each point's rows are dealt by
+    :func:`_deal_replicates`, exactly as a time course's are: grid k holds the k-th occurrence of
+    each cell, one row per dose measured at least k+1 times. Grid 0 is the full scan; a later
+    grid holds only the doses that repeat that often, and its per-row ``noiseParameters`` travel
+    with it. The importer writes grid k to ``<name>.exp`` / ``<name>_rep<k+1>.exp`` on the one
+    experiment's ``data:`` list, which the exporter emits back as repeated rows under the same
+    dose experimentIds. Before #903 each point was pivoted into a single row, so each repeated
+    cell overwrote the one before it and only the last replicate reached the fit."""
+    present = {row.observable_id for p in points for row in p['rows']}
     unknown = present - set(observable_id_to_column)
     if unknown:
         raise PybnfError(
             f"Dose-response '{stem}' references observable id(s) {sorted(unknown)} absent "
             f"from the observables table.")
+    dealt = [_deal_replicates(p['rows']) for p in points]
+    grids = []
+    for k in range(max(len(buckets) for buckets in dealt)):
+        members = [(p['dose'], buckets[k]) for p, buckets in zip(points, dealt)
+                   if k < len(buckets)]
+        grids.append(_dose_response_grid(swept_param, members, observable_id_to_column,
+                                         sd_suffix))
+    return grids
+
+
+def _dose_response_grid(swept_param, members, observable_id_to_column, sd_suffix):
+    """One replicate grid of a dose-response: ``members`` is ``[(dose, rows), ...]`` in scan
+    order, each ``rows`` a collision-free bucket from :func:`_deal_replicates` (at most one row
+    per observable), so a single value lands in each cell."""
+    present = {row.observable_id for _dose, rows in members for row in rows}
+    has_noise = any(row.noise_parameters is not None for _dose, rows in members for row in rows)
     columns = [observable_id_to_column[oid] for oid in observable_id_to_column
                if oid in present]
-    column_of_id = {oid: observable_id_to_column[oid] for oid in present}
 
-    doses = [p['dose'] for p in points]
-    values = {col: [np.nan] * len(points) for col in columns}
-    sds = {col: [np.nan] * len(points) for col in columns} if has_noise else None
-    for i, p in enumerate(points):
-        for row in p['rows']:
-            col = column_of_id[row.observable_id]
+    doses = [dose for dose, _rows in members]
+    values = {col: [np.nan] * len(members) for col in columns}
+    sds = {col: [np.nan] * len(members) for col in columns} if has_noise else None
+    for i, (_dose, rows) in enumerate(members):
+        for row in rows:
+            col = observable_id_to_column[row.observable_id]
             values[col][i] = row.measurement
             if has_noise and row.noise_parameters is not None:
                 sds[col][i] = row.noise_parameters

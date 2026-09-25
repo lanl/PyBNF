@@ -95,6 +95,7 @@ from ..pset import (
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
+    WILDTYPE_CONDITION_ID,
     PetabMappingRow,
     build_dose_response_conditions,
     build_experiment_conditions,
@@ -435,6 +436,19 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         raise PybnfError(
             f"Experiment(s) reference undefined condition(s) {sorted(undefined)}; define "
             f"each with a 'condition:' line.")
+    # A condition named 'wildtype' would be written as conditionId cond_wildtype, the id the
+    # exporter reserves for its synthesized base condition (ADR-0027). A reader cannot tell the
+    # two apart by id -- PyBNF 1.8.1's importer dropped every cond_wildtype row (#905) -- so the
+    # name is refused whenever such a condition is exported, not only when the base is emitted.
+    clash = sorted(c for c in referenced if f'cond_{c}' == WILDTYPE_CONDITION_ID)
+    if clash:
+        raise PybnfError(
+            f"Condition '{clash[0]}' cannot be exported to PEtab: it would be written as "
+            f"conditionId '{WILDTYPE_CONDITION_ID}', which the exporter reserves for the base "
+            f"condition it synthesizes for wildtype and wash-out experiments, and a PEtab reader "
+            f"may take its targets for that base and drop them. Rename the condition (any other "
+            f"name is written as 'cond_<name>').")
+
     # A condition belongs to one model (ADR-0041 addendum), and the fitter looks an experiment's
     # conditions up on the experiment's OWN model only (config.py::_resolve_experiment_data_key /
     # _preequilibration_perturbations), so an experiment applying another model's condition is a

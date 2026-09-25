@@ -168,7 +168,14 @@ following all survive an import and an export:
   one conditioned experiment per dose instead. For a steady-state scan the fit is
   the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)
   scan of that kind does not yet load after re-import: each dose becomes a time
-  course with a single measurement time, which the simulator refuses.
+  course with a single measurement time, which the simulator refuses. Replicate measurements at a dose
+  import as replicate ``.exp`` files, as a time course's do. A dose applied after a
+  pre-equilibration imports as a pre-equilibrated scan, including the
+  ``experiment__<pre>___<sim>`` experiments that ``petab1to2`` writes from a v1
+  ``preequilibrationConditionId``. An experiment that applies two conditions at the
+  same time is refused on import. The condition name ``wildtype`` is reserved: the
+  exporter writes its own base condition as ``cond_wildtype``, so a condition of that
+  name is refused on export.
 
 Tutorial lessons
 ----------------
