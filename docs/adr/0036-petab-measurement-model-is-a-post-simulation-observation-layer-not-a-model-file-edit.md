@@ -307,6 +307,15 @@ placeholder layer too, §7).
   surface), 0032 (importer read path), 0033 (the deferral), 0034 (bind-by-id; verbatim carry),
   0035 (the synthesis this supersedes; its translator/parser this reuses). Issue #407.
 
+## Addendum (2026-09-25): the export direction reads BNGL with BioNetGen's grammar (#908)
+
+§6 says the export direction (`bngl_body_to_petab_math` + `_petab_printer_cls` + the
+`_assert_round_trips` tripwire) survives unchanged. Since #908 it parses the body with
+BioNetGen's grammar and prints it with `pybnf/petab/_bngl_math.py`, and its tripwire is
+`_assert_matches_bngl`, which checks the formula against BioNetGen's value of the body; see the
+ADR-0035 addendum of the same date. `_petab_printer_cls` and `_assert_round_trips` remain for the
+PEtab-to-PEtab rewrites.
+
 ## Addendum (2026-09-25): verbatim except for marked `estimate = false` overrides (issue #907)
 
 The model file is carried verbatim, for every language and backend, **except for marked

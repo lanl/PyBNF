@@ -29,8 +29,10 @@ from .parsing import (
     _parse_set_parameter,
     _parse_set_concentration_nf,
     _parse_add_concentration,
+    _is_reset_concentrations,
     _is_reset_parameters,
     _is_save_parameters,
+    _snapshot_label,
 )
 from .expressions import (
     _build_mutant_param_set,
@@ -273,7 +275,9 @@ class BngsimNfModel(Model):
         ds = {}
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
-        saved_param_inputs = dict(current_param_inputs)
+        # saveParameters snapshots by label (None: the default slot, which starts as the
+        # parameters this run was given); a labelled reset needs its own save first (#830).
+        saved_param_inputs = {None: dict(current_param_inputs)}
         sess = SimpleNamespace(nfsim=None, method=None, gml=None)
         self._pybnf_current_action_info = None
 
@@ -346,14 +350,45 @@ class BngsimNfModel(Model):
                     continue
 
                 if _is_save_parameters(line):
-                    saved_param_inputs = dict(current_param_inputs)
+                    saved_param_inputs[_snapshot_label(line)] = dict(current_param_inputs)
                     continue
 
                 if _is_reset_parameters(line):
-                    current_param_inputs = dict(saved_param_inputs)
+                    label = _snapshot_label(line)
+                    if label not in saved_param_inputs:
+                        raise PybnfError(
+                            "Model %s: the action %s restores parameters saved under the label "
+                            "'%s', but no saveParameters(\"%s\") runs before it."
+                            % (self.name, line, label, label))
+                    current_param_inputs = dict(saved_param_inputs[label])
                     current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
                     if sess.nfsim is not None:
                         self._apply_param_overrides(sess.nfsim, current_param_overrides)
+                    continue
+
+                if _is_reset_concentrations(line):
+                    # BioNetGen's resetConcentrations() returns to the seed species (nothing
+                    # can have redefined the default snapshot here: saveConcentrations is
+                    # classified network-only, so a model that saves one never reaches this
+                    # bridge). A network-free session has no way back to its seed, so end it;
+                    # the next action starts a fresh one from the seed species under the
+                    # parameters then in force, as a synthesized experiment must (#875). A
+                    # labelled reset has no snapshot here to restore and is refused.
+                    if _snapshot_label(line) is not None:
+                        raise PybnfError(
+                            "Model %s: the network-free bridge cannot run %s: it keeps no "
+                            "labelled species snapshot, and no saveConcentrations can run on it. "
+                            "Use bngl_backend = bionetgen for this model." % (self.name, line))
+                    _destroy_nf_session(sess.nfsim)
+                    sess.nfsim, sess.method, sess.gml = None, None, None
+                    # A session a setConcentration starts after the reset is seeded for this
+                    # point in the action list, so two experiments never share a stream.
+                    bootstrap_seed = self._resolve_action_seed(
+                        explicit_seed=None,
+                        action_index=action_index,
+                        suffix='_bootstrap',
+                        method='nf',
+                    )
                     continue
 
                 if line and not re.match(r'\s*(begin|end)\s+actions', line):

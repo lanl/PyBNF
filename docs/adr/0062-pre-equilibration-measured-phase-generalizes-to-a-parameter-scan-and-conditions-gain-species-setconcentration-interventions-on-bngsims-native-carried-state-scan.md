@@ -142,3 +142,13 @@ carried-state recovery test.
 - See ADR-0052 (pre-equilibration, extended here), 0046 (steady-state
   dose-response — the fresh-from-seed sibling), 0028 (the new-era surface), 0034
   (`edition >= 2 ⇒ bngsim`). Advances #474; depends on lanl/bngsim#11.
+
+## Addendum (2026-09-25): the scan's snapshot is labelled, and the bridge reads labels (issue #830)
+
+The unlabelled `saveConcentrations()` before the scan redefined what every later experiment's
+`resetConcentrations()` restores, so the next experiment on the model started from this one's
+post-intervention state; the shipped edition-2 IGF1R job's `F5D_60min` pre-incubated from
+`F5D_20min`'s washed state. The block now writes `saveConcentrations("<name>_scan_start")`.
+The scan never read the snapshot: it restarts each dose from the state at its invocation on
+both backends. And the bngsim bridge now parses snapshot labels, which the "Out" list above
+deferred, so a labelled save leaves the default slot alone, as in BioNetGen. See ADR-0151.

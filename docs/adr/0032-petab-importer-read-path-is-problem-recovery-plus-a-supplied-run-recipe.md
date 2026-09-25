@@ -253,6 +253,28 @@ likelihood of the exported tables against a numpy hand calculation and PyBNF's o
 experiment shape, a pooled constant, a row off its experiment's mean, and a small-magnitude
 sigma.
 
+## Addendum: a `cond_wildtype` with real targets is a condition (issue #905)
+
+**Accepted and implemented 2026-09-25.** The importer treated every `conditionId` equal to
+`cond_wildtype` as the synthesized base above and dropped all of its rows. A condition of that id
+that sets real targets — another tool's, or a PyBNF condition named `wildtype` exported when the
+exporter checked the name only while it also emitted the base — was lost without a message, and
+its experiments were fitted against the unperturbed model. The importer now drops `cond_wildtype`
+only when every row is a surrogate base pin (`p = p__REF`, the identity after import); it
+blanks the periods that apply it, so every reconstruction reads "no condition" there. A
+`cond_wildtype` with any other row imports as a condition named `cond_wildtype` (its literal id,
+with only the identity pins dropped); it re-exports as `cond_cond_wildtype` and imports back under
+the same name. On the export side the name `wildtype` is now reserved outright: a condition of
+that name that some experiment applies is refused, whatever else the job contains. Two
+conditionIds that would import under one name (`cond_a` and `a`) are refused rather than merged
+when measured experiments apply both. When at most one is applied, that one (or, with none
+applied, the first in table order) is imported under the shared name and the others are left
+out: a condition no experiment applies cannot change the fit, and libpetab only warns about it.
+A condition made only of pins takes part in that check like any other, so its experiments are
+never imported under another id's targets. The pins themselves are read as the identity, as they
+always were; that is exact only when no earlier period of the experiment changed the pinned
+parameter, which is left to a separate issue.
+
 ## Addendum (2026-09-25): the model passes through unchanged unless the parameters table fixes it (issue #907)
 
 "The model passes through `_bngl.parse_model` unchanged" now has one exception. A parameters-table

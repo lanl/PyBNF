@@ -554,15 +554,16 @@ def test_de_recovers_carried_state_dose_scan(seed, tmp_path):
     conf = H.config.Configuration(H.ploop(conf_text.splitlines(keepends=True)))
 
     # Build assertion: reset -> setConcentration("P()",1) [load] -> steady-state equilibration
-    # (unmeasured) -> setConcentration("P()",0) [wash] -> saveConcentrations -> parameter_scan
-    # (reset_conc=>1) over exactly the data's doses; only 'relax' is a scored suffix and both
-    # conditions are consumed inline.
+    # (unmeasured) -> setConcentration("P()",0) [wash] -> saveConcentrations (labelled, so no
+    # later experiment starts from it -- ADR-0151) -> parameter_scan (reset_conc=>1) over
+    # exactly the data's doses; only 'relax' is a scored suffix and both conditions are
+    # consumed inline.
     model = conf.models['m10_preequil_scan']
     acts = model.actions
     i_load = acts.index('setConcentration("P()",1)')
     i_equil = next(i for i, a in enumerate(acts) if 'steady_state=>1' in a and 'relax_preequil' in a)
     i_wash = acts.index('setConcentration("P()",0)')
-    i_save = acts.index('saveConcentrations()')
+    i_save = acts.index('saveConcentrations("relax_scan_start")')
     i_scan = next(i for i, a in enumerate(acts) if a.startswith('parameter_scan('))
     assert acts.index('resetConcentrations()') < i_load < i_equil < i_wash < i_save < i_scan, acts
     # carry-over invariant: NO resetConcentrations between the equilibration and the scan

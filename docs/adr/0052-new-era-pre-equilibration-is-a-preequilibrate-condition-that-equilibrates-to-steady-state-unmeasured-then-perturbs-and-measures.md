@@ -189,3 +189,13 @@ time-indexed `tfun`; an SBML `<csymbol>` for time): PEtab runs the equilibration
 `[-T, 0]`, PyBNF on `[0, T]`, and PEtab has no way to restart the clock between periods. Both
 directions refuse it (`conditions.model_time_reads`). The steady-state `-inf` mapping is
 unchanged.
+
+## Addendum (2026-09-25): the leading reset restores the parameters too (issues #830, #831)
+
+The `resetConcentrations()` that opens the block above was meant to make the experiment
+independent of every other experiment's simulation, and it did so only for the species. The
+measurement condition's `setParameter` stayed in force for every experiment written after
+this one, so the order of the `experiment:` lines changed the fit. Since ADR-0151 every
+synthesized experiment opens with `resetParameters("pybnf_experiment_start")` (the first saves
+them) before its `resetConcentrations()`, on the network-free path too. Nothing inside the
+block changes: the equilibrated state and both conditions still carry into the measured phase.

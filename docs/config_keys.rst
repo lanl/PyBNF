@@ -148,6 +148,10 @@ Required Keys
       column of the data supplies the simulation's output grid (the BNGL ``begin actions``
       block is no longer needed for fitting); PyBNF synthesizes the ``simulate`` action
       from the data, so the scoring grid always lines up with the measurements.
+    * **Each experiment starts from the model as written:** the model's parameters with the
+      trial values of the free ones, and its seed species, whatever the experiments declared
+      before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
+      order of the ``experiment:`` lines never changes a fit. (ADR-0151)
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
       "model as is").
     * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
@@ -1777,6 +1781,8 @@ Algorithm Options
   a free-form BNGL ``generate_network`` options fragment, injected as
   ``generate_network({overwrite=>1, <options>})``. An explicit ``generate_network`` line in
   the model always takes precedence (this only fills the synthesized default).
+  :ref:`export_job <petab>` writes the synthesized line into the exported model, so the cap
+  travels with a PEtab export and its re-import.
 
   Default: none (the bare ``generate_network({overwrite=>1})``)
 

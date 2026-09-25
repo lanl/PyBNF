@@ -168,3 +168,20 @@ supersedes), **0004** (PEtab-defaulted not PEtab-bound — why native users get 
 **#419** (the per-family mean/median capability, incl. the `neg_bin` 0.5-quantile
 inversion), **#425** (analytical / user-defined objectives, the `direct_pass`
 successor), **#418** (the `_Cum` generalization in the same objfunc space).
+
+## Addendum (2026-09-25): what "the exporter always emits median" requires of a mean-centred job (#898)
+
+The exporter emits median, so it must refuse a job whose fit is not median-centred. Two
+refinements came out of #898:
+
+- **The location it judges is the one the fitter uses.** `Configuration._load_obj_func`
+  applies the whole-fit `noise_location` key last (`set_default_location`), so the key
+  overrides the whole-fit line's own `location` field and never reaches a per-observable
+  override. The exporter read only the line or token, so `objective = lnnormal` with
+  `noise_location = mean` was written as PEtab's median `log-normal`, byte-identical to the
+  median job. It now takes the key when set, with the same precedence.
+- **Only a family whose mean is not its median is refused.** On the linear scale a Gaussian or
+  Laplace is symmetric and its moment offset is exactly `0.0`, so a `mean` there is PEtab's
+  median likelihood to the bit (this ADR's own "byte-identical" argument for the default flip).
+  Such a job now exports, by either spelling; a mean-centred `lnnormal` (the one exportable
+  family where the two differ) is refused, by either spelling.

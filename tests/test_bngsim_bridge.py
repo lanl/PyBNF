@@ -1726,6 +1726,7 @@ class TestContinueFlag:
 
         # Build a minimal BngsimModel without going through __init__
         obj = object.__new__(bngsim_model.BngsimModel)
+        obj.name = 'fake'
         obj.actions = actions
         obj._net_species_initializers = []
         obj._codegen_so = ''
@@ -2798,9 +2799,12 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
         actions = ['simulate({method=>"ode",t_end=>10,n_steps=>2})']
         obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
 
-        # Give the model trackable param names and values
+        # Give the model trackable param names and values (two primaries: neither is
+        # bngsim-internal nor derived from an expression)
         param_vals = {'k1': 0.1, 'k2': 0.5}
         model.param_names = ['k1', 'k2']
+        model.param_is_internal = [False, False]
+        model.param_is_expression = [False, False]
         model.get_param = lambda n: param_vals[n]
         set_calls = []
         def mock_set_param(name, val):
@@ -2817,10 +2821,8 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
 
         # First call: setParameter("k1", 99.0)
         assert set_calls[0] == ('k1', 99.0)
-        # resetParameters restores both k1=0.1 and k2=0.5
-        restore = {name: val for name, val in set_calls[1:]}
-        assert restore['k1'] == 0.1
-        assert restore['k2'] == 0.5
+        # resetParameters puts back what saveParameters saved: k1=0.1 (k2 never moved)
+        assert param_vals == {'k1': 0.1, 'k2': 0.5}
 
     def test_protocol_simulate_continue_uses_current_time(self, monkeypatch):
         # CQ-2: _run_protocol shares the simulate() handling with _execute_actions

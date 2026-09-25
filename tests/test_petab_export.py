@@ -1833,10 +1833,6 @@ class TestExportDoseResponse:
         with pytest.raises(PybnfError, match=match):
             export_job(src / 'job.conf', src / 'out')
 
-    @pytest.mark.xfail(strict=True, reason=(
-        '#903: the importer keeps only the last measurement at each dose experiment. Keying rows '
-        'by dose (#895) puts a single file\'s repeated dose under one experiment, so this round '
-        'trip, exact before #895, now loses rows until #903 is fixed.'))
     def test_a_file_that_repeats_a_dose_round_trips(self, tmp_path_factory):
         # Reviewer's test. One data file measures L = 1 and L = 2 twice (technical replicates
         # written as repeated rows). The export is the same fit either way. Before #895 each row
@@ -3619,6 +3615,62 @@ class TestBuildExperimentConditions:
                                         nominal_of=lambda _c, _v: 1.0)
 
 
+class TestReservedWildtypeConditionName:
+    """A condition named ``wildtype`` would be written as ``cond_wildtype``, the id the exporter
+    reserves for its synthesized base condition, and PyBNF 1.8.1's importer dropped every
+    ``cond_wildtype`` row (#905). The builders caught the clash only when a fit parameter is
+    perturbed AND the base is emitted; the export now refuses the name whenever such a
+    condition is exported. ``k`` is fit, ``L`` fixed, so no fit parameter is perturbed here."""
+
+    _MODEL = ('begin model\nbegin parameters\n  k 1\n  L 1\nend parameters\n'
+              'begin molecule types\n  A()\nend molecule types\n'
+              'begin seed species\n  A() 10\nend seed species\n'
+              'begin observables\n  Molecules Atot A()\nend observables\n'
+              'begin functions\n  rate() = k*L\nend functions\n'
+              'begin reaction rules\n  A() -> 0 rate()\nend reaction rules\nend model\n')
+
+    def _conf(self, tmp_path, conditions, experiments):
+        (tmp_path / 'm.bngl').write_text(self._MODEL)
+        (tmp_path / 'e.exp').write_text('# time Atot\n0\t10\n1\t5\n2\t2.5\n')
+        conf = tmp_path / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                        + conditions + experiments + 'loguniform_var = k 0.01 100\n')
+        return conf
+
+    def test_wildtype_condition_with_no_fit_parameter_perturbed_is_refused(self, tmp_path):
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n',
+                          'experiment: wt, condition: wildtype, data: e.exp\n')
+        with pytest.raises(PybnfError, match=r"Condition 'wildtype' cannot be exported to PEtab"
+                                             r".*conditionId 'cond_wildtype'.*Rename the "
+                                             r"condition"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_wildtype_preequilibration_condition_is_refused(self, tmp_path):
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n'
+                                    'condition: meas, perturbations: L = 1\n',
+                          'experiment: e, preequilibrate: wildtype, condition: meas, '
+                          'data: e.exp\n')
+        with pytest.raises(PybnfError, match="Condition 'wildtype' cannot be exported"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_unused_wildtype_condition_does_not_block_the_export(self, tmp_path):
+        # An unreferenced condition emits no PEtab rows, so its name clashes with nothing.
+        conf = self._conf(tmp_path, 'condition: wildtype, perturbations: L = 2\n',
+                          'experiment: e, data: e.exp\n')
+        export_job(conf, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'conditions.tsv').exists()
+
+    def test_a_condition_named_cond_wildtype_exports_without_clashing(self, tmp_path):
+        # The importer's name for a real-target cond_wildtype (#905) re-exports as
+        # cond_cond_wildtype, clear of the reserved id.
+        conf = self._conf(tmp_path, 'condition: cond_wildtype, perturbations: L = 2\n',
+                          'experiment: wt, condition: cond_wildtype, data: e.exp\n')
+        export_job(conf, tmp_path / 'out')
+        cells = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(tmp_path / 'out' / 'conditions.tsv')}
+        assert cells == {('cond_cond_wildtype', 'L', '2')}
+
+
 # ---------------------------------------------------------------------------
 # 5. Documented boundaries raise (in code, not silently mis-exported). The confs are
 # all on the new-era surface (model: / experiment: / data:), since the exporter now
@@ -3755,6 +3807,33 @@ class TestBoundaries:
                 tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization = scale\n"),
                 tmp_path / 'out')
 
+    @pytest.mark.parametrize('conf_name, model', [
+        ('demo_bng_v2.conf', 'parabola_v2'), ('demo_xml_v2.conf', 'parabola')])
+    def test_postprocess_script_is_refused(self, tmp_path, monkeypatch, conf_name, model):
+        # #899: a `postprocess` script transforms each named simulation before the fitter scores
+        # it (Result.postprocess_data). An arbitrary Python function of the prediction has no
+        # PEtab v2 form, so the export used to write the bare model column -- a problem whose
+        # optimum was the untransformed one -- and say nothing. The fitter applies the key to a
+        # BNGL and an SBML model alike, so both are refused. The first half of the test is the
+        # fitter's side: it does map the experiment to the script, so the key is live.
+        import shutil
+
+        from pybnf.parse import load_config
+        job = tmp_path / 'job'
+        shutil.copytree(DEMO_DIR, job)
+        (job / 'pp.py').write_text(
+            "def postprocess(data):\n"
+            "    data.data[:, data.cols['y']] *= 10\n"
+            "    return data\n")
+        conf = job / conf_name
+        conf.write_text(conf.read_text() + 'postprocess = pp.py par1\n')
+        monkeypatch.chdir(job)
+        fitted = load_config(conf_name)
+        assert fitted.postprocessing == {(model, 'par1'): str(job / 'pp.py')}
+        with pytest.raises(NotImplementedError, match=r"'postprocess' script \('pp.py' on 'par1'\)"):
+            export_job(conf, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'observables.tsv').exists()
+
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
     def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
         # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a
@@ -3807,11 +3886,13 @@ class TestBoundaries:
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
     def test_mean_centered_noise_model_not_implemented(self, tmp_path):
-        # PEtab v2 is median-only; a mean-centered noise model has no representation.
-        with pytest.raises(NotImplementedError):
+        # PEtab v2 is median-only; a mean-centered noise model on a family whose mean is not
+        # its median has no representation. (This test used a linear gaussian line until #898;
+        # there the mean IS the median, and that case now exports -- TestNoiseLocation.)
+        with pytest.raises(NotImplementedError, match="location = mean.*'lnnormal'"):
             export_job(_boundary_conf(
                 tmp_path,
-                "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
+                "noise_model = lnnormal, sigma = fix_at 1, location = mean\n"
                 "uniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
@@ -3869,6 +3950,156 @@ class TestBoundaries:
                 tmp_path / 'out')
 
 
+# ---------------------------------------------------------------------------
+# #898: the global noise_location key. The fitter applies it after building the objective
+# (Configuration._load_obj_func -> set_default_location), so it decides the whole-fit noise
+# model's location whatever the line says, and it never reaches a per-observable override.
+# The exporter used to read only the line or token, so `objective = lnnormal` plus
+# `noise_location = mean` exported byte-identical to the median job. The oracle throughout is
+# the hand-written likelihood, evaluated with numpy on a fixed simulation of the parabola.
+# ---------------------------------------------------------------------------
+
+_POSITIVE_Y = (5.0, 8.0, 12.0, 17.0, 22.0)
+
+
+def _noise_location_job(d, noise_lines):
+    """The issue's job: the demo parabola, one experiment of positive data, ``noise_lines``.
+    The data carry a ``y_SD`` column (0.5) only when the noise source reads it: under a
+    ``fix_at`` sigma the objective treats ``y_SD`` as one more column to match against the
+    simulation, and there is none."""
+    import shutil
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copy(DEMO_DIR / DEMO_MODEL, d)
+    sd = 'fix_at' not in noise_lines
+    (d / 'positive.exp').write_text(
+        ('# time y y_SD\n' if sd else '# time y\n')
+        + ''.join(f'{t} {y}' + (' 0.5\n' if sd else '\n')
+                  for t, y in zip(range(11, 16), _POSITIVE_Y)))
+    conf = d / 'job.conf'
+    conf.write_text(
+        'edition = 2\njob_type = de\npopulation_size = 8\nmax_iterations = 5\n'
+        f'model: {DEMO_MODEL}\nexperiment: positive, data: positive.exp\n' + noise_lines
+        + 'uniform_var = v1 0.1 10\nuniform_var = v2 0.1 10\nuniform_var = v3 0.1 10\n')
+    return conf
+
+
+class TestNoiseLocation:
+
+    # A fixed simulation of y at the data times: x = t - 10, y = 0.5 x^2 + x + 3.
+    T = np.arange(11.0, 16.0)
+    F = 0.5 * (T - 10) ** 2 + (T - 10) + 3
+    Y = np.array(_POSITIVE_Y)
+    S = 0.5
+
+    def _fitter_objective(self, conf, monkeypatch):
+        """The fitter's own objective for ``conf``, scored on the fixed simulation."""
+        from pybnf.parse import load_config
+        monkeypatch.chdir(conf.parent)
+        obj = load_config(conf.name).obj
+        sim = Data.from_columns(np.column_stack([self.T, self.T - 10, self.F]),
+                                ['time', 'x', 'y'], indvar='time')
+        return obj.evaluate(sim, Data(file_name=str(conf.parent / 'positive.exp')))
+
+    def _lnnormal(self, shift):
+        mu = np.log(self.F) - shift
+        return float(np.sum(0.5 * ((np.log(self.Y) - mu) / self.S) ** 2))
+
+    @pytest.mark.parametrize('noise_lines', [
+        'objective = lnnormal\nnoise_location = mean\n',
+        'noise_model = lnnormal, sigma = fix_at 0.5\nnoise_location = mean\n',
+        # The key overrides the line's own field in the fitter, so this job is mean-centred too.
+        'noise_model = lnnormal, sigma = fix_at 0.5, location = median\nnoise_location = mean\n',
+    ])
+    def test_noise_location_mean_on_lnnormal_is_refused(self, tmp_path, monkeypatch,
+                                                         noise_lines):
+        conf = _noise_location_job(tmp_path / 'job', noise_lines)
+        # The fit is mean-centred: mu = ln f - sigma^2/2, not PEtab's median mu = ln f.
+        fitted = self._fitter_objective(conf, monkeypatch)
+        assert fitted == pytest.approx(self._lnnormal(self.S ** 2 / 2), rel=1e-12)
+        assert fitted != pytest.approx(self._lnnormal(0.0), rel=1e-3)
+        with pytest.raises(NotImplementedError, match=r"noise_location = mean.*'lnnormal'"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_noise_location_median_overrides_a_mean_line(self, tmp_path, monkeypatch):
+        # The reverse precedence: the line says mean, the key says median, and the fitter scores
+        # the median -- which PEtab's log-normal is exactly, so the export goes through.
+        conf = _noise_location_job(
+            tmp_path / 'job',
+            'noise_model = lnnormal, sigma = fix_at 0.5, location = mean\n'
+            'noise_location = median\n')
+        assert self._fitter_objective(conf, monkeypatch) == pytest.approx(
+            self._lnnormal(0.0), rel=1e-12)
+        export_job(conf, tmp_path / 'out')
+        (row,) = _tsv_rows(tmp_path / 'out' / 'observables.tsv')
+        assert (row['noiseDistribution'], row['noiseFormula']) == ('log-normal', '0.5')
+
+    @pytest.mark.parametrize('family, param', [('gaussian', 'sigma'), ('laplace', 'scale')])
+    @pytest.mark.parametrize('spelling', ['key', 'line'])
+    def test_mean_on_a_linear_family_exports_the_median_problem_exactly(
+            self, tmp_path, monkeypatch, family, param, spelling):
+        # On the linear scale a Gaussian or Laplace is symmetric: its mean IS its median, the
+        # moment offset is exactly 0.0, and the fitter's mean-centred likelihood is PEtab's
+        # median one to the bit. So `mean` there exports -- by either spelling -- and the export
+        # is the median job's, byte for byte. (The line spelling was refused before #898.)
+        base = f'noise_model = {family}, {param} = fix_at 0.5'
+        mean_lines = (f'{base}\nnoise_location = mean\n' if spelling == 'key'
+                      else f'{base}, location = mean\n')
+        mean_conf = _noise_location_job(tmp_path / 'mean', mean_lines)
+        median_conf = _noise_location_job(tmp_path / 'median', f'{base}\n')
+        fitted_mean = self._fitter_objective(mean_conf, monkeypatch)
+        fitted_median = self._fitter_objective(median_conf, monkeypatch)
+        assert fitted_mean == fitted_median
+        export_job(mean_conf, tmp_path / 'out_mean')
+        export_job(median_conf, tmp_path / 'out_median')
+        for name in ('parameters.tsv', 'observables.tsv', 'measurements.tsv', DEMO_MODEL):
+            assert ((tmp_path / 'out_mean' / name).read_bytes()
+                    == (tmp_path / 'out_median' / name).read_bytes())
+        # Score the exported tables by hand with PEtab's median likelihood: it is the fit's.
+        (obs,) = _tsv_rows(tmp_path / 'out_mean' / 'observables.tsv')
+        assert obs['noiseDistribution'] == ('normal' if family == 'gaussian' else 'laplace')
+        rows = _tsv_rows(tmp_path / 'out_mean' / 'measurements.tsv')
+        t = np.array([float(r['time']) for r in rows])
+        y = np.array([float(r['measurement']) for r in rows])
+        pred = 0.5 * (t - 10) ** 2 + (t - 10) + 3
+        scale = float(obs['noiseFormula'])
+        by_hand = (np.sum(0.5 * ((y - pred) / scale) ** 2) if family == 'gaussian'
+                   else np.sum(np.abs(y - pred) / scale))
+        assert fitted_mean == pytest.approx(by_hand, rel=1e-12)
+
+    def test_noise_location_does_not_reach_a_per_observable_override(
+            self, tmp_path, monkeypatch):
+        # The key sets only the whole-fit default; the y column's lnnormal override keeps its own
+        # (median) location in the fitter. So the export -- y as a median log-normal -- is exact,
+        # and the refusal must not fire: it matches the reach of the key, not its presence.
+        conf = _noise_location_job(
+            tmp_path / 'job',
+            'noise_model = gaussian, sigma = fix_at 1\n'
+            'noise_model y = lnnormal, sigma = fix_at 0.5\n'
+            'noise_location = mean\n')
+        assert self._fitter_objective(conf, monkeypatch) == pytest.approx(
+            self._lnnormal(0.0), rel=1e-12)
+        export_job(conf, tmp_path / 'out')
+        (row,) = _tsv_rows(tmp_path / 'out' / 'observables.tsv')
+        assert (row['observableId'], row['noiseDistribution']) == ('func_y', 'log-normal')
+
+    def test_an_sbml_job_is_held_to_the_same_rule(self, tmp_path):
+        # The key is read off the objective, not the model, so an SBML job is refused the same way.
+        import shutil
+        job = tmp_path / 'job'
+        shutil.copytree(DEMO_DIR, job)
+        conf = job / 'demo_xml_v2.conf'
+        conf.write_text(conf.read_text().replace('objective = chi_sq', 'objective = lnnormal')
+                        + 'noise_location = mean\n')
+        with pytest.raises(NotImplementedError, match=r"noise_location = mean.*'lnnormal'"):
+            export_job(conf, tmp_path / 'out')
+
+    def test_a_bad_noise_location_is_refused_as_the_fitter_refuses_it(self, tmp_path):
+        conf = _noise_location_job(tmp_path / 'job',
+                                   'objective = lnnormal\nnoise_location = mode\n')
+        with pytest.raises(PybnfError, match="noise_location must be 'mean' or 'median'"):
+            export_job(conf, tmp_path / 'out')
+
+
 class TestCleanModelUnit:
 
     def test_drops_actions_block_keeps_bare_model_verbatim(self):
@@ -3912,18 +4143,23 @@ class TestCleanModelUnit:
 
     def test_simulation_only_actions_block_fully_dropped(self):
         # A block with no generate_network line (simulation-only) disappears entirely, exactly
-        # as the whole-block strip did before -- no network-definition directive to keep.
-        src = ("begin model\nend model\n\nbegin actions\n"
-               " simulate({})\n parameter_scan({})\nend actions\n")
+        # as the whole-block strip did before -- no network-definition directive to keep. The
+        # cleaner reads the model with the fitter's own scanner, which needs a parameters block
+        # (the fitter refuses a model without one). parameter_scan used to sit in this block;
+        # it is no longer droppable (#900, TestExportRefusesStateChangingActions).
+        src = ("begin model\nbegin parameters\n k1 3\nend parameters\nend model\n\n"
+               "begin actions\n simulate({})\n resetConcentrations()\n writeXML()\n"
+               "end actions\n")
         out = clean_model_for_petab(src)
         assert 'begin actions' not in out
-        assert 'simulate' not in out and 'parameter_scan' not in out
+        assert 'simulate' not in out and 'resetConcentrations' not in out
+        assert 'writeXML' not in out
 
     def test_commented_generate_network_is_not_kept(self):
         # A commented-out '# generate_network(...)' is documentation, not a live directive: it
         # must not resurrect the block (consistent with pset.py's BNGLModel scanner, #473).
-        src = ("begin model\nend model\n\nbegin actions\n"
-               "# generate_network({overwrite=>1})\n simulate({})\nend actions\n")
+        src = ("begin model\nbegin parameters\n k1 3\nend parameters\nend model\n\n"
+               "begin actions\n# generate_network({overwrite=>1})\n simulate({})\nend actions\n")
         out = clean_model_for_petab(src)
         assert 'begin actions' not in out and 'generate_network' not in out
 
@@ -4255,6 +4491,465 @@ class TestExportPreservesNetworkCap:
         export_job(conf, out)
         imp = import_job(out / 'problem.yaml', tmp_path / 'imp')
         assert self.CAP in (imp / 'parabola2.bngl').read_text()
+
+
+# ---------------------------------------------------------------------------
+# #900 / #901: the exported BNGL model must be the model the fit ran. Under edition 2 the
+# fitter runs every hand-written action of the model file (except generate_network and
+# setOption) ahead of the simulations it builds from the `experiment:` lines, and it writes
+# the network definition from the model's own generate_network line or, failing that, from the
+# job's `generate_network` key. The oracle is BNG2.pl: the fitter's own model text
+# (BNGLModel.model_text, exactly what it hands BioNetGen) and the exported-then-reimported
+# job's, simulated side by side and against the closed form.
+# ---------------------------------------------------------------------------
+
+def _bng2_or_skip():
+    import os
+    bngpath = os.environ.get('BNGPATH')
+    path = Path(bngpath) / 'BNG2.pl' if bngpath else None
+    if path is None or not path.is_file():
+        pytest.skip('BNG2.pl not resolvable (set BNGPATH)')
+    return path
+
+
+def _run_bng2(text, workdir, name):
+    """Run BNG2.pl on ``text`` saved as ``<workdir>/<name>.bngl``; return ``workdir``."""
+    import subprocess
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / f'{name}.bngl').write_text(text)
+    subprocess.run([str(_bng2_or_skip()), f'{name}.bngl'], cwd=workdir, check=True,
+                   capture_output=True, text=True)
+    return workdir
+
+
+def _net_species_count(net_file):
+    lines = [ln.strip() for ln in net_file.read_text().splitlines()]
+    body = lines[lines.index('begin species') + 1:lines.index('end species')]
+    return sum(1 for ln in body if ln and not ln.startswith('#'))
+
+
+def _fitter_model_text(job_dir, conf_name, model, monkeypatch, value, gen_only=False):
+    """The model text the fitter hands BNG2.pl for ``model``, every free parameter at ``value``
+    (the whole BNGLModel pipeline: the hand-written actions, then each experiment's
+    ``resetConcentrations()`` + synthesized simulate, or the network-generation file)."""
+    from pybnf.parse import load_config
+    from pybnf.pset import PSet
+    monkeypatch.chdir(job_dir)
+    cfg = load_config(conf_name)
+    pset = PSet([v.set_value(value) for v in cfg.variables])
+    return cfg.models[model].copy_with_param_set(pset).model_text(gen_only=gen_only)
+
+
+_DECAY_BNGL = """\
+begin model
+begin parameters
+k 0.5
+L 1.0
+end parameters
+begin molecule types
+A()
+end molecule types
+begin seed species
+A() 100
+end seed species
+begin observables
+Molecules A_tot A()
+end observables
+begin reaction rules
+A() -> 0 k*L
+end reaction rules
+end model
+"""
+
+
+def _decay_job(d, actions='', method=None):
+    """Issue #900's job: A decays at k*L; ``actions`` is appended after ``end model``."""
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'decay.bngl').write_text(_DECAY_BNGL + ('\n' + actions if actions else ''))
+    (d / 'decay.exp').write_text('# time\tA_tot\n' + ''.join(
+        f'{t}\t{100 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+    exp_line = 'experiment: tc, data: decay.exp' + (f', method: {method}' if method else '')
+    conf = d / 'job.conf'
+    conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                    'objective = sos\nmodel: decay.bngl\n'
+                    f'{exp_line}\nuniform_var = k 0.01 3.0\n')
+    return conf
+
+
+def _block(*lines):
+    return 'begin actions\n' + ''.join(f'{ln}\n' for ln in lines) + 'end actions\n'
+
+
+class TestExportRefusesStateChangingActions:
+    """#900: a hand-written action that can change what the experiments start from is refused;
+    the ones that cannot (simulations ahead of a reset, the reset itself, file output) are
+    dropped; generate_network is kept."""
+
+    GEN = 'generate_network({overwrite=>1})'
+
+    @pytest.mark.parametrize('action, name', [
+        ('setParameter("L", 5)', 'setParameter'),
+        ('setConcentration("A()", 50)', 'setConcentration'),
+        ('addConcentration("A()", 50)', 'addConcentration'),
+        ('saveConcentrations()', 'saveConcentrations'),
+        ('saveParameters()', 'saveParameters'),
+        ('resetParameters()', 'resetParameters'),
+        ('parameter_scan({parameter=>"L",par_scan_vals=>[1,2,3],method=>"ode",t_end=>5,'
+         'n_steps=>5,suffix=>"scanL"})', 'parameter_scan'),
+        ('bifurcate({parameter=>"L",par_min=>2,par_max=>3,n_scan_pts=>3,method=>"ode",'
+         't_end=>5,n_steps=>5,suffix=>"bif"})', 'bifurcate'),
+        ('readFile({file=>"other.bngl"})', 'readFile'),
+        ('simulate({method=>"protocol"})', 'protocol'),
+        ('generate_hybrid_model({overwrite=>1})', 'generate_hybrid_model'),
+        ('quit()', 'quit'),
+    ])
+    def test_a_state_changing_or_unknown_action_is_refused(self, tmp_path, action, name):
+        conf = _decay_job(tmp_path / 'job', _block(self.GEN, action))
+        out = tmp_path / 'out'
+        with pytest.raises(NotImplementedError, match=rf"(?s)Model 'decay\.bngl'.*{name}"):
+            export_job(conf, out)
+        assert not out.exists() or not any(out.iterdir())   # nothing half-written
+
+    def test_a_loose_action_after_end_model_is_refused_too(self, tmp_path):
+        # BNG runs an action written after `end model` with no actions block, and so does the
+        # fitter (BNGLModel scans it as an action). The export kept such lines verbatim; the
+        # same refusal now applies to them.
+        conf = _decay_job(tmp_path / 'job', f'{self.GEN}\nsetParameter("L", 5)\n')
+        with pytest.raises(NotImplementedError, match='setParameter'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_leftover_simulation_and_output_actions_export(self, tmp_path):
+        # The legacy leftovers every tutorial model used to carry: dropped, generate_network kept.
+        conf = _decay_job(tmp_path / 'job', _block(
+            self.GEN, '# equilibrate first', 'simulate({method=>"ode",t_end=>5,n_steps=>5})',
+            'simulate_ode({t_end=>5,n_steps=>5})', 'resetConcentrations()', 'writeXML()',
+            'writeSBML()', 'visualize({type=>"contactmap"})')
+            + 'simulate({method=>"ode",t_end=>2,n_steps=>2})\n')   # a loose one, too
+        export_job(conf, tmp_path / 'out')
+        model = (tmp_path / 'out' / 'decay.bngl').read_text()
+        assert model.endswith(f'end model\n\nbegin actions\n{self.GEN}\nend actions\n')
+        for dropped in ('simulate', 'resetConcentrations', 'writeXML', 'visualize', 'equilibrate'):
+            assert dropped not in model
+        assert clean_model_for_petab(model) == model     # a re-export changes nothing
+
+    @pytest.mark.parametrize('method', ['nf', 'rm'])
+    def test_a_simulation_ahead_of_a_network_free_experiment_is_refused(self, tmp_path, method):
+        # A network-free experiment gets no resetConcentrations() (BNGLModel.add_action): it
+        # continues from where a hand-written simulation left off (measured on bngsim's NF
+        # session: the experiment's t=0 count was 78, not the seeded 1000). PEtab starts it from
+        # the initial state, so that pairing is refused; without the simulation it exports.
+        # RuleMonkey runs on the same session, so it is held to the same rule.
+        sim = f'simulate({{method=>"{method}",t_end=>5,n_steps=>5}})'
+        conf = _decay_job(tmp_path / 'job', _block(sim), method=method)
+        with pytest.raises(NotImplementedError, match=r"\['tc'\], which run network-free"):
+            export_job(conf, tmp_path / 'out')
+        export_job(_decay_job(tmp_path / 'ode', _block(sim)), tmp_path / 'out_ode')
+        export_job(_decay_job(tmp_path / 'nf', _block('writeXML()'), method=method),
+                   tmp_path / 'out_nf')
+
+    def test_setoption_stays_where_the_fitter_keeps_it(self, tmp_path):
+        # setOption and its siblings are not actions to the fitter: BNGLModel keeps them in the
+        # model text it hands BNG2.pl. So the export keeps them too (it used to drop them with
+        # the actions block).
+        from pybnf.pset import BNGLModel
+        option = 'setOption("NumberPerQuantityUnit",6.0221e23)'
+        conf = _decay_job(tmp_path / 'job', _block(option, self.GEN))
+        export_job(conf, tmp_path / 'out')
+        model = (tmp_path / 'out' / 'decay.bngl').read_text()
+        assert option in model and clean_model_for_petab(model) == model
+        assert option in BNGLModel(str(tmp_path / 'job' / 'decay.bngl'),
+                                   suppress_free_param_error=True).model_lines
+
+    def test_of_several_generate_network_lines_the_fitters_last_one_is_kept(self, tmp_path):
+        from pybnf.pset import BNGLModel
+        conf = _decay_job(tmp_path / 'job', _block(
+            'generate_network({overwrite=>1,max_iter=>5})', self.GEN))
+        export_job(conf, tmp_path / 'out')
+        model = (tmp_path / 'out' / 'decay.bngl').read_text()
+        fitter = BNGLModel(str(tmp_path / 'job' / 'decay.bngl'),
+                           suppress_free_param_error=True).generate_network_line
+        assert fitter == self.GEN and model.count('generate_network') == 1 and self.GEN in model
+
+    def test_the_exported_model_reproduces_the_fitters_simulation(self, tmp_path, monkeypatch):
+        # The oracle. With leftover droppable actions, the fitter's own model text (hand-written
+        # actions, then resetConcentrations() + the synthesized simulate) and the exported ->
+        # re-imported job's model text give the same trajectory under BNG2.pl, and both are the
+        # closed form 100 exp(-k L t) at k = 0.5, L = 1.
+        pytest.importorskip('petab.v2')
+        from pybnf.petab.import_ import import_job
+        _bng2_or_skip()
+        conf = _decay_job(tmp_path / 'job', _block(
+            self.GEN, 'simulate({method=>"ode",t_end=>5,n_steps=>5})', 'resetConcentrations()',
+            'writeXML()'))
+        fit_text = _fitter_model_text(tmp_path / 'job', conf.name, 'decay', monkeypatch, 0.5)
+        export_job(conf, tmp_path / 'petab')
+        imp = import_job(tmp_path / 'petab' / 'problem.yaml', tmp_path / 'imp')
+        assert (imp / 'decay.bngl').read_bytes() == (tmp_path / 'petab' / 'decay.bngl').read_bytes()
+        rt_text = _fitter_model_text(imp, 'imported.conf', 'decay', monkeypatch, 0.5)
+        fit = Data(file_name=str(_run_bng2(fit_text, tmp_path / 'bng', 'fit') / 'fit_tc.gdat'))
+        # The importer names the experiment itself, so find its one simulation by prefix.
+        (rt_gdat,) = _run_bng2(rt_text, tmp_path / 'bng', 'rt').glob('rt_*.gdat')
+        rt = Data(file_name=str(rt_gdat))
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_array_equal(rt.data[:, rt.cols['time']], t)
+        closed_form = 100 * np.exp(-0.5 * 1.0 * t)
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']], closed_form, rtol=1e-5)
+        np.testing.assert_allclose(rt.data[:, rt.cols['A_tot']], closed_form, rtol=1e-5)
+
+    def test_the_fit_does_run_a_hand_written_setparameter(self, tmp_path, monkeypatch):
+        # Why the refusal: the fitter runs setParameter("L", 5) ahead of the experiment, so its
+        # trajectory is the L = 5 closed form -- while the model the export used to write (the
+        # actions dropped) decays at L = 1. The export would have moved the optimum from k = 0.1
+        # to k = 0.5 (the issue's reproduction).
+        _bng2_or_skip()
+        conf = _decay_job(tmp_path / 'job', _block(self.GEN, 'setParameter("L", 5)'))
+        fit_text = _fitter_model_text(tmp_path / 'job', conf.name, 'decay', monkeypatch, 0.5)
+        fit = Data(file_name=str(_run_bng2(fit_text, tmp_path / 'bng', 'fit') / 'fit_tc.gdat'))
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']],
+                                   100 * np.exp(-0.5 * 5.0 * t), rtol=1e-5)
+        with pytest.raises(NotImplementedError, match='setParameter'):
+            export_job(conf, tmp_path / 'out')
+
+    # Review additions. The tests above write each action on one clean line, and their oracle
+    # is BNG2.pl only. A legacy file carries its leftovers indented, tab-indented, commented,
+    # continued across lines with a backslash, and loose after `end actions`; and the default
+    # backend is bngsim's in-process runner, which none of the tests above reaches.
+
+    @pytest.mark.bngsim
+    def test_leftover_actions_in_legacy_shapes_drop_to_the_fitters_bngsim_simulation(
+            self, tmp_path, monkeypatch):
+        # The fitter's own action list for the model (its hand-written lines, then
+        # resetConcentrations() + the synthesized simulate) is run through BngsimModel on the
+        # fitter's own network, exactly as algorithms/base.py builds it, and so is the
+        # exported -> re-imported job's. Both must be the closed form 100 exp(-k L t) at
+        # k = 0.5, L = 1: the hand-written equilibration runs in the fit, and the reset before
+        # the experiment undoes it, so dropping it changes nothing.
+        pytest.importorskip('petab.v2')
+        from pybnf.bngsim_model import BNGSIM_BACKEND_NET, BngsimModel
+        from pybnf.bngsim_model.classification import classify_actions_for_bngsim
+        from pybnf.parse import load_config
+        from pybnf.petab.import_ import import_job
+        from pybnf.pset import PSet
+        _bng2_or_skip()
+        actions = ('begin actions\n'
+                   f'  {self.GEN}\n'
+                   '# equilibrate first\n'
+                   '\tsimulate({method=>"ode",\\\n'
+                   '\t    t_end=>5,n_steps=>5})\n'
+                   '\n'
+                   '  resetConcentrations()\n'
+                   'end actions\n'
+                   'simulate({method=>"ode",t_end=>3,n_steps=>3})\n')
+        conf = _decay_job(tmp_path / 'job', actions)
+        export_job(conf, tmp_path / 'petab')
+        exported = (tmp_path / 'petab' / 'decay.bngl').read_text()
+        assert exported == _DECAY_BNGL + f'\nbegin actions\n{self.GEN}\nend actions\n'
+        imp = import_job(tmp_path / 'petab' / 'problem.yaml', tmp_path / 'imp')
+
+        def bngsim_trajectory(job_dir, conf_name, tag):
+            monkeypatch.chdir(job_dir)
+            cfg = load_config(conf_name)
+            model = cfg.models['decay']
+            # The fitter routes this model to bngsim's `.net` bridge (no BNG2.pl fallback).
+            assert classify_actions_for_bngsim(model.actions) == BNGSIM_BACKEND_NET
+            pset = PSet([v.set_value(0.5) for v in cfg.variables])
+            work = _run_bng2(model.copy_with_param_set(pset).model_text(gen_only=True),
+                             tmp_path / tag, 'gen')
+            sim = BngsimModel(model.name, model.actions, model.suffixes, model.mutants,
+                              nf=str(work / 'gen.net'), protocol=model.protocol)
+            result = sim.copy_with_param_set(pset).execute(str(work), 'run', 60)
+            (experiment,) = [s for _kind, s in model.suffixes]    # the one experiment
+            return model.actions, result[experiment]
+
+        fit_actions, fit = bngsim_trajectory(tmp_path / 'job', conf.name, 'fit')
+        # The hand-written equilibrations really are in the fit's action list.
+        assert sum('t_end=>5' in a for a in fit_actions) == 1
+        assert sum('t_end=>3' in a for a in fit_actions) == 1
+        rt_actions, rt = bngsim_trajectory(imp, 'imported.conf', 'rt')
+        assert not any('t_end=>5' in a or 't_end=>3' in a for a in rt_actions)
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_array_equal(rt.data[:, rt.cols['time']], t)
+        closed_form = 100 * np.exp(-0.5 * 1.0 * t)
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']], closed_form, rtol=1e-5)
+        np.testing.assert_allclose(rt.data[:, rt.cols['A_tot']], closed_form, rtol=1e-5)
+
+    @pytest.mark.parametrize('actions', [
+        # Continued across lines with a trailing comment, tab-indented, inside the block.
+        'begin actions\n\tsetParameter("L",\\ # the ligand dose\n\t    5)\nend actions\n',
+        # Loose after `end model`, with a space before the parenthesis and a semicolon.
+        'generate_network({overwrite=>1})\n  setParameter ("L", 5);\n',
+    ], ids=['continued-in-block', 'loose-spaced-semicolon'])
+    def test_a_setparameter_in_a_legacy_shape_is_run_by_the_fit_and_refused(
+            self, tmp_path, monkeypatch, actions):
+        # BNG2.pl joins a backslash continuation after stripping each line's comment, and
+        # accepts `name (args);`, so the fit runs these as setParameter("L", 5): the fitter's
+        # own model text decays at the L = 5 closed form. The export must see through the
+        # shape and refuse, naming the action.
+        _bng2_or_skip()
+        conf = _decay_job(tmp_path / 'job', actions)
+        fit_text = _fitter_model_text(tmp_path / 'job', conf.name, 'decay', monkeypatch, 0.5)
+        fit = Data(file_name=str(_run_bng2(fit_text, tmp_path / 'bng', 'fit') / 'fit_tc.gdat'))
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']],
+                                   100 * np.exp(-0.5 * 5.0 * t), rtol=1e-5)
+        out = tmp_path / 'out'
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Model 'decay\.bngl'.*would drop: setParameter"):
+            export_job(conf, out)
+        assert not out.exists() or not any(out.iterdir())
+
+
+_CHAIN_BNGL = """\
+begin model
+begin parameters
+k1 1
+k2 1
+end parameters
+begin molecule types
+A()
+B()
+C()
+end molecule types
+begin seed species
+A() 10
+end seed species
+begin observables
+Molecules C_tot C()
+end observables
+begin reaction rules
+A() -> B() k1
+B() -> C() k2
+end reaction rules
+end model
+"""
+
+
+def _chain_job(d, key='max_iter=>1', model_actions='', method=None):
+    """Issue #901's job: A -> B -> C, capped by the job's ``generate_network`` key."""
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'm.bngl').write_text(_CHAIN_BNGL + ('\n' + model_actions if model_actions else ''))
+    (d / 'e1.exp').write_text('# time C_tot C_tot_SD\n0 0 1\n1 7 1\n2 9.5 1\n')
+    exp_line = 'experiment: e1, data: e1.exp' + (f', method: {method}' if method else '')
+    conf = d / 'job.conf'
+    conf.write_text(
+        'edition = 2\njob_type = de\npopulation_size = 8\nmax_iterations = 3\n'
+        'objective = chi_sq\nmodel: m.bngl\n' + exp_line + '\n'
+        + (f'generate_network = {key}\n' if key else '')
+        + 'uniform_var = k1 0.1 10\nuniform_var = k2 0.1 10\n')
+    return conf
+
+
+class TestExportWritesTheJobNetworkCap:
+    """#901: an edition-2 model with no generate_network line of its own is capped by the job's
+    ``generate_network`` key; the export writes the fitter's synthesized line into the model."""
+
+    LINE = 'generate_network({overwrite=>1,max_iter=>1})'
+
+    def test_the_fitters_synthesized_line_is_written(self, tmp_path, monkeypatch):
+        from pybnf.parse import load_config
+        conf = _chain_job(tmp_path / 'job')
+        monkeypatch.chdir(tmp_path / 'job')
+        assert load_config(conf.name).models['m'].generate_network_line == self.LINE
+        export_job(conf, tmp_path / 'petab')
+        model = (tmp_path / 'petab' / 'm.bngl').read_text()
+        assert model == _CHAIN_BNGL + f'begin actions\n{self.LINE}\nend actions\n'
+        _assert_petab_clean(tmp_path / 'petab')
+
+    def test_the_exported_network_is_the_fitters_network(self, tmp_path, monkeypatch):
+        # The oracle: BNG2.pl builds 2 species (A, B) from the fitter's own network-generation
+        # file, from the exported model, and from the exported -> re-imported job's file; the
+        # uncapped model builds all 3 (the network a PEtab consumer built before this fix).
+        pytest.importorskip('petab.v2')
+        from pybnf.petab.import_ import import_job
+        _bng2_or_skip()
+        conf = _chain_job(tmp_path / 'job')
+        fit = _fitter_model_text(tmp_path / 'job', conf.name, 'm', monkeypatch, 1.0,
+                                 gen_only=True)
+        export_job(conf, tmp_path / 'petab')
+        exported = (tmp_path / 'petab' / 'm.bngl').read_text()
+        imp = import_job(tmp_path / 'petab' / 'problem.yaml', tmp_path / 'imp')
+        assert (imp / 'm.bngl').read_text() == exported           # byte-verbatim import
+        rt = _fitter_model_text(imp, 'imported.conf', 'm', monkeypatch, 1.0, gen_only=True)
+        bng = tmp_path / 'bng'
+        counts = {name: _net_species_count(_run_bng2(text, bng, name) / f'{name}.net')
+                  for name, text in (('fit', fit), ('exported', exported), ('rt', rt),
+                                     ('uncapped', _CHAIN_BNGL + _block(
+                                         'generate_network({overwrite=>1})')))}
+        assert counts == {'fit': 2, 'exported': 2, 'rt': 2, 'uncapped': 3}
+
+    def test_the_models_own_line_wins_over_the_key_as_in_the_fitter(self, tmp_path,
+                                                                      monkeypatch):
+        from pybnf.parse import load_config
+        own = 'generate_network({overwrite=>1,max_iter=>2})'
+        conf = _chain_job(tmp_path / 'job', model_actions=_block(own))
+        monkeypatch.chdir(tmp_path / 'job')
+        assert load_config(conf.name).models['m'].generate_network_line == own
+        export_job(conf, tmp_path / 'petab')
+        model = (tmp_path / 'petab' / 'm.bngl').read_text()
+        assert own in model and 'max_iter=>1' not in model
+
+    def test_a_network_free_model_gets_no_line(self, tmp_path, monkeypatch):
+        # A model whose experiments are all network-free never generates a network in the fit,
+        # so the key is not used there and the export writes no line either.
+        from pybnf.parse import load_config
+        conf = _chain_job(tmp_path / 'job', method='nf')
+        monkeypatch.chdir(tmp_path / 'job')
+        assert load_config(conf.name).models['m'].generate_network_line is None
+        export_job(conf, tmp_path / 'petab')
+        assert 'generate_network' not in (tmp_path / 'petab' / 'm.bngl').read_text()
+
+    def test_every_bngl_model_of_a_multi_model_job_gets_the_fitters_line(self, tmp_path,
+                                                                          monkeypatch):
+        # The key is job-wide: the fitter passes it to every BNGL model (config._load_models).
+        from pybnf.parse import load_config
+        conf = _write_two_model_bngl_job(tmp_path / 'job')
+        conf.write_text(conf.read_text() + 'generate_network = max_iter=>1\n'
+                        'population_size = 8\nmax_iterations = 3\n')
+        monkeypatch.chdir(tmp_path / 'job')
+        fitted = load_config(conf.name)
+        export_job(conf, tmp_path / 'petab')
+        for stem in ('parabola_v2', 'growth_v2'):
+            assert fitted.models[stem].generate_network_line == self.LINE
+            assert (tmp_path / 'petab' / f'{stem}.bngl').read_text().endswith(
+                f'begin actions\n{self.LINE}\nend actions\n')
+
+    @pytest.mark.bngsim_sbml
+    def test_a_mixed_bngl_sbml_job_caps_its_bngl_model_and_carries_sbml_verbatim(
+            self, tmp_path, monkeypatch):
+        # Review addition: the other multi-model sibling. The fitter passes the key to BNGL
+        # models only (config._load_models), so in the shipped BNGL + SBML lesson the BNGL model
+        # gets exactly the fitter's line and the SBML model is still copied byte for byte.
+        import shutil
+        from pybnf.parse import load_config
+        job = tmp_path / 'job'
+        shutil.copytree(Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+                        / '31_bngl_sbml_fit', job)
+        conf = job / 'bngl_sbml_fit.conf'
+        conf.write_text(conf.read_text() + '\ngenerate_network = max_iter=>1\n')
+        monkeypatch.chdir(job)
+        fitted = load_config(conf.name)
+        assert fitted.models['binding_low'].generate_network_line == self.LINE
+        assert not hasattr(fitted.models['binding_high'], 'generate_network_line')
+        export_job(conf, tmp_path / 'petab')
+        assert (tmp_path / 'petab' / 'binding_low.bngl').read_text() == (
+            (job / 'binding_low.bngl').read_text() + f'begin actions\n{self.LINE}\nend actions\n')
+        assert (tmp_path / 'petab' / 'binding_high.xml').read_bytes() == \
+            (job / 'binding_high.xml').read_bytes()
+
+    def test_no_key_writes_no_line(self, tmp_path):
+        # The bare default is what every consumer does unasked; the model stays as it was.
+        export_job(_chain_job(tmp_path / 'job', key=None), tmp_path / 'petab')
+        assert (tmp_path / 'petab' / 'm.bngl').read_text() == _CHAIN_BNGL
+
+    def test_the_shipped_kozer_example_exports_its_cap(self, tmp_path):
+        # The reachability case named in the issue: this job's network is unbounded without the
+        # cap, and its model has no generate_network line of its own.
+        conf = (Path(__file__).resolve().parents[1] / 'examples' / 'real-world' / 'Kozer-2013'
+                / 'egfr_ode' / 'egfr_ode.conf')
+        export_job(conf, tmp_path / 'petab')
+        assert ('generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})'
+                in (tmp_path / 'petab' / 'egfr_ode.bngl').read_text())
 
 
 class TestConditionMappingUnit:

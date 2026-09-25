@@ -1887,10 +1887,11 @@ class Configuration:
         The measured phase is a ``TimeCourse`` over the data's time grid (ADR-0052) OR, when the
         data's independent variable is a swept parameter (``type: parameter_scan``, #474), a
         ``ParamScan`` over the data's dose grid -- the preincubate->wash->dose-scan protocol. A
-        pre-equilibrated scan saves the post-intervention state and resets each dose to it
-        (``saveConcentrations`` + ``reset_conc=>1``), which bngsim honors natively
-        (lanl/bngsim#11); ``t_end:`` fixes the scan's measurement time (e.g. a dissociation read
-        at 20/60 min), or with none each dose runs to steady state (ADR-0046)."""
+        pre-equilibrated scan resets each dose to the post-intervention state
+        (``reset_conc=>1``), which bngsim honors natively (lanl/bngsim#11), and records that
+        state under its own label so no later experiment starts from it (ADR-0151); ``t_end:``
+        fixes the scan's measurement time (e.g. a dissociation read at 20/60 min), or with none
+        each dose runs to steady state (ADR-0046)."""
         if action_type not in ('time_course', 'parameter_scan', 'steady_state'):
             raise PybnfError(
                 f"Experiment '{name}' uses pre-equilibration (preequilibrate:) with unsupported "
