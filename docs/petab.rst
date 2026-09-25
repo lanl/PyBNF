@@ -127,7 +127,11 @@ following all survive an import and an export:
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by
-  measurement row.
+  measurement row. A column-mean sigma (``ave_norm_sos`` or ``column_mean``) is the
+  mean of each experiment's own data. When an observable's experiments have different
+  means, each measurement row carries its own experiment's mean in
+  ``noiseParameters``. The import restores ``column_mean`` only when every value
+  equals its experiment's mean.
 - **Observable and noise parameters** — a constant-per-observable
   ``observableParameters`` scale/offset is substituted in, and the Boehm-style
   ``sd_*`` pattern (a parameter id in the ``noiseParameters`` column, e.g.

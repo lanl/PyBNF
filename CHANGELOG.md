@@ -259,6 +259,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
+  experiment's own mean (#894).** The fit scales each experiment by its own mean, but the export
+  wrote one mean pooled over all experiments, so the exported problem had a different optimum.
+  When the experiments' means differ, each measurement row now carries its own experiment's mean.
+  The import restores `column_mean` only when every value matches its experiment's mean.
 - **The PEtab export keeps an experiment's `equil_t_end:` (#896).** A fixed-duration
   equilibration was exported as PEtab's steady-state (`-inf`) period, a different protocol from
   the one the fit scores. It now exports as a leading period at time `-equil_t_end` and imports
