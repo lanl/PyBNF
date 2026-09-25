@@ -10,6 +10,7 @@ setConcentration disambiguation are the highest-value targets.
 import pytest
 
 from pybnf.bngsim_model import parsing
+from pybnf.printing import PybnfError
 
 
 # ---------------------------------------------------------------- continuations
@@ -231,3 +232,28 @@ def test_parse_add_concentration(line, expected):
 def test_action_predicates(predicate, matching, non_matching):
     assert predicate(matching) is True
     assert predicate(non_matching) is False
+
+
+@pytest.mark.parametrize(
+    'line, label',
+    [
+        ('resetConcentrations()', None),
+        ('  saveParameters( )  ', None),
+        ('saveConcentrations("equilibrated")', 'equilibrated'),
+        ("resetParameters('pybnf_experiment_start')", 'pybnf_experiment_start'),
+        ('resetConcentrations( "t=0" );', 't=0'),
+    ],
+)
+def test_snapshot_label(line, label):
+    # BioNetGen keeps a default snapshot and one per label; the bridges must tell them apart
+    # (#830) rather than read every save/reset line as the default slot.
+    assert parsing._snapshot_label(line) == label
+
+
+@pytest.mark.parametrize(
+    'line',
+    ['resetConcentrations(seed)', 'saveParameters("a","b")', 'resetParameters({label=>"x"})'],
+)
+def test_snapshot_label_refuses_what_it_cannot_read(line):
+    with pytest.raises(PybnfError, match='one quoted label'):
+        parsing._snapshot_label(line)

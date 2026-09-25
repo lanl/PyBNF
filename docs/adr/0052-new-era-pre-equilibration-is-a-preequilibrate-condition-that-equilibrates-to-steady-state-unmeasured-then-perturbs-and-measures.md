@@ -159,3 +159,13 @@ rewriting a simulator. BNG2.pl honors `simulate({…,steady_state=>1})` natively
   0046/#426 (steady-state-default — the structural sibling), 0027 (conditions/experiments —
   whose `MutationSet`s this reads), 0034 (`edition >= 2 ⇒ bngsim`, what makes the
   steady-state default sound), 0025 (exporter — Phase 2 seam). Advances #440 (and #423).
+
+## Addendum (2026-09-25): the leading reset restores the parameters too (issues #830, #831)
+
+The `resetConcentrations()` that opens the block above was meant to make the experiment
+independent of every other experiment's simulation, and it did so only for the species. The
+measurement condition's `setParameter` stayed in force for every experiment written after
+this one, so the order of the `experiment:` lines changed the fit. Since ADR-0151 every
+synthesized experiment opens with `resetParameters("pybnf_experiment_start")` (the first saves
+them) before its `resetConcentrations()`, on the network-free path too. Nothing inside the
+block changes: the equilibrated state and both conditions still carry into the measured phase.

@@ -259,6 +259,12 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **Each experiment declared on a BNGL model starts from the model as written, so the order of
+  the `experiment:` lines no longer changes a fit (#830, #831, #869, #875; ADR-0151).** A
+  pre-equilibration's condition, a pre-equilibrated scan's saved state, or the last dose of a
+  BNG2.pl scan stayed in force for every experiment after it; on bngsim a condition run
+  started under the base run's parameters, and network-free experiments shared one live
+  session. Parameters and seed species are now restored before every experiment.
 - **`petab1to2_preserve_scale` converts every declared PEtab v1 prior to a v2 prior with the
   same distribution (#893).** A `log10` `parameterScaleNormal` prior used to import with its
   mean and sd divided by ln 10 (six priors in `Schwen_PONE2014`, others in `Isensee_JCB2018`,
