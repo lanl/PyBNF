@@ -128,6 +128,15 @@ steady-state), and a config-load check that the imported conf synthesizes the
   the fresh-from-seed sibling), 0027 (conditions/experiments), 0026
   (`register_bngl` / the `BnglModel` validation loader). Advances #477.
 
+## Addendum (2026-09-25): a fixed-duration equilibration leads each dose with a `-T` period (#896)
+
+A pre-equilibrated scan with `equil_t_end: T` (the Erickson-2019 IGF1R preincubation uses
+`7200`) exports each dose's period 0 at `time = -T` instead of `-inf`; the measurement period
+at `time = 0` and the scan time are unchanged. The importer recognizes the shape only when
+every non-leading period starts at exactly 0, and requires all doses of a group to share one
+duration. See the ADR-0052 addendum of the same date for the mapping and the refusal of a
+model that reads time.
+
 ## Addendum: pre-equilibrated doses from other sources (issue #904)
 
 **Accepted and implemented 2026-09-25.** The detector above matched only the exporter's
