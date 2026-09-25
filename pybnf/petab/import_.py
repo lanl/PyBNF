@@ -1447,8 +1447,10 @@ def read_problem_yaml(path):
     A small indentation-aware scan reads the shapes a problem file is written in: our own
     writer's (``key:`` then two-space-indented ``- item`` lines, ``model_files`` last), the
     column-0 ``- item`` lists ``petab.v2.petab1to2`` writes, keys in any order, and the one-line
-    flow list ``key: [a.tsv, b.tsv]`` (``[]`` included). Items may be quoted, and ``#`` comments
-    are dropped. Whatever else it meets raises ``PybnfError`` naming the line or key rather than
+    flow list ``key: [a.tsv, b.tsv]`` (``[]`` included). Items may be quoted, ``#`` comments
+    are dropped, a model entry's fields other than location and language are passed over with
+    everything nested beneath them, and a leading directive or ``---`` and a closing ``...``
+    are allowed. Whatever else it meets raises ``PybnfError`` naming the line or key rather than
     being skipped: a scalar where a list belongs, a flow list continued over several lines, a
     flow-form ``model_files`` entry, a key the PEtab v2 schema does not allow, a key or model
     given twice, a file listed twice under one key, a ``format_version`` other than 2 (#902).
@@ -1463,13 +1465,15 @@ def read_problem_yaml(path):
     models = []         # [{model_id, location, language}, ...] in declaration order
     current = None      # the model entry being filled (set by a `<modelId>:` line)
     model_indent = None   # the indentation of the `<modelId>:` lines
+    field_indent = None   # the indentation of the current model entry's own fields
+    field = None          # the model entry's field whose value nested lines belong to
 
     seen_keys, unknown_keys = set(), []
     format_version = None
     section = None      # the current top-level *_files key (block list items follow)
     in_model = False    # inside the model_files: block
     in_other = False    # inside a key whose nested content the importer does not read
-    started = False
+    started = ended = False
     # utf-8-sig drops a byte-order mark, which PyYAML (libpetab's reader) also ignores.
     for raw in path.read_text(encoding='utf-8-sig').splitlines():
         line = _strip_yaml_comment(raw).rstrip()
@@ -1477,8 +1481,14 @@ def read_problem_yaml(path):
             continue
         indent = len(line) - len(line.lstrip())
         stripped = line.strip()
-        if stripped == '---' and not started:
-            continue            # an explicit document-start marker
+        if not started and (stripped == '---' or stripped.startswith('%')):
+            continue            # a directive (%YAML, %TAG) or the document-start marker
+        if stripped == '...' and indent == 0:
+            ended = True        # the document-end marker PyYAML writes with explicit_end
+            continue
+        if ended:
+            raise PybnfError(f"problem.yaml at {path} holds more than one YAML document: "
+                             f"the line {stripped!r} follows the '...' end marker.")
         started = True
         is_item = stripped == '-' or stripped.startswith(('- ', '-\t'))
         # A column-0 list item (`- item`) is YAML-legal and is exactly what the official
@@ -1546,9 +1556,26 @@ def read_problem_yaml(path):
                         f"problem.yaml at {path} declares the model '{model_id}' twice.")
                 current = {'model_id': model_id, 'location': None, 'language': None}
                 models.append(current)
-            elif key in ('location', 'language') and colon:
-                current[key] = _yaml_scalar(rest, f'model_files: {current["model_id"]}: {key}',
-                                            path)
+                field_indent = field = None
+            elif field_indent is None or indent == field_indent:
+                # One of the entry's own fields. The schema allows fields beyond location and
+                # language on a model entry; they carry nothing the importer reads.
+                field_indent, field = indent, (key if colon else None)
+                if key in ('location', 'language') and colon:
+                    current[key] = _yaml_scalar(
+                        rest, f'model_files: {current["model_id"]}: {key}', path)
+            elif indent > field_indent:
+                # The nested value of the field above. It is never this model's location or
+                # language, even when it holds a `location:` key of its own; only the value
+                # of location or language itself continuing on this line is unreadable.
+                if field in ('location', 'language'):
+                    raise PybnfError(
+                        f"problem.yaml at {path}: the {field} of model '{current['model_id']}' "
+                        f"continues on the line {stripped!r}. Write it on one line.")
+            else:
+                raise PybnfError(
+                    f"problem.yaml at {path}: the line {stripped!r} of model "
+                    f"'{current['model_id']}' is not indented like the fields before it.")
         elif not in_other:
             raise PybnfError(
                 f"problem.yaml at {path}: cannot read the line {stripped!r}; it is not part of "

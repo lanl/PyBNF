@@ -1765,6 +1765,79 @@ class TestProblemYamlReader:
             read_problem_yaml(tmp_path / 'problem.yaml')
         assert 'petab1to2_preserve_scale' in err.value.message
 
+    # Review of #902. The PEtab v2 schema lets a model entry carry fields beyond location and
+    # language (it sets no additionalProperties: false there), and such a field may hold a
+    # nested mapping with a `location:` key of its own. The reader took that nested key for
+    # the model's location, so the import silently used another model file. And a problem file
+    # opening with a YAML directive or closing with the `...` end marker (PyYAML's
+    # explicit_end) read on main but was refused. Oracle: PyYAML, which libpetab reads with.
+    _MORE_VALID_SHAPES = {
+        'nested_field_after_location': _BASE.replace(
+            '    language: bngl\n',
+            '    language: bngl\n    provenance:\n      location: variant.bngl\n'
+            '      language: sbml\n'),
+        'nested_field_before_location': _BASE.replace(
+            '    location: m.bngl\n',
+            '    provenance:\n      location: variant.bngl\n    location: m.bngl\n'),
+        'nested_list_at_field_indent': _BASE.replace(
+            '    language: bngl\n', '    language: bngl\n    tags:\n    - location: x\n'),
+        'document_end_marker': _BASE + '...\n',
+        'yaml_directive': '%YAML 1.1\n---\n' + _BASE,
+    }
+
+    @pytest.mark.parametrize('shape', sorted(_MORE_VALID_SHAPES))
+    def test_more_valid_shapes_read_as_pyyaml_does(self, tmp_path, shape):
+        yaml = pytest.importorskip('yaml')
+        text = self._MORE_VALID_SHAPES[shape]
+        (tmp_path / 'problem.yaml').write_text(text)
+        got = read_problem_yaml(tmp_path / 'problem.yaml')
+        want = yaml.safe_load(text)
+        assert ([(m['model_id'], m['location'], m['language']) for m in got['models']]
+                == [(mid, m['location'], m['language'])
+                    for mid, m in want['model_files'].items()]
+                == [('m', 'm.bngl', 'bngl')])
+        for key in _TABLE_KEYS:
+            assert got[key] == (want.get(key) or []), key
+
+    @pytest.mark.parametrize('model_block, match', [
+        # A location continued on a second line (a multi-line YAML scalar).
+        ('model_files:\n  m:\n    location: m\n      .bngl\n    language: bngl\n',
+         "the location of model 'm' continues on the line '.bngl'"),
+        # A field indented differently from the fields before it (not valid YAML).
+        ('model_files:\n  m:\n    location: m.bngl\n   language: bngl\n',
+         "the line 'language: bngl' of model 'm' is not indented like the fields"),
+    ])
+    def test_unreadable_model_field_is_refused(self, tmp_path, model_block, match):
+        base = self._BASE.split('model_files:')[0]
+        (tmp_path / 'problem.yaml').write_text(base + model_block)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_second_document_after_end_marker_is_refused(self, tmp_path):
+        (tmp_path / 'problem.yaml').write_text(self._BASE + '...\n---\nid: second\n')
+        with pytest.raises(PybnfError, match=r"more than one YAML document: the line '---'"):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_nested_location_does_not_replace_the_model(self, tmp_path):
+        # End to end: a variant model file sits beside the real one and a nested field names
+        # it. libpetab imports bateman_chain.bngl; the import must copy and name that model.
+        petab_v2 = pytest.importorskip('petab.v2')
+        root = tmp_path / 'p'
+        shutil.copytree(TUTORIAL_PETAB_DIR, root)
+        (root / 'variant.bngl').write_text(
+            (root / 'bateman_chain.bngl').read_text().replace('k2  0.25', 'k2  9.99'))
+        yaml_path = root / 'problem.yaml'
+        yaml_path.write_text(yaml_path.read_text().replace(
+            '    language: bngl\n',
+            '    language: bngl\n    provenance:\n      location: variant.bngl\n'))
+        oracle = petab_v2.Problem.from_yaml(str(yaml_path))
+        (model_file,) = oracle.config.model_files.values()
+        assert str(model_file.location) == 'bateman_chain.bngl'
+        out = import_job(yaml_path, tmp_path / 'out')
+        conf = (out / 'imported.conf').read_text()
+        assert 'model: bateman_chain.bngl' in conf and 'variant.bngl' not in conf
+        assert sorted(f.name for f in out.glob('*.bngl')) == ['bateman_chain.bngl']
+
 
 # ---------------------------------------------------------------------------
 # A table split over several files (#902). PEtab v2 types every *_files key as a list, and
@@ -1880,6 +1953,71 @@ class TestSplitTableFiles:
         whole = import_job(TUTORIAL_PETAB_DIR / 'problem.yaml', tmp_path / 'whole')
         split = import_job(_split_tutorial_problem(tmp_path / 'split'), tmp_path / 'split_out')
         assert _imported_files(split) == _imported_files(whole)
+
+    def test_files_with_different_columns_import_like_one_file(self, tmp_path):
+        # Review of #902. Each file of a split table has its own header: the second file may
+        # order its columns differently and leave out an optional column that is blank
+        # anyway. Here tutorial 20 (per-row observableParameters and noiseParameters) is
+        # split so that the second measurement file drops the empty experimentId column and
+        # reorders the rest, the second parameter file reorders its columns, and the second
+        # measurement file also repeats a row of the first with another value (a replicate
+        # across files). Oracles: libpetab reads the split problem as the same measurements
+        # and free parameters as the one-file problem, and the import is byte-identical.
+        petab_v2 = pytest.importorskip('petab.v2')
+        src = (Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+               / '20_petab_observable_parameters')
+
+        def table(path):
+            head, *rows = path.read_text().splitlines()
+            cols = head.split('\t')
+            return cols, [dict(zip(cols, r.split('\t'))) for r in rows]
+
+        def write(path, cols, rows):
+            path.write_text('\n'.join(['\t'.join(cols)]
+                                      + ['\t'.join(r[c] for c in cols) for r in rows]) + '\n')
+
+        m_cols, m_rows = table(src / 'measurements.tsv')
+        p_cols, p_rows = table(src / 'parameters.tsv')
+        assert 'experimentId' in m_cols and not any(r['experimentId'] for r in m_rows)
+        first = [r for r in m_rows if r['observableId'] == 'obs_B']
+        replicate = dict(first[1], measurement='33.5')
+        second = [r for r in m_rows if r['observableId'] != 'obs_B'] + [replicate]
+        assert first and len(second) > 1
+
+        split = tmp_path / 'split'
+        shutil.copytree(src, split)
+        write(split / 'measurements.tsv', m_cols, first)
+        write(split / 'measurements2.tsv', ['measurement', 'noiseParameters', 'time',
+                                            'observableParameters', 'observableId'], second)
+        write(split / 'parameters.tsv', p_cols, p_rows[:3])
+        write(split / 'parameters2.tsv', ['upperBound', 'parameterId', 'lowerBound', 'estimate'],
+              p_rows[3:])
+        (split / 'problem.yaml').write_text((src / 'problem.yaml').read_text().replace(
+            '  - measurements.tsv\n', '  - measurements.tsv\n  - measurements2.tsv\n').replace(
+            '  - parameters.tsv\n', '  - parameters.tsv\n  - parameters2.tsv\n'))
+        # The same problem in one file per table: the rows in the same order.
+        whole = tmp_path / 'whole'
+        shutil.copytree(src, whole)
+        write(whole / 'measurements.tsv', m_cols, first + second)
+
+        def libpetab_view(yaml_path):
+            problem = petab_v2.Problem.from_yaml(str(yaml_path))
+            return (sorted((m.observable_id, float(m.time), float(m.measurement),
+                            tuple(map(str, m.observable_parameters)),
+                            tuple(map(str, m.noise_parameters)))
+                           for m in problem.measurements),
+                    list(problem.x_free_ids))
+
+        split_view = libpetab_view(split / 'problem.yaml')
+        assert split_view == libpetab_view(whole / 'problem.yaml')
+        assert len(split_view[0]) == len(m_rows) + 1
+        a = import_job(split / 'problem.yaml', tmp_path / 'split_out')
+        b = import_job(whole / 'problem.yaml', tmp_path / 'whole_out')
+        assert _imported_files(a) == _imported_files(b)
+        assert 'experiment1_rep2.exp' in _imported_files(a)
+        conf = ploop((a / 'imported.conf').read_text().splitlines(keepends=True))
+        free = [k[1] for k in conf if isinstance(k, tuple) and k[0].endswith('_var')]
+        assert sorted(free) == sorted(split_view[1])
 
     # Exported jobs that between them populate all six tables: conditions/experiments (a
     # surrogate-base condition with several target rows), the mapping table (a pre-equilibrated
