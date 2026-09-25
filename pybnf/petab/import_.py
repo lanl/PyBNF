@@ -265,9 +265,13 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # target is a condition in its own right and is kept (#905).
     condition_rows, experiment_rows = drop_synthesized_wildtype(
         condition_rows, experiment_rows, surrogate_params)
-    # Every other pin is the identity too. Drop them all here, the one place every condition
-    # reader below -- both dose-response detectors and conditions_from_rows -- takes its rows
-    # from, so a pinned per-dose condition (#892) is still read as the one-target dose it is.
+    # Every other pin is the identity too. Drop them all here, before both dose-response
+    # detectors read the conditions, so a pinned per-dose condition (#892) is still read as the
+    # one-target dose it is. conditions_from_rows gets the rows WITH their pins (it drops them
+    # itself): a condition made only of pins has no row left without them, and its id would then
+    # escape the check for two ids that import under one name (cond_a and a), letting the
+    # experiment that applies it be imported under the other id's targets.
+    pinned_condition_rows = condition_rows
     condition_rows = drop_base_pins(condition_rows, surrogate_params)
 
     # Fixed PEtab parameters carrying a numeric value: the constants a measurement-model
@@ -386,7 +390,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
     # A species target's BNGL pattern is recovered from the mapping table (ADR-0062).
     absorbed_condition_ids = dr_condition_ids | pdr_condition_ids
-    tc_condition_rows = [r for r in condition_rows
+    tc_condition_rows = [r for r in pinned_condition_rows
                          if r.condition_id not in absorbed_condition_ids]
     # ``free_names`` / ``fixed_params`` resolve a parameter-valued targetValue -- a per-condition
     # estimated initial condition (ADR-0076): a target set to an estimated parameter id becomes a

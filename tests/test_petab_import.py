@@ -1481,6 +1481,112 @@ class TestPinnedDoseConditionsImportAsOneScan:
                                           kd=kd) == pytest.approx(expected, rel=1e-5)
 
 
+class TestPinAfterPreequilibrationRestoresTheParameter:
+    """Independent review of the follow-up: a pin ``k = k__REF`` is the identity only when nothing
+    earlier in the experiment changed k. Here the -inf period sets k = 2, and the measured period
+    sets L to the dose and re-pins k = k__REF. Under PEtab v2 the measured period runs with k back
+    at its estimate. The importer drops the pin, and PyBNF carries a pre-equilibration setting
+    into the measured phase (ADR-0052), so the imported job measures with k = 2 and k has no
+    effect on its objective.
+
+    With one measured time per experiment, the follow-up (drop_base_pins) now reads the doses as
+    one pre-equilibrated scan. It scores 2.99 at k = 0.7 against 0.45 for the PEtab problem, with
+    no error. Before, that import failed to load, on BNG2.pl's three-sample-time rule. The shape
+    with three measured times imports as time courses. It scored 8.54 against 1.73 on main
+    already, because conditions_from_rows has always dropped pins."""
+
+    @staticmethod
+    def _petab_A(t, dose, k):
+        """Closed form under PEtab v2 period semantics: the -inf period (L = 5, k = 2) leaves
+        A = 3. The measured period sets L = dose and restores k, so A relaxes from 3 toward
+        (dose + 1)/k."""
+        steady = (dose + 1) / k
+        return steady + (3.0 - steady) * np.exp(-k * t)
+
+    @pytest.mark.bngsim
+    @pytest.mark.newera
+    @pytest.mark.parametrize('times', [
+        pytest.param((1.0,), id='one-time-scan', marks=pytest.mark.xfail(strict=True, reason=(
+            "made silent by drop_base_pins: the measured period's pin k = k__REF is dropped, so "
+            "the pre-equilibrated scan keeps k = 2 (it failed to load before)"))),
+        pytest.param((0.5, 1.0, 2.0), id='time-courses', marks=pytest.mark.xfail(
+            strict=True, reason=("pre-existing on main: conditions_from_rows drops the measured "
+                                 "period's pin k = k__REF, so the time courses keep k = 2"))),
+    ])
+    def test_imported_objective_is_the_petab_objective(self, times, tmp_path, monkeypatch):
+        conditions = [('pre', 'L', 5), ('pre', 'k', 2)]
+        experiments, measurements = [], []
+        for dose in (1, 2, 3):
+            conditions += [(f'd_{dose}', 'L', dose), (f'd_{dose}', 'k', 'k__REF')]
+            experiments += [(f'scan_{dose}', '-inf', 'pre'), (f'scan_{dose}', '0', f'd_{dose}')]
+            measurements += [('obs_A', f'scan_{dose}', t,
+                              round(float(self._petab_A(t, dose, 1.0)) + 0.05 * dose, 6))
+                             for t in times]
+        root = tmp_path / 'problem'
+        yaml = _write_periods_problem(root, conditions, experiments, measurements)
+        (root / 'parameters.tsv').write_text(
+            'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n'
+            'k__REF\t0.1\t10\t1\ttrue\n')
+        out = import_job(yaml, tmp_path / 'out')
+        for k in (0.7, 1.3):
+            expected = sum(0.5 * (self._petab_A(t, int(eid.split('_')[1]), k) - y) ** 2
+                           for _obs, eid, t, y in measurements)
+            assert _imported_objective_at(out, monkeypatch, k=k) == pytest.approx(
+                expected, rel=1e-5)
+
+
+class TestPinnedSteadyStateConditionIsNotADose:
+    """Independent review of the follow-up: once the pins are dropped before dose detection, a
+    steady-state experiment whose condition has one real target besides its pins looks like a
+    dose point. Main gave that reading only to jobs with no fit-and-perturbed parameter. Two jobs
+    the exporter writes, each with a fit-and-perturbed parameter (k, under 'fast'), imported and
+    loaded on main and scored the source job's objective. Both fail now, loudly.
+
+    * Two steady-state experiments ss_1 and ss_2 under conditions that set different parameters
+      are taken for one scan 'ss' and refused as ambiguous.
+    * A steady-state experiment and a time course that share a condition: the steady state is
+      taken for a scan, the scan consumes the condition, and the time course then names a
+      condition the conf does not define, so the conf fails to load.
+
+    Main refuses both shapes, in the same two ways, when the job has no fit-and-perturbed
+    parameter. The pins used to shield these jobs from that."""
+
+    SOURCES = {
+        'two steady states with one stem': (
+            'condition: hiL, perturbations: L = 3\n'
+            'condition: noflag, perturbations: flag = 0\n'
+            'experiment: ss_1, condition: hiL, data: ss_1.exp\n'
+            'experiment: ss_2, condition: noflag, data: ss_2.exp\n'),
+        'a condition shared with a time course': (
+            'condition: hiL, perturbations: L = 3\n'
+            'experiment: ss_1, condition: hiL, data: ss_1.exp\n'
+            'experiment: tc2, condition: hiL, data: tc.exp\n'),
+    }
+
+    @pytest.mark.parametrize('shape', [
+        pytest.param(shape, marks=pytest.mark.xfail(strict=True, reason=(
+            "drop_base_pins exposes pinned steady-state conditions to the plain dose "
+            "detector's false positives; main imported this job exactly")))
+        for shape in SOURCES])
+    def test_exported_job_imports_and_loads(self, shape, tmp_path, monkeypatch):
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'model.bngl').write_text(_PERIODS_MODEL)
+        (src / 'ss_1.exp').write_text('# time A_tot\ninf\t2.1\n')
+        (src / 'ss_2.exp').write_text('# time A_tot\ninf\t0.9\n')
+        (src / 'tc.exp').write_text('# time A_tot\n0.5\t0.4\n1\t0.7\n2\t0.9\n')
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: model.bngl\n'
+            'condition: fast, perturbations: k * 2\n' + self.SOURCES[shape]
+            + 'experiment: tc, condition: fast, data: tc.exp\nuniform_var = k 0.1 10\n')
+        export_job(src / 'job.conf', tmp_path / 'petab')
+        assert ('cond_hiL', 'k', 'k__REF') in {
+            (r['conditionId'], r['targetId'], r['targetValue'])
+            for r in _tsv_rows(tmp_path / 'petab' / 'conditions.tsv')}     # M = {k}: pinned
+        out = import_job(tmp_path / 'petab' / 'problem.yaml', tmp_path / 'out')
+        _load_conf(out, monkeypatch)
+
+
 class TestReplicateFileNamesAreDistinct:
     """Independent review of #903: every experiment writes its data as ``<name>.exp`` and
     ``<name>_rep<k>.exp``, so an experiment whose experimentId is literally ``<other>_rep2`` and a
@@ -1769,6 +1875,43 @@ class TestRealTargetWildtypeCondition:
                                              r"the PyBNF condition 'a', and experiments apply "
                                              r"each of them"):
             import_job(yaml, tmp_path / 'out')
+
+    @staticmethod
+    def _pins_only_pair_problem(root, applied):
+        """cond_a only re-pins the fit parameter (k = k__REF, the identity after import); a sets
+        L = 3 and re-pins k too. Both import as the condition 'a'. e1 applies cond_a, and e2
+        applies a when ``applied`` names it. k is estimated through its surrogate k__REF."""
+        experiments = [('e1', '0', 'cond_a')] + ([('e2', '0', 'a')] if 'a' in applied else [])
+        yaml = _write_periods_problem(
+            root, [('cond_a', 'k', 'k__REF'), ('a', 'L', 3), ('a', 'k', 'k__REF')], experiments,
+            [('obs_A', eid, t, 1.0 + t) for eid, _time, _cid in experiments for t in (0.5, 1, 2)])
+        (root / 'parameters.tsv').write_text(
+            'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n'
+            'k__REF\t0.1\t10\t1\ttrue\n')
+        return yaml
+
+    def test_a_pins_only_id_applied_with_its_colliding_pair_is_refused(self, tmp_path):
+        # Independent review of the follow-up: the pins were dropped before the collision check,
+        # so cond_a had no rows left and was not seen to collide. e1 was imported under 'a' with
+        # a's L = 3, and the imported job scored 5.10 at k = 0.7 against 0.63 for the PEtab
+        # problem (e1 at L = 1), with no error. A pins-only id still takes part in the check.
+        yaml = self._pins_only_pair_problem(tmp_path / 'problem', ('cond_a', 'a'))
+        with pytest.raises(PybnfError, match=r"PEtab conditions 'cond_a' and 'a' both import as "
+                                             r"the PyBNF condition 'a', and experiments apply "
+                                             r"each of them"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_pins_only_id_does_not_take_an_unused_ids_targets(self, tmp_path, monkeypatch):
+        # Only cond_a is applied, so it is the id kept under the name 'a' and the unused a (L = 3)
+        # is left out. cond_a has no target left once its pin is dropped, so e1 names a condition
+        # the conf does not define, and the conf refuses to load. That is loud; the follow-up
+        # gave e1 the unused condition's L = 3 instead and fitted it (4.53 at k = 0.7 against
+        # 0.056 for the PEtab problem).
+        yaml = self._pins_only_pair_problem(tmp_path / 'problem', ('cond_a',))
+        out = import_job(yaml, tmp_path / 'out')
+        assert 'L = 3' not in (out / 'imported.conf').read_text()
+        with pytest.raises(PybnfError, match=r"Experiment 'e1' references condition 'a'"):
+            _load_conf(out, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
