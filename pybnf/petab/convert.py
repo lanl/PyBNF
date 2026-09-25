@@ -338,9 +338,16 @@ def _warn_dropped_initialization_priors(v1_pdf):
     PEtab v2 has no initialization prior, and PyBNF has no channel for one: its importer
     starts a fit from ``nominalValue`` and draws initial points from the bounds. v1's default
     initialization prior, ``parameterScaleUniform`` over the bounds, is that same box on the
-    parameter's scale, so a blank cell or a stated default loses nothing and is skipped, as
-    is a parameter that is not estimated. Anything else is reported. Dropping it leaves the
-    objective, the prior, and the posterior unchanged, so this is a warning, not a refusal.
+    parameter's scale, so a blank cell or a stated default is skipped, as is a parameter
+    that is not estimated. Anything else is reported. Dropping it leaves the objective, the
+    prior, and the posterior unchanged, so this is a warning, not a refusal.
+
+    One case where the skipped default does change something: a log or log10 parameter that
+    declares a LINEAR objective prior (``uniform`` / ``normal`` / ``laplace``). v2 carries no
+    parameter scale, so PyBNF searches that parameter, and draws its starting points, on the
+    linear scale, where v1's default would have drawn them log-uniformly over the bounds. The
+    objective and posterior are still the same; only where a fit starts differs. This is the
+    declared-prior form of #548, left out of #893 (see the ADR-0073 addendum).
     """
     import petab.v1.C as C1
 
