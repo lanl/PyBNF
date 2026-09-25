@@ -145,3 +145,22 @@ table's value holds elsewhere.
 See ADR-0019 (the parameters step), ADR-0032 (the importer read path), ADR-0036 (the verbatim
 model carry), ADR-0041 (multi-model problems) and ADR-0147 (initial assignments in the SBML
 scanner).
+
+## Addendum (2026-09-25): independent review
+
+- **Every spelling of an action BNG2.pl runs.** The first gate matched `setParameter("k"` and
+  `parameter=>"k"` only. BNG2.pl's actions reader allows whitespace before the parenthesis,
+  and it evaluates the options as a Perl hash, whose key may be quoted. So
+  `setParameter ("v3", 3)` and `parameter_scan({"parameter"=>"v3", ...})` passed the gate and
+  undid the edit: the issue's check job scored 18.375 (and 24 with the scan) instead of 0,
+  while the import printed that the copy uses 10. The gate now matches those spellings too.
+- **The copy must not be the source.** A copy is written at the model's `location` under
+  `out_dir`. When `out_dir` is the problem's own directory, or a location such as
+  `../models/m.bngl` leads from `out_dir` back to the source, the "copy" is the source file,
+  and the edit changed the user's model. That is refused before anything is written
+  (`PybnfError`). A model that needs no edit is still written back as it was read.
+- **Not yet handled.** A PyBNF export turns a fit-and-perturbed parameter `p` into the
+  surrogate `p__REF`, which reaches the experiments without a condition only through the
+  `cond_wildtype` base pin `p = p__REF`. Fixing `p__REF` in the table is the same kind of
+  edit, but the importer drops every `cond_wildtype` row (#905), so those experiments
+  simulate the model file's `p`. A strict xfail test records it.

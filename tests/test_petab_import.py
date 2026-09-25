@@ -2657,6 +2657,119 @@ class TestFixedModelParameterImport:
         assert _bng_objective(imp2, point, monkeypatch) == first
 
 
+# Spellings of an action that sets v3 which BNG2.pl 2.9.3 executes (its actions reader is
+# `^\s*(\w+)\s*\((.*)\);?\s*$`, and it evaluates the options as a Perl hash, where a key may
+# be quoted), and which the first version of the #907 gate did not recognise.
+_V3_ACTION_SPELLINGS = [
+    'setParameter ("v3", 7)',
+    'setParameter\t("v3", 7)',
+    'parameter_scan({"parameter"=>"v3", par_min=>6, par_max=>7, n_scan_pts=>2, '
+    'method=>"ode", t_end=>1, n_steps=>1})',
+]
+
+
+class TestFixedModelParameterImportEdges:
+    """#907, found in review: the ways the override could still fail to take effect, or
+    reach a file it must not touch."""
+
+    @pytest.mark.parametrize('action', _V3_ACTION_SPELLINGS)
+    def test_every_spelling_of_an_action_that_sets_it_is_refused(self, tmp_path, action):
+        # Let through, the action runs after the model is read and undoes the edit: the job
+        # then reports that the copy uses v3 = 10 while it simulates 7 (with `setParameter
+        # ("v3", 3)` a check job scored 18.375 instead of 0).
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + f'\nbegin actions\n  {action}\nend actions\n')
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(NotImplementedError,
+                           match="'v3' has estimate=false with nominalValue 10, but an action "
+                                 "in the model fixedsigma_model.bngl"):
+            import_job(yaml, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'fixedsigma_model.bngl').exists()
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('action', _V3_ACTION_SPELLINGS)
+    def test_bng2_runs_each_of_those_spellings(self, tmp_path, action):
+        # The oracle for the refusal above: BNG2.pl itself executes each spelling, and
+        # writeModel afterwards records v3 = 7, not the model file's 3.
+        import re
+        import subprocess
+        bng2 = shutil.which('BNG2.pl')
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin actions\n  generate_network({overwrite=>1})\n'
+                 + f'  {action}\n  writeModel({{prefix=>"after"}})\nend actions\n')
+        (tmp_path / 'm.bngl').write_text(model)
+        subprocess.run([bng2, 'm.bngl'], cwd=tmp_path, check=True, capture_output=True)
+        written = (tmp_path / 'after.bngl').read_text()
+        assert float(re.search(r'^\s*v3\s+(\S+)', written, re.M).group(1)) == 7.0
+
+    @pytest.mark.parametrize('layout', ['in-place', 'sibling-models-dir'])
+    def test_a_copy_that_would_overwrite_the_source_model_is_refused(self, tmp_path, layout):
+        # A problem may name its model by a relative path that leaves the problem directory,
+        # and the copy is written at the same relative path under out_dir. When that lands on
+        # the source file itself, writing the edited copy would change the user's model
+        # (PEtab says a parameter absent from some other parameters table takes the model
+        # file's value, so a later import of a sibling problem would silently use 10).
+        yaml = _fixed_v3_problem(tmp_path)
+        prob = yaml.parent
+        if layout == 'in-place':
+            source, out = prob / 'fixedsigma_model.bngl', prob
+        else:
+            (tmp_path / 'models').mkdir()
+            source = tmp_path / 'models' / 'fixedsigma_model.bngl'
+            shutil.move(prob / 'fixedsigma_model.bngl', source)
+            yaml.write_text(yaml.read_text().replace(
+                'location: fixedsigma_model.bngl',
+                'location: ../models/fixedsigma_model.bngl'))
+            out = tmp_path / 'out'
+        before = source.read_bytes()
+        with pytest.raises(PybnfError, match='fixedsigma_model.bngl.*is the source model file'):
+            import_job(yaml, out)
+        assert source.read_bytes() == before
+
+    def test_an_in_place_import_that_edits_nothing_is_still_accepted(self, tmp_path):
+        # The refusal above is only for a copy that differs from its source: a model that
+        # already agrees with the table imports in place as it did before #907.
+        yaml = _fixed_v3_problem(tmp_path, v3='3', data=_EXACT_AT_V3_3)
+        source = yaml.parent / 'fixedsigma_model.bngl'
+        before = source.read_bytes()
+        import_job(yaml, yaml.parent)
+        assert source.read_bytes() == before
+        assert (yaml.parent / 'imported.conf').exists()
+
+    @pytest.mark.bionetgen
+    @pytest.mark.xfail(strict=True, reason=(
+        "#907/#905: a fixed <p>__REF surrogate's nominalValue reaches the job only through the "
+        "cond_wildtype base pin, and the importer drops every cond_wildtype row, so the "
+        "experiments without a condition simulate the model file's value"))
+    def test_a_fixed_surrogate_base_value_is_simulated(self, tmp_path, monkeypatch):
+        # A PyBNF job that fits v3 and sets it to 20 in one condition exports v3 as the
+        # surrogate v3__REF, pinned in every other experiment by cond_wildtype (v3 = v3__REF).
+        # Fixing v3__REF at 10 in parameters.tsv is the PEtab edit #907 is about; libpetab
+        # simulates experiment `a` at v3 = 10. Data exact for (0.5, 1, 10) and (0.5, 1, 20).
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        for name, v3 in (('a', 10.), ('b', 20.)):
+            y = 0.5 * _X ** 2 + _X + v3
+            (src / f'{name}.exp').write_text(
+                '# time\ty\ty_SD\n' + ''.join(f'{t}\t{float(v)!r}\t1\n' for t, v in enumerate(y)))
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            f'model: {DEMO_MODEL}\ncondition: hi, perturbations: v3 = 20\n'
+            'experiment: a, data: a.exp\nexperiment: b, condition: hi, data: b.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 100\n')
+        petab1 = export_job(src / 'job.conf', tmp_path / 'petab1')
+        assert [r['parameterId'] for r in _tsv_rows(petab1 / 'parameters.tsv')] == [
+            'v1', 'v2', 'v3__REF']
+        (petab1 / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'v1\ttrue\t0\t10\t\nv2\ttrue\t0\t10\t\nv3__REF\tfalse\t\t\t10\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'out')
+        # chi_sq at the exact point is 0; with v3 = 3 in experiment a it is 3 * 7^2 / 2.
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            0., abs=1e-9)
+
+
 class TestBnglSetParameterValues:
     """The line editor behind #907 (``_bngl.set_parameter_values``): every parameter-line
     shape the reader accepts, only the edited lines change, line endings kept."""

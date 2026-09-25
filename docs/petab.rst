@@ -88,7 +88,10 @@ that the model file's own actions set (``setParameter``, or a parameter scan). I
 cases writing the value into the model would not give the parameter the table's value for the
 whole simulation. An SBML
 parameter declared ``constant="false"`` that nothing assigns is accepted, since nothing can
-change it.
+change it. The import also refuses to edit a copy that would be written over its source: the
+copy goes to the model's ``location`` under ``out_dir``, which is the source file itself when
+``out_dir`` is the problem's own directory, or when a location such as ``../models/m.bngl``
+leads from ``out_dir`` back to it. Import into another directory.
 
 The exporter never writes an ``estimate = false`` row. A parameter a PyBNF job does not fit
 stays in the exported model at the model file's value, which is exactly what PEtab uses for a

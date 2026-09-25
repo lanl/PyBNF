@@ -233,7 +233,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     Where the model file has a different value (or, in BNGL, an expression; in SBML, no
     value), the copy is edited to the table's value and the edit is marked with a comment in
     the copy, listed in the conf header, and printed, one line per override. A model that
-    already agrees is copied byte for byte, and the source files are never touched.
+    already agrees is copied byte for byte, and the source files are never touched: an edited
+    copy whose destination is its own source file raises ``PybnfError``.
 
     ``job_type`` is the SEARCH method token, or ``'all'`` to emit one
     ``imported_<jt>.conf`` per registered optimizer + sampler. ``method`` (default
@@ -344,6 +345,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # ADR-0149). The entity sets read above are unchanged by the edit.
     model_texts, fixed_overrides = _apply_fixed_model_parameters(
         parameter_rows, models, model_texts)
+    _refuse_overwriting_an_edited_source(fixed_overrides, base, out_dir)
 
     # Observables -> the observableId -> model-column map (the data pivot's column order)
     # plus the measurement models (id, formula) synthesized from expression
@@ -631,6 +633,27 @@ def _apply_fixed_model_parameters(parameter_rows, models, model_texts):
         overrides += [_FixedOverride(pid, loc, changed[pid], fixed[pid])
                       for pid in targets if pid in changed]
     return texts, overrides
+
+
+def _refuse_overwriting_an_edited_source(overrides, base, out_dir):
+    """Refuse an import whose edited model copy would be written over its source (#907).
+
+    A copy is written at its PEtab ``location`` under ``out_dir``, and a location may leave
+    the problem directory (``../models/m.bngl``). With ``out_dir`` beside the problem
+    directory, or equal to it, that path is the source file itself, and writing the edited
+    copy would change the user's model: a later problem that leaves the parameter to the model
+    file would then silently simulate this table's value. A model that needs no edit is still
+    written back as it was read, as before #907. Called before anything is written."""
+    for loc in dict.fromkeys(o.location for o in overrides):
+        dest = (out_dir / loc).resolve()
+        if dest == (base / loc).resolve():
+            names = ', '.join(o.parameter_id for o in overrides if o.location == loc)
+            raise PybnfError(
+                f"PEtab import: parameters.tsv fixes {names} (estimate=false) at a value the "
+                f"model {loc} does not have, so the imported copy of that model is edited, but "
+                f"the copy would be written to {dest}, which is the source model file. The "
+                f"import never changes a source model. Import into a directory where {loc} "
+                f"does not lead back to the source file.")
 
 
 def _report_fixed_override(o):

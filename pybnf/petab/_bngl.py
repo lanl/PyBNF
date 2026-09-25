@@ -189,8 +189,12 @@ def _block_lines(text, block_name):
 
 
 # An action that assigns a parameter by name: ``setParameter("k", 1)``, or the swept
-# ``parameter=>"k"`` of a ``parameter_scan`` / ``bifurcate``.
-_ACTION_PARAMETER = re.compile(r'''(?:setParameter\(\s*|parameter\s*=>\s*)["'](\w+)["']''')
+# ``parameter=>"k"`` of a ``parameter_scan`` / ``bifurcate``. Spelled as BNG2.pl accepts
+# them: its actions reader allows whitespace between the action name and ``(``
+# (``setParameter ("k", 1)``), and it evaluates the options as a Perl hash, whose key may be
+# quoted (``"parameter"=>"k"``) and whose ``=>`` may be a plain comma.
+_ACTION_PARAMETER = re.compile(
+    r'''(?:\bsetParameter\s*\(\s*|\bparameter["']?\s*(?:=>|,)\s*)["'](\w+)["']''')
 
 
 def parameters_set_by_actions(text):
