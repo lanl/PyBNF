@@ -133,6 +133,8 @@ steady-state), and a config-load check that the imported conf synthesizes the
 The first "Out" boundary above no longer holds. A pre-equilibrated scan now exports with a
 non-empty surrogate set M. The `-inf` period's pre-equilibration Condition sets all of M,
 PEtab v2 carries those values into the measurement period as the fitter does, and a wash
-Condition re-pins M like any other. Two cases are still refused: a wash that would re-pin a fit
-parameter the pre-equilibration Condition set (the fitter keeps the pre-equilibration value
-through the scan), and a swept parameter in M beside a wash. See ADR-0027's 2026-09-25 addendum.
+Condition re-pins M like any other. Three cases are still refused: a wash that would re-pin a
+fit parameter the pre-equilibration Condition set (the fitter keeps the pre-equilibration value
+through the scan), a swept parameter in M beside a wash, and a wash that sets the swept
+parameter itself (two setters of one target in the measurement period). See ADR-0027's
+2026-09-25 addendum.

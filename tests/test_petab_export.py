@@ -1501,6 +1501,26 @@ class TestExportDoseResponse:
         with pytest.raises(PybnfError, match=match):
             export_job(src / 'job.conf', src / 'out')
 
+    @pytest.mark.xfail(strict=True, reason=(
+        '#903: the importer keeps only the last measurement at each dose experiment. Keying rows '
+        'by dose (#895) puts a single file\'s repeated dose under one experiment, so this round '
+        'trip, exact before #895, now loses rows until #903 is fixed.'))
+    def test_a_file_that_repeats_a_dose_round_trips(self, tmp_path_factory):
+        # Reviewer's test. One data file measures L = 1 and L = 2 twice (technical replicates
+        # written as repeated rows). The export is the same fit either way. Before #895 each row
+        # was its own experiment and the import gave back all five rows; now the repeated rows
+        # share one experiment, and the import must still give back every (dose, value) pair.
+        from pybnf.petab.import_ import import_job
+        text = '# L resp\n1\t0.5\n1\t0.55\n2\t1\n5\t2.5\n2\t0.95\n'
+        src = self._src(tmp_path_factory, 'dr_dup_round_trip')
+        (src / 'dose.exp').write_text(text)
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: dr, data: dose.exp\n' + self._PARAMS)
+        export_job(src / 'job.conf', src / 'petab')
+        import_job(src / 'petab' / 'problem.yaml', src / 'imported')
+        back = [p.read_text() for p in sorted((src / 'imported').glob('*.exp'))]
+        assert _exp_pairs_by_hand(*back) == _exp_pairs_by_hand(text)
+
 
 # ---------------------------------------------------------------------------
 # Chunk 5b: new-era condition: / conditioned experiment: -> conditions/experiments
@@ -1949,6 +1969,48 @@ end model
 """
 
 
+# Two independent pools for the carried-state oracle: A' = kp - k*A and B' = kf - L*B. A scan over
+# L read at a finite time shows the B state carried out of the pre-equilibration, and A shows
+# which k the measurement period ran at.
+_TWO_POOL_MODEL = """begin model
+begin parameters
+  kp  1.0
+  k   2.0
+  kf  0.5
+  L   1.0
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 0
+  B() 0
+end seed species
+begin observables
+  Molecules  A_tot  A()
+  Molecules  B_tot  B()
+end observables
+begin reaction rules
+  0 -> A()    kp
+  A() -> 0    k
+  0 -> B()    kf
+  B() -> 0    L
+end reaction rules
+end model
+"""
+
+
+def _two_pool(state, p, t):
+    """The closed-form ``_TWO_POOL_MODEL`` state ``t`` time units after ``state``, under the
+    parameter values ``p`` (``t = inf`` gives the steady state)."""
+    a_ss, b_ss = p['kp'] / p['k'], p['kf'] / p['L']
+    if np.isinf(t):
+        return {'A': a_ss, 'B': b_ss}
+    return {'A': a_ss + (state['A'] - a_ss) * np.exp(-p['k'] * t),
+            'B': b_ss + (state['B'] - b_ss) * np.exp(-p['L'] * t)}
+
+
 class TestExportPreequilibratedDoseResponse:
 
     def _src(self, tmp_path_factory, name='pdr'):
@@ -2173,6 +2235,140 @@ class TestExportPreequilibratedDoseResponse:
         assert _half_sse_by_hand(out, {'kd': 2.0}, {'L': 1.0, 'kd': 5.0},
                                  _dr_birth_death) == pytest.approx(0.01125, rel=1e-9)
         assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('incubate, wash, fit_lines, match', [
+        # L is fit and a time-course condition perturbs it, so L is in M. The job was refused
+        # before #892 lifted the empty-M rule, and the rule's replacement let this case through.
+        ('"A()" = 100', '"A()" = 0, L = 7',
+         'condition: hi, perturbations: L * 2\nexperiment: tc, condition: hi, data: tc.exp\n'
+         'uniform_var = L 0.1 10\n', r"its wash condition 'wash' also sets 'L'"),
+        # L is a fixed parameter and M is empty.
+        ('"A()" = 100', '"A()" = 0, L = 7', '', r"its wash condition 'wash' also sets 'L'"),
+        # The pre-equilibration sets the fit parameter L, so L is in M. This used to be refused
+        # with the advice to repeat L's value in the wash, which gave the case above.
+        ('"A()" = 100, L = 3', '"A()" = 0', 'uniform_var = L 0.1 10\n',
+         r"sweeps 'L', a fit parameter"),
+    ], ids=['wash_sets_swept_in_M', 'wash_sets_swept_fixed', 'pre_sets_swept_in_M'])
+    def test_a_wash_that_would_set_the_swept_parameter_is_refused(
+            self, tmp_path_factory, incubate, wash, fit_lines, match):
+        # Reviewer's test. The wash and the per-dose condition apply in the same measurement
+        # period, so a wash that sets the swept parameter, or re-pins it as a member of M, gives
+        # two conditions of one period the same target. PEtab v2 forbids that (petab's
+        # CheckValidConditionTargets reports it), and the export used to write it without
+        # complaint in the first two cases.
+        src = self._src(tmp_path_factory, 'pdr_wash_sets_swept')
+        (src / 'tc.exp').write_text('# time resp\n0\t0\n1\t0.5\n')
+        (src / 'job.conf').write_text(
+            self._HEAD + f'condition: incubate, perturbations: {incubate}\n'
+            f'condition: wash, perturbations: {wash}\n'
+            'experiment: scan, preequilibrate: incubate, condition: wash, '
+            'type: parameter_scan, data: dose.exp\n' + fit_lines + self._PARAMS)
+        with pytest.raises(NotImplementedError, match=match):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_carried_state_and_a_wash_only_fit_parameter_match_the_protocol(
+            self, tmp_path_factory):
+        # Reviewer's oracle for a fixed-endpoint scan (t_end: 0.7). Its readings depend on the
+        # species state carried out of the pre-equilibration, which the steady-state tests above
+        # cannot see. kp joins M through a time-course condition and k only through the wash.
+        # The expected value follows PyBNF's own protocol, read from the conf: the pre condition
+        # is applied, the model equilibrates, the wash is applied (its setParameter is never
+        # undone), and each dose starts from that state. Each replicate row is scored at its own
+        # dose. The exported value walks the exported tables under PEtab v2 period semantics,
+        # where a change, to a parameter or a species, persists into later periods. Both use the
+        # closed-form two-pool solution, and neither goes through the exporter.
+        src = tmp_path_factory.mktemp('pdr_carried_state')
+        (src / 'm.bngl').write_text(_TWO_POOL_MODEL)
+        tc = '# time A_tot B_tot\n0\t0\t0\n0.5\t0.6\t0.2\n1\t0.9\t0.3\n2\t1.0\t0.45\n'
+        rep1 = '# L A_tot B_tot\n0.5\t1.9\t4.1\n1\t2.1\t3.2\n4\t1.8\t1.5\n'
+        # rep2 reorders the doses, drops L = 1 and adds L = 2 (#895).
+        rep2 = '# L A_tot B_tot\n4\t1.7\t1.4\n0.5\t2.0\t4.3\n2\t1.95\t2.2\n'
+        for name, text in (('tc.exp', tc), ('rep1.exp', rep1), ('rep2.exp', rep2)):
+            (src / name).write_text(text)
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+            'condition: hi, perturbations: kp * 2\n'
+            'experiment: tc, condition: hi, data: tc.exp\n'
+            'condition: pre, perturbations: kf = 3, "B()" = 2\n'
+            'condition: wash, perturbations: "A()" = 0, kf = 1, k = 0.3\n'
+            'experiment: scan, preequilibrate: pre, condition: wash, type: parameter_scan, '
+            't_end: 0.7, data: rep1.exp, rep2.exp\n'
+            'uniform_var = kp 0.1 10\nuniform_var = k 0.1 10\n')
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        model = {'kp': 1.0, 'k': 2.0, 'kf': 0.5, 'L': 1.0}
+
+        def data_rows(text):
+            return [[float(x) for x in line.split()] for line in text.splitlines()
+                    if line.strip() and not line.startswith('#')]
+
+        def protocol(kp, k):
+            total = 0.0
+            p = dict(model, kp=2 * kp, k=k)                  # tc under hi, from the seed
+            for t, a, b in data_rows(tc):
+                s = _two_pool({'A': 0.0, 'B': 0.0}, p, t)
+                total += 0.5 * ((a - s['A']) ** 2 + (b - s['B']) ** 2)
+            p = dict(model, kp=kp, k=k, kf=3.0)              # pre, then equilibrate
+            s = _two_pool({'A': 0.0, 'B': 2.0}, p, np.inf)
+            p.update(kf=1.0, k=0.3)                          # the wash
+            s['A'] = 0.0
+            for dose, a, b in data_rows(rep1) + data_rows(rep2):
+                m = _two_pool(s, dict(p, L=dose), 0.7)
+                total += 0.5 * ((a - m['A']) ** 2 + (b - m['B']) ** 2)
+            return total
+
+        import sympy as sp
+        alias = {r['petabEntityId']: r['modelEntityId'].replace('()', '')
+                 for r in _tsv_rows(out / 'mapping.tsv')}
+        changes_of = {}
+        for r in _tsv_rows(out / 'conditions.tsv'):
+            changes_of.setdefault(r['conditionId'], []).append(
+                (r['targetId'], sp.sympify(r['targetValue'])))
+        periods = {}
+        for r in _tsv_rows(out / 'experiments.tsv'):
+            periods.setdefault(r['experimentId'], {}).setdefault(
+                float(r['time']), []).append(r['conditionId'])
+        formula = {r['observableId']: r['observableFormula']
+                   for r in _tsv_rows(out / 'observables.tsv')}
+
+        def exported(kp, k):
+            total = 0.0
+            for meas in _tsv_rows(out / 'measurements.tsv'):
+                p, s = dict(model), {'A': 0.0, 'B': 0.0}
+                by_start = periods[meas['experimentId']]
+                starts = sorted(by_start)
+                t_meas = float(meas['time'])
+                for i, start in enumerate(starts):
+                    env = {**p, **s, **{a: s[n] for a, n in alias.items()},
+                           'kp__REF': kp, 'k__REF': k}
+                    changes = [(target, float(value.subs({sp.Symbol(n): v
+                                                          for n, v in env.items()})))
+                               for cid in by_start[start] for target, value in changes_of[cid]]
+                    targets = [target for target, _v in changes]
+                    assert len(targets) == len(set(targets))  # one setter per target per period
+                    for target, value in changes:
+                        if target in alias:
+                            s[alias[target]] = value
+                        else:
+                            p[target] = value
+                    if np.isinf(start):                     # the -inf pre-equilibration
+                        s = _two_pool(s, p, np.inf)
+                        continue
+                    if i + 1 == len(starts) or t_meas < starts[i + 1]:
+                        s = _two_pool(s, p, t_meas - start)
+                        break
+                    s = _two_pool(s, p, starts[i + 1] - start)
+                predicted = {'A_tot': s['A'], 'B_tot': s['B']}[formula[meas['observableId']]]
+                total += 0.5 * (float(meas['measurement']) - predicted) ** 2
+            return total
+
+        # BNG2.pl scores this job (PyBNF's NetModel path) at 8.809596094 at kp = k = 1.3 and at
+        # 11.1441501 at kp = 0.7, k = 1.1, so the closed-form protocol is the fitter's.
+        assert protocol(1.3, 1.3) == pytest.approx(8.809596094, rel=1e-7)
+        assert protocol(0.7, 1.1) == pytest.approx(11.1441501, rel=1e-7)
+        for kp, k in ((1.3, 1.3), (0.7, 1.1), (2.0, 0.4)):
+            assert exported(kp, k) == pytest.approx(protocol(kp, k), rel=1e-12)
 
     def test_species_condition_on_a_plain_time_course_is_refused(self, tmp_path_factory):
         # A species setConcentration is inline-only within a pre-equilibration protocol (ADR-0062);

@@ -1063,6 +1063,10 @@ def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):
     * ``p`` is the swept parameter. The per-dose condition sets it in the same period, and PEtab
       v2 forbids two conditions of one period from setting the same target.
 
+    For the same reason a wash that sets the swept parameter itself is refused, whether or not
+    the parameter is in M. The fitter's scan overrides the wash's value at every dose, but the
+    exported measurement period would give the swept parameter two setters.
+
     A wash-free scan has no such pin (its measurement period carries only the per-dose
     condition), so it is never refused here.
     """
@@ -1071,9 +1075,20 @@ def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):
         if wash is None:
             continue
         wash_targets = {var for var, _op, _val in conditions[wash]}
+        swept = _swept_param(exp)
+        if swept in wash_targets:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', and "
+                f"its wash condition '{wash}' also sets '{swept}'. Both conditions apply in the "
+                f"exported measurement period, and PEtab v2 forbids two conditions of one period "
+                f"from setting the same target. PyBNF's scan sets '{swept}' to each dose over the "
+                f"wash's value, so remove '{swept}' from '{wash}' to export this job, or run it "
+                f"natively.")
         pre = exp['preequilibrate']
+        # The swept parameter is left to the check below: the dose, not the pre-equilibration
+        # value, is what the scan runs at.
         carried = sorted(p for p in surrogate
-                         if p not in wash_targets
+                         if p != swept and p not in wash_targets
                          and any(var == p for var, _op, _val in conditions[pre]))
         if carried:
             raise NotImplementedError(
@@ -1085,8 +1100,7 @@ def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):
                 f"({carried[0]} = {surrogate_name(carried[0])}, ADR-0027), which would undo that "
                 f"value. Repeat the pre-equilibration value in '{wash}' so the scan's value is "
                 f"stated there too, or run the job natively.")
-        swept = _swept_param(exp)
-        if swept in surrogate and swept not in wash_targets:
+        if swept in surrogate:
             raise NotImplementedError(
                 f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', a fit "
                 f"parameter that a condition also perturbs, so its wash condition '{wash}' re-pins "

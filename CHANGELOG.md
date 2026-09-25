@@ -263,7 +263,7 @@ All notable changes to PyBNF are documented below. This project adheres to
   perturbed by a condition elsewhere in the job (#892).** Each dose condition set only the
   swept parameter, so PEtab ran every dose at the parameter's model-file value. Each dose
   condition now pins it to its estimate. A pre-equilibrated dose-response in such a job, until
-  now refused, exports too, except for two combinations that are still refused with a message.
+  now refused, exports too, except for three combinations that are still refused with a message.
 - **PEtab export pairs every replicate's dose-response measurements with the dose they were
   measured at (#895).** A second `data:` file's rows were paired with the first file's doses by
   row position, so reordered or missing doses were exported against the wrong doses, and an

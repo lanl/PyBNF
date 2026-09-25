@@ -234,11 +234,12 @@ go into the per-dose Conditions, for two reasons:
 
 So the `-inf` period's pre-equilibration Condition sets all of M, a wash Condition re-pins M
 as every Condition does, and a wash-free scan's measurement period applies only the per-dose
-Condition. Two cases are still refused, each with a message: a wash that would re-pin a fit
-parameter the pre-equilibration Condition set, and a swept parameter in M beside a wash, whose
-pin would collide with the dose. The plain pre-equilibration builder (ADR-0052, #443) still
-re-pins M on its measurement period, which undoes a carried value in the same way. That is
-reported separately.
+Condition. Three cases are still refused, each with a message: a wash that would re-pin a fit
+parameter the pre-equilibration Condition set, a swept parameter in M beside a wash, whose
+pin would collide with the dose, and a wash that sets the swept parameter itself, which
+collides the same way whether or not the parameter is in M. The plain pre-equilibration
+builder (ADR-0052, #443) still re-pins M on its measurement period, which undoes a carried
+value in the same way. That is reported separately.
 
 **The dose axis is the fitter's scan grid (#895).** "Dose-response Parameter Scan" above maps
 dose *row* `i` to `cond_<stem>_i`, reading the first data file only, and each replicate's
