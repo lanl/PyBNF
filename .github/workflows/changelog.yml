@@ -67,7 +67,9 @@ jobs:
         # the last command's, so without it a `gh api` that failed for any
         # reason would hand an empty list to a checker that found nothing to
         # object to, and this job would go green having read nothing. The script
-        # refuses an empty list for the same reason: two independent guards.
+        # refuses an empty list for the same reason, and a response body where
+        # the paths should be, which is what a failed `gh api` actually prints
+        # to stdout (it applies --jq only to a success): two independent guards.
         run: |
           set -o pipefail
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \

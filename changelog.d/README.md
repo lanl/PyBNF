@@ -94,8 +94,9 @@ folds every fragment into a new `## [v1.9.0] - <today>` section below
 `## [Unreleased]`, in Keep a Changelog order with the highest issue number first
 and each kind's entries as a tight list, and deletes the fragment files. The
 leading `v` on `--version` is optional, and `--date YYYY-MM-DD` overrides the
-date. It refuses a malformed fragment, a malformed version, and a version the file
-already has, and writes nothing when it refuses.
+date. It refuses a malformed fragment, a malformed version, a version the file
+already has, and a version older than the newest one it has, and writes nothing
+when it refuses.
 
 Commit the result together with the version bump in `pybnf/__init__.py`,
 `CITATION.cff` and `docs/conf.py` (`tests/test_packaging_metadata.py` checks that

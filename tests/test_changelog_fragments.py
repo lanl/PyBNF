@@ -289,6 +289,40 @@ class TestTheReleasedHeading:
         with pytest.raises(changelog.ChangelogError, match="already has a section for v0.1.0"):
             changelog.build(SYNTHETIC, [], version, "2026-10-01")
 
+    @pytest.mark.parametrize(
+        ("text", "version", "expected"),
+        [
+            # The file's own v1.2.2 heading has no brackets and no date, and
+            # [v0.1] has two components; both are the same release as X.Y.Z.
+            (
+                SYNTHETIC.replace("## [v0.1.0]", "## v0.2.0 (untagged)\n\n## [v0.1.0]"),
+                "0.2.0",
+                "already has a section for v0.2.0",
+            ),
+            (
+                SYNTHETIC.replace("## [v0.1.0]", "## [v0.3] - 2026-01-02\n\n## [v0.1.0]"),
+                "0.3.0",
+                "already has a section for v0.3.0",
+            ),
+            # 0.1.00 is v0.1.0; written as-is it is a second section for it.
+            (SYNTHETIC, "0.1.00", "is not a release number"),
+            (SYNTHETIC, "00.2.0", "is not a release number"),
+            # build writes the new section at the top, where the packaging
+            # test reads it as the current version; an older one there is a
+            # wrong release history.
+            (SYNTHETIC, "0.0.9", "older than v0.1.0"),
+        ],
+        ids=["unbracketed", "two-component", "padded-patch", "padded-major", "older"],
+    )
+    def test_the_same_or_an_older_release_in_another_spelling_is_refused(
+        self, text, version, expected
+    ):
+        """Added in review. The refusal above compared the literal ``[vX.Y.Z]``
+        spelling, so a release the file already has under another spelling, or
+        an older one, was written at the top as the newest section."""
+        with pytest.raises(changelog.ChangelogError, match=expected):
+            changelog.build(text, [], version, "2026-10-01")
+
     def test_a_file_without_exactly_one_unreleased_heading_is_refused(self):
         text = SYNTHETIC.replace("## [Unreleased]", "## Next")
         with pytest.raises(
@@ -331,6 +365,121 @@ class TestTheBuildCommand:
         assert target.read_text() == SYNTHETIC
         assert (fragments / name).exists()
         assert capsys.readouterr().err.startswith("error: ")
+
+
+class TestAReleaseOfTheRealFragments:
+    """Added in review: ``build`` run as a release would run it, on a copy of the
+    real ``CHANGELOG.md`` and ``changelog.d/``, and checked by an assembler
+    written here from ``changelog.d/README.md`` rather than by the tool's own
+    functions. The script is copied into the scratch tree, so its
+    ``REPO_ROOT`` is the copy and the checkout is never written.
+
+    Edge-shaped fragments go in beside the real ones, so the test still means
+    something the day after a release empties the directory, and covers what an
+    editor produces: CRLF, no final newline, blank lines around the bullet,
+    trailing spaces, non-ASCII, a nested list, ``#`` in a code span, an
+    indented line that looks like a heading, a ``+slug`` and a ``.2`` name.
+    """
+
+    EDGE = {
+        "99006.added.md": b"- **Nested (#99006).** Intro.\n\n  * one\n    * deeper\n\n  Closing.\n",
+        "99006.added.2.md": b"- **A second added entry for one issue (#99006).**\n",
+        "99006.added.10.md": b"- **A tenth, which sorts after the second.**\n",
+        "99005.fixed.md": (
+            b"- **Code (#99005).** `k1 k2 # comment` and `## [v9.9.9] - 2026-01-01`.\n"
+            b"  ### Indented, so part of the bullet rather than a heading\n"
+        ),
+        "99004.changed.md": b"- **CRLF (#99004).** One.\r\n  Two.\r\n",
+        "99003.fixed.md": b"- **No final newline (#99003).**",
+        "99002.security.md": (
+            "- **Non-ASCII (#99002): caf\u00e9, \u00b5M, \u03b1\u2192\u03b2.**   \n".encode()
+        ),
+        "99001.deprecated.md": b"\n\n- **Blank lines around it (#99001).**\n\n\n",
+        "+reviewer-slug.fixed.md": b"- **No issue number.**\n",
+    }
+
+    @staticmethod
+    def _expected_text(raw: bytes) -> str:
+        # What a reader sees: universal newlines, no blank lines around the
+        # bullet, everything else byte for byte (trailing spaces included).
+        return raw.decode("utf-8").replace("\r\n", "\n").strip("\n")
+
+    @staticmethod
+    def _order(name: str) -> tuple:
+        # changelog.d/README.md: highest issue number first; the tool's
+        # docstring: issueless fragments after, alphabetically; ``.N`` in order.
+        stem = name[: -len(".md")].split(".")
+        seq = int(stem[2]) if len(stem) == 3 else 1
+        if stem[0].startswith("+"):
+            return (1, 0, stem[0], seq)
+        return (0, -int(stem[0]), "", seq)
+
+    def test_every_entry_lands_once_under_its_heading_and_nothing_else_moves(self, tmp_path):
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "changelog.py").write_bytes(SCRIPT.read_bytes())
+        original = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text(original, encoding="utf-8")
+        staged = tmp_path / "changelog.d"
+        staged.mkdir()
+        raw = {
+            p.name: p.read_bytes()
+            for p in (REPO_ROOT / "changelog.d").iterdir()
+            if p.name != "README.md"
+        }
+        assert not set(raw) & set(self.EDGE), "pick edge issue numbers no real fragment uses"
+        raw.update(self.EDGE)
+        for name, content in [("README.md", b"not a fragment\n"), *raw.items()]:
+            (staged / name).write_bytes(content)
+
+        # A version newer than every release, read from the file independently.
+        newest = max(
+            tuple(map(int, v)) for v in re.findall(r"^## \[v(\d+)\.(\d+)\.(\d+)\]", original, re.M)
+        )
+        version = f"{newest[0] + 1}.0.0"
+        done = subprocess.run(
+            [sys.executable, "tools/changelog.py", "build"]
+            + ["--version", version, "--date", "2031-02-03"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 0, done.stderr
+        built = (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        # Everything above the first released heading, and everything from it
+        # down, is exactly what it was.
+        cut = original.index("\n## ", original.index("## [Unreleased]")) + 1
+        head, released = original[:cut], original[cut:]
+        assert built.startswith(head), "the title, preamble or [Unreleased] pointer changed"
+        assert built.endswith(released), "a released section changed"
+
+        # The new section, assembled by hand.
+        texts = {name: self._expected_text(content) for name, content in raw.items()}
+        blocks = []
+        for kind in CANONICAL:
+            names = sorted(
+                (n for n in raw if n.split(".")[1] == kind.lower()), key=self._order
+            )
+            if names:
+                blocks.append("\n".join([f"### {kind}", *(texts[n] for n in names)]))
+        title = f"## [v{version}] - 2031-02-03"
+        assert built[len(head) : len(built) - len(released)] == (
+            title + "\n\n" + "\n\n".join(blocks) + "\n\n"
+        )
+
+        # No entry is lost or doubled anywhere in the file.
+        doubled = {n: built.count(t) for n, t in texts.items() if built.count(t) != 1}
+        assert not doubled, doubled
+        # The fragments are consumed and nothing else in the directory is.
+        assert sorted(p.name for p in staged.iterdir()) == ["README.md"]
+        # And the result satisfies what test_changelog_structure and
+        # test_packaging_metadata ask of the real file.
+        sections = _sections(built)
+        assert _entries(sections["[Unreleased]"]) == []
+        assert "changelog.d/" in "\n".join(sections["[Unreleased]"])
+        kinds = _kinds(sections[f"[v{version}]"])
+        assert kinds == [k for k in CANONICAL if k in kinds]
+        assert re.findall(r"^## \[v?([^\]]+)\]", built, re.M)[1] == version
 
 
 class TestTheLengthLimit:
@@ -474,6 +623,41 @@ class TestTheBranchMustStageItsOwnEntry:
         )
         assert done.returncode == 1
         assert "nothing was actually checked" in done.stderr
+
+    #: What ``gh api repos/lanl/PyBNF/pulls/999999/files --paginate --jq
+    #: '.[].filename'`` writes to stdout, captured byte for byte. gh applies
+    #: ``--jq`` only to a successful response; an HTTP error's body goes to
+    #: stdout as it came, and gh exits 1.
+    _GH_404 = (
+        '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/'
+        'pulls#list-pull-requests-files","status":"404"}'
+    )
+
+    @pytest.mark.parametrize(
+        "stdin",
+        [
+            _GH_404 + "\n",
+            # A later page failing after an earlier one arrived.
+            "pybnf/config.py\nchangelog.d/856.fixed.md\n" + _GH_404 + "\n",
+        ],
+        ids=["first-page", "later-page"],
+    )
+    def test_a_failed_api_call_fails_closed_on_what_gh_actually_prints(self, stdin):
+        """Added in review. A failed ``gh api`` does not hand the checker an
+        empty list: it hands it the error body, which names neither a ``pybnf/``
+        path nor ``CHANGELOG.md``, so every rule passed it and only the
+        workflow's ``pipefail`` kept the job red. The script's own guard has to
+        fail on that shape too, or it is not the second guard it is described
+        as."""
+        done = subprocess.run(
+            [sys.executable, str(SCRIPT), "required", "--files", "-"],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        assert done.returncode == 1, done.stdout
+        assert "not a path" in done.stderr
 
 
 def _workflow_body() -> str:

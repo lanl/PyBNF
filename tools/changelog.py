@@ -95,7 +95,19 @@ EXEMPT_LABEL = "changelog exempt"
 _UNRELEASED = "## [Unreleased]"
 
 #: ``1.9.0`` or ``v1.9.0``. Every release since v0.2.0 has had three components.
-_VERSION = re.compile(r"^v?(?P<number>[0-9]+\.[0-9]+\.[0-9]+)$")
+#: No leading zeros: ``1.8.01`` is v1.8.1, and written as-is it would be a
+#: second section for a release that already has one.
+_VERSION = re.compile(r"^v?(?P<number>(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2})$")
+
+#: The version of every released heading, in whichever of the file's spellings:
+#: ``## [v1.8.1] - 2026-08-23``, ``## v1.2.2 (untagged)``, ``## [v0.1] - ...``.
+_RELEASED = re.compile(r"^## \[?v?(?P<number>[0-9]+(?:\.[0-9]+)+)\b", re.MULTILINE)
+
+
+def _release_key(number: str) -> tuple[int, ...]:
+    """``1.8.1`` as ``(1, 8, 1)``, and ``0.1`` as ``(0, 1, 0)``, for comparing."""
+    parts = tuple(int(part) for part in number.split("."))
+    return parts + (0,) * (3 - len(parts))
 
 
 class ChangelogError(Exception):
@@ -321,12 +333,25 @@ def build(text: str, fragments: list[Fragment], version: str, when: str) -> str:
     Anything already sitting under ``[Unreleased]`` by hand is folded in rather
     than replaced, so this command cannot silently drop prose someone wrote. A
     version the file already has is refused: a second section for one release
-    would split its entries between two headings.
+    would split its entries between two headings. So is one older than the
+    newest release, because the new section is written at the top, where
+    ``tests/test_packaging_metadata.py`` reads it as the current version.
+    Versions are compared as numbers, across every heading spelling the file
+    uses, so ``## v1.2.2 (untagged)`` counts as v1.2.2.
     """
     title = heading(version, when)
     number = _VERSION.match(version).group("number")
-    if re.search(rf"^## \[v?{re.escape(number)}\]", text, re.MULTILINE):
+    released = [
+        (_release_key(m.group("number")), m.group("number")) for m in _RELEASED.finditer(text)
+    ]
+    if any(key == _release_key(number) for key, _ in released):
         raise ChangelogError(f"CHANGELOG.md already has a section for v{number}")
+    newest = max(released, default=None)
+    if newest is not None and newest[0] > _release_key(number):
+        raise ChangelogError(
+            f"v{number} is older than v{newest[1]}, the newest release in CHANGELOG.md. "
+            f"build writes the new section at the top, which is read as the current version."
+        )
 
     head, body, tail = _split_unreleased(text)
     preamble, existing = _sections(body)
@@ -437,6 +462,20 @@ def main(argv: list[str] | None = None) -> int:
         if not changed:
             return _report(
                 ["no changed files were reported, so nothing was actually checked"],
+                "",
+            )
+        # Nor is a failed call always an empty list. On an HTTP error `gh api`
+        # writes the response body to stdout as it came, without applying
+        # --jq, and exits 1: one line of JSON, which names no pybnf/ path and
+        # not CHANGELOG.md, so both rules would pass it. No path in this
+        # repository starts with '{', '[' or '<'; a response body does.
+        bodies = [line for line in changed if line.startswith(("{", "[", "<"))]
+        if bodies:
+            return _report(
+                [
+                    "the changed-file list holds a response body, not a path, so the "
+                    f"call that produced it failed: {bodies[0][:200]}"
+                ],
                 "",
             )
         return _report(required(changed), "changelog: this branch's entry is staged correctly")
