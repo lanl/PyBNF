@@ -398,6 +398,94 @@ class TestV1PriorConversion:
                 == (tmp_path / 'plain' / 'parameters.tsv').read_bytes())
 
 
+# A narrow box that every prior in _ACCEPTED_V1_PRIORS crosses on at least one side, so the
+# bounds truncate each one; nominalValue 3 lies inside every truncated support. The points
+# straddle both walls and the interior support edges (e^0.5 = 1.649 for the natural-log
+# uniform cases).
+_NARROW_BOUNDS = (0.5, 4.0)
+_NARROW_THETAS = np.array([0.3, 0.45, 0.55, 0.9, 1.2, 1.6, 1.7, 2.5, 3.0, 3.9, 4.5, 6.0])
+
+
+def _v1_truncated_pdf(prior_type, parameters, scale, lb, ub, theta):
+    """Density over theta of a v1 objective prior truncated to [lb, ub] and renormalized, in
+    closed form from the v1 specification (a blank type is parameterScaleUniform). The family
+    acts on theta, on ln theta (logNormal / logLaplace) or on the parameterScale; the
+    truncation mass is a difference of CDFs on that same axis."""
+    from scipy import stats
+    a, b = (float(x) for x in parameters.split(';'))
+    prior_type = prior_type or 'parameterScaleUniform'
+    if prior_type in ('uniform', 'normal', 'laplace'):
+        family, axis = prior_type, 'lin'
+    elif prior_type.startswith('parameterScale'):
+        family, axis = prior_type[len('parameterScale'):].lower(), scale
+    else:
+        family, axis = prior_type[len('log'):].lower(), 'log'
+    to_axis = {'lin': lambda t: t, 'log': np.log, 'log10': np.log10}[axis]
+    d_axis = {'lin': lambda t: np.ones_like(t), 'log': lambda t: 1 / t,
+              'log10': lambda t: 1 / (t * _LN10)}[axis]
+    dist = {'uniform': stats.uniform(a, b - a), 'normal': stats.norm(a, b),
+            'laplace': stats.laplace(a, b)}[family]
+    mass = dist.cdf(to_axis(ub)) - dist.cdf(to_axis(lb))
+    inside = (theta >= lb) & (theta <= ub)
+    with np.errstate(divide='ignore'):
+        return np.where(inside, dist.pdf(to_axis(theta)) * d_axis(theta) / mass, 0.0)
+
+
+class TestTruncatedV1PriorConversion:
+    """Review tests (#893): the v1 prior survives conversion *and truncation* intact.
+
+    TestV1PriorConversion checks every accepted prior with its support inside the bounds, so
+    the bounds never cut it. Here the bounds cut every one, and PyBNF's imported prior -- which
+    normalizes itself over its own box -- must equal the truncated, renormalized v1 prior
+    point for point, not just up to a constant: the same support, the same walls, the same
+    mass. A second oracle is libpetab's own truncated reading of the v1 row."""
+
+    @pytest.mark.parametrize('scale,prior_type,parameters', _ACCEPTED_V1_PRIORS)
+    def test_imported_prior_is_the_truncated_v1_prior(self, tmp_path, scale, prior_type,
+                                                      parameters):
+        from petab.v1.priors import Prior
+        lb, ub = _NARROW_BOUNDS
+        yaml = _write_v1_parameters(tmp_path / 'v1', _PRIOR_COLUMNS,
+                                    [('k', scale, lb, ub, 3, 1, prior_type, parameters)])
+        fp = _imported(petab1to2_preserve_scale(yaml, tmp_path / 'v2'))['k']
+        with np.errstate(divide='ignore'):
+            # PyBNF's density is over its sampling axis (log10 theta for a log-space
+            # parameter); carry it back to theta.
+            pybnf = np.exp([fp.prior_logpdf(t) for t in _NARROW_THETAS])
+            if fp.log_space:
+                pybnf = pybnf / (_NARROW_THETAS * _LN10)
+        expected = _v1_truncated_pdf(prior_type, parameters, scale, lb, ub, _NARROW_THETAS)
+        np.testing.assert_array_equal(pybnf > 0, expected > 0)
+        np.testing.assert_allclose(pybnf, expected, rtol=1e-9, atol=0)
+        v1_row = {'parameterScale': scale, 'lowerBound': lb, 'upperBound': ub,
+                  'objectivePriorType': prior_type or float('nan'),
+                  'objectivePriorParameters': parameters}
+        libpetab = Prior.from_par_dict(v1_row, type_='objective').pdf(_NARROW_THETAS)
+        np.testing.assert_allclose(pybnf, libpetab, rtol=1e-9, atol=0)
+
+    def test_parameters_without_a_type_column_are_parameter_scale_uniform(self, tmp_path):
+        # A v1 table may carry objectivePriorParameters and no objectivePriorType column at
+        # all. v1 reads every such row as parameterScaleUniform over its parameters. petab1to2
+        # then writes priorParameters with no priorDistribution, and on main the converter,
+        # finding no type column, overwrote each log row with log-uniform over its bounds.
+        columns = ('parameterId', 'parameterScale', 'lowerBound', 'upperBound',
+                   'nominalValue', 'estimate', 'objectivePriorParameters')
+        rows = [('k', 'log10', '1e-3', '1e3', 0.1, 1, '-2;2'),
+                ('kln', 'log', '1e-3', '1e3', 3, 1, '0.5;2'),
+                ('klin', 'lin', '0', '5', 1, 1, '0.2;3')]
+        yaml = _write_v1_parameters(tmp_path / 'v1', columns, rows)
+        imported = _imported(petab1to2_preserve_scale(yaml, tmp_path / 'v2'))
+        # By hand: log10 k in [-2, 2], ln k in [0.5, 2], k in [0.2, 3].
+        expected = {'k': ('loguniform_var', 1e-2, 1e2),
+                    'kln': ('loguniform_var', math.exp(0.5), math.exp(2.0)),
+                    'klin': ('uniform_var', 0.2, 3.0)}
+        for pid, (keyword, p1, p2) in expected.items():
+            fp = imported[pid]
+            assert fp.type == keyword, pid
+            assert (fp.p1, fp.p2) == (pytest.approx(p1, rel=1e-15),
+                                      pytest.approx(p2, rel=1e-15)), pid
+
+
 class TestV2PriorFromV1:
     """The mapping itself, against numbers worked by hand -- including the four cases
     petab1to2 refuses before the mapping can run."""
