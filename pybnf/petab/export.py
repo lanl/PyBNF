@@ -409,7 +409,7 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     # job the fitter refuses. Refuse it here too: the condition's model is what its fixed-target
     # relative ops are computed against (#897), so there is no single right base otherwise.
     for exp in experiments:
-        for c in (exp['condition'], exp['preequilibrate']):
+        for c in (exp['condition'], exp['preequilibrate'], exp['unperturbed_condition']):
             if c is not None and c in condition_models and condition_models[c] != exp['model']:
                 raise PybnfError(
                     f"Experiment '{exp['name']}' simulates model '{exp['model']}' but applies "
@@ -463,6 +463,9 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             [(exp['name'], exp['condition']) for exp in tc_experiments],
             conditions, fit_model_params, nominal_of,
             extra_surrogate=pe_surrogate)
+    _refuse_job_wildtype_beside_the_base_condition(
+        conditions, referenced, surrogate_params, tc_experiments, pe_experiments,
+        pdr_experiments)
 
     # Pre-equilibration experiments -> two-period Experiments (ADR-0052): a -inf steady-state
     # period (or a -T period for a fixed equil_t_end: T, #896) under the pre-equilibration
@@ -601,10 +604,12 @@ def _read_experiments(conf, conf_path, models):
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
     mf?, 'type': t?, 'method': m?, 't_end': t?, 'preequilibrate': p?, 'measurement_params':
     mp?, 'equil_t_end': T?}``. ``models`` is the ordered list of the job's model files. Returns a
-    list (declaration order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data,
-    ...], 'data_files': [str, ...], 'type', 'scan_time', 'preequilibrate': cond?,
-    'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed equilibration duration,
-    :func:`_equil_t_end`) -- the ``data:`` files (``data_files``, as written in the conf, for
+    list (declaration order) of dicts ``{'name', 'condition', 'unperturbed_condition',
+    'model': model_file, 'datas': [Data, ...], 'data_files': [str, ...], 'type', 'scan_time',
+    'preequilibrate': cond?, 'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed
+    equilibration duration, :func:`_equil_t_end`; a measured ``perturbations: none`` condition
+    reads as ``'condition': None`` with its name in ``'unperturbed_condition'``, #906) -- the
+    ``data:`` files (``data_files``, as written in the conf, for
     error messages) read as individual
     :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
     rows, so they are not pre-stacked), each experiment's resolved model
@@ -637,8 +642,11 @@ def _read_experiments(conf, conf_path, models):
             continue
         name = key[1]
         condition = fields.get('condition')
+        # Kept, so the model-ownership check can still refuse another model's `none` condition
+        # exactly as the fitter does (which looks it up on the experiment's own model).
+        unperturbed_condition = None
         if condition in unperturbed:
-            condition = None
+            condition, unperturbed_condition = None, condition
         model_file = _resolve_experiment_model(name, fields.get('model'), models,
                                                stem_to_model)
         data_files = fields.get('data', [])
@@ -683,6 +691,7 @@ def _read_experiments(conf, conf_path, models):
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': condition,
+                            'unperturbed_condition': unperturbed_condition,
                             'model': model_file, 'datas': datas, 'data_files': list(data_files),
                             'type': exp_type,
                             'scan_time': scan_time, 'preequilibrate': preequilibrate,
@@ -1163,6 +1172,38 @@ def _swept_param(exp):
     """The swept-parameter (dose axis) header of a parameter_scan experiment's data (column 0)."""
     data0 = exp['datas'][0]
     return data0.indvar if data0.indvar is not None else _independent_variable(data0)
+
+
+def _refuse_job_wildtype_beside_the_base_condition(conditions, referenced, surrogate,
+                                                   tc_experiments, pe_experiments,
+                                                   pdr_experiments):
+    """Refuse a job condition named ``wildtype`` in a problem that also needs the synthesized
+    base condition ``cond_wildtype`` (ADR-0027).
+
+    With the surrogate set M non-empty, a period that applies no condition of its own is written
+    as ``cond_wildtype``, which pins every ``p`` in M at ``p__REF``: a wildtype time course, a
+    wash-out's measured period, and a ``perturbations: none`` equilibration period (#906). A job
+    condition named ``wildtype`` is exported under the same id. The builders emit each id once, so
+    whichever shape is built first writes its rows and every other shape silently uses them: a
+    ``none`` equilibration or a wash-out ran under the job's ``wildtype`` perturbations, or the
+    job's ``wildtype`` experiment under the bare base. Each builder already refuses the clash
+    among its own experiments; this refuses it across shapes. A ``none`` condition named
+    ``wildtype`` is never a conditionId, so it does not clash.
+    """
+    if not surrogate or not conditions.get('wildtype') or 'wildtype' not in referenced:
+        return
+    needs_base = [exp['name'] for exp in tc_experiments if exp['condition'] is None]
+    needs_base += [exp['name'] for exp in pe_experiments
+                   if exp['condition'] is None or not conditions[exp['preequilibrate']]]
+    needs_base += [exp['name'] for exp in pdr_experiments
+                   if not conditions[exp['preequilibrate']]]
+    if needs_base:
+        raise PybnfError(
+            f"A condition named 'wildtype' clashes with the synthesized base condition "
+            f"cond_wildtype, which the exporter writes to re-pin the fit-and-perturbed "
+            f"parameter(s) {sorted(surrogate)} on the periods of experiment(s) {needs_base} that "
+            f"apply no condition of their own. Both would be exported as cond_wildtype. Rename "
+            f"the 'wildtype' condition.")
 
 
 def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):

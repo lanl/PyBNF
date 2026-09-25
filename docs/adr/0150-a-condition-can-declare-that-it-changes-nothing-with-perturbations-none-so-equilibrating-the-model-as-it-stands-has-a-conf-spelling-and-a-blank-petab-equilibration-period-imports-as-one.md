@@ -61,7 +61,11 @@ or, when fit-and-perturbed parameters must be re-pinned on every period (the set
 ADR-0027), as the base condition `cond_wildtype` the exporter already writes for a wildtype
 experiment. A `none` measured condition exports exactly as an omitted one. A `none` condition
 never becomes a `conditionId` of its own, since PEtab has no zero-row condition, and the
-condition builder now refuses to emit one.
+condition builder now refuses to emit one. A job condition named `wildtype` is exported under
+that same id, so export refuses one wherever the base condition is also needed, on a `none`
+equilibration, a wash-out or a wildtype time course alike; before, whichever was written first
+silently supplied the other's rows. The exporter also checks a measured `none` condition's
+model, as the fitter does, before reading it as omitted.
 
 PEtab import is the inverse. A `-inf` period that applies no condition is pointed at one
 synthesized condition, `unperturbed` (or `unperturbed_2`, ... when the problem already uses the
