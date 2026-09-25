@@ -322,8 +322,9 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     :func:`~pybnf.petab.conditions.build_experiment_conditions`): a fit-and-perturbed
     parameter is renamed to ``<p>__REF`` in the parameter table and pinned in every
     experiment's Condition. A **parameter-scan** (dose-response) experiment takes the
-    dual shape (ADR-0046): each dose of its swept-axis ``.exp`` becomes a Condition
-    setting the swept parameter + an Experiment, measured at the scan time (``inf`` for the
+    dual shape (ADR-0046): each dose of its dose axis (the sorted union of its replicates'
+    doses, #895) becomes a Condition setting the swept parameter (and re-pinning M, #892) + an
+    Experiment, measured at the scan time (``inf`` for the
     steady-state default => PEtab time=inf, or a finite ``t_end:``), via
     :func:`~pybnf.petab.conditions.build_dose_response_conditions` +
     :func:`~pybnf.petab.measurements.dose_response_measurement_rows`. With no referenced
@@ -445,12 +446,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                      sorted(unused))
 
     # The surrogate set M (ADR-0027) is problem-global: removing a fit-and-perturbed param from
-    # the parameter table makes its model name a pure condition target, so EVERY condition in
-    # EVERY experiment shape must re-pin it. A pre-equilibration condition that perturbs a fit
-    # param therefore contributes to M too (#443); thread that contribution into the time-course
-    # builder's M via extra_surrogate, so the time-course/wildtype conditions re-pin it as well.
+    # the parameter table makes its model name a pure condition target, so EVERY experiment of
+    # EVERY shape must set it before its simulation starts -- the time-course, wildtype,
+    # pre-equilibration, dose-response and pre-equilibrated dose-response conditions alike (#443,
+    # #892). A pre-equilibration or pre-equilibrated-scan condition that perturbs a fit param
+    # therefore contributes to M too; thread that contribution into the time-course builder's M
+    # via extra_surrogate, so every builder below pins the same M.
     pe_surrogate = {
-        var for exp in pe_experiments
+        var for exp in pe_experiments + pdr_experiments
         for c in ([exp['preequilibrate']]
                   + ([exp['condition']] if exp['condition'] is not None else []))
         for var, _op, _val in conditions[c] if var in fit_model_params}
@@ -483,33 +486,22 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
 
     # Pre-equilibrated dose-response experiments (ADR-0062): N two-period Experiments per scan, a
     # -inf (or -equil_t_end, #896) pre-equilibration period + a measurement period applying the
-    # shared wash condition and a per-dose swept-parameter condition. The surrogate split (a fit-and-perturbed parameter) is not
-    # yet combined with this multi-condition dose-period shape, so the shape requires an EMPTY M --
-    # neither the pre-equilibrated scans' own conditions nor any other experiment may fit-and-perturb
-    # a parameter. Refuse the combination with a clear boundary rather than emit an under-pinned
-    # problem.
+    # shared wash condition and a per-dose swept-parameter condition. They share the
+    # problem-global M (#892): the pre-equilibration condition sets all of M in its leading
+    # period, and PEtab v2, like the fitter, carries those values into the measurement period. A
+    # wash condition re-pins M as every other condition does, and _refuse_wash_re_pins refuses
+    # the cases where that re-pin is wrong.
     if pdr_experiments:
-        pdr_fit_perturbed = sorted(
-            var for exp in pdr_experiments
-            for c in ([exp['preequilibrate']]
-                      + ([exp['condition']] if exp['condition'] is not None else []))
-            for var, _op, _val in conditions[c] if var in fit_model_params)
-        if surrogate_params or pdr_fit_perturbed:
-            raise NotImplementedError(
-                "A pre-equilibrated dose-response export (ADR-0062) requires that no parameter is "
-                "both fit and perturbed by a condition (an empty surrogate set M): the surrogate "
-                f"split is not yet combined with the multi-condition dose period. Offending fit "
-                f"parameters: {sorted(set(surrogate_params) | set(pdr_fit_perturbed))}. Run the "
-                "job natively, or keep the pre-equilibration/wash conditions to fixed parameters "
-                "and species amounts.")
+        _refuse_wash_re_pins(pdr_experiments, conditions, surrogate_params)
         pdr_condition_rows, pdr_experiment_rows, pdr_ids_by_name = \
             build_preequilibrated_dose_response_conditions(
                 [(exp['name'], exp['preequilibrate'], exp['condition'],
-                  _swept_param(exp), _dose_values(exp), exp['scan_time'], exp['equil_t_end'])
+                  _swept_param(exp), _dose_axis(exp), exp['scan_time'], exp['equil_t_end'])
                  for exp in pdr_experiments],
                 conditions, nominal_of,
                 species_id_of=species_id_of,
-                existing_condition_ids={r.condition_id for r in condition_rows})
+                existing_condition_ids={r.condition_id for r in condition_rows},
+                surrogate=surrogate_params)
         condition_rows += pdr_condition_rows
         experiment_rows += pdr_experiment_rows
 
@@ -549,41 +541,50 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                     exp['measurement_params'], replicate),
                 noise_values=_noise_values_for(exp))
 
-    # Dose-response (ADR-0046): each dose row of the swept-axis .exp becomes its own Condition
-    # (setting the swept parameter) + Experiment, and the observable columns become measurements
-    # at the scan time (inf => steady state). The swept-parameter column (the data's indvar) is
-    # the scan axis, not a measurement, so it is dropped from the column map.
+    # Dose-response (ADR-0046): each dose of the experiment's dose axis -- the sorted union of its
+    # replicates' doses, the grid the fitter scans (#895) -- becomes its own Condition (setting the
+    # swept parameter, and re-pinning M, #892) + Experiment, and the observable columns become
+    # measurements at the scan time (inf => steady state). Each data row is tagged with the
+    # experiment of its OWN dose, never by its row position, so a replicate whose doses are
+    # reordered, missing or extra pairs every measurement with the dose it was taken at, as the
+    # fitter does. The swept-parameter column is the scan axis, not a measurement, so it is
+    # dropped from the column map.
     for exp in dr_experiments:
         stem = exp['name']
         model_id = Path(exp['model']).stem if multi_model else ''
         scan_time = exp['scan_time']
         swept_param = _swept_param(exp)
+        dose_axis = _dose_axis(exp)
         dr_conditions, dr_experiment_rows, experiment_ids = build_dose_response_conditions(
-            stem, swept_param, _dose_values(exp), scan_time)
+            stem, swept_param, dose_axis, scan_time, surrogate=surrogate_params)
         condition_rows += dr_conditions
         experiment_rows += dr_experiment_rows
+        experiment_id_of_dose = dict(zip(dose_axis, experiment_ids))
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items()
                     if c in data.cols and c != swept_param}
             # A column-mean sigma is the whole scan's mean, not a per-dose one: the scan is
             # ONE PyBNF experiment however many PEtab experiments its doses become (#894).
             measurement_rows += dose_response_measurement_rows(
-                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id,
+                data, cmap, swept_param, experiment_id_of_dose, scan_time,
+                sd_suffix=sd_suffix, model_id=model_id,
                 noise_values=_noise_values_for(exp))
 
     # Pre-equilibrated dose-response measurements (ADR-0062): tagged <stem>_<i> at the scan time,
-    # exactly like a plain dose-response, so the same pivot applies. The per-experiment experiment
-    # ids come from the builder above; the swept-parameter column is the scan axis, not a measurement.
+    # exactly like a plain dose-response, so the same pivot applies -- each row by its own dose
+    # (#895). The per-experiment experiment ids come from the builder above, aligned with the same
+    # dose axis; the swept-parameter column is the scan axis, not a measurement.
     for exp in pdr_experiments:
         model_id = Path(exp['model']).stem if multi_model else ''
         scan_time = exp['scan_time']
         swept_param = _swept_param(exp)
-        experiment_ids = pdr_ids_by_name[exp['name']]
+        experiment_id_of_dose = dict(zip(_dose_axis(exp), pdr_ids_by_name[exp['name']]))
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items()
                     if c in data.cols and c != swept_param}
             measurement_rows += dose_response_measurement_rows(
-                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id,
+                data, cmap, swept_param, experiment_id_of_dose, scan_time,
+                sd_suffix=sd_suffix, model_id=model_id,
                 noise_values=_noise_values_for(exp))
 
     # The species-amount mapping table (ADR-0062): one row per referenced species pattern, in
@@ -601,9 +602,10 @@ def _read_experiments(conf, conf_path, models):
     mf?, 'type': t?, 'method': m?, 't_end': t?, 'preequilibrate': p?, 'measurement_params':
     mp?, 'equil_t_end': T?}``. ``models`` is the ordered list of the job's model files. Returns a
     list (declaration order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data,
-    ...], 'type', 'scan_time', 'preequilibrate': cond?, 'measurement_params': table?,
-    'equil_t_end': T?}`` (``T`` the fixed equilibration duration, :func:`_equil_t_end`) -- the
-    ``data:`` files read as individual
+    ...], 'data_files': [str, ...], 'type', 'scan_time', 'preequilibrate': cond?,
+    'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed equilibration duration,
+    :func:`_equil_t_end`) -- the ``data:`` files (``data_files``, as written in the conf, for
+    error messages) read as individual
     :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
     rows, so they are not pre-stacked), each experiment's resolved model
     (:func:`_resolve_experiment_model`, ADR-0041), the inferred ``type`` (``'time_course'`` or
@@ -672,7 +674,8 @@ def _read_experiments(conf, conf_path, models):
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': fields.get('condition'),
-                            'model': model_file, 'datas': datas, 'type': exp_type,
+                            'model': model_file, 'datas': datas, 'data_files': list(data_files),
+                            'type': exp_type,
                             'scan_time': scan_time, 'preequilibrate': preequilibrate,
                             'measurement_params': measurement_params,
                             'equil_t_end': _equil_t_end(name, fields, preequilibrate)})
@@ -1153,10 +1156,120 @@ def _swept_param(exp):
     return data0.indvar if data0.indvar is not None else _independent_variable(data0)
 
 
-def _dose_values(exp):
-    """The dose values of a parameter_scan experiment -- its swept-axis column, as floats."""
-    data0 = exp['datas'][0]
-    return [float(v) for v in data0[_swept_param(exp)]]
+def _refuse_wash_re_pins(pdr_experiments, conditions, surrogate):
+    """Refuse a pre-equilibrated dose-response whose wash condition would re-pin a parameter it
+    must leave alone (#892).
+
+    A wash (measurement) condition is emitted like every other condition: it carries a base pin
+    ``p = p__REF`` for each ``p`` in the surrogate set M that it does not set itself (ADR-0027).
+    On this shape two such pins are wrong:
+
+    * ``p`` is set by the pre-equilibration condition. The fitter applies that condition as an
+      inline ``setParameter`` and never undoes it, so ``p`` keeps the pre-equilibration value
+      through the dose scan. PEtab v2 keeps it too, unless a later period sets it again, which is
+      exactly what the wash's pin would do.
+    * ``p`` is the swept parameter. The per-dose condition sets it in the same period, and PEtab
+      v2 forbids two conditions of one period from setting the same target.
+
+    For the same reason a wash that sets the swept parameter itself is refused, whether or not
+    the parameter is in M. The fitter's scan overrides the wash's value at every dose, but the
+    exported measurement period would give the swept parameter two setters.
+
+    A wash-free scan has no such pin (its measurement period carries only the per-dose
+    condition), so it is never refused here.
+    """
+    for exp in pdr_experiments:
+        wash = exp['condition']
+        if wash is None:
+            continue
+        wash_targets = {var for var, _op, _val in conditions[wash]}
+        swept = _swept_param(exp)
+        if swept in wash_targets:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', and "
+                f"its wash condition '{wash}' also sets '{swept}'. Both conditions apply in the "
+                f"exported measurement period, and PEtab v2 forbids two conditions of one period "
+                f"from setting the same target. PyBNF's scan sets '{swept}' to each dose over the "
+                f"wash's value, so remove '{swept}' from '{wash}' to export this job, or run it "
+                f"natively.")
+        pre = exp['preequilibrate']
+        # The swept parameter is left to the check below: the dose, not the pre-equilibration
+        # value, is what the scan runs at.
+        carried = sorted(p for p in surrogate
+                         if p != swept and p not in wash_targets
+                         and any(var == p for var, _op, _val in conditions[pre]))
+        if carried:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}': its "
+                f"pre-equilibration condition '{pre}' sets the fit parameter(s) {carried}, and "
+                f"PyBNF keeps that value through the dose scan (the pre-equilibration setParameter "
+                f"is never undone). In the exported problem the wash condition '{wash}' must re-pin "
+                f"every fit-and-perturbed parameter it does not set to its estimate "
+                f"({carried[0]} = {surrogate_name(carried[0])}, ADR-0027), which would undo that "
+                f"value. Repeat the pre-equilibration value in '{wash}' so the scan's value is "
+                f"stated there too, or run the job natively.")
+        if swept in surrogate:
+            raise NotImplementedError(
+                f"Pre-equilibrated dose-response experiment '{exp['name']}' sweeps '{swept}', a fit "
+                f"parameter that a condition also perturbs, so its wash condition '{wash}' re-pins "
+                f"'{swept}' to its estimate ({swept} = {surrogate_name(swept)}, ADR-0027) in the "
+                f"same period in which the per-dose condition sets it to the dose. PEtab v2 forbids "
+                f"two conditions of one period from setting the same target. Fix '{swept}' (do not "
+                f"fit it) to export this job, or run it natively.")
+
+
+# The relative tolerance the fitter matches a data row's dose with: ``Objective._sim_row_for``
+# takes the first simulated row where ``np.isclose(sim_dose, dose, atol=0.)`` holds, i.e. numpy's
+# default ``rtol``. Two distinct doses this close can be scored against one simulation.
+_FITTER_DOSE_RTOL = 1e-5
+
+
+def _dose_axis(exp):
+    """The exported dose axis of a parameter_scan experiment: the sorted union of every
+    replicate's doses, as floats (#895).
+
+    This is exactly the grid the fitter scans (``config.py`` stacks the ``data:`` replicates and
+    passes ``sorted({float(x) for x in stacked[indvar]})`` to the scan), so the exported problem
+    has one Experiment per dose the fitter simulates. The exporter then tags each data row with
+    the experiment of its own dose (:func:`~pybnf.petab.measurements.dose_response_measurement_rows`),
+    as the fitter pairs each row with the simulation at its own dose. The swept column is read by
+    name, as the fitter's replicate stacking reads it.
+
+    Refuses (``PybnfError``, naming the experiment, file and dose) a data file the fitter could not
+    score correctly either: a replicate with no swept-parameter column (its doses stack as NaN); a
+    non-finite dose; and two distinct doses within the fitter's dose-matching tolerance
+    (:data:`_FITTER_DOSE_RTOL`), which the fitter may score against a single simulation while PEtab
+    would simulate each separately.
+    """
+    swept = _swept_param(exp)
+    first_file = {}
+    for data, data_file in zip(exp['datas'], exp['data_files']):
+        if swept not in data.cols:
+            raise PybnfError(
+                f"Experiment '{exp['name']}' is a dose-response scan over '{swept}' (the first "
+                f"column of its first data file), but data file '{data_file}' has no '{swept}' "
+                f"column (its columns: {list(data.cols)}). Every replicate of a dose-response "
+                f"must give each row's dose in a '{swept}' column.")
+        for value in data[swept]:
+            dose = float(value)
+            if not np.isfinite(dose):
+                raise PybnfError(
+                    f"Experiment '{exp['name']}', data file '{data_file}': the dose "
+                    f"{swept} = {dose!r} is not a finite number, so no simulation can be run or "
+                    f"matched at it. Give every row a finite dose.")
+            first_file.setdefault(dose, data_file)
+    axis = sorted(first_file)
+    for low, high in zip(axis, axis[1:]):
+        if np.isclose(low, high, rtol=_FITTER_DOSE_RTOL, atol=0.0):
+            raise PybnfError(
+                f"Experiment '{exp['name']}' has two distinct doses {swept} = {low!r} (in "
+                f"'{first_file[low]}') and {swept} = {high!r} (in '{first_file[high]}') that "
+                f"differ by less than the fitter's dose-matching tolerance (relative "
+                f"{_FITTER_DOSE_RTOL:g}). The fitter can score measurements at one of them against "
+                f"the simulation of the other, while the exported PEtab problem would simulate "
+                f"each separately. If they are the same dose, write it identically in every data "
+                f"file.")
+    return axis
 
 
 def _species_id_map(patterns):
