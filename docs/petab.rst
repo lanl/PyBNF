@@ -45,7 +45,14 @@ Then run the emitted configuration with the ``pybnf`` command line::
   pybnf -c imported/imported_de.conf
 
 The *problem* — parameters and priors, observables and noise, measurements, and
-conditions/experiments — is recovered exactly. The *run recipe* is supplied by the
+conditions/experiments — is recovered exactly. A table split over several files (more
+than one entry under a ``*_files`` key of ``problem.yaml``) is read in full: the files
+are concatenated in list order, as libpetab reads them, and an id defined in two places
+(a parameter, observable, condition, experiment, or mapping id) is refused with an error
+naming the id and the files. ``problem.yaml`` is read without a YAML library; it accepts
+indented or column-0 ``- file`` lists and the one-line ``[a.tsv, b.tsv]`` form, and any
+other shape (a single file name where a list belongs, a key PEtab v2 does not define, a
+key given twice) is refused rather than skipped. The *run recipe* is supplied by the
 caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 ``imported_<job_type>.conf`` per registered optimizer and sampler), ``method``
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``

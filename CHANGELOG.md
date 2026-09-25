@@ -265,6 +265,22 @@ All notable changes to PyBNF are documented below. This project adheres to
   `Raimundez_PCB2020` and `Bachmann_MSB2011`), and a natural-log `parameterScaleUniform` with
   its bounds on the wrong scale, both silently. petab1to2 warnings the converter does not
   repair now reach the caller, and a dropped non-default initialization prior is named.
+- **The PEtab importer reads every file a `problem.yaml` lists under a table key (#902).** It
+  used to read only the first, so a problem that split its measurements or parameters over
+  several files was fitted to part of its data, with the later files' parameters left fixed. An
+  id defined in two places is now refused. The one-line `[a.tsv, b.tsv]` list form, which read
+  as no condition, experiment or mapping table at all, is read, and a shape the reader cannot
+  read (an unknown key, a file name where a list belongs) is refused instead of skipped.
+- **The bngsim `.net` backend compiles its ODE right-hand side once per model, and no longer
+  re-loads the `.net` file on every evaluation (ADR-0148).** Each per-evaluation copy of a
+  model went through its pickling hooks, which re-loaded the file and re-ran codegen for a
+  model the copy then discarded. It also asked every `Simulator` for codegen, which a bngsim
+  with lanl/bngsim#803 answers by recomputing its cache key. Per evaluation, at 58,276
+  reactions: 121 ms before on bngsim 0.15.0, 3.0 s on a bngsim with #803, and 14 ms now on
+  either. PyBNF no longer calls bngsim's deprecated `prepare_codegen` or passes `net_path`.
+  A sensitivity run now always asks bngsim to compile against the model as it stands, so
+  under `PYBNF_NO_CODEGEN` a condition that pins a derived parameter is no longer served the
+  base condition's chain rule (lanl/bngsim#708).
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

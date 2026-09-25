@@ -164,20 +164,37 @@ class _SensitivityRequest:
     ic: list       # species initial-value names -> sensitivity_ic
 
 
-def _try_prepare_codegen(net_path):
-    """Attempt to compile ODE RHS to a shared library for faster simulation.
+def _attach_codegen(engine_model):
+    """Build the model's compiled ODE right-hand side once, onto ``engine_model``.
 
-    Returns the path to the compiled ``.so`` or ``""`` if codegen is
-    unavailable or compilation fails.
+    Returns the artifact (a compiled library's path, or the C source under bngsim's
+    MIR JIT backend), or ``""`` when codegen is disabled or the build failed.
+
+    bngsim records the artifact on the model a ``Simulator`` was built for, and
+    ``Model.clone()`` carries it, so the ``Simulator`` of every per-evaluation clone
+    inherits it without being asked (ADR-0148). Building the ``Simulator`` here also
+    derives the engine model's analytical Jacobian once, which the clones inherit too.
+    What this replaced asked for codegen on every construction instead, and since
+    lanl/bngsim#803 each such request recomputes bngsim's structural cache key: about
+    90 ms per ``Simulator`` at 3,749 reactions and 1.4 s at 58,276. It also went
+    through ``bngsim.prepare_codegen`` and ``net_path``, both deprecated there.
+
+    Only a plain run inherits. A plain right-hand side reads parameter values at run
+    time, so one artifact serves every clone whatever it overrides. A sensitivity run
+    asks for codegen outright instead (:meth:`BngsimModel._codegen_kwargs`), so bngsim
+    rebuilds against the model as it stands: a condition that overrides a derived
+    parameter must not inherit a sensitivity right-hand side compiled for the base
+    condition (lanl/bngsim#708).
     """
     if os.environ.get('PYBNF_NO_CODEGEN') or os.environ.get('BNGSIM_NO_CODEGEN'):
         return ""
     try:
-        from bngsim import prepare_codegen
-        return str(prepare_codegen(net_path))
+        _runtime.bngsim.Simulator(engine_model, method='ode', codegen=True)
     except Exception as exc:
         logger.warning("Codegen compilation failed (%s); falling back to interpreted ODE RHS (slower)", exc)
         return ""
+    return str(getattr(engine_model, '_codegen_so_path', '')
+               or getattr(engine_model, '_codegen_c_source', '') or '')
 
 
 class BngsimModel(NetModel):
@@ -249,7 +266,7 @@ class BngsimModel(NetModel):
         if nf is not None:
             self._net_path = nf
             self._engine_model = _runtime.bngsim.Model.from_net(nf)
-            self._codegen_so = _try_prepare_codegen(nf)
+            self._codegen_so = _attach_codegen(self._engine_model)
         elif ls is not None:
             raise ValueError('BngsimModel requires nf so the .net path is stable')
         else:
@@ -257,8 +274,7 @@ class BngsimModel(NetModel):
 
     def copy_with_param_set(self, pset):
         """Return a shallow copy with a cloned engine model and new PSet."""
-        newmodel = copy.copy(self)
-        newmodel._engine_model = self._engine_model.clone()
+        newmodel = copy.copy(self)  # clones the engine model (__copy__)
         newmodel._protocol = self._protocol
         newmodel.param_set = pset
         return newmodel
@@ -1284,11 +1300,40 @@ class BngsimModel(NetModel):
 
         return result
 
-    def _codegen_kwargs(self, method='ode'):
-        """Return codegen keyword args for ODE Simulator construction."""
-        if method == 'ode' and getattr(self, '_codegen_so', ''):
-            return {'codegen': True, 'net_path': self._net_path}
-        return {}
+    def _codegen_kwargs(self, method='ode', sensitivities=None):
+        """Return codegen keyword args for ODE Simulator construction.
+
+        ``sensitivities`` says whether this construction carries forward
+        sensitivities; ``None`` reads it off the model's request, which is right for
+        every construction except one that drops the request (an unscored scan).
+
+        A plain run with the artifact attached to the engine model
+        (:func:`_attach_codegen`): none. The clone carries the artifact and the
+        Simulator inherits it, without recomputing bngsim's codegen cache key.
+
+        A plain run without one -- codegen disabled, or its build failed:
+        ``codegen=False``. bngsim then neither retries a failed build on every
+        construction (lanl/bngsim#826) nor, since lanl/bngsim#803, compiles a model of
+        256 or more species on its own under ``PYBNF_NO_CODEGEN``.
+
+        A sensitivity run: ``codegen=True``, whatever was built, so bngsim builds
+        against the model as it stands rather than inheriting whatever the model
+        carries. In an evaluation with conditions that is the base condition's own
+        sensitivity artifact, which the conditions' models are cloned from, and
+        :meth:`analytic_sens_rhs_status` leaves one on the base engine model too. A
+        condition that overrides a derived parameter would otherwise run on a chain
+        rule compiled for the base condition (lanl/bngsim#708). ``PYBNF_NO_CODEGEN``
+        does not change this: a sensitivity right-hand side is compiled or there is
+        none. Under ``BNGSIM_NO_CODEGEN``, nothing, and bngsim refuses the run with
+        its own explanation.
+        """
+        if method != 'ode':
+            return {}
+        if sensitivities is None:
+            sensitivities = bool(self._sensitivity_request_kwargs(method))
+        if sensitivities:
+            return {} if os.environ.get('BNGSIM_NO_CODEGEN') else {'codegen': True}
+        return {} if getattr(self, '_codegen_so', '') else {'codegen': False}
 
     def _make_scan_simulator(self, model, method, poplevel):
         """Construct a fresh simulator for one parameter-scan point."""
@@ -1650,7 +1695,7 @@ class BngsimModel(NetModel):
             sim = _runtime.bngsim.Simulator(model, method='psa', poplevel=s.poplevel)
         else:
             sim = _runtime.bngsim.Simulator(
-                model, method=method, **self._codegen_kwargs(method),
+                model, method=method, **self._codegen_kwargs(method, sensitivities=bears),
                 **(self._sensitivity_request_kwargs(method) if bears else {}))
 
         overrides = s.concentration_overrides or {}
@@ -2420,8 +2465,7 @@ class BngsimModel(NetModel):
 
     def _get_mutant_model_bngsim(self, mut):
         """Create a mutant copy using a cloned engine model."""
-        mut_model = copy.copy(self)
-        mut_model._engine_model = self._engine_model.clone()
+        mut_model = copy.copy(self)  # clones the engine model (__copy__)
         mut_model.param_set = _build_mutant_param_set(self.param_set, mut, self._engine_model)
         # A mutant's action output is scored under ``<action suffix><mut.suffix>``
         # in the parent's dataset, so fold its suffix onto each action's own suffix
@@ -2429,6 +2473,23 @@ class BngsimModel(NetModel):
         # shares the base model's _scored_suffixes / _sensitivity_request).
         mut_model._sensitivity_offset = mut.suffix
         return mut_model
+
+    def __copy__(self):
+        """A shallow copy with its own clone of the engine model.
+
+        Without it, ``copy.copy`` goes through ``__getstate__``/``__setstate__``, the
+        pickling hooks for Dask, so every per-evaluation copy re-loaded the ``.net``
+        file and rebuilt codegen, for an engine model its caller then replaced with a
+        clone anyway. The clone carries the codegen artifact and the derived Jacobian.
+        It is taken here rather than left to the callers, so no copy can share an
+        engine model, and so a ``set_param`` on one, with the model it came from.
+        """
+        new = object.__new__(type(self))
+        new.__dict__.update(self.__dict__)
+        engine = self.__dict__.get('_engine_model')
+        if engine is not None:
+            new._engine_model = engine.clone()
+        return new
 
     def __getstate__(self):
         """Support pickling for Dask workers by dropping the C++ model object."""
@@ -2442,7 +2503,7 @@ class BngsimModel(NetModel):
         self.__dict__.update(state)
         if hasattr(self, '_net_path') and self._net_path:
             self._engine_model = _runtime.bngsim.Model.from_net(self._net_path)
-            self._codegen_so = _try_prepare_codegen(self._net_path)
+            self._codegen_so = _attach_codegen(self._engine_model)
         else:
             raise RuntimeError("Cannot unpickle BngsimModel: no _net_path")
 
