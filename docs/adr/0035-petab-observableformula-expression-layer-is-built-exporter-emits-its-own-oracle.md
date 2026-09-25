@@ -187,3 +187,45 @@ dependency weight off the critical path until it is actually exercised.
   model adapter + entity namespaces), ADR-0032 (importer read path + the round-trip
   discipline), ADR-0033 (the boundary this supersedes; placeholder deferral stands), and
   ADR-0034 (bind-by-id; the verbatim-carry this chunk edits on the expression path).
+
+## Addendum (2026-09-25): the inlined body is read with BioNetGen's grammar, and the tripwire checks it against BioNetGen (#908)
+
+The export direction parsed a BNGL function body with PEtab's grammar (`sympify_petab`, after
+renaming `g()` to `g`). BNGL is not PEtab math, and two differences changed the number with no
+error: BNGL attaches a unary sign to the operand it precedes, so `-k^2` is `(-k)^2`, where
+PEtab reads `-(k^2)`; and BNGL folds `^` left to right, so `a^b^c` is `(a^b)^c`, where PEtab
+reads `a^(b^c)`. The tripwire could not see either, because it compared PEtab's parse of the
+body with PEtab's parse of the output, and a body misread in the first place passes that.
+Other differences failed loudly but wrongly: a comparison used as a number, `if()`, `asin`,
+`_pi()`, `sum`/`avg`, a three-argument `min`, `obsA()`, and the literals `.5` and `5.`.
+
+**Decision.** `pybnf/petab/_bngl_math.py` parses the body with BioNetGen's grammar
+(`Perl2/Expression.pm`: one unary sign per operand, a sign folded into a numeric literal,
+binary operators folded left to right in the order `^`, `* /`, `+ -`, comparisons,
+`&& ||`), prints the tree as PEtab math with explicit parentheses wherever the grammars could
+disagree, and turns BNGL's numeric comparisons and `if()` into `piecewise`. The tripwire for
+this direction is now `formula._assert_matches_bngl`: it evaluates the tree with BioNetGen's
+semantics in floating point and the emitted formula as the measurement layer would (numpy),
+at fixed pseudo-random points, and refuses on any disagreement or when no point can be
+checked. `_assert_round_trips` stays for the PEtab-to-PEtab rewrites, whose input is PEtab.
+
+The reading that decides a fitted value is the simulators', not BNG2.pl's parser: BNG2.pl
+writes the body into the `.net`/XML file and `run_network`, NFsim and bngsim evaluate that
+text. They agree with the parser everywhere but one place, a negative literal as the base of
+`^`: `-2^x` and `(-2)^x` both reach the network file as `-2^x` and are evaluated as `-(2^x)`,
+while the parser means `(-2)^x`. That construct is refused (`NotImplementedError`), as are
+constructs with no exact PEtab reading PyBNF can import back (`rint`, `time()`, `mratio`,
+`TFUN`/`tfun`, a function or observable called with arguments). `**`, `~=`, `!` and `~` are
+accepted by BNG2.pl but no simulator compiles them, so a body using one is refused as
+malformed (`PybnfError`). The oracle is a table of BNG2.pl's own function values in
+`tests/test_petab_formula.py`, re-derived from a live BNG2.pl when one is on `PATH`.
+
+**Relation to #681.** `_bngl_math.py` does not import `_bngl_expr.py`, the parameters-block
+evaluator #681 plans to delete once libpetab carries its port, so that deletion needs no change
+here. The two read the same grammar for different consumers: a parameter is evaluated by
+BNG2.pl's Perl (where `**` works and `-2^2` is 4), a function by a simulator reading the network
+file. The randomized differential test that checks this translator against that evaluator
+lives in `tests/test_petab_bngl_expr.py` and is deleted with it; the BNG2.pl table remains.
+
+This supersedes, for the export direction only, the implementation notes above that say both
+directions parse via `sympify_petab` and that `f()` references are bridged by a bounded rename.

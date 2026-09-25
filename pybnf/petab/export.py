@@ -1195,7 +1195,8 @@ def _inlined_formula(col, kind, model, model_file):
             f"declaration or a function with arguments); only a zero-arg global function "
             f"'{col}() = <body>' can be inlined as an observableFormula (ADR-0035). Export "
             f"without inline_functions to reference it by bare name.")
-    return bngl_body_to_petab_math(body, model)
+    # The body is BNGL, read with BioNetGen's grammar, not PEtab's (#908).
+    return bngl_body_to_petab_math(body, model, function_name=col, model_file=model_file)
 
 
 def _noise_source_for_column(verb, arg, col, datas):

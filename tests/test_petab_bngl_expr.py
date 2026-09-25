@@ -333,3 +333,95 @@ end model
     values, errors = evaluate_parameters_partial(parse_model(text).parameters)
     assert values == {'a': 2.0, 'b': 6.0}
     assert errors == {}
+
+
+# -- the function-body translator agrees with this evaluator (#908) ------------
+#
+# pybnf/petab/_bngl_math.py reads a BNGL *function* body with the same grammar to translate it
+# into a PEtab observableFormula. This evaluator is a second, independent reader of that
+# grammar (checked against BNG2.pl above), so random bodies are evaluated here and, after
+# translation, by petab's own parser, and the two must agree. It lives in this file because
+# it leans on the evaluator #681 will delete; it goes with it, and the BNG2.pl table in
+# tests/test_petab_formula.py remains the translator's oracle.
+#
+# The generator stays inside what a parameter and a function read alike: no negative literal
+# raised to a power (the simulators read a function's '-2^x' as -(2^x), BNG2.pl's Perl reads a
+# parameter's as (-2)^x, and the translator refuses it), and no '**', '~=' or rint, which only
+# a parameter can use.
+
+_FUZZ_FUNCTIONS = ('exp', 'abs', 'sqrt', 'ln', 'log10', 'sin', 'atan', 'tanh')
+
+
+def _random_body(rng, depth):
+    if depth <= 0 or rng.random() < 0.25:
+        if rng.random() < 0.3:
+            return rng.choice(['2', '0.5', '3', '1.5', '.25', '4.', '1e-1'])
+        return rng.choice(['a', 'b', 'c'])
+    r = rng.random()
+
+    def sub():
+        return _random_body(rng, depth - 1)
+
+    if r < 0.45:
+        return (f"{sub()}{rng.choice(['', ' '])}{rng.choice('+-*/^^^')}"
+                f"{rng.choice(['', ' '])}{sub()}")
+    if r < 0.55:
+        return f"{sub()} {rng.choice(['<', '>', '<=', '>=', '==', '!='])} {sub()}"
+    if r < 0.6:
+        return f"{sub()} {rng.choice(['&&', '||'])} {sub()}"
+    if r < 0.72:
+        return f'({sub()})'
+    if r < 0.82:     # a unary minus, on anything but a literal
+        return '-' + rng.choice([f'({sub()})', rng.choice('abc'),
+                                 f'{rng.choice(_FUZZ_FUNCTIONS)}({sub()})'])
+    if r < 0.92:
+        return f'{rng.choice(_FUZZ_FUNCTIONS)}({sub()})'
+    name = rng.choice(['min', 'max', 'if'])
+    count = 3 if name == 'if' else rng.choice([2, 3])
+    return f"{name}({', '.join(sub() for _ in range(count))})"
+
+
+def test_function_body_translation_agrees_with_this_evaluator():
+    pytest.importorskip('petab')
+    import random
+
+    import numpy as np
+    import sympy as sp
+    from petab.v2.math import sympify_petab
+
+    from pybnf.petab.formula import bngl_body_to_petab_math
+    from pybnf.printing import PybnfError
+
+    def log(x, base=None):   # petab's log10(x) is sympy's log(x, 10); see _assert_matches_bngl
+        return np.log(x) if base is None else np.log(x) / np.log(base)
+
+    entities = parse_model('begin parameters\n a 1\n b 2\n c 3\nend parameters\n')
+    rng = random.Random(908)
+    compared, disagreements = 0, []
+    for _ in range(300):
+        body = _random_body(rng, 3)
+        point = {s: rng.choice((1, -1)) * 10 ** rng.uniform(-1, 1) for s in 'abc'}
+        try:
+            want = evaluate_expression(body, point)
+        except (BnglExpressionError, OverflowError):
+            want = None
+        try:
+            formula = bngl_body_to_petab_math(body, entities)
+        except PybnfError as e:
+            # Only a body with no checkable value may be refused: undefined wherever sampled,
+            # or complex-valued by petab's own reading (ln of a negative constant).
+            assert 'Could not check' in str(e) or 'not real-valued' in str(e), (body, str(e))
+            continue
+        if want is None or not math.isfinite(want):
+            continue
+        expr = sympify_petab(formula, evaluate=False)
+        names = sorted(str(s) for s in expr.free_symbols)
+        by_name = {str(s): s for s in expr.free_symbols}
+        func = sp.lambdify([by_name[n] for n in names], expr, modules=[{'log': log}, 'numpy'])
+        with np.errstate(all='ignore'):
+            got = float(func(*[np.float64(point[n]) for n in names]))
+        compared += 1
+        if not (math.isfinite(got) and abs(got - want) <= 1e-9 * max(1.0, abs(want))):
+            disagreements.append((body, formula, point, want, got))
+    assert not disagreements, disagreements[:5]
+    assert compared >= 200, compared
