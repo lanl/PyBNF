@@ -259,6 +259,48 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **PEtab export refuses `noise_location = mean` on an `lnnormal` fit (#898).** It used to
+  write the mean-centred fit as PEtab's median log-normal, byte-identical to the median job.
+  A `mean` on a linear Gaussian or Laplace, where the mean is the median, now exports by either
+  spelling.
+- **PEtab export refuses a job with a `postprocess` script (#899).** It used to write a problem
+  that scores the untransformed simulations.
+- **PEtab export refuses a BNGL model whose hand-written actions change what the fit's
+  experiments start from, such as `setParameter` or `saveConcentrations` (#900).** It used to
+  drop them silently; leftover `simulate` and `write*` lines are still dropped.
+- **PEtab export writes the job's `generate_network` cap into the exported BNGL model (#901).**
+  A model capped from the conf used to export uncapped, so PEtab consumers built a different or
+  unbounded network.
+- **PEtab import keeps every replicate of a dose-response experiment (#903).** Repeated
+  measurements at one dose now import as `<name>.exp`, `<name>_rep2.exp`, ..., as time-course
+  replicates already did. Before, only the last replicate reached the fit. Every data file now
+  gets a name no other experiment's file has, so an experiment named `s_rep2` is no longer
+  fitted to the replicate of an experiment `s`.
+- **PEtab import reads a dose experiment from all its periods, not its last row (#904).** A
+  dose after a pre-equilibration (the shape `petab1to2` writes) imports as a pre-equilibrated
+  scan, and an experiment applying two conditions at once is refused, naming both. Before, the
+  pre-equilibration or the other condition was dropped.
+- **PEtab import keeps a `cond_wildtype` condition that sets real targets (#905).** It imports
+  as condition `cond_wildtype`; only the exporter's base, made of surrogate pins, is dropped.
+  The exporter now refuses a condition named `wildtype`. Before, such a condition was dropped
+  and its experiment fitted against the unperturbed model.
+- **Each experiment declared on a BNGL model starts from the model as written, so the order of
+  the `experiment:` lines no longer changes a fit (#830, #831, #869, #875; ADR-0151).** A
+  pre-equilibration's condition, a pre-equilibrated scan's saved state, or the last dose of a
+  BNG2.pl scan stayed in force for every experiment after it; on bngsim a condition run
+  started under the base run's parameters, and network-free experiments shared one live
+  session. Parameters and seed species are now restored before every experiment.
+- **A PEtab import now applies the value of a parameter the table fixes (#907).** A
+  `parameters.tsv` row with `estimate = false` fixes a model parameter at its `nominalValue`,
+  but `import_job` ignored the row and the job simulated the model file's value. The value is
+  now written into PyBNF's copy of the model, marked with a comment, listed in the conf header
+  and printed. A fixed row PEtab forbids, or one PyBNF cannot apply exactly, is refused.
+- **PEtab export with `inline_functions=True` now writes a BNGL function body with the value
+  BioNetGen gives it (#908).** The body was read as PEtab math, so `-k^2` (BNGL: `(-k)^2`) and
+  `a^b^c` (BNGL: `(a^b)^c`) were exported as formulas with different values and no error. The
+  body is now read with BioNetGen's grammar and checked against it numerically; a construct
+  with no exact PEtab reading, or whose value depends on the simulator, such as `rint`,
+  `time()`, `(-2)^x` or an `if()` whose condition is not a comparison, is refused.
 - **PEtab export now simulates a dose-response at the estimate of a parameter that is fit and
   perturbed by a condition elsewhere in the job (#892).** Each dose condition set only the
   swept parameter, so PEtab ran every dose at the parameter's model-file value. Each dose
