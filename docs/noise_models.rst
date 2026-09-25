@@ -74,9 +74,10 @@ The sources, in the vocabulary of the :ref:`noise_model <noise_model_key>` key:
 - **relative** (``relative [<cv>]``) — a constant coefficient of variation,
   :math:`\sigma = \mathrm{cv}\cdot|\mathrm{value}|`; the heteroscedastic model
   the legacy ``norm_sos`` fits.
-- **column mean** (``column_mean``) — one scale per column, the mean of the
-  observable's measured experimental values (``nan`` entries are missing data and
-  do not enter it); the model the legacy ``ave_norm_sos`` fits.
+- **column mean** (``column_mean``) — one scale per column in each experiment, the
+  mean of the observable's measured values in that experiment, with its replicate
+  files pooled (``nan`` entries are missing data and do not enter it); the model the
+  legacy ``ave_norm_sos`` fits.
 - **formula** (``formula <expr>``) — an expression over free parameters (and,
   row by row, PEtab noise placeholders); the PEtab ``noiseFormula`` source.
 - **prediction formula** (``prediction_formula <expr>``) — an expression whose

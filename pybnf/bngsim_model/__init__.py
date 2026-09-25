@@ -114,7 +114,7 @@ from .classification import (
 # result conversion to BngsimModel) keep resolving pybnf.bngsim_model.<name>.
 from .net_model import (
     BngsimModel as BngsimModel,
-    _try_prepare_codegen as _try_prepare_codegen,
+    _attach_codegen as _attach_codegen,
 )
 # The network-free model class lives in nf_model.py. Re-exported so
 # pybnf.algorithms.base and the tests keep resolving pybnf.bngsim_model.<name>.
