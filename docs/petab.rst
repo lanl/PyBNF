@@ -137,6 +137,16 @@ following all survive an import and an export:
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
   **pre-equilibration** phase round-trips as such.
+- **Equilibrating the model as is** — a ``time = -inf`` period with a blank
+  ``conditionId`` (PEtab v2's "the model as is") imports as ``preequilibrate:`` a
+  synthesized ``condition: unperturbed, perturbations: none`` (``unperturbed_2``, … when
+  the name is taken, and one per model in a multi-model job), and a condition whose rows
+  only re-pin fit parameters at their own values (``p = p__REF``) imports as a ``none``
+  condition under its own name. The export is the inverse: a ``perturbations: none``
+  pre-equilibration writes a blank ``-inf`` ``conditionId``, or the synthesized base
+  condition ``cond_wildtype`` when fit-and-perturbed parameters must be re-pinned there,
+  and a ``none`` measured ``condition:`` exports exactly as an omitted one. A blank
+  ``conditionId`` on a measured period stays "no condition" (ADR-0150).
 
 Tutorial lessons
 ----------------

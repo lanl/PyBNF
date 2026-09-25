@@ -587,11 +587,20 @@ def _read_experiments(conf, conf_path, models):
       be exported (the fitter still runs it -- ADR-0028 addendum).
     """
     stem_to_model = {Path(mf).stem: mf for mf in models}
+    # A `perturbations: none` condition (#906, ADR-0150) changes nothing, so as the measured
+    # `condition:` it is exactly an omitted one and exports as such (read here as None). As
+    # `preequilibrate:` it keeps its name -- that is what makes the experiment two-period -- and
+    # the builders write its -inf period as the model as is.
+    unperturbed = {k[1] for k, v in conf.items()
+                   if isinstance(k, tuple) and len(k) == 2 and k[0] == 'condition' and not v[1]}
     experiments = []
     for key, fields in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
             continue
         name = key[1]
+        condition = fields.get('condition')
+        if condition in unperturbed:
+            condition = None
         model_file = _resolve_experiment_model(name, fields.get('model'), models,
                                                stem_to_model)
         data_files = fields.get('data', [])
@@ -625,17 +634,17 @@ def _read_experiments(conf, conf_path, models):
             # condition on it has no export route. A PRE-EQUILIBRATED dose-response (ADR-0062),
             # by contrast, names its measurement (wash) condition, applied alongside the per-dose
             # condition in the measurement period -- that route exists, so allow it there.
-            if fields.get('condition') is not None and preequilibrate is None:
+            if condition is not None and preequilibrate is None:
                 raise NotImplementedError(
                     f"Experiment '{name}' is a parameter_scan that also names a condition "
-                    f"('{fields['condition']}'). A dose-response already makes each dose its "
+                    f"('{condition}'). A dose-response already makes each dose its "
                     f"own condition (ADR-0046); combining it with a named condition has no "
                     f"export route yet.")
         measurement_params = None
         mp_file = fields.get('measurement_params')
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
-        experiments.append({'name': name, 'condition': fields.get('condition'),
+        experiments.append({'name': name, 'condition': condition,
                             'model': model_file, 'datas': datas, 'type': exp_type,
                             'scan_time': scan_time, 'preequilibrate': preequilibrate,
                             'measurement_params': measurement_params})

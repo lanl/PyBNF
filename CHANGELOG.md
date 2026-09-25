@@ -7,6 +7,10 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 
+- **A condition can declare that it changes nothing: `condition: basal, perturbations: none`
+  (#906, ADR-0150).** Named in `preequilibrate:`, it equilibrates the model as it stands before
+  the measured `condition:` applies; as a measured `condition:` it is the same as omitting one.
+  `none` must be the whole list. PEtab export writes it as a blank `-inf` `conditionId`.
 - **`tools/changelog_merge.py` resolves a `CHANGELOG.md` merge conflict by appending rather than
   by merging lines (#800).** It takes the incoming version of the file whole and re-inserts the
   entries the branch added, so nothing on either side can be lost and an entry cannot come out
@@ -259,6 +263,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **A PEtab v2 problem that equilibrates the model as is before measuring now imports with
+  that pre-equilibration (#906).** A `time = -inf` period with a blank `conditionId` imported
+  as no pre-equilibration, so the experiment started from the seed species and the fit ran
+  against the wrong trajectory without a warning. It now imports as `preequilibrate:` a
+  synthesized `perturbations: none` condition.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

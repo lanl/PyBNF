@@ -88,8 +88,11 @@ from ..priors import PRIOR_KEYWORD_MAP
 from .conditions import (
     REF_MARKER,
     condition_name_from_id,
+    condition_names_and_ids,
     conditions_from_rows,
+    free_condition_name,
     is_species_target,
+    name_unperturbed_equilibrations,
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
@@ -307,6 +310,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
         row_varying_obs_params, derived)
 
+    # A time=-inf period that applies no condition equilibrates the model as is, which is a
+    # pre-equilibration, not the absence of one (#906, ADR-0150): point each such period at one
+    # synthesized condition, declared below as `perturbations: none`, before any reader sees it.
+    experiment_rows, unperturbed = name_unperturbed_equilibrations(condition_rows, experiment_rows)
+
     # Pre-equilibrated dose-response reconstruction (ADR-0062): pull out the two-period scan groups
     # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
     # dose-response and time-course reconstructions below never see them. Only the per-dose
@@ -394,6 +402,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Pre-equilibrated scans become preequilibrate:+condition: parameter_scan experiments (ADR-0062).
     experiments += _preequilibrated_dose_response_experiments(
         preequil_scans, out_dir, model_location_of)
+    # The `perturbations: none` conditions the experiments apply (#906, ADR-0150).
+    experiments = _declare_unperturbed_conditions(
+        conditions, experiments, tc_condition_rows, experiment_rows, unperturbed)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -1226,6 +1237,48 @@ def _write_exp(path, data):
 # The .conf writer (the disposable output half)
 # ---------------------------------------------------------------------------
 
+def _declare_unperturbed_conditions(conditions, experiments, condition_rows, experiment_rows,
+                                    synthesized):
+    """Add to ``conditions`` (as empty perturbation lists, written ``perturbations: none``) the
+    conditions the imported ``experiments`` apply that change nothing (#906, ADR-0150), and
+    return the experiments.
+
+    Two kinds:
+
+    * ``synthesized`` -- the name :func:`~pybnf.petab.conditions.name_unperturbed_equilibrations`
+      gave every ``time = -inf`` period that applied no condition. A PyBNF condition belongs to
+      one model, so when experiments on more than one model apply it, each model after the first
+      gets its own copy under the next free name, and its experiments are renamed to match.
+    * a named PEtab condition whose every row is a base pin ``p = p__REF``, the identity once
+      ``p__REF`` is renamed back to ``p``, so :func:`conditions_from_rows` recovered nothing from
+      it. It is the model as is wherever it is applied: as ``preequilibrate:`` an equilibration
+      with nothing changed, as ``condition:`` the same as none.
+
+    A name that no row of ``condition_rows`` defines is left undeclared: the experiments table
+    then applies a condition the problem never defines, and loading the conf says so.
+    """
+    defined = {condition_name_from_id(r.condition_id) for r in condition_rows} - {None}
+    for exp in experiments:
+        for name in (exp.condition, exp.preequilibrate):
+            if name and name != synthesized and name not in conditions and name in defined:
+                conditions[name] = []
+    if synthesized is None:
+        return experiments
+    models = []
+    for exp in experiments:
+        if exp.preequilibrate == synthesized and exp.model_location not in models:
+            models.append(exp.model_location)
+    taken = condition_names_and_ids(condition_rows, experiment_rows) | set(conditions)
+    name_of_model = {}
+    for location in models:
+        name = synthesized if not name_of_model else free_condition_name(taken)
+        taken.add(name)
+        name_of_model[location] = name
+        conditions[name] = []
+    return [exp._replace(preequilibrate=name_of_model[exp.model_location])
+            if exp.preequilibrate == synthesized else exp for exp in experiments]
+
+
 def _write_conf(path, *, model_filenames, job_type, objective_directives, free_param_lines,
                 conditions, experiments, measurement_models, method, method_overrides,
                 settings, multi):
@@ -1276,7 +1329,8 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
             if cname:
                 cond_models.setdefault(cname, set()).add(exp.model_location)
     for name, perts in conditions.items():
-        pert_str = ', '.join(_render_perturbation(var, op, val) for var, op, val in perts)
+        # An empty list is a condition that changes nothing (#906, ADR-0150).
+        pert_str = ', '.join(_render_perturbation(var, op, val) for var, op, val in perts) or 'none'
         model_field = ''
         if multi_model:
             locs = {loc for loc in cond_models.get(name, set()) if loc}

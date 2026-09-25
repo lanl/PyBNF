@@ -1788,15 +1788,20 @@ class Configuration:
         # if one is also used as a regular conditioned experiment's measurement condition, that
         # is ambiguous -- raise.
         for base, conds in consumed_conditions.items():
-            clash = conds & regular_conditions.get(base, set())
+            model = self.models[base]
+            # A `perturbations: none` condition (#906, ADR-0150) is nothing inline and the model
+            # as it stands as a mutant, so it can serve both roles at once: its (empty) mutant is
+            # kept for the regular experiment(s) that apply it.
+            unperturbed = {m.suffix for m in model.mutants if not m.mutations}
+            both = conds & regular_conditions.get(base, set())
+            clash = both - unperturbed
             if clash:
                 raise PybnfError(
                     f"Condition(s) {sorted(clash)} are used both for pre-equilibration "
                     "(applied inline as setParameter) and as a regular experiment's "
                     "'condition:' (a separate mutant simulation) on the same model. A "
                     "condition cannot be both; use distinct conditions (ADR-0052).")
-            model = self.models[base]
-            model.mutants = [m for m in model.mutants if m.suffix not in conds]
+            model.mutants = [m for m in model.mutants if m.suffix not in conds - both]
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read
@@ -1832,6 +1837,50 @@ class Configuration:
             kind = 'species' if getattr(mut, 'is_species', False) else 'param'
             perts.append((kind, mut.name, mut.value))
         return perts
+
+    #: A BNGL action line that leaves a model parameter changed for every action written after
+    #: it: an inline ``setParameter``, or a ``parameter_scan`` / ``bifurcate`` over a parameter
+    #: (BNG2.pl leaves the scanned parameter at its last value, #831). Group 1 or 2 is the name.
+    _PARAMETER_CHANGING_ACTION = re.compile(
+        r'\s*(?:setParameter\s*\(\s*["\'](\w+)["\']'
+        r'|(?:parameter_scan|bifurcate)\s*\(.*?\bparameter\s*=>\s*["\'](\w+)["\'])')
+
+    def _refuse_unperturbed_equilibration_after_parameter_changes(self, exp_name, model, base,
+                                                                  condition_name):
+        """Refuse a ``perturbations: none`` pre-equilibration that an earlier action on the same
+        model would silently re-parameterize (#906, ADR-0150).
+
+        A ``none`` pre-equilibration equilibrates the model as it stands: free parameters at the
+        trial values, everything else at its model value. PyBNF writes every declared experiment
+        of a model into one action list and resets only the species between them, never the
+        parameters (#830, #831), so a parameter an earlier line changed -- another experiment's
+        inline condition, or a scanned parameter -- would still be changed when this experiment
+        equilibrates. A named condition that sets such a parameter explicitly is immune for that
+        parameter; a ``none`` condition sets nothing, so it is refused whenever any earlier line
+        changes a parameter. Only a BNGL action list (strings) carries experiments over; an SBML
+        model builds each experiment's simulation afresh, so its object actions are skipped."""
+        changed = []
+        for line in getattr(model, 'actions', []):
+            if not isinstance(line, str):
+                continue
+            match = self._PARAMETER_CHANGING_ACTION.match(line)
+            if match:
+                pname = match.group(1) or match.group(2)
+                if pname not in changed:
+                    changed.append(pname)
+        if not changed:
+            return
+        example = ', '.join(f'{p} = <its value in the model>' for p in changed)
+        raise PybnfError(
+            f"Experiment '{exp_name}' pre-equilibrates under condition '{condition_name}' "
+            f"(perturbations: none), which equilibrates model '{base}' as it stands. But an "
+            f"action written before it on the same model changes parameter(s) "
+            f"{', '.join(changed)}, and PyBNF does not yet restore parameters between the "
+            f"experiments it writes into one action list (#830, #831), so '{exp_name}' would "
+            f"equilibrate with them still changed.",
+            hint=f"Give the condition the model's values for those parameters explicitly -- "
+                 f"'condition: {condition_name}, perturbations: {example}' -- which sets them "
+                 f"before the equilibration whatever ran first.")
 
     @staticmethod
     def _steady_state_action(name, method, fields):
@@ -1898,6 +1947,11 @@ class Configuration:
                 "steady_state or a parameter_scan.")
         preequil_cond = fields['preequilibrate']
         equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
+        if not equil_perts:
+            # A `perturbations: none` condition (#906, ADR-0150): equilibrate the model as it
+            # stands. Only a condition declared `none` has no perturbations.
+            self._refuse_unperturbed_equilibration_after_parameter_changes(
+                name, model, base, preequil_cond)
         consumed_conditions.setdefault(base, set()).add(preequil_cond)
         meas_cond = fields.get('condition')
         if meas_cond is not None:

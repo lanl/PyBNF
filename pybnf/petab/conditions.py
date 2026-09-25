@@ -33,6 +33,7 @@ measured at the scan time (``inf`` => steady state, ADR-0046) -- both live expor
 """
 
 import csv
+import math
 import re
 from dataclasses import dataclass
 
@@ -243,6 +244,14 @@ def _condition_rows_for(cid, perturbations, surrogate, nominal_of, species_id_of
             continue
         rows.append(PetabConditionRow(
             cid, var, mutation_target_value(op, val, nominal=nominal_of(var), target=var)))
+    if not rows:
+        # PEtab v2 has no zero-row condition: a conditionId an experiment names must have at
+        # least one row. Only a `perturbations: none` condition (#906, ADR-0150) has nothing to
+        # write, and the builders export it as the model as is (a blank conditionId) instead.
+        raise PybnfError(
+            f"Condition '{cid}' would be exported with no rows, which PEtab cannot express. A "
+            f"'perturbations: none' condition is exported as the model as is, never as a "
+            f"conditionId; this is a PyBNF exporter defect, please report it.")
     return rows
 
 
@@ -369,10 +378,16 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     ``species_id_of`` (``{pattern: petab_id}``, ADR-0062) maps a species ``setConcentration``
     wash target to its mapping-table id, threaded through :func:`_condition_rows_for` so a
     pre-equilibration or measurement (wash) condition can perturb a species amount.
+
+    A ``perturbations: none`` pre-equilibration condition (an empty perturbation list, #906,
+    ADR-0150) equilibrates the model as it stands, so it has no rows of its own: its ``-inf``
+    period takes the wash-out's treatment -- a blank ``conditionId`` when ``M`` is empty (PEtab
+    v2's "the model as is"), else :data:`WILDTYPE_CONDITION_ID`, which re-pins ``M`` at base.
     """
     referenced = set()
     for _name, pre, meas in experiments:
-        referenced.add(pre)
+        if conditions[pre]:
+            referenced.add(pre)
         if meas is not None:
             referenced.add(meas)
 
@@ -393,7 +408,8 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     # A wash-out (no measurement condition) with a non-empty M re-pins M at base on its time=0
     # measurement period via the synthesized base condition cond_wildtype (the same base
     # build_experiment_conditions pins for wildtype time courses) -- emitted once, shared (#443).
-    has_washout = any(meas is None for _name, _pre, meas in experiments)
+    # A `none` pre-equilibration re-pins M on its -inf period the same way (#906).
+    has_washout = any(meas is None or not conditions[pre] for _name, pre, meas in experiments)
     if surrogate and has_washout:
         if WILDTYPE_CONDITION_ID in {f'cond_{c}' for c in referenced}:
             raise PybnfError(
@@ -410,8 +426,15 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     experiment_to_id = {}
     for name, pre, meas in experiments:
         experiment_to_id[name] = name
-        # Period 0: the -inf pre-equilibration period (steady state, unmeasured).
-        experiment_rows.append(PetabExperimentRow(name, float('-inf'), f'cond_{pre}'))
+        # Period 0: the -inf pre-equilibration period (steady state, unmeasured). A `none`
+        # condition is the model as is: blank, or the M re-pin cond_wildtype (#906).
+        if conditions[pre]:
+            pre_cid = f'cond_{pre}'
+        elif surrogate:
+            pre_cid = WILDTYPE_CONDITION_ID
+        else:
+            pre_cid = ''
+        experiment_rows.append(PetabExperimentRow(name, float('-inf'), pre_cid))
         # Period 1: the time=0 measurement period. A measurement condition -> its cond id; a
         # wash-out -> the synthesized base cond_wildtype when M is non-empty (re-pin M at base),
         # else an empty conditionId (M empty -> the model default).
@@ -483,10 +506,12 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
     experiment_rows = []
     experiment_ids_by_name = {}
 
-    # The shared pre-equilibration + wash conditions, each emitted once across the whole job.
+    # The shared pre-equilibration + wash conditions, each emitted once across the whole job. A
+    # `perturbations: none` pre-equilibration (#906, ADR-0150) has no rows: its -inf period is
+    # blank, PEtab v2's "the model as is" (M is empty for this shape, so nothing to re-pin).
     for _name, pre, wash, _sp, _dv, _st in experiments:
         for c in (pre, wash):
-            if c is None:
+            if c is None or not conditions[c]:
                 continue
             cid = f'cond_{c}'
             if cid in emitted:
@@ -502,10 +527,11 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
             dose_cid = f'cond_{eid}'
             condition_rows.append(PetabConditionRow(dose_cid, swept_param, num(dose)))
             # Period 0: the -inf steady-state pre-equilibration period (unmeasured).
-            experiment_rows.append(PetabExperimentRow(eid, float('-inf'), f'cond_{pre}'))
+            experiment_rows.append(PetabExperimentRow(
+                eid, float('-inf'), f'cond_{pre}' if conditions[pre] else ''))
             # Period 1: the measurement period -- the shared wash condition (if any) plus the
             # per-dose swept-parameter condition, applied simultaneously (disjoint targets).
-            if wash is not None:
+            if wash is not None and conditions[wash]:
                 experiment_rows.append(PetabExperimentRow(eid, 0.0, f'cond_{wash}'))
             experiment_rows.append(PetabExperimentRow(eid, 0.0, dose_cid))
             eids.append(eid)
@@ -530,6 +556,60 @@ def condition_name_from_id(condition_id):
     if condition_id.startswith(CONDITION_ID_PREFIX):
         return condition_id[len(CONDITION_ID_PREFIX):]
     return condition_id
+
+
+#: The name the importer gives the ``perturbations: none`` condition it synthesizes for a
+#: ``time = -inf`` period that applies no condition (#906, ADR-0150); ``unperturbed_2``,
+#: ``unperturbed_3``, ... when the problem already uses it.
+UNPERTURBED_CONDITION_NAME = 'unperturbed'
+
+
+def free_condition_name(taken, base=UNPERTURBED_CONDITION_NAME):
+    """The first of ``base``, ``base_2``, ``base_3``, ... that is neither in ``taken`` (a set of
+    condition names and ids) nor, prefixed ``cond_``, an id in it."""
+    name, n = base, 1
+    while name in taken or f'{CONDITION_ID_PREFIX}{name}' in taken:
+        n += 1
+        name = f'{base}_{n}'
+    return name
+
+
+def condition_names_and_ids(condition_rows, experiment_rows):
+    """Every condition id either table uses, and the conf name each one imports as."""
+    ids = {r.condition_id for r in condition_rows} | {r.condition_id for r in experiment_rows}
+    return ids | ({condition_name_from_id(cid) for cid in ids} - {None})
+
+
+def name_unperturbed_equilibrations(condition_rows, experiment_rows):
+    """Point each ``time = -inf`` period that applies no condition at a synthesized ``none``
+    condition (#906, ADR-0150).
+
+    In PEtab v2 a blank ``conditionId`` means "the model as is". On the ``-inf`` period of a
+    pre-equilibration that is an equilibration with nothing changed -- a PyBNF
+    ``perturbations: none`` condition applied as ``preequilibrate:`` -- which is not the same
+    thing as no pre-equilibration at all, the meaning ``None`` has in the period readers. Before
+    #906 the two collapsed, and the experiment started from the seed species instead of the
+    steady state. So each such period is given the id ``cond_<name>`` for one ``name``
+    (:func:`free_condition_name`) that collides with no condition name or id in the problem;
+    every reader downstream then sees an ordinary named pre-equilibration, and the importer
+    declares ``name`` as a ``none`` condition. A period whose id :func:`condition_name_from_id`
+    maps to ``None`` counts as applying no condition; that includes the exporter's base
+    condition, whose rows only re-pin fit parameters at their own values. A blank id on a finite
+    period is left alone: there it is simply the absence of a ``condition:`` (a wash-out).
+
+    Returns ``(experiment_rows, name)``; ``name`` is ``None``, and the rows are unchanged, when no
+    period applies no condition.
+    """
+    def unconditioned_equilibration(row):
+        return math.isinf(row.time) and row.time < 0 and condition_name_from_id(
+            row.condition_id) is None
+
+    if not any(unconditioned_equilibration(r) for r in experiment_rows):
+        return experiment_rows, None
+    name = free_condition_name(condition_names_and_ids(condition_rows, experiment_rows))
+    cid = f'{CONDITION_ID_PREFIX}{name}'
+    return ([PetabExperimentRow(r.experiment_id, r.time, cid)
+             if unconditioned_equilibration(r) else r for r in experiment_rows], name)
 
 
 def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,

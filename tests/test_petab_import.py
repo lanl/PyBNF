@@ -22,6 +22,7 @@ itself: a PyBNF job exported to a PEtab v2 problem and imported back must reprod
    observableFormula becomes a measurement model evaluated post-simulation.)
 """
 
+import os
 import shutil
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from pybnf.petab.conditions import (
     PetabExperimentRow,
     build_experiment_conditions,
     conditions_from_rows,
+    name_unperturbed_equilibrations,
     read_condition_table,
     read_experiment_table,
 )
@@ -913,6 +915,295 @@ class TestPreequilibrationPeriodGrouping:
                    self._row(50.0, 'cond_late')]
         with pytest.raises(NotImplementedError, match='more than'):
             _condition_and_preequilibrate(periods, 'relax')
+
+    def test_a_blank_equilibration_period_gets_a_synthesized_condition(self):
+        # #906: a blank conditionId on the -inf period is "equilibrate the model as is" -- a
+        # pre-equilibration -- so it is pointed at a synthesized (`none`) condition before the
+        # period resolver can read it as "no pre-equilibration".
+        rows = [self._row(float('-inf'), ''), self._row(0.0, 'cond_meas')]
+        conds = [PetabConditionRow('cond_meas', 'flag', '2')]
+        renamed, name = name_unperturbed_equilibrations(conds, rows)
+        assert name == 'unperturbed'
+        assert [(r.time, r.condition_id) for r in renamed] == [
+            (float('-inf'), 'cond_unperturbed'), (0.0, 'cond_meas')]
+        assert _condition_and_preequilibrate(renamed, 'relax') == ('meas', 'unperturbed')
+
+    def test_a_blank_measured_period_is_left_alone(self):
+        rows = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, '')]
+        assert name_unperturbed_equilibrations([], rows) == (rows, None)
+
+    def test_the_synthesized_name_collides_with_nothing_in_the_problem(self):
+        # 'unperturbed' is a condition id and 'cond_unperturbed_2' a condition's id, so both of
+        # those names are taken: the next free one is used.
+        rows = [self._row(float('-inf'), ''), self._row(0.0, 'unperturbed'),
+                PetabExperimentRow('other', 0.0, 'cond_unperturbed_2')]
+        conds = [PetabConditionRow('unperturbed', 'flag', '2'),
+                 PetabConditionRow('cond_unperturbed_2', 'flag', '3')]
+        renamed, name = name_unperturbed_equilibrations(conds, rows)
+        assert name == 'unperturbed_3'
+        assert renamed[0].condition_id == 'cond_unperturbed_3'
+
+
+# ---------------------------------------------------------------------------
+# #906 / ADR-0150: a time=-inf period with no condition equilibrates the model as is, which
+# imports as `preequilibrate:` a synthesized `perturbations: none` condition -- not as no
+# pre-equilibration, which started the experiment from the seed species. The problem is the
+# issue's: A' = p - k*flag*A, seed A = 10, p = k = flag = 1; equilibrate unperturbed, then
+# measure with flag = 2, so A(t) = 0.5 + 0.5*exp(-2t) at k = 1.
+# ---------------------------------------------------------------------------
+
+_RELAX_BNGL = """\
+begin model
+begin parameters
+  p    1
+  k    1
+  flag 1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  0 -> A() p
+  A() -> 0 k*flag
+end reaction rules
+end model
+"""
+
+_RELAX_TIMES = [0.0, 0.5, 1.0, 2.0]
+
+
+def _relax_closed_form(k):
+    """A_tot after equilibrating at flag = 1 and switching to flag = 2 (p = 1)."""
+    return [1 / (2 * k) + (1 / k - 1 / (2 * k)) * np.exp(-2 * k * t) for t in _RELAX_TIMES]
+
+
+def _write_relax_problem(root, experiments, conditions='cond_meas\tflag\t2\n',
+                         parameters='k\ttrue\t0.1\t10\n', measured='relax'):
+    """The issue's PEtab v2 problem, with the experiments/conditions/parameters rows given."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / 'relax.bngl').write_text(_RELAX_BNGL)
+    (root / 'problem.yaml').write_text(
+        'format_version: 2.0.0\nparameter_files:\n  - parameters.tsv\nobservable_files:\n'
+        '  - observables.tsv\nmeasurement_files:\n  - measurements.tsv\ncondition_files:\n'
+        '  - conditions.tsv\nexperiment_files:\n  - experiments.tsv\nmodel_files:\n  relax:\n'
+        '    location: relax.bngl\n    language: bngl\n')
+    (root / 'experiments.tsv').write_text('experimentId\ttime\tconditionId\n' + experiments)
+    (root / 'conditions.tsv').write_text('conditionId\ttargetId\ttargetValue\n' + conditions)
+    (root / 'observables.tsv').write_text(
+        'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+        'obs_A_tot\tA_tot\t1\tnormal\n')
+    (root / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\n' + parameters)
+    (root / 'measurements.tsv').write_text(
+        'observableId\texperimentId\ttime\tmeasurement\n' + ''.join(
+            f'obs_A_tot\t{measured}\t{t}\t{v:.7f}\n'
+            for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0))))
+    return root / 'problem.yaml'
+
+
+def _load_imported(out, monkeypatch):
+    from pybnf import config as config_mod
+    monkeypatch.chdir(out)
+    return config_mod.Configuration(
+        ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+
+
+def _objective_at(conf_path, values, monkeypatch):
+    """Build ``conf_path``'s job (BNG2.pl network generation, its default bngsim backend), simulate
+    every model at the free-parameter ``values``, and return the objective there."""
+    from pybnf import algorithms, config as config_mod
+    from pybnf.pset import PSet
+    monkeypatch.chdir(conf_path.parent)
+    conf = config_mod.Configuration(ploop(conf_path.read_text().splitlines(keepends=True)))
+    os.makedirs(conf.config['output_dir'], exist_ok=True)
+    alg = algorithms.DifferentialEvolution(conf)
+    monkeypatch.chdir(conf_path.parent)
+    pset = PSet([v.set_value(values[v.name]) for v in alg.variables])
+    sims = {}
+    for model in alg.model_list:
+        folder = conf_path.parent / f'objective_{model.name}'
+        folder.mkdir(exist_ok=True)
+        sims[model.name] = model.copy_with_param_set(pset).execute(str(folder), 'x', 120)
+        monkeypatch.chdir(conf_path.parent)
+    return conf.obj.evaluate_multiple(sims, conf.exp_data, pset), sims
+
+
+class TestImportUnperturbedEquilibration:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        root = tmp_path_factory.mktemp('relax906')
+        yaml = _write_relax_problem(
+            root / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\n')
+        return import_job(yaml, root / 'imported')
+
+    def test_the_problem_is_valid_petab_with_an_empty_equilibration_period(self, imported):
+        # The oracle for the input: libpetab reads the -inf period as an empty condition list.
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        problem = Problem.from_yaml(str(imported.parent / 'problem' / 'problem.yaml'))
+        assert not lint_problem(problem)
+        assert [(p.time, list(p.condition_ids)) for p in problem.experiments[0].periods] == [
+            (float('-inf'), []), (0.0, ['cond_meas'])]
+
+    def test_blank_equilibration_imports_as_a_none_preequilibration(self, imported):
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'condition: unperturbed, perturbations: none' in lines
+        assert ('experiment: relax, preequilibrate: unperturbed, condition: meas, method: ode, '
+                'data: relax.exp') in lines
+
+    def test_imported_conf_equilibrates_before_measuring(self, imported, monkeypatch):
+        acts = _load_imported(imported, monkeypatch).models['relax'].actions
+        i_equil = next(i for i, a in enumerate(acts) if 'relax_preequil' in a)
+        assert 'steady_state=>1' in acts[i_equil]
+        assert not any(a.startswith('setParameter') for a in acts[:i_equil])
+        assert acts[i_equil + 1] == 'setParameter("flag",2)'
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_imported_conf_reproduces_the_closed_form(self, imported, monkeypatch):
+        # The issue's numbers: [1.0, 0.6839, 0.5677, 0.5092] at k = 1 and an objective of zero
+        # against the exact data; the pre-#906 import simulated [10, 3.99, 1.79, 0.67].
+        objective, sims = _objective_at(imported / 'imported.conf', {'k': 1.0}, monkeypatch)
+        data = sims['relax']['relax']
+        np.testing.assert_allclose(data.data[:, data.cols['A_tot']], _relax_closed_form(1.0),
+                                   atol=1e-6)
+        assert objective < 1e-10
+        _objective, sims = _objective_at(imported / 'imported.conf', {'k': 0.37}, monkeypatch)
+        data = sims['relax']['relax']
+        np.testing.assert_allclose(data.data[:, data.cols['A_tot']], _relax_closed_form(0.37),
+                                   rtol=1e-6)
+
+    def test_a_condition_of_only_base_pins_is_a_none_condition(self, tmp_path, monkeypatch):
+        # k is fit AND perturbed (k__REF), so every condition re-pins it; cond_basal does nothing
+        # else. Once k__REF is renamed back to k its rows are the identity: a `none` condition,
+        # on the equilibration period and on a measured one alike.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem',
+            'relax\t-inf\tcond_basal\nrelax\t0\tcond_meas\nplain\t0\tcond_basal\n',
+            conditions=('cond_basal\tk\tk__REF\ncond_meas\tflag\t2\ncond_meas\tk\tk__REF\n'),
+            parameters='k__REF\ttrue\t0.1\t10\n')
+        with open(tmp_path / 'problem' / 'measurements.tsv', 'a') as fh:
+            fh.write('obs_A_tot\tplain\t0\t10\nobs_A_tot\tplain\t1\t4.3\n'
+                     'obs_A_tot\tplain\t2\t2.2\n')
+        out = import_job(yaml, tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: basal, perturbations: none' in text
+        assert 'experiment: relax, preequilibrate: basal, condition: meas' in text
+        cfg = _load_imported(out, monkeypatch)
+        assert set(cfg.exp_data['relax']) == {'relax', 'plainbasal'}
+
+    def test_an_equilibration_condition_the_problem_never_defines_still_fails(
+            self, tmp_path, monkeypatch):
+        # Only a condition whose rows are all base pins becomes `none`; an id with no rows at all
+        # is a malformed problem, and the imported conf refuses to load rather than guess.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', 'relax\t-inf\tcond_ghost\nrelax\t0\tcond_meas\n')
+        out = import_job(yaml, tmp_path / 'imported')
+        assert 'preequilibrate: ghost' in (out / 'imported.conf').read_text()
+        with pytest.raises(PybnfError, match="condition 'ghost'"):
+            _load_imported(out, monkeypatch)
+
+    def test_blank_equilibration_of_a_pre_equilibrated_scan(self, tmp_path, monkeypatch):
+        # The exporter's per-dose shape (cond_<eid>) with a blank -inf period: one scan
+        # experiment, pre-equilibrated under the synthesized `none` condition.
+        root = tmp_path / 'problem'
+        _write_relax_problem(
+            root, ''.join(f'dose_{i}\t-inf\t\ndose_{i}\t0\tcond_dose_{i}\n' for i in range(3)),
+            conditions=''.join(f'cond_dose_{i}\tflag\t{f}\n' for i, f in enumerate((1, 2, 4))))
+        (root / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\n' + ''.join(
+                f'obs_A_tot\tdose_{i}\t1\t{v}\n' for i, v in enumerate((1.0, 0.568, 0.264))))
+        out = import_job(root / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: unperturbed, perturbations: none' in text
+        assert 'experiment: dose, preequilibrate: unperturbed, method: ode, t_end: 1' in text
+        acts = _load_imported(out, monkeypatch).models['relax'].actions
+        assert any('dose_preequil' in a and 'steady_state=>1' in a for a in acts)
+
+    def test_each_model_gets_its_own_none_condition(self, tmp_path, monkeypatch):
+        # A PyBNF condition belongs to one model, so blank equilibrations on two models import as
+        # two `none` conditions -- a single shared one would be refused as spanning models.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'relax.bngl').write_text(_RELAX_BNGL)
+        (src / 'other.bngl').write_text(_RELAX_BNGL.replace('A() 10', 'A() 5'))
+        exp = '# time\tA_tot\n' + ''.join(
+            f'{t}\t{v}\n' for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0)))
+        (src / 'relax.exp').write_text(exp)
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: relax.bngl\nmodel: other.bngl\n'
+            'condition: basal, model: relax.bngl, perturbations: none\n'
+            'condition: basal2, model: other.bngl, perturbations: none\n'
+            'condition: stim, model: relax.bngl, perturbations: flag = 2\n'
+            'condition: stim2, model: other.bngl, perturbations: flag = 2\n'
+            'experiment: ra, model: relax.bngl, preequilibrate: basal, condition: stim, '
+            'data: relax.exp\n'
+            'experiment: rb, model: other.bngl, preequilibrate: basal2, condition: stim2, '
+            'data: relax.exp\n'
+            'uniform_var = k 0.1 10\n')
+        export_job(src / 'job.conf', tmp_path / 'petab1')
+        out = import_job(tmp_path / 'petab1' / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: unperturbed, model: relax.bngl, perturbations: none' in text
+        assert 'condition: unperturbed_2, model: other.bngl, perturbations: none' in text
+        assert 'experiment: ra, preequilibrate: unperturbed, condition: stim' in text
+        assert 'experiment: rb, preequilibrate: unperturbed_2, condition: stim2' in text
+        cfg = _load_imported(out, monkeypatch)
+        assert set(cfg.exp_data) == {'relax', 'other'}
+        export_job(out / 'imported.conf', tmp_path / 'petab2')
+        _assert_problem_round_trips(tmp_path / 'petab1', tmp_path / 'petab2')
+
+
+class TestUnperturbedPreequilibrationRoundTrip:
+    """A `perturbations: none` pre-equilibration survives export -> import -> re-export byte for
+    byte, and the imported job scores the same objective at a fixed parameter vector."""
+
+    _CONF = ('edition = 2\njob_type = de\nobjective = sos\nmodel: relax.bngl\n'
+             'population_size = 4\nmax_iterations = 1\n'
+             'condition: basal, perturbations: none\n'
+             'condition: stim, perturbations: flag = 2\n'
+             'experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp\n'
+             'uniform_var = k 0.1 10\n')
+    # M = {k}: another experiment perturbs the fit parameter, so the -inf period is cond_wildtype.
+    _CONF_FIT = _CONF + ('condition: fast, perturbations: k * 2\n'
+                         'experiment: other, condition: fast, data: relax.exp\n')
+
+    def _extra(self):
+        return {'relax.bngl': _RELAX_BNGL,
+                'relax.exp': '# time\tA_tot\n' + ''.join(
+                    f'{t}\t{v}\n' for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0)))}
+
+    @pytest.mark.parametrize('conf', [_CONF, _CONF_FIT], ids=['empty_M', 'fit_perturbed_M'])
+    def test_round_trips_byte_for_byte(self, tmp_path, conf):
+        petab1, _imported, petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files=self._extra(), model_name='relax.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert 'perturbations: none' in imported_conf.read_text()
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    @pytest.mark.parametrize('conf', [_CONF, _CONF_FIT], ids=['empty_M', 'fit_perturbed_M'])
+    def test_imported_job_scores_the_original_objective(self, tmp_path, monkeypatch, conf):
+        _petab1, _imported, _petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files=self._extra(), model_name='relax.bngl')
+        original, _ = _objective_at(tmp_path / 'src' / 'job.conf', {'k': 0.6}, monkeypatch)
+        again, _ = _objective_at(imported_conf, {'k': 0.6}, monkeypatch)
+        assert again == pytest.approx(original, rel=1e-9)
+        # and it is the closed form's objective, not a seed-started one: half the sum of squares
+        # (`sos`) of the k = 0.6 trajectory against the k = 1 data. (With M the second
+        # experiment adds a term of its own, so only the first job is checked in closed form.)
+        if conf == self._CONF:
+            want = 0.5 * sum((a - b) ** 2 for a, b in zip(_relax_closed_form(0.6),
+                                                         _relax_closed_form(1.0)))
+            assert original == pytest.approx(want, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------

@@ -1817,6 +1817,111 @@ class TestExportPreequilibratedDoseResponse:
 
 
 # ---------------------------------------------------------------------------
+# `perturbations: none` (#906, ADR-0150): a condition that changes nothing. As `preequilibrate:`
+# its -inf period is the model as is -- a blank conditionId, or cond_wildtype re-pinning a
+# non-empty surrogate set M -- and as the measured `condition:` it exports exactly as an omitted
+# one. It never becomes a conditionId of its own (PEtab has no zero-row condition).
+# ---------------------------------------------------------------------------
+
+class TestExportUnperturbedCondition:
+
+    _HEAD = TestExportPreequilibration._HEAD
+    _PARAMS = TestExportPreequilibration._PARAMS
+
+    def _export(self, tmp_path_factory, name, body, files=()):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'm.bngl').write_text(_PREEQUIL_MODEL)
+        (src / 'relax.exp').write_text('# time A_tot\n0\t10\n1\t6\n2\t4\n')
+        for fname, text in files:
+            (src / fname).write_text(text)
+        (src / 'job.conf').write_text(self._HEAD + body + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        return out
+
+    @staticmethod
+    def _experiments(out):
+        return [(r['experimentId'], r['time'], r['conditionId'])
+                for r in _tsv_rows(out / 'experiments.tsv')]
+
+    @staticmethod
+    def _conditions(out):
+        path = out / 'conditions.tsv'
+        return ({(r['conditionId'], r['targetId'], r['targetValue']) for r in _tsv_rows(path)}
+                if path.exists() else set())
+
+    def test_none_preequilibration_is_a_blank_minus_inf_period(self, tmp_path_factory):
+        out = self._export(tmp_path_factory, 'none_pre', (
+            'condition: basal, perturbations: none\n'
+            'condition: meas, perturbations: flag = 2\n'
+            'experiment: relax, preequilibrate: basal, condition: meas, data: relax.exp\n'))
+        assert self._experiments(out) == [('relax', '-inf', ''), ('relax', '0', 'cond_meas')]
+        assert self._conditions(out) == {('cond_meas', 'flag', '2')}
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        # libpetab's own reading: a pre-equilibration period with an empty condition list.
+        from petab.v2 import Problem
+        (experiment,) = Problem.from_yaml(str(out / 'problem.yaml')).experiments
+        assert [(p.time, list(p.condition_ids)) for p in experiment.periods] == [
+            (float('-inf'), []), (0.0, ['cond_meas'])]
+
+    def test_none_preequilibration_re_pins_a_fit_and_perturbed_parameter(self, tmp_path_factory):
+        # Another experiment perturbs the fit parameter k, so M = {k}: k is renamed k__REF in the
+        # parameter table and every period must set k, the -inf one included -- through the same
+        # base condition a wildtype experiment gets.
+        out = self._export(tmp_path_factory, 'none_pre_fit', (
+            'condition: basal, perturbations: none\n'
+            'condition: meas, perturbations: flag = 2\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: relax, preequilibrate: basal, condition: meas, data: relax.exp\n'
+            'experiment: other, condition: fast, data: relax.exp\n'))
+        assert {r['parameterId'] for r in _tsv_rows(out / 'parameters.tsv')} == {'k__REF'}
+        assert ('relax', '-inf', 'cond_wildtype') in self._experiments(out)
+        conditions = self._conditions(out)
+        assert ('cond_wildtype', 'k', 'k__REF') in conditions
+        assert ('cond_meas', 'k', 'k__REF') in conditions
+        assert not any(cid == 'cond_basal' for cid, _t, _v in conditions)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_none_measured_condition_exports_as_an_omitted_one(self, tmp_path_factory):
+        # Byte-for-byte the problem an experiment with no condition exports, as a plain time
+        # course, as a wash-out after a pre-equilibration, and on a plain dose-response scan
+        # (which refuses a real named condition).
+        dose = ('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')
+        for label, with_none, without in (
+                ('tc', 'experiment: relax, condition: basal, data: relax.exp\n',
+                 'experiment: relax, data: relax.exp\n'),
+                ('washout', 'condition: pre, perturbations: flag = 0\n'
+                            'experiment: relax, preequilibrate: pre, condition: basal, '
+                            'data: relax.exp\n',
+                 'condition: pre, perturbations: flag = 0\n'
+                 'experiment: relax, preequilibrate: pre, data: relax.exp\n'),
+                ('scan', 'experiment: scan, condition: basal, data: dose.exp\n',
+                 'experiment: scan, data: dose.exp\n')):
+            a = self._export(tmp_path_factory, f'none_meas_{label}',
+                             'condition: basal, perturbations: none\n' + with_none, [dose])
+            b = self._export(tmp_path_factory, f'omitted_{label}', without, [dose])
+            assert sorted(f.name for f in a.iterdir()) == sorted(f.name for f in b.iterdir())
+            for f in a.iterdir():
+                assert f.read_text() == (b / f.name).read_text(), (label, f.name)
+
+    def test_none_preequilibrated_scan_is_a_blank_minus_inf_period(self, tmp_path_factory):
+        out = self._export(tmp_path_factory, 'none_pdr', (
+            'condition: basal, perturbations: none\n'
+            'experiment: scan, preequilibrate: basal, t_end: 1, data: dose.exp\n'),
+            [('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')])
+        assert self._experiments(out) == [
+            ('scan_0', '-inf', ''), ('scan_0', '0', 'cond_scan_0'),
+            ('scan_1', '-inf', ''), ('scan_1', '0', 'cond_scan_1')]
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_an_empty_condition_is_never_written_as_a_condition_id(self):
+        # The builders' own net: a condition with no rows cannot be expressed in PEtab.
+        from pybnf.petab.conditions import _condition_rows_for
+        with pytest.raises(PybnfError, match="would be exported with no rows"):
+            _condition_rows_for('cond_basal', [], set(), lambda v: None)
+
+
+# ---------------------------------------------------------------------------
 # Multi-model export (ADR-0041, #430): a job with more than one model: each experiment names
 # the model it simulates; the model id is stamped on its measurement rows' modelId (the column
 # is omitted single-model), free parameters bind across the union of every model's ids, and

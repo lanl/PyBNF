@@ -115,11 +115,20 @@ Required Keys
   model; it is omittable when the job declares a single model, and required when it
   declares more than one. Requires ``edition >= 2``.
 
+  ``perturbations: none`` declares a condition that **changes nothing** (``none`` is
+  caseless, and must be the whole list: ``none, kdeg = 2`` is refused). Its use is as a
+  ``preequilibrate:`` condition that equilibrates the model **as it stands** — free
+  parameters at their trial values, everything else at its value in the model — before the
+  measured ``condition:`` perturbs it: PEtab v2's ``time = -inf`` period with a blank
+  ``conditionId``. As a measured ``condition:`` it is exactly the same as omitting
+  ``condition:``. The name is yours; ``none`` is not a reserved condition name. (ADR-0150)
+
   Examples:
 
     * ``condition: dimer_dead, perturbations: kdimer = 0``
     * ``condition: overexpr, perturbations: erbb2_tot * 20, kdeg / 2``
     * ``condition: overexpr, model: erbb2.bngl, perturbations: erbb2_tot * 20`` (multi-model)
+    * ``condition: basal, perturbations: none`` (changes nothing)
 
 .. _experiment:
 
@@ -160,6 +169,11 @@ Required Keys
       experiment, so they are not also run as standalone conditions. Available for BNGL
       models and for SBML/Antimony models under ``sbml_backend = bngsim``; the
       RoadRunner SBML backend has no state carry-over between phases and refuses it.
+      To equilibrate with nothing changed, name a ``perturbations: none`` condition. PyBNF
+      does not yet restore parameters between the experiments it writes into one BNGL model's
+      action list (#830, #831), so such an experiment is refused when an experiment before it
+      on the same model changes a parameter inline; the error names the parameters, and
+      giving the condition their model values explicitly (``flag = 1``) resolves it.
     * **model:** names the base model by filename stem; omittable when the job declares a
       single model, required when it declares more than one.
     * **type:** is **inferred** from the data — a ``time`` column ⇒ a time course, a ``time``
@@ -189,6 +203,9 @@ Required Keys
     * ``experiment: eq, data: equilibrium.exp`` (an ``.exp`` measured at ``time = inf``)
     * ``experiment: dose, preequilibrate: serum_starve, data: dose.exp`` (equilibrate under
       ``serum_starve``, then measure)
+    * ``experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp`` with
+      ``condition: basal, perturbations: none`` (equilibrate the model as it stands, then
+      stimulate and measure)
     * ``experiment: egf_high, model: egfr.bngl, data: high.exp`` (multi-model)
 
 .. _observable:
