@@ -71,6 +71,7 @@ from .test_petab_export import (
     _petab_nll,
     _pybnf_objective,
     _write_decay_job,
+    _write_ragged_job,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -1707,6 +1708,61 @@ class TestColumnMeanSigmaImport:
         assert f'noise_model = gaussian, sigma = fix_at {num(sigma)}' in text.splitlines()
         export_job(out / 'imported.conf', petab2)
         _assert_problem_round_trips(petab1, petab2)
+
+    @pytest.mark.parametrize('edit', ['each_dose_its_own_value', 'one_dose_off'])
+    def test_doses_with_different_sigmas_stay_per_point(self, tmp_path, edit, monkeypatch):
+        # Added in independent review. The doses of a scan are separate PEtab experiments that
+        # import into ONE PyBNF experiment, so their sigmas must all equal that one scan's mean
+        # before the import may say column_mean. Two edits of the scan rows break that: every
+        # dose carries its own measurement (the mean of its own one-row PEtab experiment), or
+        # one dose is 1% off the scan mean while the others keep it. Either way the scan stays
+        # a per-point sigma, and libpetab's likelihood of the problem and the imported job's
+        # objective differ only by a constant.
+        pytest.importorskip('petab.v2')
+        _conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        lines = (petab1 / 'measurements.tsv').read_text().splitlines()
+        head = lines[0].split('\t')
+        rows = [ln.split('\t') for ln in lines[1:]]
+        eid, meas = head.index('experimentId'), head.index('measurement')
+        scan_rows = [r for r in rows if r[eid].startswith('scan_')]
+        assert len(scan_rows) == 3
+        if edit == 'each_dose_its_own_value':
+            for r in scan_rows:
+                r[-1] = r[meas]
+        else:
+            scan_rows[1][-1] = repr(float(scan_rows[1][-1]) * 1.01)
+        (petab1 / 'measurements.tsv').write_text(
+            '\n'.join(['\t'.join(head)] + ['\t'.join(r) for r in rows]) + '\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'edited_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        assert 'Obs_A_SD' in Data(file_name=str(out / 'scan.exp')).cols
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_ragged_replicates_round_trip_to_the_column_mean(self, tmp_path, monkeypatch):
+        # Added in independent review. Ragged replicates on different time grids, NaN cells, and
+        # one table mixing the constant form (Obs_A, one experiment) with the per-row form
+        # (Obs_B, two experiments). The import regroups the replicate rows by time, so its mean
+        # is summed in another order than the export's; both observables must still come back
+        # as ONE ave_norm_sos line, with no _SD companion left for the fitter to refuse, and the
+        # imported job must score exactly like the source job.
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_ragged_job(src)
+        petab1, imported = tmp_path / 'petab1', tmp_path / 'imported'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'objective = ave_norm_sos' in lines
+        assert not any('noise_model' in ln for ln in lines)
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        for k in (0.4, 0.6, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
 
 
 # ---------------------------------------------------------------------------

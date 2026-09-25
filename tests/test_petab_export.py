@@ -707,6 +707,47 @@ def _pybnf_objective(conf_path, k, monkeypatch):
     return cfg.obj.evaluate_multiple(sims, cfg.exp_data, pset)
 
 
+def _write_ragged_job(src):
+    """A column-mean job with ragged replicates and sparse columns (added in review, #894).
+
+    'lo' is two replicate files on different time grids: the first measures Obs_A (NaN at
+    every third time) and Obs_B, the second only Obs_A. 'hi' (scale 10) measures only Obs_B,
+    at every other time. Both observables read the one species A."""
+    (src / 'decay.bngl').write_text(_DECAY_MODEL.replace(
+        '  Molecules  Obs_A  A()\n', '  Molecules  Obs_A  A()\n  Molecules  Obs_B  A()\n'))
+
+    def cell(v):
+        return 'nan' if np.isnan(v) else repr(float(v))
+
+    lo_a = [np.nan if i % 3 == 0 else 100 * np.exp(-0.5 * t) for i, t in enumerate(_DECAY_TIMES)]
+    lo_b = _decay_series(120, 0.5)
+    (src / 'lo.exp').write_text('# time Obs_A Obs_B\n' + ''.join(
+        f'{t!r}\t{cell(a)}\t{cell(b)}\n' for t, a, b in zip(_DECAY_TIMES, lo_a, lo_b)))
+    rep_times = [t + 0.25 for t in _DECAY_TIMES[:6]]
+    _write_exp(src / 'lo_rep.exp', 'time', rep_times, _decay_series(80, 0.5, rep_times))
+    hi_b = [900 * np.exp(-0.7 * t) if i % 2 == 0 else np.nan for i, t in enumerate(_DECAY_TIMES)]
+    (src / 'hi.exp').write_text('# time Obs_B\n' + ''.join(
+        f'{t!r}\t{cell(b)}\n' for t, b in zip(_DECAY_TIMES, hi_b)))
+    (src / 'job.conf').write_text(
+        'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+        'condition: high, perturbations: scale = 10\n'
+        'experiment: lo, data: lo.exp, lo_rep.exp\n'
+        'experiment: hi, condition: high, data: hi.exp\n'
+        'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+    return src / 'job.conf'
+
+
+def _observed_mean_of_files(src, files, col):
+    """numpy's mean of the observed (non-NaN) ``col`` values over ``files``, read directly."""
+    values = []
+    for name in files:
+        header = (src / name).read_text().splitlines()[0].lstrip('#').split()
+        if col in header:
+            values.append(np.atleast_2d(np.loadtxt(src / name))[:, header.index(col)])
+    values = np.concatenate(values)
+    return values[~np.isnan(values)].mean()
+
+
 # Every spelling of a column-mean sigma: (conf noise lines, PyBNF family, PEtab distribution).
 _COLUMN_MEAN_SPELLINGS = {
     'ave_norm_sos': ('objective = ave_norm_sos\n', 'gaussian', 'normal'),
@@ -815,6 +856,42 @@ class TestColumnMeanSigmaIsPerExperiment:
         with pytest.raises(NotImplementedError, match=r"column 'x'.*column mean"):
             measurement_rows_from_data(data, {'x': 'obs_x'}, sd_suffix=None,
                                        measurement_params=sidecar, noise_values={'x': 3.0})
+
+    def test_ragged_replicates_and_sparse_columns_use_observed_values_only(
+            self, tmp_path, monkeypatch):
+        # Added in independent review. The fixture above has full, same-grid replicates. Here
+        # the replicates are ragged: 'lo' has two files on different time grids, the second
+        # lacks Obs_B, and the first has NaN cells in Obs_A. 'hi' measures only Obs_B, sparsely.
+        # So Obs_A is measured in one experiment (the constant noiseFormula) and Obs_B in two
+        # with different means (the per-row form), in one table. Oracles: numpy means of each
+        # experiment's observed values read from the .exp files, and libpetab's likelihood of
+        # the exported tables against PyBNF's objective at three k (a constant offset only).
+        pytest.importorskip('petab.v2')
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_ragged_job(src)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        obs = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        mean_a = _observed_mean_of_files(src, ['lo.exp', 'lo_rep.exp'], 'Obs_A')
+        assert float(obs['obs_Obs_A']['noiseFormula']) == pytest.approx(mean_a, rel=1e-15)
+        assert obs['obs_Obs_A']['noisePlaceholders'] == ''
+        assert obs['obs_Obs_B']['noiseFormula'] == 'noiseParameter1_obs_Obs_B'
+        mean_b = {'': _observed_mean_of_files(src, ['lo.exp', 'lo_rep.exp'], 'Obs_B'),
+                  'hi': _observed_mean_of_files(src, ['hi.exp'], 'Obs_B')}
+        rows = _tsv_rows(out / 'measurements.tsv')
+        b_rows = [r for r in rows if r['observableId'] == 'obs_Obs_B']
+        assert {r['experimentId'] for r in b_rows} == {'', 'hi'}
+        for r in b_rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                mean_b[r['experimentId']], rel=1e-15)
+        assert all(r['noiseParameters'] == '' for r in rows if r['observableId'] == 'obs_Obs_A')
+        # Only observed cells become rows: 7 + 6 Obs_A, 11 + 6 Obs_B.
+        assert len(rows) == 30
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        offsets = [_petab_nll(out, k) - f for k, f in zip(ks, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8 * max(fit))
 
 
 # ---------------------------------------------------------------------------
