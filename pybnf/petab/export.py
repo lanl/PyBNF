@@ -55,12 +55,17 @@ the union of every model's ids, and ``problem.yaml`` lists every model in its ow
 (BNGL + SBML may mix). Everything else raises ``NotImplementedError`` (the boundary is in
 code, not silent): an objective PEtab cannot represent (``neg_bin*`` -- removed from v2;
 ``lognormal`` -- log10 vs PEtab natural log; a free-parameter or relative sigma;
-``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a ``u``-flagged
+``direct_pass``/``kl``/``wasserstein``); a mean-centred ``lnnormal``, whether the line says
+``location = mean`` or the job says ``noise_location = mean`` (#898); the no-prior
+``var``/``logvar``; a ``u``-flagged
 Uniform, whose box seeds the draw without constraining the search (#736); a ``time_error``
 measurement-time marginalization, whose latent sampling time a PEtab measurement row's single
 exact ``time`` cannot carry (#738); a fixed-duration equilibration (``equil_t_end:``) on a
 model that reads the simulation time, whose clock a PEtab period cannot restart (#896); a
-``.con``/``.prop`` Constraint; an Antimony (``.ant``) model. The
+``postprocess`` script (#899); a BNGL action the fit runs ahead of its experiments that can
+change their starting state, such as ``setParameter`` (#900); a ``.con``/``.prop``
+Constraint; an Antimony (``.ant``) model. The job's ``generate_network`` cap is written into
+the exported BNGL model, as the fitter synthesizes it (#901). The
 oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
 ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
 """
@@ -75,12 +80,18 @@ import numpy as np
 
 from .. import edition
 from ..data import Data, observed_mean
-from ..objective import _OBJECTIVE_DESUGAR
+from ..objective import _NOISE_FAMILIES, _OBJECTIVE_DESUGAR
 from ..parameter_record import free_parameter_from_record
 from ..parse import ploop
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
-from ..pset import FreeParameter, INITIALIZATION_PRIOR, OutOfBoundsException
+from ..pset import (
+    BNGLModel,
+    FreeParameter,
+    INITIALIZATION_PRIOR,
+    ModelError,
+    OutOfBoundsException,
+)
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
@@ -123,6 +134,17 @@ logger = logging.getLogger(__name__)
 _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {
     'gaussian': 'normal', 'normal': 'normal', 'lnnormal': 'log-normal',
     'laplace': 'laplace'}
+
+# The exported families whose mean and median coincide, so a ``mean`` location scores exactly
+# what PEtab's median does (#898). A location-scale family is symmetric on its additive scale,
+# so its moment correction vanishes on the LINEAR scale (``ln(base) == 0``): Gaussian's
+# ``ln(base)*sigma**2/2`` and Laplace's ``-ln(1 - b**2 t**2)/t`` are both exactly 0 there. On a
+# log scale (``lnnormal``) the mean sits above the median and the likelihood changes. Derived
+# from the families themselves -- the predicate their own ``supports_profiled_scale`` reads --
+# rather than listed, so a family added to the map above lands in the right arm by construction.
+_MEAN_IS_MEDIAN_FAMILIES = frozenset(
+    token for token in _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION
+    if _NOISE_FAMILIES[token]().additive_on.ln_base == 0.0)
 
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise. The new-era
@@ -192,6 +214,7 @@ def export_job(conf_path, out_dir, inline_functions=False):
     _reject_cumulative(conf)
     _reject_time_error(conf)
     _reject_normalization(conf)
+    _reject_postprocess(conf)
     free_params = _free_parameters_from_conf(conf)
     # An estimated (`fit`) sigma exports as a bare-id noiseFormula naming an estimated PEtab
     # parameter (#439), so its noise scale must be a DECLARED free parameter (with bounds/prior
@@ -228,6 +251,20 @@ def export_job(conf_path, out_dir, inline_functions=False):
     parameter_rows = _parameter_rows(
         free_params, free_to_model, surrogate_params, registry, models)
 
+    # Each model is emitted in its own native language (ADR-0040): a BNGL model is
+    # PEtab-cleaned (its actions reduced to the network definition the fit used, #485/#900/
+    # #901); an SBML model is carried byte-verbatim (the measurement model lives in the
+    # observables table, never a model-file edit -- ADR-0036). Cleaned before any file is
+    # written, so a refused actions block leaves no half-written problem behind.
+    methods = _experiment_methods_by_model(conf, models)
+    model_texts = {
+        mf: (clean_model_for_petab(
+                registry[mf].text, Path(mf).name,
+                generate_network_options=conf.get('generate_network'),
+                experiment_methods=methods[mf])
+             if languages[mf] == 'bngl' else registry[mf].text)
+        for mf in models}
+
     write_parameter_table(parameter_rows, out_dir / 'parameters.tsv')
     write_observable_table(observable_rows, out_dir / 'observables.tsv')
     write_measurement_table(measurement_rows, out_dir / 'measurements.tsv')
@@ -237,13 +274,8 @@ def export_job(conf_path, out_dir, inline_functions=False):
         write_experiment_table(experiment_rows, out_dir / 'experiments.tsv')
     if mapping_rows:
         write_mapping_table(mapping_rows, out_dir / 'mapping.tsv')
-    # Each model is emitted in its own native language (ADR-0040): a BNGL model is
-    # PEtab-cleaned (drop 'begin actions'); an SBML model is carried byte-verbatim (the
-    # measurement model lives in the observables table, never a model-file edit -- ADR-0036).
     for mf in models:
-        view, language = registry[mf], languages[mf]
-        model_text = clean_model_for_petab(view.text) if language == 'bngl' else view.text
-        (out_dir / Path(mf).name).write_text(model_text)
+        (out_dir / Path(mf).name).write_text(model_texts[mf])
     # One model_files entry per model (ADR-0041), modelId = the file stem, in declaration
     # order (so a re-export reproduces the same problem.yaml model_files ordering).
     model_yaml = [(Path(mf).stem, Path(mf).name, languages[mf]) for mf in models]
@@ -682,6 +714,25 @@ def _read_experiments(conf, conf_path, models):
     return experiments
 
 
+def _experiment_methods_by_model(conf, models):
+    """``{model_file: {experiment_name: method}}`` -- each experiment's simulation ``method:``
+    (``ode`` when unset, as ``config.py`` defaults it), grouped by the model it simulates.
+
+    PEtab has no simulation method, so the tables never read this; the model cleaner does.
+    The fitter builds each experiment's simulation differently by method: a network-free
+    (``nf``) one is emitted with no ``resetConcentrations()`` before it and does not make the
+    fitter generate a network (``BNGLModel.add_action``). So whether a hand-written
+    simulation action can change what an experiment starts from (#900), and whether the fit
+    generates a network at all (#901), depend on it."""
+    stem_to_model = {Path(mf).stem: mf for mf in models}
+    methods = {mf: {} for mf in models}
+    for key, fields in conf.items():
+        if isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment':
+            mf = _resolve_experiment_model(key[1], fields.get('model'), models, stem_to_model)
+            methods[mf][key[1]] = str(fields.get('method', 'ode')).lower()
+    return methods
+
+
 def _equil_t_end(name, fields, preequilibrate):
     """An experiment's fixed equilibration duration (``equil_t_end:``) as a float, or ``None``.
 
@@ -965,8 +1016,10 @@ def _resolve_noise(conf):
       whole column's shape, not a per-observation likelihood, so it has no PEtab
       observable-noise representation;
     * no objective, or more than one global objective key (no implicit default);
-    * a ``mean``-centered noise model -- PEtab takes the prediction as the median for
-      every family;
+    * a ``mean``-centered noise model on a family whose mean is not its median
+      (``lnnormal``) -- PEtab takes the prediction as the median for every family. The
+      location is the one the fitter uses: the global ``noise_location`` key when set (it
+      overrides the line's own ``location`` field, #898), else the line's field;
     * an objective with no per-point noise model (``score`` / unknown token);
     * a family PEtab v2 cannot express (``neg_bin`` -- removed; ``lognormal`` -- log10 vs
       PEtab natural log). The distinct ``lnnormal`` family maps exactly to ``log-normal``.
@@ -1000,7 +1053,25 @@ def _resolve_noise(conf):
             "explicitly -- there is no implicit default. Set 'objective = <name>' or "
             "'noise_model = <family>, ...' (ADR-0031, #423).")
 
-    return _reduce_noise_spec(family_token, fields, location, 'the whole-fit noise model')
+    # The global ``noise_location`` key (ADR-0024) is the whole-fit default location, and the
+    # fitter applies it last: ``Configuration._load_obj_func`` builds the objective from the
+    # line or token above, then calls ``set_default_location``, which rebuilds the class-default
+    # noise model with this location whatever the line's own ``location`` field said. It
+    # reaches only that class default -- the model every column without a per-observable
+    # ``noise_model <obs> = ...`` override is scored with -- never an override, which keeps its
+    # own location (``_resolve_per_observable_noise``). The exporter read only the line or
+    # token, so a mean-centred ``lnnormal`` fit was written as PEtab's median-centred
+    # ``log-normal`` with no refusal (#898). Reading the key here makes the location the
+    # exporter judges the one the fitter scores with.
+    where = 'the whole-fit noise model'
+    global_location = conf.get('noise_location')
+    if global_location is not None:
+        if global_location not in ('mean', 'median'):
+            raise PybnfError(
+                f"noise_location must be 'mean' or 'median', not {global_location!r}.")
+        location = global_location
+        where = f"the whole-fit noise model (noise_location = {global_location})"
+    return _reduce_noise_spec(family_token, fields, location, where)
 
 
 def _resolve_per_observable_noise(conf):
@@ -1121,19 +1192,55 @@ def _reject_normalization(conf):
         f"(normalizing your data and model output equivalently yourself) to export to PEtab.")
 
 
+def _reject_postprocess(conf):
+    """Fail loud if the job runs a ``postprocess`` script on its simulations (#899).
+
+    ``postprocess = <script.py> <suffix> ...`` names a user Python function that the fitter
+    applies to each named simulation before scoring it (``Configuration._load_postprocessing``
+    maps the ``(model, suffix)`` pairs, under edition 2 the experiment name is the suffix;
+    ``Result.postprocess_data`` swaps the simulation for ``postprocess(data)``). An arbitrary
+    Python transform of the prediction has no PEtab v2 representation -- an ``observableFormula``
+    is a pointwise expression over model entities, not a program -- so exporting wrote the bare
+    model column and emitted a problem that scores the untransformed simulation: a different
+    objective with a different optimum, and no warning (#899). Refuse instead, beside
+    :func:`_reject_normalization`, whose whole-trajectory reductions are the built-in cousins of
+    what a script typically does. The key is model-language agnostic (the fitter applies it to
+    a BNGL or an SBML model's suffix alike), so is the refusal."""
+    specs = conf.get('postprocess')
+    if not specs:
+        return
+    detail = '; '.join(
+        f"'{spec[0]}' on {', '.join(repr(s) for s in spec[1:])}" for spec in specs)
+    raise NotImplementedError(
+        f"This job transforms its simulations with a 'postprocess' script ({detail}) before "
+        f"scoring them. A user Python function applied to the prediction has no PEtab v2 "
+        f"representation -- an observableFormula is a pointwise expression over model "
+        f"entities, not a program -- so exporting would silently score the untransformed "
+        f"simulations instead, a different objective (#899). Remove the 'postprocess' line to "
+        f"export, after expressing the transform as an 'observable: <id>, formula: <expr>' "
+        f"measurement model if it is pointwise, or applying it to the data yourself.")
+
+
 def _reduce_noise_spec(family_token, fields, location, where):
     """Reduce one parsed noise spec ``(family_token, {param: (verb, arg)}, location)`` to
     ``(noiseDistribution, sigma_verb, sigma_arg)``, raising the PEtab boundaries shared by the
     whole-fit base (:func:`_resolve_noise`) and the per-observable overrides
-    (:func:`_resolve_per_observable_noise`): a ``mean``-centered location (PEtab is median-only)
-    and a family PEtab v2 cannot express (``neg_bin`` removed; ``lognormal`` is log10 vs PEtab's
-    natural ``log-normal``; ``lnnormal`` is its exact native match). ``where`` names the spec in
-    the error message."""
-    if location == 'mean':
+    (:func:`_resolve_per_observable_noise`): a ``mean``-centered location on a family whose
+    mean is not its median (PEtab is median-only) and a family PEtab v2 cannot express
+    (``neg_bin`` removed; ``lognormal`` is log10 vs PEtab's natural ``log-normal``; ``lnnormal``
+    is its exact native match). ``where`` names the spec in the error message.
+
+    A ``mean`` location on a linear Gaussian or Laplace exports: those families are symmetric,
+    so the mean IS the median and the fitter's likelihood is PEtab's to the bit (the moment
+    offset is exactly ``0.0``; :data:`_MEAN_IS_MEDIAN_FAMILIES`). Refusing it would only make
+    the user delete a word that changes no number (#898)."""
+    if location == 'mean' and family_token.lower() not in _MEAN_IS_MEDIAN_FAMILIES:
         raise NotImplementedError(
-            f"{where} is mean-centered (location = mean); PEtab v2 takes the prediction as "
-            f"the distribution median for every noise family, so mean centering has no PEtab "
-            f"representation (ADR-0031, #423). Use median.")
+            f"{where} is mean-centered (location = mean) on the '{family_token}' family, "
+            f"whose mean is not its median; PEtab v2 takes the prediction as the distribution "
+            f"median for every noise family, so mean centering has no PEtab representation "
+            f"and the exported problem would have a different optimum (ADR-0031, #423, #898). "
+            f"Use median (drop 'noise_location = mean' or the line's 'location = mean').")
     distribution = _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION.get(family_token.lower())
     if distribution is None:
         raise NotImplementedError(
@@ -1967,39 +2074,136 @@ def _read_model(model_file, path, language):
 # Emitting the PEtab-clean model and problem.yaml
 # ---------------------------------------------------------------------------
 
-# The ``begin actions`` ... ``end actions`` block, capturing its inner body. PEtab drives
-# simulation from the measurement times / experiments, so the *simulation* actions are
-# dropped -- but ``generate_network`` is a network-definition / compilation directive, not a
-# simulation action, and it carries the finiteness cap (``max_stoich`` / ``max_agg`` /
-# ``max_iter``) that keeps a rule-based network finite (#485). See _strip_simulation_actions.
-_ACTIONS_BLOCK = re.compile(
-    r'^[ \t]*begin\s+actions\b[^\n]*\n(?P<body>.*?)^[ \t]*end\s+actions\b[^\n]*\n?',
-    flags=re.S | re.I | re.M)
-# A ``generate_network`` action line (the directive we keep). Anchored past leading indent so
-# a commented-out ``# generate_network(...)`` line does not match (it is documentation, not a
-# live directive), consistent with pset.py's ``BNGLModel`` scanner (#473).
-_GENERATE_NETWORK_LINE = re.compile(r'^[ \t]*generate_network\b', flags=re.I)
+# The hand-written actions the exporter may drop, by BNGL action name (#900). Under edition 2
+# the fitter runs every action the model file holds -- in ``begin actions`` or loose after
+# ``end model`` -- except ``generate_network`` and ``setOption`` (``BNGLModel.__init__``), and
+# then the simulations it builds from the ``experiment:`` lines (``BNGLModel.add_action``),
+# each network-based one preceded by ``resetConcentrations()``. PEtab has no such preamble, so
+# an action may be dropped only if it cannot change what those simulations start from. Checked
+# by reading ``pset.py`` and BioNetGen 2.9.3's ``Perl2`` sources, and by running the same fit
+# with and without each action under BNG2.pl and under bngsim:
+#
+# * a simulation changes species amounts only, and the reset before each network-based
+#   experiment restores the seed (or the last ``saveConcentrations()`` snapshot, and saving is
+#   refused). A network-free (``method: nf``) experiment gets no reset, so it continues from
+#   where a hand-written simulation left off; that pairing is refused separately.
+#   ``method=>"protocol"`` runs the model's ``begin protocol`` block, whose own actions can set
+#   parameters, so it is not a plain simulation and is refused.
+# * ``resetConcentrations()`` restores the seed or a saved snapshot, and saving is refused.
+# * the ``write*`` / ``visualize`` actions write files and change nothing.
+#
+# Everything else is refused, the unknown included. ``parameter_scan`` / ``bifurcate`` look
+# like simulations but are not droppable: BNG2.pl leaves the scanned parameter at its last scan
+# value (``BNGAction.pm``'s scan never restores it), which every later experiment then sees
+# (measured: the fit's objective moved from 7e-12 to 1606), while bngsim restores it -- so the
+# fitter itself disagrees by backend, and no export can match both.
+_SIMULATION_ACTIONS = frozenset({
+    'simulate', 'simulate_ode', 'simulate_ssa', 'simulate_pla', 'simulate_psa', 'simulate_nf'})
+_DROPPABLE_ACTIONS = frozenset({
+    'resetConcentrations',
+    'writeXML', 'writeSBML', 'writeNetwork', 'writeNET', 'writeFile', 'writeModel', 'writeBNGL',
+    'writeMfile', 'writeMexfile', 'writeMEXfile', 'writeMDL', 'writeLatex', 'writeSSC',
+    'writeSSCcfg', 'writeCPPfile', 'writeCPYfile', 'visualize'})
+# The network-free experiment methods (``Action.VALID_METHODS``). ``BNGLModel.add_action``
+# omits the reset for ``nf`` alone today; RuleMonkey (``rm``) runs on the same bngsim
+# network-free session, which keeps its state from one simulate to the next and does not run a
+# reset, so it is counted too rather than trusting a reset line that session skips.
+_NETWORK_FREE_METHODS = frozenset({'nf', 'rm', 'rulemonkey'})
+# An action's name: the identifier before its opening parenthesis.
+_ACTION_NAME = re.compile(r'([A-Za-z_]\w*)\s*\(')
+_PROTOCOL_METHOD = re.compile(r'method\s*=>\s*["\']protocol["\']')
+# The line ``BNGLModel._synthesized_generate_network_line`` writes when no ``generate_network``
+# conf key is set: the default network generation every BNGL consumer applies unasked, so it
+# is left implicit in the exported model rather than written into every one of them.
+_BARE_GENERATE_NETWORK = 'generate_network({overwrite=>1})'
 
 
-def _strip_simulation_actions(match):
-    """Rewrite one matched ``begin actions`` block, keeping only its network-definition
-    directives (``generate_network``, which carries the model's finiteness cap -- #485) and
-    dropping the simulation actions (``simulate*`` / ``parameter_scan`` / ``bifurcate`` / ...).
-
-    Returns the empty string when nothing survives, so a simulation-only block disappears
-    exactly as the whole-block strip did before. A kept line is emitted verbatim (its cap
-    args intact) inside a minimal, column-0 ``begin actions`` / ``end actions`` wrapper.
-    """
-    kept = [line for line in match.group('body').splitlines()
-            if _GENERATE_NETWORK_LINE.match(line)]
-    if not kept:
-        return ''
-    return 'begin actions\n' + '\n'.join(kept) + '\nend actions\n'
+def _action_code(raw):
+    """One ``BNGLModel.actions`` entry as code: comments stripped, the physical lines of a
+    backslash continuation joined, whitespace collapsed. Empty for a blank or comment line."""
+    code = re.sub(r'#[^\n]*', '', raw)
+    code = re.sub(r'\\\s*\n', ' ', code)
+    return ' '.join(code.split())
 
 
-def clean_model_for_petab(text):
-    """Return a PEtab-clean copy of a BNGL model: the ``begin actions`` block reduced to its
-    network-definition directives (``generate_network``), its simulation actions dropped.
+def _require_droppable_actions(model, model_file, experiment_methods):
+    """Refuse a BNGL model whose hand-written actions the export cannot drop without changing
+    the fit (#900); see ``_DROPPABLE_ACTIONS`` for which actions are droppable and why.
+
+    ``model.actions`` is the fitter's own list -- the scan ``BNGLModel.__init__`` does for the
+    fit -- so this checks exactly the lines the fit runs ahead of its experiments, the ones in
+    ``begin actions`` and the loose ones after ``end model`` alike. ``experiment_methods`` maps
+    the model's experiments to their ``method:`` (``None``: unknown, none taken as
+    network-free)."""
+    refused, simulations = [], []
+    for raw in model.actions:
+        code = _action_code(raw)
+        if not code:
+            continue                          # a blank or comment line inside the block
+        match = _ACTION_NAME.match(code)
+        name = match.group(1) if match else None
+        if name in _SIMULATION_ACTIONS and not _PROTOCOL_METHOD.search(code):
+            simulations.append(code)
+        elif name not in _DROPPABLE_ACTIONS:
+            refused.append(code)
+    if refused:
+        raise NotImplementedError(
+            f"Model '{model_file}' carries action(s) that the fit runs before its experiments "
+            f"but the PEtab export would drop: {'; '.join(refused)}. Under edition 2 the fitter "
+            f"runs every action in the model file (in 'begin actions' or loose after 'end "
+            f"model'), except generate_network and setOption, ahead of the simulations it builds "
+            f"from the 'experiment:' lines, so such an action can change what every experiment "
+            f"starts from -- a parameter value, a species amount, or the snapshot "
+            f"resetConcentrations() restores (a parameter_scan or bifurcate leaves its parameter "
+            f"at the last scanned value under BioNetGen). PEtab has no step to carry it, so the "
+            f"exported problem would have a different optimum. Move the change into the model's "
+            f"parameters or seed species, or into a 'condition:' on the experiments, or delete "
+            f"the line if the fit should not use it. The export drops only simulate*, "
+            f"resetConcentrations and write*/visualize, and keeps generate_network (#900).")
+    network_free = sorted(name for name, method in (experiment_methods or {}).items()
+                          if method in _NETWORK_FREE_METHODS)
+    if simulations and network_free:
+        raise NotImplementedError(
+            f"Model '{model_file}' carries hand-written simulation action(s) "
+            f"({'; '.join(simulations)}) that the fit runs ahead of experiment(s) "
+            f"{network_free}, which run network-free (method: nf / rm). The fitter starts a "
+            f"network-free experiment without resetting the species, so it continues from the "
+            f"state the hand-written simulation left, while PEtab starts every experiment from "
+            f"the model's initial state. Delete the hand-written simulation action(s) from the "
+            f"model to export (#900).")
+
+
+def _exported_generate_network_line(model, text_lines, experiment_methods):
+    """The ``generate_network`` line the exported model carries: the fitter's own (#485/#901).
+
+    * The model has its own line: the fitter uses it and ignores the ``generate_network`` conf
+      key ("an explicit line in the model always wins", ``pset.py``) -- the last one if there
+      are several, since the scan keeps overwriting ``generate_network_line``. So does the
+      export.
+    * Otherwise the fitter synthesizes ``generate_network({overwrite=>1,<opts>})`` from the key
+      whenever it generates a network -- for a hand-written network-based simulation, or for
+      any experiment that is not network-free (``BNGLModel.add_action``). The export used to
+      write nothing, so a cap stated in the job was lost and a PEtab consumer built a
+      different, or an unbounded, network (#901). The synthesized line is now written; the bare
+      default (no key) is what every consumer does unasked, so it stays implicit.
+
+    ``None`` when the exported model needs no line."""
+    own = any(re.match('generate_network', text_lines[i].split('#', 1)[0].strip())
+              for i in model.action_line_indices)
+    if own:
+        return model.generate_network_line.strip()
+    generates = (model.generates_network or experiment_methods is None
+                 or any(method != 'nf' for method in experiment_methods.values()))
+    if not generates:
+        return None
+    line = model._synthesized_generate_network_line()
+    return None if line == _BARE_GENERATE_NETWORK else line
+
+
+def clean_model_for_petab(text, model_file='model.bngl', generate_network_options=None,
+                          experiment_methods=None):
+    """Return a PEtab-clean copy of a BNGL model: its actions removed, and the network
+    definition the fit used (``generate_network``) kept.
 
     New-era BNGL binds free parameters **by id** (ADR-0034), so the source model already
     carries bare parameter ids with real nominal values -- exactly what PEtab estimates.
@@ -2008,14 +2212,30 @@ def clean_model_for_petab(text):
     ``generate_network`` -- a network-definition / compilation directive, not a simulation
     action. That directive carries the model's finiteness cap (``max_stoich`` / ``max_agg`` /
     ``max_iter``); dropping it would silently turn a model that is finite only under the cap
-    into one that network-generates unbounded, with no error or warning (#485). The exported
-    model then carries its own cap, so ``import_.py`` (which copies the model byte-verbatim)
-    round-trips it for free and any BNG2.pl / PyBNF consumer stays finite; a simulation-only
-    block (no ``generate_network`` line) still disappears entirely. The reaction network and
+    into one that network-generates unbounded, with no error or warning (#485). The line
+    written is the one the fitter runs (:func:`_exported_generate_network_line`): the model's
+    own, or the one the fitter synthesizes from the job's ``generate_network`` key (#901). The
+    exported model then carries its own cap, so ``import_.py`` (which copies the model
+    byte-verbatim) round-trips it and any BNG2.pl / PyBNF consumer stays finite; with no line
+    to keep, the actions disappear entirely.
+
+    The model is read with the fitter's own scanner (``BNGLModel``), so the lines removed are
+    exactly the ones the fit reads as actions -- the ``begin actions`` block and any loose
+    action after ``end model`` -- and the kept line goes in a minimal ``begin actions`` block
+    at the end of the file, where the fitter writes it. ``setOption`` and its siblings stay
+    where they are (the fitter keeps them in the model text too), as do a comment outside the
+    actions block and a protocol block. An action the export cannot drop without changing the
+    fit -- one that sets a parameter or species, saves a snapshot, or reads a file -- raises
+    rather than vanishing (:func:`_require_droppable_actions`, #900). The reaction network and
     the ``begin functions`` block -- which carry the measurement model -- are carried verbatim.
     A fit-and-mutated parameter keeps its model name (``v1``) here as a plain nominal-valued
     parameter (always overridden by its Condition); only the parameter *table* carries the
     surrogate ``v1__REF`` (ADR-0027).
+
+    ``generate_network_options`` is the job's ``generate_network`` key and
+    ``experiment_methods`` maps the experiments on this model to their ``method:``
+    (:func:`_experiment_methods_by_model`); the ``None`` defaults mean no key and network-based
+    experiments. ``model_file`` names the model in error messages.
 
     A legacy ``<name>__FREE`` marker in the model **code** is **rejected**: new-era binds by
     id, so a model still carrying one was not modernized, and shipping it would dangle an
@@ -2031,7 +2251,20 @@ def clean_model_for_petab(text):
             "new-era feature where free parameters bind by id (ADR-0034). Declare the "
             "model's fit parameters as bare ids with nominal values (e.g. 'v1 0.5', not "
             "'v1 v1__FREE') and list them as free parameters in the .conf.")
-    return _ACTIONS_BLOCK.sub(_strip_simulation_actions, text)
+    try:
+        model = BNGLModel(model_file, suppress_free_param_error=True,
+                          generate_network_options=generate_network_options, text=text)
+    except ModelError as exc:
+        raise PybnfError(f"Model '{model_file}' could not be read as BNGL: {exc}.") from exc
+    _require_droppable_actions(model, model_file, experiment_methods)
+    lines = text.splitlines(keepends=True)
+    network_line = _exported_generate_network_line(model, lines, experiment_methods)
+    out = ''.join(line for i, line in enumerate(lines) if i not in model.action_line_indices)
+    if network_line is not None:
+        if out and not out.endswith('\n'):
+            out += '\n'
+        out += f'begin actions\n{network_line}\nend actions\n'
+    return out
 
 
 def write_problem_yaml(path, models, has_conditions=False, has_experiments=False,

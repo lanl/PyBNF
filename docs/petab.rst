@@ -84,6 +84,18 @@ concern a job that otherwise looks perfectly exportable:
   sampling time. A PEtab measurement carries one exact ``time``, so the job is refused
   rather than silently exported as an exact-time fit.
 
+Job-wide settings and the model's own actions are checked too. ``noise_location = mean``
+on an ``lnnormal`` fit is refused like a ``location = mean`` field (on a linear Gaussian or
+Laplace the mean is the median, so either spelling exports), and a ``postprocess`` script is
+refused because PEtab cannot run a Python transform of the prediction. A BNGL model is
+exported as the model the fit ran: its leftover ``simulate`` / ``resetConcentrations`` /
+``write*`` / ``visualize`` actions are dropped, its network definition is kept (the model's own
+``generate_network`` line, or the one the job's ``generate_network`` key synthesizes), and an
+action that would change what the experiments start from (``setParameter``,
+``setConcentration``, ``saveConcentrations``, a ``parameter_scan``, and any action not listed
+here) is refused with the model file and the action named. Move such a change into the model
+itself or into a ``condition:``, or delete the line.
+
 .. _petab_bngl_loader:
 
 The BNGL model loader

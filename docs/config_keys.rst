@@ -1781,6 +1781,8 @@ Algorithm Options
   a free-form BNGL ``generate_network`` options fragment, injected as
   ``generate_network({overwrite=>1, <options>})``. An explicit ``generate_network`` line in
   the model always takes precedence (this only fills the synthesized default).
+  :ref:`export_job <petab>` writes the synthesized line into the exported model, so the cap
+  travels with a PEtab export and its re-import.
 
   Default: none (the bare ``generate_network({overwrite=>1})``)
 
