@@ -496,8 +496,13 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     scan endpoint -- the form a new-era ``experiment: <stem>, preequilibrate: <pre>[, condition:
     <wash>], type: parameter_scan[, t_end: <t>]`` re-exports.
 
+    A **fixed-duration** equilibration (``equil_t_end: T``, #896) leads with a finite ``time = -T``
+    period instead of ``-inf``; it is recognized only when every other period starts at exactly
+    ``time = 0`` (so ``T`` is the equilibration's duration), and the scan carries ``equil_t_end = T``.
+
     **Detection.** An experiment is a pre-equilibrated dose-response *point* when (a) it has exactly
-    one ``time = -inf`` period (a single pre-equilibration condition), (b) its measurements all share
+    one ``time = -inf`` period, or a finite leading ``time = -T < 0`` period followed only by
+    periods at ``time = 0`` (a single pre-equilibration condition), (b) its measurements all share
     one time (the scan time), and (c) the condition ``cond_<eid>`` (the exporter's per-dose naming)
     is applied at the measurement period and sets exactly one numeric target (the dose). The other
     measurement-period conditions are the shared wash. Points group by their experimentId stem
@@ -508,9 +513,10 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
 
     Returns ``(scans, remaining_rows, consumed_condition_ids, consumed_experiment_ids)``:
 
-    * ``scans`` -- a list of ``{name, model_id, preequilibrate, wash, swept_param, scan_time, data}``
-      (``preequilibrate`` / ``wash`` are condition names, ``wash`` ``None`` when the measurement
-      period applies no shared condition; ``scan_time`` is ``inf`` for steady state);
+    * ``scans`` -- a list of ``{name, model_id, preequilibrate, wash, swept_param, scan_time,
+      equil_t_end, data}`` (``preequilibrate`` / ``wash`` are condition names, ``wash`` ``None``
+      when the measurement period applies no shared condition; ``scan_time`` is ``inf`` for steady
+      state; ``equil_t_end`` is ``None`` for a steady-state equilibration);
     * ``remaining_rows`` -- the measurement rows NOT in any pre-equilibrated scan;
     * ``consumed_condition_ids`` -- only the per-dose ``cond_<stem>_<i>`` ids (the shared
       pre-equilibration + wash conditions are NOT consumed: they become ``preequilibrate:`` /
@@ -518,7 +524,10 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     * ``consumed_experiment_ids`` -- every ``<stem>_<i>`` experiment id (dropped from the
       time-course / plain-pre-equilibration reconstruction).
     """
-    from .conditions import condition_name_from_id
+    from .conditions import (
+        condition_name_from_id,
+        refuse_measurements_inside_fixed_equilibration,
+    )
 
     periods_of = {}
     for row in experiment_rows:
@@ -546,9 +555,18 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
     buckets = {}
     consumed = set()
     for (eid, mid), rows in by_group.items():
-        periods = periods_of.get(eid, [])
-        pre_periods = [(t, c) for t, c in periods if math.isinf(t) and t < 0]
-        meas_periods = [(t, c) for t, c in periods if not (math.isinf(t) and t < 0)]
+        periods = sorted(periods_of.get(eid, []), key=lambda p: p[0])
+        if periods and math.isfinite(periods[0][0]) and periods[0][0] < 0:
+            # A fixed-duration equilibration (#896): a finite leading period at -T, which is the
+            # equilibration's duration only when every other period starts at exactly 0.
+            pre_periods, meas_periods = periods[:1], periods[1:]
+            if not meas_periods or any(t != 0 for t, _c in meas_periods):
+                continue                   # not the exporter's -T / 0 shape -> not this shape
+            equil_t_end = -periods[0][0]
+        else:
+            pre_periods = [(t, c) for t, c in periods if math.isinf(t) and t < 0]
+            meas_periods = [(t, c) for t, c in periods if not (math.isinf(t) and t < 0)]
+            equil_t_end = None
         if len(pre_periods) != 1 or not meas_periods:
             continue                       # not a (single) pre-equilibration -> not this shape
         meas_times = {t for t, _c in meas_periods}
@@ -571,12 +589,25 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         stem = m.group(1) if m else eid
         index = int(m.group(2)) if m else 0
         pre_cid = pre_periods[0][1]
+        if equil_t_end is not None and condition_name_from_id(pre_cid) is None:
+            # PyBNF carries the duration on a `preequilibrate:` condition; with none to name, the
+            # scan would import with no equilibration at all (#896).
+            raise NotImplementedError(
+                f"Experiment '{eid}' has a fixed-duration equilibration period (time "
+                f"{periods[0][0]}) with no condition. PyBNF carries an equilibration duration on "
+                f"a 'preequilibrate:' condition, so an equilibration at the model defaults has no "
+                f"PyBNF representation yet.")
+        if equil_t_end is not None:
+            # A dose read inside the -T period (before the wash and the dose are applied) would
+            # import as a negative scan t_end, which the fitter cannot run as PEtab reads it.
+            refuse_measurements_inside_fixed_equilibration(eid, equil_t_end, [scan_time])
         wash_names = [condition_name_from_id(c) for c in meas_cids if c != dose_cid]
         wash_names = [w for w in wash_names if w is not None]
         buckets.setdefault((stem, mid), []).append(
             {'index': index, 'eid': eid, 'swept_param': swept_param, 'dose': dose_value,
              'scan_time': scan_time, 'preequilibrate': condition_name_from_id(pre_cid),
-             'wash_names': wash_names, 'dose_cid': dose_cid, 'rows': rows})
+             'wash_names': wash_names, 'dose_cid': dose_cid, 'rows': rows,
+             'equil_t_end': equil_t_end})
         consumed.add((eid, mid))
 
     scans = []
@@ -587,13 +618,17 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         scan_times = {p['scan_time'] for p in points}
         pres = {p['preequilibrate'] for p in points}
         washes = {tuple(p['wash_names']) for p in points}
-        if len(swept) != 1 or len(scan_times) != 1 or len(pres) != 1 or len(washes) != 1:
+        equils = {p['equil_t_end'] for p in points}
+        if (len(swept) != 1 or len(scan_times) != 1 or len(pres) != 1 or len(washes) != 1
+                or len(equils) != 1):
             raise PybnfError(
                 f"Pre-equilibrated dose-response group '{stem}' is ambiguous: its experiments set "
                 f"swept parameter(s) {sorted(swept)} at scan time(s) {sorted(scan_times)} under "
                 f"pre-equilibration condition(s) {sorted(pres)} and wash condition(s) "
-                f"{sorted(washes)}. A pre-equilibrated dose-response sweeps ONE parameter at ONE "
-                f"time under ONE pre-equilibration + wash (ADR-0062).")
+                f"{sorted(washes)}, equilibrating for "
+                f"{sorted(str('steady state' if e is None else e) for e in equils)}. A "
+                f"pre-equilibrated dose-response sweeps ONE parameter at ONE time under ONE "
+                f"pre-equilibration + wash (ADR-0062) of ONE duration (#896).")
         wash_names = next(iter(washes))
         if len(wash_names) > 1:
             raise PybnfError(
@@ -606,7 +641,8 @@ def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows,
         data = _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix)
         scans.append({'name': stem, 'model_id': mid, 'preequilibrate': next(iter(pres)),
                       'wash': wash_names[0] if wash_names else None, 'swept_param': swept_param,
-                      'scan_time': next(iter(scan_times)), 'data': data})
+                      'scan_time': next(iter(scan_times)), 'equil_t_end': next(iter(equils)),
+                      'data': data})
         for p in points:
             consumed_experiment_ids.add(p['eid'])
             consumed_condition_ids.add(p['dose_cid'])

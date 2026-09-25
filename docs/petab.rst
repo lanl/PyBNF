@@ -45,7 +45,14 @@ Then run the emitted configuration with the ``pybnf`` command line::
   pybnf -c imported/imported_de.conf
 
 The *problem* — parameters and priors, observables and noise, measurements, and
-conditions/experiments — is recovered exactly. The *run recipe* is supplied by the
+conditions/experiments — is recovered exactly. A table split over several files (more
+than one entry under a ``*_files`` key of ``problem.yaml``) is read in full: the files
+are concatenated in list order, as libpetab reads them, and an id defined in two places
+(a parameter, observable, condition, experiment, or mapping id) is refused with an error
+naming the id and the files. ``problem.yaml`` is read without a YAML library; it accepts
+indented or column-0 ``- file`` lists and the one-line ``[a.tsv, b.tsv]`` form, and any
+other shape (a single file name where a list belongs, a key PEtab v2 does not define, a
+key given twice) is refused rather than skipped. The *run recipe* is supplied by the
 caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 ``imported_<job_type>.conf`` per registered optimizer and sampler), ``method``
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``
@@ -136,7 +143,11 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such. An exported dose-response whose
+  **pre-equilibration** phase round-trips as such. An equilibration to steady state is a
+  leading period at time ``-inf``; a fixed-duration one (``equil_t_end: T``) is a leading
+  period at time ``-T``. The fixed-duration form is refused for a model that reads the
+  simulation time, because PEtab runs that period from ``-T`` to 0 while PyBNF runs it from 0
+  to ``T``. An exported dose-response whose
   conditions also pin a fit-and-perturbed parameter (``p = p__REF``) comes back as
   one conditioned experiment per dose instead. For a steady-state scan the fit is
   the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)

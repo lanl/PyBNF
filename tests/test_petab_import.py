@@ -874,11 +874,247 @@ class TestImportPreequilibratedDoseResponseRoundTrip:
         assert 't_end:' not in imported_conf.read_text()
 
 
+# ---------------------------------------------------------------------------
+# #896: a fixed-duration equilibration (``equil_t_end: T``) exports as a leading PEtab period at
+# time -T and imports back as ``preequilibrate:`` + ``equil_t_end: T``: the same protocol, the
+# same objective at a fixed parameter vector, and a byte-equal re-export.
+# ---------------------------------------------------------------------------
+
+# dA/dt = kp - k*flag*A, A(0) = 10 (the #896 reproduction model).
+_FIXED_EQUIL_MODEL = _PREEQUIL_MODEL.replace(
+    'begin parameters\n  k     1.0', 'begin parameters\n  kp    5\n  k     1.0').replace(
+    '  A() -> 0 deg()', '  0 -> A() kp\n  A() -> 0 deg()')
+
+_FIXED_EQUIL_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+    'condition: pre,  perturbations: flag = 2\n'
+    'condition: meas, perturbations: flag = 1\n'
+    'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 0.1, '
+    'data: relax.exp\n'
+    'uniform_var = k 0.1 10\n')
+
+_FIXED_EQUIL_EXP = '# time A_tot\n0\t8.64\n1\t6.34\n2\t5.49\n'
+
+
+def _simulate_and_score(conf_path, k, monkeypatch):
+    """PyBNF's own simulation (BNG2.pl) of the job at ``conf_path`` at ``k``, scored with the
+    job's own objective. Returns ``(A_tot over the measured phase, objective value)``."""
+    import os
+    from pybnf.parse import load_config
+    from pybnf.pset import PSet
+    monkeypatch.chdir(conf_path.parent)
+    text = conf_path.read_text()
+    if 'population_size' not in text:
+        text += 'population_size = 4\nmax_iterations = 1\n'
+    (conf_path.parent / 'sim.conf').write_text(text)
+    conf = load_config('sim.conf')
+    name, model = next(iter(conf.models.items()))
+    ps = PSet([v.set_value(k) for v in conf.variables])
+    folder = f'sim_{k}'
+    os.makedirs(folder, exist_ok=True)
+    out = model.copy_with_param_set(ps).execute(folder, folder, 60)
+    data = out['relax']
+    return (list(data.data[:, data.cols['A_tot']]),
+            conf.obj.evaluate_multiple({name: out}, conf.exp_data, ps))
+
+
+class TestImportFixedDurationEquilibrationRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+        assert [(r['time'], r['conditionId']) for r in _tsv_rows(petab1 / 'experiments.tsv')] \
+            == [('-0.1', 'cond_pre'), ('0', 'cond_meas')]
+
+    def test_imported_conf_carries_equil_t_end(self, imported):
+        # The -0.1 leading period reads back as the fixed duration, not a refusal (the old
+        # "fixed-time equilibration is deferred") and not a steady state.
+        _, _, _, conf = imported
+        assert ('experiment: relax, preequilibrate: pre, condition: meas, method: ode, '
+                'equil_t_end: 0.1, data: relax.exp') in conf.read_text()
+
+    def test_imported_conf_synthesizes_the_fixed_duration_equilibration(self, imported,
+                                                                        monkeypatch):
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        acts = Configuration(ploop(conf.read_text().splitlines(keepends=True))).models['m'].actions
+        equil = [a for a in acts if '_preequil' in a]
+        assert equil == ['simulate({method=>"ode",t_start=>0,t_end=>0.1,n_steps=>1,'
+                         'suffix=>"relax_preequil",print_functions=>1})']
+
+    def test_original_and_imported_jobs_score_the_same(self, imported, monkeypatch):
+        # Oracle: the native job and its round-tripped import simulate the same trajectory and
+        # score the same objective at fixed k, and the trajectory is the hand-derived fixed 0.1
+        # equilibration (A(0) = 2.5/k + (10 - 2.5/k)*exp(-0.2k), then relaxation to 5/k).
+        import math
+        from .recovery_harness import require_bng2pl
+        require_bng2pl()
+        petab1, imported_dir, _, conf = imported
+        src = petab1.parent / 'src'
+        for k in (1.0, 0.4):
+            native_a, native_obj = _simulate_and_score(src / 'job.conf', k, monkeypatch)
+            imported_a, imported_obj = _simulate_and_score(conf, k, monkeypatch)
+            a0 = 2.5 / k + (10 - 2.5 / k) * math.exp(-0.2 * k)
+            closed = [5 / k + (a0 - 5 / k) * math.exp(-k * t) for t in (0, 1, 2)]
+            np.testing.assert_allclose(native_a, closed, rtol=1e-5)
+            np.testing.assert_allclose(imported_a, native_a, rtol=1e-12)
+            assert imported_obj == pytest.approx(native_obj, rel=1e-12)
+            # edition 2 reads `objective = sos` as a unit-sigma Gaussian: 1/2 * sum(residual^2).
+            data = (8.64, 6.34, 5.49)
+            assert native_obj == pytest.approx(
+                0.5 * sum((p - d) ** 2 for p, d in zip(closed, data)), rel=1e-4, abs=1e-7)
+
+    def test_fit_parameter_perturbation_round_trips_with_equil_t_end(self, tmp_path_factory):
+        # The surrogate split (ADR-0027, #443) composes with the -T period: the equilibration
+        # condition sets the FIT parameter k (so k is exported as k__REF and re-pinned on the
+        # measured period) and the fixed duration survives the round trip alongside it.
+        conf = _FIXED_EQUIL_CONF.replace('condition: pre,  perturbations: flag = 2',
+                                         'condition: pre,  perturbations: k = 0.5')
+        petab1, _, petab2, imported_conf = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_fit'), conf,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert {(r['conditionId'], r['targetId'], r['targetValue'])
+                for r in _tsv_rows(petab1 / 'conditions.tsv')} == {
+            ('cond_pre', 'k', '0.5'), ('cond_meas', 'k', 'k__REF'), ('cond_meas', 'flag', '1')}
+        text = imported_conf.read_text()
+        assert 'condition: pre, perturbations: k = 0.5' in text
+        assert 'preequilibrate: pre, condition: meas, method: ode, equil_t_end: 0.1' in text
+
+    def test_preequilibrated_scan_round_trips_its_equil_t_end(self, tmp_path_factory,
+                                                              monkeypatch):
+        # The ADR-0062 sibling: each dose's -7200 leading period reads back as ONE scan experiment
+        # carrying equil_t_end: 7200, and the fitter synthesizes a fixed 7200 equilibration.
+        conf = _PDR_CONF.replace(', t_end: 500,', ', t_end: 500, equil_t_end: 7200,')
+        petab1, imported_dir, petab2, imported_conf = _roundtrip(
+            tmp_path_factory.mktemp('pdr_fixed'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert {r['time'] for r in _tsv_rows(petab1 / 'experiments.tsv')} == {'-7200', '0'}
+        text = imported_conf.read_text()
+        assert ('experiment: scan, preequilibrate: incubate, condition: wash, method: ode, '
+                't_end: 500, equil_t_end: 7200, data: scan.exp') in text
+        from pybnf.config import Configuration
+        monkeypatch.chdir(imported_dir)
+        acts = Configuration(ploop(text.splitlines(keepends=True))).models['m'].actions
+        assert any('t_end=>7200' in a and '_preequil' in a and 'steady_state' not in a
+                   for a in acts)
+
+    def test_time_dependent_model_is_refused(self, tmp_path_factory):
+        # PEtab runs the leading period on [-T, 0]; PyBNF would run equil_t_end on [0, T] and
+        # restart the clock, so a model reading time() would see a different protocol.
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_time'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        (petab1 / 'm.bngl').write_text(
+            _FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*(1 + time())'))
+        with pytest.raises(NotImplementedError,
+                           match="Experiment 'relax'.*reads the simulation time"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_time')
+
+    def test_scan_with_a_finite_leading_period_not_followed_by_time_zero_is_not_a_scan(self):
+        # Only the exporter's -T / 0 shape is a fixed-duration pre-equilibrated scan; a leading
+        # finite period followed by one at t=1 would shift the dose period, so it is not read as one.
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id='scan_0')]
+        conds = [PetabConditionRow('cond_scan_0', 'L', '1'),
+                 PetabConditionRow('cond_pre', 'kd', '2')]
+        for times in ((-5.0, 1.0), (-5.0, 0.0)):
+            exps = [PetabExperimentRow('scan_0', times[0], 'cond_pre'),
+                    PetabExperimentRow('scan_0', times[1], 'cond_scan_0')]
+            scans, *_ = reconstruct_preequilibrated_dose_responses(
+                meas, conds, exps, {'obs_resp': 'resp'})
+            if times[1] == 0.0:
+                assert [(s['preequilibrate'], s['equil_t_end']) for s in scans] == [('pre', 5.0)]
+            else:
+                assert scans == []
+
+    def test_scan_with_a_blank_fixed_duration_period_is_refused(self):
+        # No condition to carry equil_t_end on -> refused, not imported as an un-equilibrated scan.
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id='scan_0')]
+        conds = [PetabConditionRow('cond_scan_0', 'L', '1')]
+        exps = [PetabExperimentRow('scan_0', -5.0, ''),
+                PetabExperimentRow('scan_0', 0.0, 'cond_scan_0')]
+        with pytest.raises(NotImplementedError, match="'scan_0'.*fixed-duration equilibration"):
+            reconstruct_preequilibrated_dose_responses(meas, conds, exps, {'obs_resp': 'resp'})
+
+    def test_scan_whose_doses_equilibrate_for_different_durations_is_ambiguous(self):
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id=f'scan_{i}')
+                for i in range(2)]
+        conds = [PetabConditionRow(f'cond_scan_{i}', 'L', str(i + 1)) for i in range(2)]
+        exps = [PetabExperimentRow('scan_0', -5.0, 'cond_pre'),
+                PetabExperimentRow('scan_0', 0.0, 'cond_scan_0'),
+                PetabExperimentRow('scan_1', -7.0, 'cond_pre'),
+                PetabExperimentRow('scan_1', 0.0, 'cond_scan_1')]
+        with pytest.raises(PybnfError, match='ONE duration'):
+            reconstruct_preequilibrated_dose_responses(meas, conds, exps, {'obs_resp': 'resp'})
+
+    @staticmethod
+    def _retime_measurements(petab_dir, retime):
+        """Rewrite measurements.tsv, mapping each row's time string through ``retime`` (a row it
+        maps to ``None`` is kept unchanged)."""
+        rows = _tsv_rows(petab_dir / 'measurements.tsv')
+        header = list(rows[0])
+        lines = ['\t'.join(header)]
+        for r in rows:
+            r = dict(r, time=retime(r['time']) or r['time'])
+            lines.append('\t'.join(r[h] for h in header))
+        (petab_dir / 'measurements.tsv').write_text('\n'.join(lines) + '\n')
+
+    def test_measurement_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # A PEtab measurement at a time in [-T, 0) is taken DURING the equilibration period, which
+        # PEtab lint accepts. PyBNF's `preequilibrate:` + `equil_t_end:` equilibration is
+        # unmeasured and its measured phase starts at the intervention (t = 0), so the point has
+        # no PyBNF representation. Imported as-is it landed on the measured phase's time grid,
+        # where bngsim starts integrating at the earliest sample time: every measurement of the
+        # experiment was then scored 0.05 time units late, with no error. Refused instead.
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_early'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-0.05' if t == '0' else None)
+        assert '-0.05' in [r['time'] for r in _tsv_rows(petab1 / 'measurements.tsv')]
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'relax'.*-0\.05.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+        # A measurement at exactly 0 is the post-intervention state PyBNF measures: still imported.
+        self._retime_measurements(petab1, lambda t: '0' if t == '-0.05' else None)
+        import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_zero')
+
+    def test_scan_measured_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # The pre-equilibrated scan sibling: every dose read at t = -100, inside the -7200
+        # equilibration (before the wash and the dose are even applied). It imported as a scan
+        # with `t_end: -100`, which BNG2.pl runs as no integration at all and bngsim rejects.
+        conf = _PDR_CONF.replace(', t_end: 500,', ', t_end: 500, equil_t_end: 7200,')
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('pdr_fixed_early'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-100' if t == '500' else None)
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'scan_0'.*-100.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+
+
 class TestPreequilibrationPeriodGrouping:
     """White-box on the multi-period resolver (`_condition_and_preequilibrate`, ADR-0052/#442):
     a single period is a plain time course; a leading time=-inf steady-state period + a finite
-    measurement period is a pre-equilibration; only steady-state -inf equilibration is in scope
-    (Phase 1/2), so a finite leading period or >2 periods raises rather than silently flattens."""
+    measurement period is a pre-equilibration; a leading finite time=-T period + a measurement
+    period at exactly 0 is a fixed-duration one (#896); any other finite leading period or >2
+    periods raises rather than silently flattens."""
 
     def _row(self, time, cid):
         return PetabExperimentRow('relax', time, cid)
@@ -901,11 +1137,31 @@ class TestPreequilibrationPeriodGrouping:
         periods = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, '')]
         assert _condition_and_preequilibrate(periods, 'relax') == (None, 'pre')
 
-    def test_finite_leading_equilibration_period_is_deferred(self):
-        # A FINITE leading period is fixed-time equilibration (ADR-0052 "Out"), not steady state;
-        # refuse rather than flatten to the last period.
-        periods = [self._row(100.0, 'cond_pre'), self._row(200.0, 'cond_meas')]
-        with pytest.raises(NotImplementedError, match='fixed-time equilibration'):
+    def test_finite_leading_period_not_followed_by_time_zero_is_refused(self):
+        # A finite leading period is a fixed-duration equilibration only in the exporter's shape
+        # (-T, then the measured period at exactly 0 -- #896); any other finite pair would shift
+        # the data times or the equilibration's duration, so refuse rather than flatten it.
+        for times in ((100.0, 200.0), (-5.0, 1.0), (0.0, 3.0)):
+            periods = [self._row(times[0], 'cond_pre'), self._row(times[1], 'cond_meas')]
+            with pytest.raises(NotImplementedError, match='exactly time=0'):
+                _condition_and_preequilibrate(periods, 'relax')
+
+    def test_finite_leading_period_before_time_zero_is_a_fixed_duration_preequilibration(self):
+        # #896: a leading period at -T followed by the measured period at 0 is preequilibrate:
+        # with equil_t_end: T (the duration is read separately, by _fixed_equilibration_time).
+        from pybnf.petab.import_ import _fixed_equilibration_time
+        periods = [self._row(-7.5, 'cond_pre'), self._row(0.0, 'cond_meas')]
+        assert _condition_and_preequilibrate(periods, 'relax') == ('meas', 'pre')
+        assert _fixed_equilibration_time(periods) == 7.5
+        # the steady-state shape carries no duration
+        assert _fixed_equilibration_time(
+            [self._row(float('-inf'), 'cond_pre'), self._row(0.0, 'cond_meas')]) is None
+
+    def test_fixed_duration_period_with_a_blank_condition_is_refused(self):
+        # An equilibration at the model defaults has no preequilibrate: condition to carry the
+        # duration, so it is refused rather than imported as no equilibration at all (#896).
+        periods = [self._row(-7.5, ''), self._row(0.0, 'cond_meas')]
+        with pytest.raises(NotImplementedError, match='fixed-duration equilibration period'):
             _condition_and_preequilibrate(periods, 'relax')
 
     def test_more_than_two_periods_is_deferred(self):
@@ -1206,6 +1462,35 @@ class TestImportMultiModelCondition:
                 experiments=exps, measurement_models=[], method='ode', method_overrides={},
                 settings={'population_size': 10, 'max_iterations': 5, 'verbosity': 1},
                 multi=False)
+
+    def test_relative_condition_round_trips_against_its_own_model(self, tmp_path):
+        # #897: two models give the fixed parameter L different values (a: 1, b: 5); the
+        # condition `L * 2` belongs to b. It must round-trip as b's doubled value, L = 10 -- the
+        # base the fitter uses -- not a's (L = 2, which moved the optimum from k = 1 to k = 4.2).
+        model = _GROWTH_BNGL.replace('    a2 2\n', '    a2 2\n    L 1\n')
+        assert '    L 1\n' in model
+        conf = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
+                f'model: {DEMO_MODEL}\nmodel: growth_v2.bngl\n'
+                'condition: dbl, model: growth_v2.bngl, perturbations: L * 2\n'
+                f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+                'experiment: gr, model: growth_v2.bngl, condition: dbl, data: gr.exp\n'
+                + _PARAMS_U + 'uniform_var = a2 0 10\n')
+        demo_with_l = (DEMO_DIR / DEMO_MODEL).read_text().replace(
+            'begin parameters', 'begin parameters\n    L 5', 1)
+        petab1, _, petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files={**self._EXTRA, 'growth_v2.bngl': model,
+                                         DEMO_MODEL: demo_with_l})
+        _assert_problem_round_trips(petab1, petab2)
+        assert ('condition: dbl, model: growth_v2.bngl, perturbations: L = 2'
+                in imported_conf.read_text())
+        # ...and with the models' values swapped, the same condition folds to 10.
+        (tmp_path / 'swapped').mkdir()
+        petab1, _, _, imported_conf = _roundtrip(
+            tmp_path / 'swapped', conf,
+            extra_files={**self._EXTRA, 'growth_v2.bngl': model.replace('    L 1', '    L 5'),
+                         DEMO_MODEL: demo_with_l.replace('    L 5', '    L 1')})
+        assert ('condition: dbl, model: growth_v2.bngl, perturbations: L = 10'
+                in imported_conf.read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -1535,7 +1820,7 @@ class TestReverseAssets:
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
         conds = {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '*', 5.0)]}
         cond_rows, _, surrogate, _ = build_experiment_conditions(
-            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda v: 2.0)
+            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda _c, _v: 2.0)
         recovered = conditions_from_rows(cond_rows, surrogate)
         # The fit op recovers exactly; the fixed relative op recovers as its precomputed
         # absolute value (s*5 with nominal 2 -> s = 10); base pins are dropped.
@@ -1628,6 +1913,525 @@ class TestProblemYamlReader:
         (tmp_path / 'indented.yaml').write_text(indented)
         assert (read_problem_yaml(tmp_path / 'col0.yaml')
                 == read_problem_yaml(tmp_path / 'indented.yaml'))
+
+    # #902: the reader keeps EVERY file listed under a key, reads the one-line flow form
+    # (`key: [a.tsv, b.tsv]`) on every key, and refuses what it cannot read. Each shape below
+    # is a valid PEtab v2 problem.yaml; the oracle is PyYAML, the parser libpetab reads it with.
+    _VALID_SHAPES = {
+        'block_lists_two_files_each': (
+            'format_version: 2.0.0\n'
+            'parameter_files:\n  - parameters.tsv\n  - parameters2.tsv\n'
+            'observable_files:\n  - observables.tsv\n  - observables2.tsv\n'
+            'measurement_files:\n  - measurements.tsv\n  - measurements2.tsv\n'
+            'condition_files:\n  - conditions.tsv\n  - conditions2.tsv\n'
+            'experiment_files:\n  - experiments.tsv\n  - experiments2.tsv\n'
+            'mapping_files:\n  - mapping.tsv\n  - mapping2.tsv\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+        'petab1to2_column0_lists': (
+            'format_version: 2.0.0\n'
+            'id: split_problem\n'
+            'model_files:\n  m:\n    location: m.xml\n    language: sbml\n'
+            'parameter_files:\n- parameters.tsv\n'
+            'measurement_files:\n- measurements.tsv\n- measurements2.tsv\n'
+            'condition_files:\n- conditions.tsv\n- conditions2.tsv\n'
+            'experiment_files:\n- experiments.tsv\n'
+            'observable_files:\n- observables.tsv\n- observables2.tsv\n'
+            'mapping_files: []\n'
+            'extensions: {}\n'),
+        'flow_lists_on_every_key': (
+            'format_version: 2.0.0\n'
+            'parameter_files: [parameters.tsv, parameters2.tsv]\n'
+            'observable_files: [observables.tsv]\n'
+            'measurement_files: [measurements.tsv, measurements2.tsv]\n'
+            'condition_files: [conditions.tsv]\n'
+            'experiment_files: [experiments.tsv]\n'
+            'mapping_files: [mapping.tsv]\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+        'quotes_comments_trailing_comma': (
+            '# A problem written by hand.\n'
+            'format_version: "2.0.0"   # quoted\n'
+            "parameter_files: ['parameters.tsv', \"parameters 2.tsv\",]  # trailing comma\n"
+            "observable_files:\n  - 'observables.tsv'   # a comment after an item\n"
+            'measurement_files:\n  - "measurements.tsv"\n  - m#2.tsv\n'
+            'condition_files: []\n'
+            "model_files:\n  m:   # the only model\n    location: 'm.bngl'\n    language: bngl\n"),
+        'two_models_listed_first': (
+            '---\n'
+            'format_version: 2.0.0\n'
+            'model_files:\n'
+            '    first:\n        language: bngl\n        location: a.bngl\n'
+            '    second:\n        location: b.xml\n        language: sbml\n'
+            'parameter_files:\n    - parameters.tsv\n'
+            'observable_files: [observables.tsv]\n'
+            'measurement_files:\n    - measurements_a.tsv\n    - measurements_b.tsv\n'),
+        'byte_order_mark': (
+            '\ufeffparameter_files:\n- parameters.tsv\n'
+            'format_version: 2.0.0\n'
+            'observable_files:\n- observables.tsv\n'
+            'measurement_files:\n- measurements.tsv\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+    }
+
+    @pytest.mark.parametrize('shape', sorted(_VALID_SHAPES))
+    def test_reads_every_valid_shape_as_pyyaml_does(self, tmp_path, shape):
+        yaml = pytest.importorskip('yaml')
+        text = self._VALID_SHAPES[shape]
+        (tmp_path / 'problem.yaml').write_text(text)
+        got = read_problem_yaml(tmp_path / 'problem.yaml')
+        want = yaml.safe_load(text)
+        for key in ('parameter_files', 'observable_files', 'measurement_files',
+                    'condition_files', 'experiment_files', 'mapping_files'):
+            assert got[key] == (want.get(key) or []), key
+        assert ([(m['model_id'], m['location'], m['language']) for m in got['models']]
+                == [(mid, m['location'], m['language'])
+                    for mid, m in want['model_files'].items()])
+
+    def test_flow_list_on_an_optional_key_is_read(self, tmp_path):
+        # Before #902 the flow form on condition/experiment/mapping keys read as an EMPTY
+        # list with no message, so the whole table was dropped from the import.
+        (tmp_path / 'problem.yaml').write_text(self._VALID_SHAPES['flow_lists_on_every_key'])
+        problem = read_problem_yaml(tmp_path / 'problem.yaml')
+        assert problem['condition_files'] == ['conditions.tsv']
+        assert problem['experiment_files'] == ['experiments.tsv']
+        assert problem['mapping_files'] == ['mapping.tsv']
+        assert problem['measurement_files'] == ['measurements.tsv', 'measurements2.tsv']
+
+    _BASE = ('format_version: 2.0.0\n'
+             'parameter_files:\n  - parameters.tsv\n'
+             'observable_files:\n  - observables.tsv\n'
+             'measurement_files:\n  - measurements.tsv\n'
+             'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n')
+
+    @pytest.mark.parametrize('extra, match', [
+        # A scalar where the schema requires a list (libpetab refuses it too).
+        ('condition_files: conditions.tsv\n', "'condition_files' must be a list of files"),
+        # A flow list continued on the next line.
+        ('condition_files: [conditions.tsv,\n  conditions2.tsv]\n',
+         "'condition_files' must be a list of files"),
+        # A plain line where a '- file' item belongs.
+        ('experiment_files:\n  experiments.tsv\n',
+         "'experiment_files' must be a list of files, one '- <file>' line each"),
+        # A nested list as an item.
+        ('mapping_files:\n  - [a.tsv, b.tsv]\n', 'uses YAML syntax this reader does not read'),
+        # The v1 singular spelling, or any key PEtab v2 does not define.
+        ('condition_file: conditions.tsv\n', r"\['condition_file'\], which PEtab v2 does not"),
+        # A key given twice (PyYAML would silently keep the second list).
+        ('measurement_files:\n  - measurements2.tsv\n',
+         "gives the key 'measurement_files' twice"),
+        # The same file twice under one key (its rows would be read twice).
+        ('condition_files: [conditions.tsv, conditions.tsv]\n',
+         r"lists \['conditions.tsv'\] more than once under condition_files"),
+    ])
+    def test_unreadable_shape_is_refused(self, tmp_path, extra, match):
+        (tmp_path / 'problem.yaml').write_text(self._BASE + extra)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    @pytest.mark.parametrize('model_block, match', [
+        ('model_files: {m: {location: m.bngl, language: bngl}}\n', 'YAML flow form'),
+        ('model_files:\n  m: {location: m.bngl, language: bngl}\n',
+         "cannot read the model_files entry 'm: {location"),
+        ('model_files:\n  m:\n    location: a.bngl\n  m:\n    location: b.bngl\n',
+         "declares the model 'm' twice"),
+    ])
+    def test_unreadable_model_files_is_refused(self, tmp_path, model_block, match):
+        # A flow-form or repeated model entry used to be skipped: with two models, the skipped
+        # one simply vanished from the import.
+        base = self._BASE.split('model_files:')[0]
+        (tmp_path / 'problem.yaml').write_text(base + model_block)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_petab_v1_problem_is_named_as_such(self, tmp_path):
+        (tmp_path / 'problem.yaml').write_text(
+            'format_version: 1\nparameter_file: parameters.tsv\nproblems:\n'
+            '  - sbml_files: [model.xml]\n    measurement_files: [measurements.tsv]\n')
+        with pytest.raises(PybnfError, match='declares format_version 1') as err:
+            read_problem_yaml(tmp_path / 'problem.yaml')
+        assert 'petab1to2_preserve_scale' in err.value.message
+
+    # Review of #902. The PEtab v2 schema lets a model entry carry fields beyond location and
+    # language (it sets no additionalProperties: false there), and such a field may hold a
+    # nested mapping with a `location:` key of its own. The reader took that nested key for
+    # the model's location, so the import silently used another model file. And a problem file
+    # opening with a YAML directive or closing with the `...` end marker (PyYAML's
+    # explicit_end) read on main but was refused. Oracle: PyYAML, which libpetab reads with.
+    _MORE_VALID_SHAPES = {
+        'nested_field_after_location': _BASE.replace(
+            '    language: bngl\n',
+            '    language: bngl\n    provenance:\n      location: variant.bngl\n'
+            '      language: sbml\n'),
+        'nested_field_before_location': _BASE.replace(
+            '    location: m.bngl\n',
+            '    provenance:\n      location: variant.bngl\n    location: m.bngl\n'),
+        'nested_list_at_field_indent': _BASE.replace(
+            '    language: bngl\n', '    language: bngl\n    tags:\n    - location: x\n'),
+        'document_end_marker': _BASE + '...\n',
+        'yaml_directive': '%YAML 1.1\n---\n' + _BASE,
+    }
+
+    @pytest.mark.parametrize('shape', sorted(_MORE_VALID_SHAPES))
+    def test_more_valid_shapes_read_as_pyyaml_does(self, tmp_path, shape):
+        yaml = pytest.importorskip('yaml')
+        text = self._MORE_VALID_SHAPES[shape]
+        (tmp_path / 'problem.yaml').write_text(text)
+        got = read_problem_yaml(tmp_path / 'problem.yaml')
+        want = yaml.safe_load(text)
+        assert ([(m['model_id'], m['location'], m['language']) for m in got['models']]
+                == [(mid, m['location'], m['language'])
+                    for mid, m in want['model_files'].items()]
+                == [('m', 'm.bngl', 'bngl')])
+        for key in _TABLE_KEYS:
+            assert got[key] == (want.get(key) or []), key
+
+    @pytest.mark.parametrize('model_block, match', [
+        # A location continued on a second line (a multi-line YAML scalar).
+        ('model_files:\n  m:\n    location: m\n      .bngl\n    language: bngl\n',
+         "the location of model 'm' continues on the line '.bngl'"),
+        # A field indented differently from the fields before it (not valid YAML).
+        ('model_files:\n  m:\n    location: m.bngl\n   language: bngl\n',
+         "the line 'language: bngl' of model 'm' is not indented like the fields"),
+    ])
+    def test_unreadable_model_field_is_refused(self, tmp_path, model_block, match):
+        base = self._BASE.split('model_files:')[0]
+        (tmp_path / 'problem.yaml').write_text(base + model_block)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_second_document_after_end_marker_is_refused(self, tmp_path):
+        (tmp_path / 'problem.yaml').write_text(self._BASE + '...\n---\nid: second\n')
+        with pytest.raises(PybnfError, match=r"more than one YAML document: the line '---'"):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_nested_location_does_not_replace_the_model(self, tmp_path):
+        # End to end: a variant model file sits beside the real one and a nested field names
+        # it. libpetab imports bateman_chain.bngl; the import must copy and name that model.
+        petab_v2 = pytest.importorskip('petab.v2')
+        root = tmp_path / 'p'
+        shutil.copytree(TUTORIAL_PETAB_DIR, root)
+        (root / 'variant.bngl').write_text(
+            (root / 'bateman_chain.bngl').read_text().replace('k2  0.25', 'k2  9.99'))
+        yaml_path = root / 'problem.yaml'
+        yaml_path.write_text(yaml_path.read_text().replace(
+            '    language: bngl\n',
+            '    language: bngl\n    provenance:\n      location: variant.bngl\n'))
+        oracle = petab_v2.Problem.from_yaml(str(yaml_path))
+        (model_file,) = oracle.config.model_files.values()
+        assert str(model_file.location) == 'bateman_chain.bngl'
+        out = import_job(yaml_path, tmp_path / 'out')
+        conf = (out / 'imported.conf').read_text()
+        assert 'model: bateman_chain.bngl' in conf and 'variant.bngl' not in conf
+        assert sorted(f.name for f in out.glob('*.bngl')) == ['bateman_chain.bngl']
+
+
+# ---------------------------------------------------------------------------
+# A table split over several files (#902). PEtab v2 types every *_files key as a list, and
+# libpetab reads a problem by chaining every listed file's rows in list order. The importer
+# read only the first file of each list, so a split problem was fitted to part of its data.
+# Oracles: libpetab reading the same split problem, and the unsplit problem's own import.
+# ---------------------------------------------------------------------------
+
+TUTORIAL_PETAB_DIR = (Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+                      / '12_petab_roundtrip' / 'petab')
+
+_TABLE_KEYS = ('parameter_files', 'observable_files', 'measurement_files',
+               'condition_files', 'experiment_files', 'mapping_files')
+
+
+def _split_tutorial_problem(root, flow=False):
+    """The #902 reproduction: tutorial 12's problem with its measurements split over two files
+    (obs_Obs_A rows in the first, obs_Obs_B/C in the second) and its two estimated parameters
+    one per file. ``flow`` writes the two lists in the one-line ``[a, b]`` form."""
+    shutil.copytree(TUTORIAL_PETAB_DIR, root)
+    head, *rows = (root / 'measurements.tsv').read_text().splitlines()
+    (root / 'measurements.tsv').write_text(
+        '\n'.join([head] + [r for r in rows if r.split('\t')[0] == 'obs_Obs_A']) + '\n')
+    (root / 'measurements2.tsv').write_text(
+        '\n'.join([head] + [r for r in rows if r.split('\t')[0] != 'obs_Obs_A']) + '\n')
+    (root / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\nk1\ttrue\t0.05\t3\n')
+    (root / 'parameters2.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\nk2\ttrue\t0.02\t2\n')
+    if flow:
+        lists = ('parameter_files: [parameters.tsv, parameters2.tsv]\n'
+                 'measurement_files: [measurements.tsv, measurements2.tsv]\n')
+    else:
+        lists = ('parameter_files:\n  - parameters.tsv\n  - parameters2.tsv\n'
+                 'measurement_files:\n  - measurements.tsv\n  - measurements2.tsv\n')
+    (root / 'problem.yaml').write_text(
+        'format_version: 2.0.0\n' + lists + 'observable_files:\n  - observables.tsv\n'
+        'model_files:\n  bateman_chain:\n    location: bateman_chain.bngl\n    language: bngl\n')
+    return root / 'problem.yaml'
+
+
+def _split_every_table(src, dst):
+    """Copy the PEtab problem at ``src`` to ``dst`` with EVERY table split over two files.
+
+    Rows are divided by the id in the table's first column: the first half of the distinct ids
+    (in order of appearance) go to ``<table>.tsv``, the rest to ``<table>_2.tsv`` (header only
+    when the table has one id), row order kept. Every row of one id stays in one file, so the
+    split problem is the same problem -- which libpetab confirms in the tests below."""
+    shutil.copytree(src, dst)
+    problem = read_problem_yaml(src / 'problem.yaml')
+    lines = ['format_version: 2.0.0\n']
+    for key in _TABLE_KEYS:
+        if not problem[key]:
+            continue
+        (name,) = problem[key]
+        head, *rows = (src / name).read_text().splitlines()
+        ids = list(dict.fromkeys(r.split('\t')[0] for r in rows))
+        first = set(ids[:(len(ids) + 1) // 2])
+        second_name = name.replace('.tsv', '_2.tsv')
+        (dst / name).write_text(
+            '\n'.join([head] + [r for r in rows if r.split('\t')[0] in first]) + '\n')
+        (dst / second_name).write_text(
+            '\n'.join([head] + [r for r in rows if r.split('\t')[0] not in first]) + '\n')
+        lines.append(f'{key}:\n  - {name}\n  - {second_name}\n')
+    lines.append('model_files:\n')
+    for m in problem['models']:
+        lines.append(f"  {m['model_id']}:\n    location: {m['location']}\n"
+                     f"    language: {m['language']}\n")
+    (dst / 'problem.yaml').write_text(''.join(lines))
+    return dst / 'problem.yaml'
+
+
+def _imported_files(out):
+    """``{name: text}`` of an imported job's conf, data and sidecar files."""
+    return {f.name: f.read_text() for f in sorted(out.iterdir())
+            if f.suffix in ('.conf', '.exp', '.tsv')}
+
+
+class TestSplitTableFiles:
+
+    @pytest.mark.parametrize('flow', [False, True], ids=['block_lists', 'flow_lists'])
+    def test_split_problem_imports_what_libpetab_reads(self, tmp_path, flow):
+        # The independent oracle: libpetab reads the split problem as 63 measurements and two
+        # estimated parameters and finds it valid. On main the import kept only the 21 rows of
+        # the first measurement file and declared only k1 (k2 silently held at its model
+        # value); with the flow form it refused with "has no parameter_files".
+        petab_v2 = pytest.importorskip('petab.v2')
+        from petab.v2.lint import lint_problem
+        yaml_path = _split_tutorial_problem(tmp_path / 'split', flow=flow)
+        oracle = petab_v2.Problem.from_yaml(str(yaml_path))
+        assert not lint_problem(oracle)
+        out = import_job(yaml_path, tmp_path / 'imported')
+
+        conf = ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+        free = [k[1] for k in conf if isinstance(k, tuple) and k[0].endswith('_var')]
+        assert free == list(oracle.x_free_ids) == ['k1', 'k2']
+
+        # Every (observable column, time, value) libpetab reads is in the imported data, and
+        # nothing else is.
+        column_of = {o.id: str(o.formula) for o in oracle.observables}
+        want = sorted((column_of[m.observable_id], float(m.time), float(m.measurement))
+                      for m in oracle.measurements)
+        data = Data(file_name=str(out / 'experiment1.exp'))
+        got = sorted((col, float(t), float(v))
+                     for col in data.cols if col != 'time'
+                     for t, v in zip(data['time'], data[col]) if not np.isnan(v))
+        assert len(want) == 63
+        assert got == want
+
+    def test_split_problem_imports_like_the_unsplit_one(self, tmp_path):
+        # Splitting a table over two files changes nothing about the problem, so the import
+        # must be byte-identical to the unsplit tutorial problem's. Dependency-free.
+        whole = import_job(TUTORIAL_PETAB_DIR / 'problem.yaml', tmp_path / 'whole')
+        split = import_job(_split_tutorial_problem(tmp_path / 'split'), tmp_path / 'split_out')
+        assert _imported_files(split) == _imported_files(whole)
+
+    def test_files_with_different_columns_import_like_one_file(self, tmp_path):
+        # Review of #902. Each file of a split table has its own header: the second file may
+        # order its columns differently and leave out an optional column that is blank
+        # anyway. Here tutorial 20 (per-row observableParameters and noiseParameters) is
+        # split so that the second measurement file drops the empty experimentId column and
+        # reorders the rest, the second parameter file reorders its columns, and the second
+        # measurement file also repeats a row of the first with another value (a replicate
+        # across files). Oracles: libpetab reads the split problem as the same measurements
+        # and free parameters as the one-file problem, and the import is byte-identical.
+        petab_v2 = pytest.importorskip('petab.v2')
+        src = (Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+               / '20_petab_observable_parameters')
+
+        def table(path):
+            head, *rows = path.read_text().splitlines()
+            cols = head.split('\t')
+            return cols, [dict(zip(cols, r.split('\t'))) for r in rows]
+
+        def write(path, cols, rows):
+            path.write_text('\n'.join(['\t'.join(cols)]
+                                      + ['\t'.join(r[c] for c in cols) for r in rows]) + '\n')
+
+        m_cols, m_rows = table(src / 'measurements.tsv')
+        p_cols, p_rows = table(src / 'parameters.tsv')
+        assert 'experimentId' in m_cols and not any(r['experimentId'] for r in m_rows)
+        first = [r for r in m_rows if r['observableId'] == 'obs_B']
+        replicate = dict(first[1], measurement='33.5')
+        second = [r for r in m_rows if r['observableId'] != 'obs_B'] + [replicate]
+        assert first and len(second) > 1
+
+        split = tmp_path / 'split'
+        shutil.copytree(src, split)
+        write(split / 'measurements.tsv', m_cols, first)
+        write(split / 'measurements2.tsv', ['measurement', 'noiseParameters', 'time',
+                                            'observableParameters', 'observableId'], second)
+        write(split / 'parameters.tsv', p_cols, p_rows[:3])
+        write(split / 'parameters2.tsv', ['upperBound', 'parameterId', 'lowerBound', 'estimate'],
+              p_rows[3:])
+        (split / 'problem.yaml').write_text((src / 'problem.yaml').read_text().replace(
+            '  - measurements.tsv\n', '  - measurements.tsv\n  - measurements2.tsv\n').replace(
+            '  - parameters.tsv\n', '  - parameters.tsv\n  - parameters2.tsv\n'))
+        # The same problem in one file per table: the rows in the same order.
+        whole = tmp_path / 'whole'
+        shutil.copytree(src, whole)
+        write(whole / 'measurements.tsv', m_cols, first + second)
+
+        def libpetab_view(yaml_path):
+            problem = petab_v2.Problem.from_yaml(str(yaml_path))
+            return (sorted((m.observable_id, float(m.time), float(m.measurement),
+                            tuple(map(str, m.observable_parameters)),
+                            tuple(map(str, m.noise_parameters)))
+                           for m in problem.measurements),
+                    list(problem.x_free_ids))
+
+        split_view = libpetab_view(split / 'problem.yaml')
+        assert split_view == libpetab_view(whole / 'problem.yaml')
+        assert len(split_view[0]) == len(m_rows) + 1
+        a = import_job(split / 'problem.yaml', tmp_path / 'split_out')
+        b = import_job(whole / 'problem.yaml', tmp_path / 'whole_out')
+        assert _imported_files(a) == _imported_files(b)
+        assert 'experiment1_rep2.exp' in _imported_files(a)
+        conf = ploop((a / 'imported.conf').read_text().splitlines(keepends=True))
+        free = [k[1] for k in conf if isinstance(k, tuple) and k[0].endswith('_var')]
+        assert sorted(free) == sorted(split_view[1])
+
+    # Exported jobs that between them populate all six tables: conditions/experiments (a
+    # surrogate-base condition with several target rows), the mapping table (a pre-equilibrated
+    # dose response, whose experiments have several period rows), and two models.
+    _JOBS = {
+        'conditions': (
+            'edition = 2\njob_type = de\nobjective = chi_sq\nmodel: parabola2.bngl\n'
+            'condition: doubled, perturbations: v1 * 2\n'
+            'condition: scaled, perturbations: s * 5\n'
+            'experiment: wt, data: wt.exp\n'
+            'experiment: dbl, condition: doubled, data: dbl.exp\n'
+            'experiment: scl, condition: scaled, data: scl.exp\n' + _PARAMS_U,
+            {'parabola2.bngl': _PARABOLA2_BNGL,
+             'wt.exp': '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n',
+             'dbl.exp': '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n',
+             'scl.exp': '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n'},
+            'parabola2.bngl'),
+        'mapping_and_periods': (
+            _PDR_CONF, {'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, 'm.bngl'),
+        'two_models': (
+            TestImportMultiModelRoundTrip.CONF, TestImportMultiModelRoundTrip.EXTRA, DEMO_MODEL),
+    }
+
+    @pytest.mark.parametrize('job', sorted(_JOBS))
+    def test_every_table_split_imports_like_the_unsplit_one(self, tmp_path, job):
+        conf_text, extra, model_name = self._JOBS[job]
+        petab1, whole, _petab2, _conf = _roundtrip(
+            tmp_path, conf_text, extra_files=extra, model_name=model_name)
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        listed = read_problem_yaml(split_yaml)
+        split_keys = [k for k in _TABLE_KEYS if listed[k]]
+        assert len(split_keys) >= 3 and all(len(listed[k]) == 2 for k in split_keys)
+        split = import_job(split_yaml, tmp_path / 'split_out')
+        assert _imported_files(split) == _imported_files(whole)
+
+    @pytest.mark.parametrize('job', sorted(_JOBS))
+    def test_libpetab_reads_the_split_problem_as_the_unsplit_one(self, tmp_path, job):
+        # The split helper is itself checked against the oracle: libpetab reads the split and
+        # the unsplit problem as the same entities and the same measurements, so the identity
+        # above compares two imports of one problem.
+        petab_v2 = pytest.importorskip('petab.v2')
+        conf_text, extra, model_name = self._JOBS[job]
+        petab1, _whole, _petab2, _conf = _roundtrip(
+            tmp_path, conf_text, extra_files=extra, model_name=model_name)
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        import re
+        a = petab_v2.Problem.from_yaml(str(petab1 / 'problem.yaml'))
+        b = petab_v2.Problem.from_yaml(str(split_yaml))
+
+        def entities(problem, attr):
+            # Each entity's full content, minus its row position inside its own file. A
+            # condition's numeric targetValue is compared as a number: libpetab types a column
+            # per file, so '2' reads as Integer(2) beside an expression and Float(2) without one.
+            if attr == 'conditions':
+                return sorted((c.id, ch.target_id,
+                               float(ch.target_value) if ch.target_value.is_number
+                               else str(ch.target_value))
+                              for c in problem.conditions for ch in c.changes)
+            return sorted(re.sub(r'index=\d+', '', repr(e)) for e in getattr(problem, attr))
+
+        for attr in ('parameters', 'observables', 'measurements', 'conditions',
+                     'experiments', 'mappings'):
+            assert entities(a, attr) == entities(b, attr), attr
+        assert len(b.measurements) == len(a.measurements) > 0
+
+    # A repeated id: each is a duplicate libpetab's lint_problem reports as an error, and the
+    # import used to either never see it (it sat in a later file) or let one row silently win.
+    @pytest.mark.parametrize('table, edit, match', [
+        ('parameters2.tsv', 'k1\ttrue\t0.05\t3\n',
+         r"parameterId 'k1' more than once \(in both parameters.tsv and parameters2.tsv\)"),
+        ('parameters.tsv', 'k1\ttrue\t0.05\t3\n',
+         r"parameterId 'k1' more than once \(twice in parameters.tsv\)"),
+    ])
+    def test_repeated_parameter_is_refused(self, tmp_path, table, edit, match):
+        yaml_path = _split_tutorial_problem(tmp_path / 'split')
+        with open(yaml_path.parent / table, 'a') as fh:
+            fh.write(edit)
+        with pytest.raises(PybnfError, match=match):
+            import_job(yaml_path, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(yaml_path, 'Parameter table contains duplicate IDs')
+
+    def test_observable_in_two_files_is_refused(self, tmp_path):
+        yaml_path = _split_tutorial_problem(tmp_path / 'split')
+        (yaml_path.parent / 'observables2.tsv').write_text(
+            'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+            'obs_Obs_A\tObs_B\t1\tnormal\n')
+        yaml_path.write_text(yaml_path.read_text().replace(
+            '  - observables.tsv\n', '  - observables.tsv\n  - observables2.tsv\n'))
+        with pytest.raises(PybnfError, match=r"observableId 'obs_Obs_A' more than once "
+                                             r"\(in both observables.tsv and observables2.tsv\)"):
+            import_job(yaml_path, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(yaml_path, 'Observable table contains duplicate IDs')
+
+    @pytest.mark.parametrize('table, row, match, lint', [
+        # A condition's target rows split between two files: two definitions of one id.
+        ('conditions', 'cond_incubate\tspecies_B\t1\n',
+         r"conditionId 'cond_incubate' more than once \(in both conditions.tsv and "
+         r"conditions_2.tsv\)", 'Condition table contains duplicate IDs'),
+        ('experiments', 'scan_0\t1\tcond_scan_0\n',
+         r"experimentId 'scan_0' more than once \(in both experiments.tsv and "
+         r"experiments_2.tsv\)", 'Experiment table contains duplicate IDs'),
+        ('mapping', 'species_A\tB()\n',
+         r"petabEntityId 'species_A' more than once \(in both mapping.tsv and mapping_2.tsv\)",
+         'Mapping table contains non-unique IDs'),
+    ])
+    def test_id_defined_in_two_files_is_refused(self, tmp_path, table, row, match, lint):
+        petab1, _whole, _petab2, _conf = _roundtrip(
+            tmp_path, _PDR_CONF, extra_files={'m.bngl': _PDR_MODEL,
+                                                     'dose.exp': _PDR_DOSE_EXP},
+            model_name='m.bngl')
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        with open(split_yaml.parent / f'{table}_2.tsv', 'a') as fh:
+            fh.write(row)
+        with pytest.raises(PybnfError, match=match):
+            import_job(split_yaml, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(split_yaml, lint)
+
+
+def _assert_libpetab_reports_duplicate(yaml_path, message):
+    """The oracle for a duplicate-id refusal: libpetab's lint reports the same problem as an
+    error, so the importer refuses exactly what PEtab itself calls invalid."""
+    petab_v2 = pytest.importorskip('petab.v2')
+    from petab.v2.lint import CheckMappingTable, CheckUniquePrimaryKeys
+    from petab.v2.lint import ValidationIssueSeverity
+    problem = petab_v2.Problem.from_yaml(str(yaml_path))
+    issues = [task.run(problem) for task in (CheckUniquePrimaryKeys(), CheckMappingTable())]
+    errors = [str(i) for i in issues
+              if i is not None and i.level == ValidationIssueSeverity.ERROR]
+    assert any(message in e for e in errors), errors
 
 
 class TestBoundaries:
