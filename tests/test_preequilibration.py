@@ -519,9 +519,9 @@ class TestUnperturbedConditionGrammar:
 class TestUnperturbedConditionSynthesis:
     def test_none_preequilibration_is_the_named_block_without_its_perturbation(self, tmp_path):
         # A `none` pre-equilibration emits exactly the block a named one does, minus the
-        # setParameter that named condition would apply before the equilibration -- so an
-        # experiment written after it inherits nothing a named pre-equilibration would not leave
-        # behind too (#830 is unchanged, not widened).
+        # setParameter that named condition would apply before the equilibration. Every block
+        # opens with the experiment start (ADR-0151), so the experiment written after it starts
+        # from the model's own parameters, as it does after a named one.
         after = "experiment: after, data: relax.exp"
         none = _issue_conf(tmp_path / "none", _UNPERTURBED_RELAX + [after]).models["relax"]
         named = _issue_conf(tmp_path / "named", [
@@ -596,38 +596,6 @@ class TestUnperturbedConditionSynthesis:
         assert conf.models["relax"].mutants == []
         assert set(conf.exp_data["relax"]) == {"relax", "plain"}
 
-    @pytest.mark.parametrize("earlier", [
-        # another pre-equilibration's measured condition leaves flag = 2 behind (#830)
-        "experiment: first, preequilibrate: basal, condition: stim, data: relax.exp",
-        # a scan leaves its parameter at the last dose on BNG2.pl (#831)
-        "experiment: dose, t_end: 1, data: dose.exp",
-    ])
-    def test_none_preequilibration_after_a_parameter_change_is_refused(self, tmp_path, earlier):
-        # PyBNF does not restore parameters between the experiments it writes into one action
-        # list, so a `none` equilibration after one that changed flag would run with flag changed.
-        (tmp_path / "dose.exp").write_text("# flag\tA_tot\n1\t1\n2\t0.57\n")
-        with pytest.raises(PybnfError, match=r"(?s)Experiment 'relax' pre-equilibrates under "
-                                             r"condition 'basal'.*changes parameter\(s\) flag.*#830"):
-            _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [earlier, _UNPERTURBED_RELAX[2]])
-
-    def test_refusal_does_not_tell_the_user_to_pin_a_free_parameter(self, tmp_path):
-        # The remedy for a fixed parameter is to name its model value in the condition. For the
-        # free k that would pin k = 1 for the whole experiment instead of equilibrating at the
-        # trial value: following that advice made `relax` simulate A = 0.5 + 0.5 exp(-2t) at
-        # every trial k, a silently different fit. So the explicit value is offered for the fixed
-        # flag only, and the free k gets the reordering remedy.
-        with pytest.raises(PybnfError) as info:
-            _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [
-                "condition: fast, perturbations: k = 2, flag = 3",
-                "experiment: first, preequilibrate: basal, condition: fast, data: relax.exp",
-                _UNPERTURBED_RELAX[2]])
-        message = info.value.message
-        assert "changes parameter(s) k, flag" in message
-        assert "k = <its value in the model>" not in message
-        assert "'condition: basal, perturbations: flag = <its value in the model>'" in message
-        assert "k is a free parameter, which a condition cannot restore" in message
-        assert "Declare 'relax' before the experiment(s) that change it" in message
-
     def test_none_preequilibration_after_an_unperturbed_time_course_is_accepted(self, tmp_path):
         # A plain time course changes no parameter, so nothing reaches the equilibration.
         conf = _issue_conf(tmp_path, _UNPERTURBED_RELAX[:2] + [
@@ -657,6 +625,27 @@ class TestUnperturbedPreequilibrationOracle:
         np.testing.assert_allclose(at_one, [1.0, 0.6839397, 0.5676676, 0.5091578], atol=1e-6)
         at_other = _a_tot(_simulate_at(alg, tmp_path, 0.37, "k037")["relax"])
         np.testing.assert_allclose(at_other, _issue_closed_form(0.37), rtol=1e-6)
+
+    @pytest.mark.parametrize("earlier", [
+        # a pre-equilibration whose measured condition sets the fixed flag = 2 inline
+        ["experiment: first, preequilibrate: basal, condition: stim, data: relax.exp"],
+        # one that also sets the FREE k inline: it must come back at the trial value, not 1
+        ["condition: fast, perturbations: k = 3, flag = 3",
+         "experiment: first, preequilibrate: basal, condition: fast, data: relax.exp"],
+        # a scan over flag, which BNG2.pl leaves at its last dose (#831)
+        ["experiment: dose, t_end: 1, data: dose.exp"],
+    ], ids=["fixed_parameter", "free_parameter", "scan"])
+    @pytest.mark.parametrize("backend", _BNGL_BACKENDS)
+    def test_after_an_experiment_that_changed_parameters(self, tmp_path, backend, earlier):
+        # Every declared experiment starts from the model's own parameters (ADR-0151, #830), so a
+        # `none` equilibration written after one that changed flag or k still equilibrates the
+        # model as it stands -- flag = 1 and k at the trial point -- and `relax` is the closed form.
+        (tmp_path / "dose.exp").write_text("# flag\tA_tot\n1\t1\n2\t0.57\n4\t0.26\n")
+        _conf, alg = _issue_algorithm(
+            tmp_path, _UNPERTURBED_RELAX[:2] + earlier + _UNPERTURBED_RELAX[2:], backend)
+        for k in (1.0, 0.37):
+            got = _a_tot(_simulate_at(alg, tmp_path, k, f"after{k}")["relax"])
+            np.testing.assert_allclose(got, _issue_closed_form(k), rtol=1e-6)
 
     @pytest.mark.parametrize("backend", _BNGL_BACKENDS)
     def test_preequilibrated_scan_matches_the_closed_form(self, tmp_path, backend):

@@ -207,6 +207,6 @@ the model as it stands and is PEtab's `-inf` period with a blank `conditionId` (
 Two rules above change for such a condition only. It emits no `setParameter` before the
 equilibration. And the "a condition cannot be both consumed and a live mutant" refusal does not
 arise for it: a `none` condition is never a mutant, and a regular experiment that names it as
-its measured `condition:` is read as having no condition at all. A `none`
-pre-equilibration after an experiment that changed a parameter on the same model's action list
-is refused, because parameters are not restored between experiments (#830, #831).
+its measured `condition:` is read as having no condition at all. Because every experiment now
+opens by restoring the parameters (the #830 addendum above), a `none` equilibration runs on the
+model as it stands, free parameters at the trial point, whatever experiment is written before it.

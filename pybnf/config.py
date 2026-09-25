@@ -1858,66 +1858,6 @@ class Configuration:
             perts.append((kind, mut.name, mut.value))
         return perts
 
-    #: A BNGL action line that leaves a model parameter changed for every action written after
-    #: it: an inline ``setParameter``, or a ``parameter_scan`` / ``bifurcate`` over a parameter
-    #: (BNG2.pl leaves the scanned parameter at its last value, #831). Group 1 or 2 is the name.
-    _PARAMETER_CHANGING_ACTION = re.compile(
-        r'\s*(?:setParameter\s*\(\s*["\'](\w+)["\']'
-        r'|(?:parameter_scan|bifurcate)\s*\(.*?\bparameter\s*=>\s*["\'](\w+)["\'])')
-
-    def _refuse_unperturbed_equilibration_after_parameter_changes(self, exp_name, model, base,
-                                                                  condition_name):
-        """Refuse a ``perturbations: none`` pre-equilibration that an earlier action on the same
-        model would silently re-parameterize (#906, ADR-0150).
-
-        A ``none`` pre-equilibration equilibrates the model as it stands: free parameters at the
-        trial values, everything else at its model value. PyBNF writes every declared experiment
-        of a model into one action list and resets only the species between them, never the
-        parameters (#830, #831), so a parameter an earlier line changed -- another experiment's
-        inline condition, or a scanned parameter -- would still be changed when this experiment
-        equilibrates. A named condition that sets such a parameter explicitly is immune for that
-        parameter; a ``none`` condition sets nothing, so it is refused whenever any earlier line
-        changes a parameter. Only a BNGL action list (strings) carries experiments over; an SBML
-        model builds each experiment's simulation afresh, so its object actions are skipped."""
-        changed = []
-        for line in getattr(model, 'actions', []):
-            if not isinstance(line, str):
-                continue
-            match = self._PARAMETER_CHANGING_ACTION.match(line)
-            if match:
-                pname = match.group(1) or match.group(2)
-                if pname not in changed:
-                    changed.append(pname)
-        if not changed:
-            return
-        # A free parameter has no constant to restore: `k = 1` in the condition would pin k at 1
-        # for the whole experiment instead of equilibrating at its trial value, a silently
-        # different fit. So the explicit-values remedy is offered for fixed parameters only.
-        free = {k[1] for k in self.config if self._is_free_param_key(k)}
-        fixed = [p for p in changed if p not in free]
-        fitted = [p for p in changed if p in free]
-        remedies = []
-        if fixed:
-            example = ', '.join(f'{p} = <its value in the model>' for p in fixed)
-            remedies.append(
-                f"Give the condition the model's values for {', '.join(fixed)} explicitly -- "
-                f"'condition: {condition_name}, perturbations: {example}' -- which sets them "
-                f"before the equilibration whatever ran first.")
-        if fitted:
-            what = 'is a free parameter' if len(fitted) == 1 else 'are free parameters'
-            remedies.append(
-                f"{', '.join(fitted)} {what}, which a condition cannot restore: '= <value>' "
-                f"would pin it to that constant instead of its trial value. Declare "
-                f"'{exp_name}' before the experiment(s) that change it.")
-        raise PybnfError(
-            f"Experiment '{exp_name}' pre-equilibrates under condition '{condition_name}' "
-            f"(perturbations: none), which equilibrates model '{base}' as it stands. But an "
-            f"action written before it on the same model changes parameter(s) "
-            f"{', '.join(changed)}, and PyBNF does not yet restore parameters between the "
-            f"experiments it writes into one action list (#830, #831), so '{exp_name}' would "
-            f"equilibrate with them still changed.",
-            hint=remedies)
-
     @staticmethod
     def _steady_state_action(name, method, fields):
         """The measured ``TimeCourse`` for a steady-state experiment (ADR-0086, #521): a
@@ -1983,12 +1923,10 @@ class Configuration:
                 f"type '{action_type}'. The measured phase must be a time_course, a "
                 "steady_state or a parameter_scan.")
         preequil_cond = fields['preequilibrate']
+        # A `perturbations: none` condition (#906, ADR-0150) contributes nothing: the experiment
+        # equilibrates the model as it stands (free parameters at the trial point), which the
+        # experiment start's resetParameters (ADR-0151) restores whatever experiment ran before.
         equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
-        if not equil_perts:
-            # A `perturbations: none` condition (#906, ADR-0150): equilibrate the model as it
-            # stands. Only a condition declared `none` has no perturbations.
-            self._refuse_unperturbed_equilibration_after_parameter_changes(
-                name, model, base, preequil_cond)
         consumed_conditions.setdefault(base, set()).add(preequil_cond)
         meas_cond = fields.get('condition')
         if meas_cond is not None:

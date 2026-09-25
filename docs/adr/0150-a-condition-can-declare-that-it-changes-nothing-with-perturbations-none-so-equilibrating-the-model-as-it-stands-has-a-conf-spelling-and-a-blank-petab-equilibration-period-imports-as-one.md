@@ -71,23 +71,21 @@ condition whose rows are all base pins `p = p__REF`, the identity once `p__REF` 
 to `p`, imports as a `none` condition under its own name. A blank id on a measured period is
 still "no condition".
 
-## One interaction refused: parameters left changed by an earlier experiment
+## Experiments written before a `none` equilibration
 
-PyBNF writes every declared experiment of a BNGL model into one action list, and between them it
-resets the species but not the parameters (#830, #831). A named pre-equilibration condition sets
-its own parameters explicitly and so is immune for those; a `none` one sets nothing. A `none`
-equilibration placed after an experiment that changed `flag` would therefore run with `flag`
-still changed, which is a different protocol from the one declared.
+PyBNF writes every declared experiment of a BNGL model into one action list. Since ADR-0151
+(#830, #831) each experiment opens by restoring the parameters saved before the first one, so a
+`none` equilibration starts from the model as it stands -- free parameters at the trial point,
+everything else at its model value -- whatever experiments are written before it, on BNG2.pl,
+bngsim and the network-free path alike. An SBML model builds each experiment's simulation afresh
+and never carried anything over.
 
-So a `none` pre-equilibration is refused at load when any line written before it on the same
-model's action list changes a parameter: an inline `setParameter`, or a `parameter_scan` or
-`bifurcate` over a parameter. The error names the parameters and says to give the condition
-the model values of the fixed ones explicitly. A free parameter has no constant to restore
-(`k = 1` would pin it for the whole experiment instead of equilibrating at its trial value), so
-for a free one the error says to declare the experiment before the one that changes it. An
-SBML model builds each experiment's simulation afresh, so the check does not apply there. The
-refusal is conservative (bngsim restores a scanned parameter, BNG2.pl does not), and it can be
-lifted when #830 and #831 are fixed.
+Before ADR-0151 this mattered most for a `none` condition, which sets nothing and so has
+no `setParameter` of its own to overwrite a leftover value; a named condition is immune for the
+parameters it sets. The first version of this change therefore refused a `none` equilibration
+written after any line that changed a parameter. That refusal was removed when #830 was fixed:
+the leftover values it guarded against no longer exist, and the check, which only looked for an
+earlier `setParameter`, refused jobs that now simulate correctly.
 
 ## Why not the alternatives
 
@@ -105,10 +103,11 @@ represent exactly once a condition can say it changes nothing.
 
 ## Left for later
 
-A finite leading period with a blank condition, `-T` before a measured period at `0` (the
-fixed-duration equilibration of #896), is refused on the branch that adds `equil_t_end:`
-import. Once that branch and this one are both on `main`, it should import by the same rule, as
-`preequilibrate:` a `none` condition plus `equil_t_end: T`.
+A `none` pre-equilibration with `equil_t_end: T` exports exactly, as a blank (or, with `M`
+non-empty, `cond_wildtype`) period at `-T` before the measured period at `0`. The importer
+still refuses a leading `-T` period that applies no condition (#896), so such a job does not yet
+round-trip. It should import by the same rule as the `-inf` period, as `preequilibrate:` a
+`none` condition plus `equil_t_end: T`.
 
 ## Consequences
 
