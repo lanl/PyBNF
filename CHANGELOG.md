@@ -259,19 +259,16 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
-- **PEtab import keeps every replicate of a dose-response experiment (#903).** Repeated
-  measurements at one dose now import as `<name>.exp`, `<name>_rep2.exp`, ..., as time-course
-  replicates already did. Before, only the last replicate reached the fit. Every data file now
-  gets a name no other experiment's file has, so an experiment named `s_rep2` is no longer
-  fitted to the replicate of an experiment `s`.
-- **PEtab import reads a dose experiment from all its periods, not its last row (#904).** A
-  dose after a pre-equilibration (the shape `petab1to2` writes) imports as a pre-equilibrated
-  scan, and an experiment applying two conditions at once is refused, naming both. Before, the
-  pre-equilibration or the other condition was dropped.
-- **PEtab import keeps a `cond_wildtype` condition that sets real targets (#905).** It imports
-  as condition `cond_wildtype`; only the exporter's base, made of surrogate pins, is dropped.
-  The exporter now refuses a condition named `wildtype`. Before, such a condition was dropped
-  and its experiment fitted against the unperturbed model.
+- **PEtab export now simulates a dose-response at the estimate of a parameter that is fit and
+  perturbed by a condition elsewhere in the job (#892).** Each dose condition set only the
+  swept parameter, so PEtab ran every dose at the parameter's model-file value. Each dose
+  condition now pins it to its estimate. A pre-equilibrated dose-response in such a job, until
+  now refused, exports too, except for three combinations that are still refused with a message.
+- **PEtab export pairs every replicate's dose-response measurements with the dose they were
+  measured at (#895).** A second `data:` file's rows were paired with the first file's doses by
+  row position, so reordered or missing doses were exported against the wrong doses, and an
+  extra dose raised a bare `IndexError`. The dose axis is now every dose any replicate measures.
+  A dose the fitter itself cannot match is refused, with the file and dose named.
 - **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
   experiment's own mean (#894).** The fit scales each experiment by its own mean, but the export
   wrote one mean pooled over all experiments, so the exported problem had a different optimum.

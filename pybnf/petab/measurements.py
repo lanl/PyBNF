@@ -233,23 +233,36 @@ def _token_at_time(by_time, t):
     return None
 
 
-def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids,
-                                   scan_time, sd_suffix='_SD', model_id='', noise_values=None):
+def dose_response_measurement_rows(data, column_to_observable_id, swept_param,
+                                   experiment_id_of_dose, scan_time, sd_suffix='_SD',
+                                   model_id='', noise_values=None):
     """Pivot a dose-response (swept-axis) wide :class:`~pybnf.data.Data` to long rows.
 
     The dual of :func:`measurement_rows_from_data` for a Parameter Scan ``.exp`` whose
-    independent axis (column 0) is the swept parameter, not time. Each data *row* is one
-    measured dose mapped to its own experiment (``experiment_ids[i]``, aligned with the
-    ``data`` row order), and the measurement ``time`` is the scan's fixed ``scan_time`` -- a
-    scalar, ``inf`` for a steady-state scan (PEtab time=inf) or a finite ``t_end:`` for a
-    fixed-endpoint scan (ADR-0046), not a data column. ``column_to_observable_id`` and the
-    ``<col><sd_suffix>`` noise companion behave as in the time-course pivot (``sd_suffix=None``
-    disables per-point noise); the swept-parameter column 0 is not in the map, so it is never
-    emitted as a measurement. ``model_id`` is the optional model->data link (ADR-0041), stamped
-    on every row (``''`` for a single-model job). ``noise_values`` is the time-course pivot's
+    independent axis is the swept parameter, not time. Each data *row* is one measured dose,
+    tagged with the experiment of **its own dose**: the row's ``swept_param`` cell is looked up
+    in ``experiment_id_of_dose`` (``{dose: experimentId}``, built by the exporter over the
+    experiment's whole dose axis). The fitter pairs a row with the simulation at the row's own
+    dose (``Objective._sim_row_for``), so a replicate whose doses are reordered, missing or
+    extra is tagged correctly (#895); the row's position in the file plays no part. A dose
+    absent from the map raises ``PybnfError`` rather than tagging the row with a neighbour's
+    experiment.
+
+    The measurement ``time`` is the scan's fixed ``scan_time`` -- a scalar, ``inf`` for a
+    steady-state scan (PEtab time=inf) or a finite ``t_end:`` for a fixed-endpoint scan
+    (ADR-0046), not a data column. ``column_to_observable_id`` and the ``<col><sd_suffix>``
+    noise companion behave as in the time-course pivot (``sd_suffix=None`` disables per-point
+    noise); the swept-parameter column is not in the map, so it is never emitted as a
+    measurement. ``model_id`` is the optional model->data link (ADR-0041), stamped on every row
+    (``''`` for a single-model job). ``noise_values`` is the time-course pivot's
     per-experiment numeric noise (#894): the scan's one column mean, written on every dose.
     """
     noise_values = noise_values or {}
+    if swept_param not in data.cols:
+        raise PybnfError(
+            f"A dose-response data file has no column for the swept parameter '{swept_param}' "
+            f"(columns: {list(data.cols)}), so its rows cannot be matched to their doses.")
+    di = data.cols[swept_param]
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
@@ -262,10 +275,17 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
             value = data.data[i, ci]
             if np.isnan(value):
                 continue
+            dose = float(data.data[i, di])
+            experiment_id = experiment_id_of_dose.get(dose)
+            if experiment_id is None:
+                raise PybnfError(
+                    f"A dose-response measurement of '{col}' at {swept_param} = {dose!r} has no "
+                    f"experiment in the exported dose axis {sorted(experiment_id_of_dose)}; the "
+                    f"row cannot be tagged with the dose it was measured at.")
             noise = fixed_noise if sd_ci is None else float(data.data[i, sd_ci])
             rows.append(PetabMeasurementRow(
                 observable_id=observable_id, time=float(scan_time),
-                measurement=float(value), experiment_id=experiment_ids[i],
+                measurement=float(value), experiment_id=experiment_id,
                 model_id=model_id, noise_parameters=noise))
     return rows
 
