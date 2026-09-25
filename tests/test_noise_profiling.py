@@ -529,7 +529,6 @@ end reaction rules
 end model
 
 generate_network({overwrite=>1})
-simulate({method=>"ode",t_end=>2,n_steps=>2})
 """
 
 _EXP = "# time\tx\ty\n1\t10\t0\n2\t6\t4\n"

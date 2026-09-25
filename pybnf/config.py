@@ -806,9 +806,10 @@ class Configuration:
 
         * the record names a model this job actually declares;
         * that model is one with a CVODE tolerance to state -- an ``.xml``/``.ant`` model on
-          ``sbml_backend = bngsim``, integrated by CVODE rather than by Gillespie. A
-          ``.bngl`` model takes ``atol``/``rtol`` from its own ``begin actions`` block, the
-          RoadRunner backend has its own integrator settings, and
+          ``sbml_backend = bngsim``, integrated by CVODE rather than by Gillespie. The
+          simulations PyBNF writes for a ``.bngl`` model's experiments carry no
+          ``atol``/``rtol`` (and the edition-2 model may not carry a simulation of its own,
+          #969), the RoadRunner backend has its own integrator settings, and
           ``sbml_integrator = gillespie`` makes every action of every model stochastic
           (``_resolve_method``), where a run carries no tolerances at all -- so accepting
           the record in any of the three would silently do nothing;
@@ -845,7 +846,8 @@ class Configuration:
                     f"Model '{mf}' cannot take the `model:` line's solver tolerances "
                     f'({", ".join(sorted(record))}): they are CVODE settings, and only an '
                     'SBML (.xml) or Antimony (.ant) model on sbml_backend = bngsim uses '
-                    'them. A BNGL model states atol/rtol in its own begin actions block.')
+                    'them. The simulations PyBNF writes for a BNGL model\'s experiments '
+                    'carry no atol/rtol.')
             if backend != 'bngsim':
                 raise PybnfError(
                     f"Model '{mf}' states solver tolerances "
@@ -1651,6 +1653,25 @@ class Configuration:
         ed = edition.resolve_edition(self.config.get('edition'))
         edition.require_edition(ed, 2, "the 'experiment:' syntax")
 
+        # The model defines the model and the conf defines the protocol (#969, ADR-0152): a BNGL
+        # model that experiment: lines simulate may carry, in its actions, only the network
+        # definition (generate_network, setOption). Checked before any experiment is synthesized
+        # onto it, against what the scan read from the file -- not model.actions, which a legacy
+        # time_course key may already have extended. A model no experiment simulates (one bound
+        # the legacy way, model = X : Y.exp) keeps its actions: they are its protocol. A model
+        # bound both ways is refused, and told why its simulate lines are not leftovers.
+        for base in dict.fromkeys(self._resolve_experiment_model(name, fields.get('model'))
+                                  for name, fields in experiments):
+            model = self.models[base]
+            if not isinstance(model, BNGLModel):
+                continue
+            legacy = self._data_map.get(base)
+            model.require_no_protocol_actions(note=(
+                f"This model also binds data the legacy way ({', '.join(legacy)} on its "
+                "'model =' line), which only its own actions simulate: bind that data with "
+                "'experiment:' lines too, or simulate this model with no 'experiment:' line."
+                if legacy else None))
+
         # Output-row counts (suffix -> n_points - 1) for the synthesized actions, merged
         # into time_length by _load_t_length (the actions live neither in the model file
         # nor the legacy time_course list, so find_t_length / the xml branch miss them).
@@ -2021,7 +2042,10 @@ class Configuration:
                 continue  # no experiment-synthesized actions -> nothing to prune
             action_suffixes = {s[1] for s in model.suffixes}
             if action_suffixes != exp_names_by_model[base]:
-                continue  # a begin-actions block is mixed in -> not separable, fail safe
+                # Another action is mixed in -> not separable, fail safe. For a BNGL model it can
+                # no longer be one from the model's own actions block, which the edition-2 rule
+                # refuses (#969); a legacy time_course / param_scan key still adds one.
+                continue
             producible = set(model.get_suffixes())
             emit = set(self.exp_data.get(base, {}).keys())
             for cs in self.constraints:

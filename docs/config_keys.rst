@@ -57,8 +57,9 @@ Required Keys
   species-keyed one has no reading across models that do not share species names.
 
   A ``model:`` line carrying any of these fields must declare exactly one model, and that
-  model must be one with a CVODE tolerance to state. A BNGL model writes ``atol``/``rtol``
-  in its own ``begin actions`` block; the RoadRunner backend has its own integrator
+  model must be one with a CVODE tolerance to state. A BNGL model is not one: the simulations
+  PyBNF writes for its experiments carry no ``atol``/``rtol``, and an edition-2 model's own
+  actions may carry no simulation (#969); the RoadRunner backend has its own integrator
   settings; and ``sbml_integrator = gillespie`` runs every action stochastically, where
   there are no CVODE tolerances at all. All three are refused here rather than accepted and
   ignored. Requires ``edition >= 2``.
@@ -145,9 +146,12 @@ Required Keys
       format without ``replicate`` remains valid and shares each time binding across all
       replicate files.
     * **The simulation outputs at exactly the data's points.** The independent-variable
-      column of the data supplies the simulation's output grid (the BNGL ``begin actions``
-      block is no longer needed for fitting); PyBNF synthesizes the ``simulate`` action
-      from the data, so the scoring grid always lines up with the measurements.
+      column of the data supplies the simulation's output grid; PyBNF synthesizes the
+      ``simulate`` action from the data, so the scoring grid always lines up with the
+      measurements. The model file defines the model and the conf the protocol, so a BNGL
+      model that ``experiment:`` lines simulate may carry, in its actions, only its network
+      definition (``generate_network``, ``setOption``); any other action is refused at load,
+      naming the model file and the line. (ADR-0152)
     * **Each experiment starts from the model as written:** the model's parameters with the
       trial values of the free ones, and its seed species, whatever the experiments declared
       before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
@@ -1017,7 +1021,7 @@ These keys specify what simulations should be performed with the models. For SBM
 
 .. note::
 
-   For BNGL models, we recommend specifying simulation actions in the BNGL file's ``begin actions`` block rather than in the configuration file. The BNGL actions block supports the full set of BioNetGen action arguments (e.g., ``steady_state``, ``atol``, ``rtol``, ``sparse``, ``continue``, ``stop_if``), whereas the configuration file keys below only support a subset. Configuration file actions are primarily intended for SBML models, which have no native action syntax.
+   For BNGL models, we recommend specifying simulation actions in the BNGL file's ``begin actions`` block rather than in the configuration file. The BNGL actions block supports the full set of BioNetGen action arguments (e.g., ``steady_state``, ``atol``, ``rtol``, ``sparse``, ``continue``, ``stop_if``), whereas the configuration file keys below only support a subset. Configuration file actions are primarily intended for SBML models, which have no native action syntax. This applies to edition 1: in an edition-2 job the ``experiment:`` lines define the simulations, and a BNGL model they simulate may carry only its network definition (``generate_network``, ``setOption``) in its actions.
 
 .. _time_course_key:
 
@@ -1559,8 +1563,9 @@ Algorithm Options
 **sbml_rtol**, **sbml_atol**
   Relevant only when ``sbml_backend = bngsim``: the CVODE relative and absolute error
   tolerances used for every deterministic (``ode``) simulation of every SBML/Antimony
-  model in the fit. For BNGL models, write ``rtol``/``atol`` in the BNGL file's
-  ``begin actions`` block instead — that is BioNetGen's own surface for them.
+  model in the fit. For an edition-1 BNGL model, write ``rtol``/``atol`` in the BNGL file's
+  ``begin actions`` block instead — that is BioNetGen's own surface for them. (An edition-2
+  model's actions may carry no simulation, #969.)
 
   These two keys are the fit-wide **default**. Under ``edition >= 2`` a single model can
   state its own instead, on its :ref:`model: <model_decl>` declaration line
@@ -1772,9 +1777,10 @@ Algorithm Options
     
 **generate_network**
   Model-scoped options for BNGL network generation (edition 2). When a model carries no
-  ``begin actions`` block — the edition-2 convention, where the ``experiment:`` lines
-  synthesize the simulations — PyBNF generates the reaction network with a bare
-  ``generate_network({overwrite=>1})``. For a model whose reaction network is finite only
+  ``generate_network`` line of its own — the edition-2 convention, where the
+  ``experiment:`` lines synthesize the simulations and a model's actions may be only its
+  network definition (``generate_network``, ``setOption``) — PyBNF generates the reaction
+  network with a bare ``generate_network({overwrite=>1})``. For a model whose reaction network is finite only
   under a stoichiometry / aggregation / iteration cap (crosslinking, aggregation,
   polymerization), that bare default would generate an *unbounded* network and never
   terminate. This key supplies the cap the stripped actions block used to carry: its value is

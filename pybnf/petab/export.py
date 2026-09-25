@@ -62,10 +62,12 @@ Uniform, whose box seeds the draw without constraining the search (#736); a ``ti
 measurement-time marginalization, whose latent sampling time a PEtab measurement row's single
 exact ``time`` cannot carry (#738); a fixed-duration equilibration (``equil_t_end:``) on a
 model that reads the simulation time, whose clock a PEtab period cannot restart (#896); a
-``postprocess`` script (#899); a BNGL action the fit runs ahead of its experiments that can
-change their starting state, such as ``setParameter`` (#900); a ``.con``/``.prop``
-Constraint; an Antimony (``.ant``) model. The job's ``generate_network`` cap is written into
-the exported BNGL model, as the fitter synthesizes it (#901). The
+``postprocess`` script (#899); a ``.con``/``.prop`` Constraint; an Antimony (``.ant``) model.
+A BNGL model whose actions are more than its network definition (``generate_network``,
+``setOption``) is refused as the fitter refuses it, with a ``PybnfError`` naming the file and
+the line (#969): under edition 2 the conf, not the model, defines the protocol. The job's
+``generate_network`` cap is written into the exported BNGL model, as the fitter synthesizes it
+(#901). The
 oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
 ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
 """
@@ -91,6 +93,7 @@ from ..pset import (
     INITIALIZATION_PRIOR,
     ModelError,
     OutOfBoundsException,
+    _strip_action_line_index,
 )
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
@@ -253,8 +256,8 @@ def export_job(conf_path, out_dir, inline_functions=False):
         free_params, free_to_model, surrogate_params, registry, models)
 
     # Each model is emitted in its own native language (ADR-0040): a BNGL model is
-    # PEtab-cleaned (its actions reduced to the network definition the fit used, #485/#900/
-    # #901); an SBML model is carried byte-verbatim (the measurement model lives in the
+    # PEtab-cleaned (its actions, which may be only a network definition, #969, reduced to the
+    # one the fit used, #485/#901); an SBML model is carried byte-verbatim (the measurement model lives in the
     # observables table, never a model-file edit -- ADR-0036). Cleaned before any file is
     # written, so a refused actions block leaves no half-written problem behind.
     methods = _experiment_methods_by_model(conf, models)
@@ -733,11 +736,9 @@ def _experiment_methods_by_model(conf, models):
     (``ode`` when unset, as ``config.py`` defaults it), grouped by the model it simulates.
 
     PEtab has no simulation method, so the tables never read this; the model cleaner does.
-    The fitter builds each experiment's simulation differently by method: a network-free
-    (``nf``) one is emitted with no ``resetConcentrations()`` before it and does not make the
-    fitter generate a network (``BNGLModel.add_action``). So whether a hand-written
-    simulation action can change what an experiment starts from (#900), and whether the fit
-    generates a network at all (#901), depend on it."""
+    A network-free (``nf``) experiment does not make the fitter generate a network
+    (``BNGLModel.add_action``), so whether the fit generates one at all, and so writes the
+    ``generate_network`` line the export must carry, depends on it (#901)."""
     stem_to_model = {Path(mf).stem: mf for mf in models}
     methods = {mf: {} for mf in models}
     for key, fields in conf.items():
@@ -2088,106 +2089,13 @@ def _read_model(model_file, path, language):
 # Emitting the PEtab-clean model and problem.yaml
 # ---------------------------------------------------------------------------
 
-# The hand-written actions the exporter may drop, by BNGL action name (#900). Under edition 2
-# the fitter runs every action the model file holds -- in ``begin actions`` or loose after
-# ``end model`` -- except ``generate_network`` and ``setOption`` (``BNGLModel.__init__``), and
-# then the simulations it builds from the ``experiment:`` lines (``BNGLModel.add_action``),
-# each network-based one preceded by ``resetConcentrations()``. PEtab has no such preamble, so
-# an action may be dropped only if it cannot change what those simulations start from. Checked
-# by reading ``pset.py`` and BioNetGen 2.9.3's ``Perl2`` sources, and by running the same fit
-# with and without each action under BNG2.pl and under bngsim:
-#
-# * a simulation changes species amounts only, and the reset before each network-based
-#   experiment restores the seed (or the last ``saveConcentrations()`` snapshot, and saving is
-#   refused). A network-free (``method: nf``) experiment gets no reset, so it continues from
-#   where a hand-written simulation left off; that pairing is refused separately.
-#   ``method=>"protocol"`` runs the model's ``begin protocol`` block, whose own actions can set
-#   parameters, so it is not a plain simulation and is refused.
-# * ``resetConcentrations()`` restores the seed or a saved snapshot, and saving is refused.
-# * the ``write*`` / ``visualize`` actions write files and change nothing.
-#
-# Everything else is refused, the unknown included. ``parameter_scan`` / ``bifurcate`` look
-# like simulations but are not droppable: BNG2.pl leaves the scanned parameter at its last scan
-# value (``BNGAction.pm``'s scan never restores it), which every later experiment then sees
-# (measured: the fit's objective moved from 7e-12 to 1606), while bngsim restores it -- so the
-# fitter itself disagrees by backend, and no export can match both.
-_SIMULATION_ACTIONS = frozenset({
-    'simulate', 'simulate_ode', 'simulate_ssa', 'simulate_pla', 'simulate_psa', 'simulate_nf'})
-_DROPPABLE_ACTIONS = frozenset({
-    'resetConcentrations',
-    'writeXML', 'writeSBML', 'writeNetwork', 'writeNET', 'writeFile', 'writeModel', 'writeBNGL',
-    'writeMfile', 'writeMexfile', 'writeMEXfile', 'writeMDL', 'writeLatex', 'writeSSC',
-    'writeSSCcfg', 'writeCPPfile', 'writeCPYfile', 'visualize'})
-# The network-free experiment methods (``Action.VALID_METHODS``). ``BNGLModel.add_action``
-# omits the reset for ``nf`` alone today; RuleMonkey (``rm``) runs on the same bngsim
-# network-free session, which keeps its state from one simulate to the next and does not run a
-# reset, so it is counted too rather than trusting a reset line that session skips.
-_NETWORK_FREE_METHODS = frozenset({'nf', 'rm', 'rulemonkey'})
-# An action's name: the identifier before its opening parenthesis.
-_ACTION_NAME = re.compile(r'([A-Za-z_]\w*)\s*\(')
-_PROTOCOL_METHOD = re.compile(r'method\s*=>\s*["\']protocol["\']')
 # The line ``BNGLModel._synthesized_generate_network_line`` writes when no ``generate_network``
 # conf key is set: the default network generation every BNGL consumer applies unasked, so it
 # is left implicit in the exported model rather than written into every one of them.
 _BARE_GENERATE_NETWORK = 'generate_network({overwrite=>1})'
 
 
-def _action_code(raw):
-    """One ``BNGLModel.actions`` entry as code: comments stripped, the physical lines of a
-    backslash continuation joined, whitespace collapsed. Empty for a blank or comment line."""
-    code = re.sub(r'#[^\n]*', '', raw)
-    code = re.sub(r'\\\s*\n', ' ', code)
-    return ' '.join(code.split())
-
-
-def _require_droppable_actions(model, model_file, experiment_methods):
-    """Refuse a BNGL model whose hand-written actions the export cannot drop without changing
-    the fit (#900); see ``_DROPPABLE_ACTIONS`` for which actions are droppable and why.
-
-    ``model.actions`` is the fitter's own list -- the scan ``BNGLModel.__init__`` does for the
-    fit -- so this checks exactly the lines the fit runs ahead of its experiments, the ones in
-    ``begin actions`` and the loose ones after ``end model`` alike. ``experiment_methods`` maps
-    the model's experiments to their ``method:`` (``None``: unknown, none taken as
-    network-free)."""
-    refused, simulations = [], []
-    for raw in model.actions:
-        code = _action_code(raw)
-        if not code:
-            continue                          # a blank or comment line inside the block
-        match = _ACTION_NAME.match(code)
-        name = match.group(1) if match else None
-        if name in _SIMULATION_ACTIONS and not _PROTOCOL_METHOD.search(code):
-            simulations.append(code)
-        elif name not in _DROPPABLE_ACTIONS:
-            refused.append(code)
-    if refused:
-        raise NotImplementedError(
-            f"Model '{model_file}' carries action(s) that the fit runs before its experiments "
-            f"but the PEtab export would drop: {'; '.join(refused)}. Under edition 2 the fitter "
-            f"runs every action in the model file (in 'begin actions' or loose after 'end "
-            f"model'), except generate_network and setOption, ahead of the simulations it builds "
-            f"from the 'experiment:' lines, so such an action can change what every experiment "
-            f"starts from -- a parameter value, a species amount, or the snapshot "
-            f"resetConcentrations() restores (a parameter_scan or bifurcate leaves its parameter "
-            f"at the last scanned value under BioNetGen). PEtab has no step to carry it, so the "
-            f"exported problem would have a different optimum. Move the change into the model's "
-            f"parameters or seed species, or into a 'condition:' on the experiments, or delete "
-            f"the line if the fit should not use it. The export drops only simulate*, "
-            f"resetConcentrations and write*/visualize, and keeps generate_network (#900).")
-    network_free = sorted(name for name, method in (experiment_methods or {}).items()
-                          if method in _NETWORK_FREE_METHODS)
-    if simulations and network_free:
-        raise NotImplementedError(
-            f"Model '{model_file}' carries hand-written simulation action(s) "
-            f"({'; '.join(simulations)}) that the fit runs ahead of experiment(s) "
-            f"{network_free}, which run network-free (method: nf / rm). The fitter starts a "
-            f"network-free experiment without resetting the species, so it continues from the "
-            f"state the hand-written simulation left, while PEtab starts every experiment from "
-            f"the model's initial state. Delete the hand-written simulation action(s) from the "
-            f"model to export (#900).")
-
-
-def _exported_generate_network_line(model, text_lines, experiment_methods):
+def _exported_generate_network_line(model, experiment_methods):
     """The ``generate_network`` line the exported model carries: the fitter's own (#485/#901).
 
     * The model has its own line: the fitter uses it and ignores the ``generate_network`` conf
@@ -2195,18 +2103,17 @@ def _exported_generate_network_line(model, text_lines, experiment_methods):
       are several, since the scan keeps overwriting ``generate_network_line``. So does the
       export.
     * Otherwise the fitter synthesizes ``generate_network({overwrite=>1,<opts>})`` from the key
-      whenever it generates a network -- for a hand-written network-based simulation, or for
-      any experiment that is not network-free (``BNGLModel.add_action``). The export used to
-      write nothing, so a cap stated in the job was lost and a PEtab consumer built a
+      for any experiment that is not network-free (``BNGLModel.add_action``). The export used
+      to write nothing, so a cap stated in the job was lost and a PEtab consumer built a
       different, or an unbounded, network (#901). The synthesized line is now written; the bare
-      default (no key) is what every consumer does unasked, so it stays implicit.
+      default (no key) is what every consumer does unasked, so it stays implicit. A model
+      that passed :meth:`~pybnf.pset.BNGLModel.require_no_protocol_actions` has no
+      hand-written simulation that could make the fitter generate a network as well (#969).
 
     ``None`` when the exported model needs no line."""
-    own = any(re.match('generate_network', text_lines[i].split('#', 1)[0].strip())
-              for i in model.action_line_indices)
-    if own:
+    if model.generate_network_lines:
         return model.generate_network_line.strip()
-    generates = (model.generates_network or experiment_methods is None
+    generates = (experiment_methods is None
                  or any(method != 'nf' for method in experiment_methods.values()))
     if not generates:
         return None
@@ -2221,30 +2128,31 @@ def clean_model_for_petab(text, model_file='model.bngl', generate_network_option
 
     New-era BNGL binds free parameters **by id** (ADR-0034), so the source model already
     carries bare parameter ids with real nominal values -- exactly what PEtab estimates.
-    "PEtab-clean" therefore drops the *simulation* actions (PEtab drives simulation via the
-    measurement times / experiments, not the model's own ``simulate`` calls) while keeping
-    ``generate_network`` -- a network-definition / compilation directive, not a simulation
-    action. That directive carries the model's finiteness cap (``max_stoich`` / ``max_agg`` /
-    ``max_iter``); dropping it would silently turn a model that is finite only under the cap
-    into one that network-generates unbounded, with no error or warning (#485). The line
-    written is the one the fitter runs (:func:`_exported_generate_network_line`): the model's
-    own, or the one the fitter synthesizes from the job's ``generate_network`` key (#901). The
-    exported model then carries its own cap, so ``import_.py`` (which copies the model
-    byte-verbatim) round-trips it and any BNG2.pl / PyBNF consumer stays finite; with no line
-    to keep, the actions disappear entirely.
+    Under edition 2 the model file defines the model and the conf the protocol (#969,
+    ADR-0152), so the only actions a model may carry are ``generate_network`` and
+    ``setOption``: :meth:`~pybnf.pset.BNGLModel.require_no_protocol_actions` -- the check the
+    fit runs at config load and the importer runs on a PEtab problem's model -- refuses any
+    other, naming the model file and the line. Nothing the fit runs is dropped, then:
+    ``setOption`` and its siblings stay where they are (the fitter keeps them in the model text
+    too; a line index in front of one is removed, as outside a block BNG2.pl would not read the
+    line, #963), and ``generate_network`` -- a network-definition / compilation directive, not
+    a simulation action -- is written back. That directive carries the model's finiteness cap
+    (``max_stoich`` / ``max_agg`` / ``max_iter``); dropping it would silently turn a model that
+    is finite only under the cap into one that network-generates unbounded, with no error or
+    warning (#485). The line written is the one the fitter runs
+    (:func:`_exported_generate_network_line`): the model's own, or the one the fitter
+    synthesizes from the job's ``generate_network`` key (#901). The exported model then carries
+    its own cap, so ``import_.py`` round-trips it and any BNG2.pl / PyBNF consumer stays finite;
+    with no line to keep, the actions block disappears entirely.
 
     The model is read with the fitter's own scanner (``BNGLModel``), so the lines removed are
     exactly the ones the fit reads as actions -- the ``begin actions`` block and any loose
     action after ``end model`` -- and the kept line goes in a minimal ``begin actions`` block
-    at the end of the file, where the fitter writes it. ``setOption`` and its siblings stay
-    where they are (the fitter keeps them in the model text too), as do a comment outside the
-    actions block and a protocol block. An action the export cannot drop without changing the
-    fit -- one that sets a parameter or species, saves a snapshot, or reads a file -- raises
-    rather than vanishing (:func:`_require_droppable_actions`, #900). The reaction network and
-    the ``begin functions`` block -- which carry the measurement model -- are carried verbatim.
-    A fit-and-mutated parameter keeps its model name (``v1``) here as a plain nominal-valued
-    parameter (always overridden by its Condition); only the parameter *table* carries the
-    surrogate ``v1__REF`` (ADR-0027).
+    at the end of the file, where the fitter writes it. A comment outside the actions block and
+    a protocol block stay too. The reaction network and the ``begin functions`` block -- which
+    carry the measurement model -- are carried verbatim. A fit-and-mutated parameter keeps its
+    model name (``v1``) here as a plain nominal-valued parameter (always overridden by its
+    Condition); only the parameter *table* carries the surrogate ``v1__REF`` (ADR-0027).
 
     ``generate_network_options`` is the job's ``generate_network`` key and
     ``experiment_methods`` maps the experiments on this model to their ``method:``
@@ -2270,10 +2178,13 @@ def clean_model_for_petab(text, model_file='model.bngl', generate_network_option
                           generate_network_options=generate_network_options, text=text)
     except ModelError as exc:
         raise PybnfError(f"Model '{model_file}' could not be read as BNGL: {exc}.") from exc
-    _require_droppable_actions(model, model_file, experiment_methods)
-    lines = text.splitlines(keepends=True)
-    network_line = _exported_generate_network_line(model, lines, experiment_methods)
-    out = ''.join(line for i, line in enumerate(lines) if i not in model.action_line_indices)
+    model.require_no_protocol_actions(model_file)
+    network_line = _exported_generate_network_line(model, experiment_methods)
+    out = ''.join(
+        _strip_action_line_index(line.lstrip()) if i in model.indexed_directive_line_indices
+        else line
+        for i, line in enumerate(text.splitlines(keepends=True))
+        if i not in model.action_line_indices)
     if network_line is not None:
         if out and not out.endswith('\n'):
             out += '\n'

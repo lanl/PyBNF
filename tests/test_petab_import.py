@@ -22,6 +22,7 @@ itself: a PyBNF job exported to a PEtab v2 problem and imported back must reprod
    observableFormula becomes a measurement model evaluated post-simulation.)
 """
 
+import re
 import shutil
 from pathlib import Path
 
@@ -108,7 +109,8 @@ PREDSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'predsigma_
 BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
 
 # A two-parameter-kind model for the conditioned fixture: v1/v2/v3 fit, s fixed (so a
-# condition on v1 exercises the surrogate-base rename and one on s the precomputed path).
+# condition on v1 exercises the surrogate-base rename and one on s the precomputed path). Its
+# actions are only the network definition, as an edition-2 model's must be (#969).
 _PARABOLA2_BNGL = """\
 begin model
   begin parameters
@@ -136,7 +138,6 @@ end model
 
 begin actions
   generate_network({overwrite=>1})
-  simulate({method=>"ode",t_start=>0,t_end=>2,n_steps=>2,suffix=>"par1",print_functions=>1})
 end actions
 """
 
@@ -3836,6 +3837,54 @@ class TestBoundaries:
             self._import_mutated(
                 demo_petab, tmp_path,
                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx*observableParameter1_obs_x\t')})
+
+    @pytest.mark.parametrize('leftover, code', [
+        ('simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"x"})',
+         'simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"x"})'),
+        ('setParameter("v1", 2)', 'setParameter("v1", 2)'),
+        ('writeSBML()', 'writeSBML()'),
+        # BNG2.pl reads a leading line index and ignores it (#963), and so does the check.
+        ('1 simulate({method=>"ode",t_end=>10,n_steps=>10})',
+         'simulate({method=>"ode",t_end=>10,n_steps=>10})'),
+    ], ids=['simulate', 'setParameter', 'writeSBML', 'numbered'])
+    def test_a_bngl_model_with_a_protocol_of_its_own_is_refused(self, demo_petab, tmp_path,
+                                                                leftover, code):
+        # #969: a third-party BNGL model carrying a leftover action. The importer copies the
+        # model into an edition-2 job whose experiments stand for the PEtab tables, and the
+        # fitter would refuse that job at load; the importer refuses it first, with the fitter's
+        # own check, naming the file and the line and saying the tables define the protocol.
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        model = prob / 'parabola_v2.bngl'
+        assert 'begin actions' not in model.read_text()        # the export wrote none
+        model.write_text(model.read_text() + f'begin actions\n{leftover}\nend actions\n')
+        number = model.read_text().splitlines().index(leftover) + 1
+        out = tmp_path / 'out'
+        with pytest.raises(PybnfError, match=(
+                rf"^Model file 'parabola_v2\.bngl' carries BNGL actions that are not "
+                rf"network-definition directives -- line {number}: {re.escape(code)}\. In a "
+                rf"PEtab problem the tables define the protocol.*PEtab condition table")):
+            import_job(prob / 'problem.yaml', out)
+        assert not out.exists() or not any(out.iterdir())      # nothing written
+
+    def test_a_bngl_model_with_only_a_network_definition_imports_verbatim(
+            self, demo_petab, tmp_path, monkeypatch):
+        # The directives an edition-2 model may carry: setOption and a (here numbered, #963)
+        # generate_network. The model is copied byte for byte, and the imported job loads with
+        # the fitter reading the numbered line as the network definition.
+        from pybnf.parse import load_config
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        model = prob / 'parabola_v2.bngl'
+        model.write_text(model.read_text() + 'begin actions\n'
+                         'setOption("NumberPerQuantityUnit",6.0221e23)\n'
+                         '1 generate_network({overwrite=>1,max_iter=>20})\nend actions\n')
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        assert (out / 'parabola_v2.bngl').read_bytes() == model.read_bytes()
+        monkeypatch.chdir(out)
+        fitted = load_config('imported.conf').models['parabola_v2']
+        assert fitted.generate_network_line == 'generate_network({overwrite=>1,max_iter=>20})'
+        assert fitted.hand_written_actions == []
 
     def test_unknown_prior_distribution_is_refused(self, demo_petab, tmp_path):
         # An unrecognized priorDistribution spelling is a malformed problem, not a gap.

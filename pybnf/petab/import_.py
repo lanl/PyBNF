@@ -87,6 +87,7 @@ import numpy as np
 from ..data import Data, observed_mean
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
+from ..pset import BNGLModel, ModelError
 from .conditions import (
     REF_MARKER,
     condition_name_from_id,
@@ -237,8 +238,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder) and
     ``PybnfError``
     for a malformed problem (an ``observableFormula`` symbol that is not a model entity, an
-    ambiguous dose-response group, an id defined twice across a table's files, or a
-    ``problem.yaml`` shape the reader cannot read -- #902).
+    ambiguous dose-response group, an id defined twice across a table's files, a
+    ``problem.yaml`` shape the reader cannot read -- #902 -- or a BNGL model whose actions are
+    more than its network definition, ``generate_network`` and ``setOption`` -- #969).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -301,6 +303,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     for m in models:
         loc, lang = m['location'], (m['language'] or 'bngl').lower()
         text = (base / loc).read_text(encoding='utf-8', errors='replace')
+        if lang == 'bngl':
+            _require_no_protocol_actions(text, loc)
         model_texts[loc] = text
         ns, ents, rules = _model_namespace(text, lang)
         namespaces.append(ns)
@@ -611,6 +615,25 @@ def _free_parameter_conf_line(fp, model_param):
     parts += [f'{fname}: {num(val)}' for fname, val in zip(fam.field_names, values)]
     parts += [f'lower: {num(fp.trunc_lb)}', f'upper: {num(fp.trunc_ub)}']
     return ', '.join(parts)
+
+
+def _require_no_protocol_actions(text, location):
+    """Refuse a BNGL model file that carries a protocol of its own (#969, ADR-0152).
+
+    In a PEtab problem the tables define the protocol, and the importer copies the model file
+    into an edition-2 job whose ``experiment:`` lines stand for them. An action the model file
+    carries would run ahead of each of those experiments, so the fitter refuses such a model at
+    config load. The importer applies the same check
+    (:meth:`~pybnf.pset.BNGLModel.require_no_protocol_actions`, also run by the exporter) to
+    every BNGL model first, so a third-party model with a leftover ``simulate`` or a
+    ``setParameter`` is refused before any file is written, naming the model file and the line.
+    Its actions may be only ``generate_network`` and ``setOption``.
+    """
+    try:
+        model = BNGLModel(location, suppress_free_param_error=True, text=text)
+    except ModelError as exc:
+        raise PybnfError(f"Model '{location}' could not be read as BNGL: {exc}.") from exc
+    model.require_no_protocol_actions(location, where='petab')
 
 
 # ---------------------------------------------------------------------------

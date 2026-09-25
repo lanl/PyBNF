@@ -58,6 +58,14 @@ caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``
 sets it per experiment, and ``settings`` overrides the required algorithm settings.
 
+In a PEtab problem the tables define the protocol, and the model file only the model. A
+BNGL model is therefore held to the rule an edition-2 job holds it to: its actions may be
+only its network definition, ``generate_network`` and ``setOption``. A model that carries
+anything else, such as a leftover ``simulate`` from running BioNetGen directly or a
+``setParameter``, is refused before any file is written, with an error naming the model
+file and the line (#969). Delete leftover simulations, and move a parameter or species
+change into the condition table or into the model itself.
+
 Exporting a PyBNF job
 ---------------------
 
@@ -88,13 +96,15 @@ Job-wide settings and the model's own actions are checked too. ``noise_location 
 on an ``lnnormal`` fit is refused like a ``location = mean`` field (on a linear Gaussian or
 Laplace the mean is the median, so either spelling exports), and a ``postprocess`` script is
 refused because PEtab cannot run a Python transform of the prediction. A BNGL model is
-exported as the model the fit ran: its leftover ``simulate`` / ``resetConcentrations`` /
-``write*`` / ``visualize`` actions are dropped, its network definition is kept (the model's own
-``generate_network`` line, or the one the job's ``generate_network`` key synthesizes), and an
-action that would change what the experiments start from (``setParameter``,
-``setConcentration``, ``saveConcentrations``, a ``parameter_scan``, and any action not listed
-here) is refused with the model file and the action named. Move such a change into the model
-itself or into a ``condition:``, or delete the line.
+exported as the model the fit ran. In an edition-2 job the model file defines the model and
+the conf defines the protocol, so a model's actions may be only its network definition,
+``generate_network`` and ``setOption``. The export keeps ``setOption`` where it stands and
+writes the network definition back: the model's own ``generate_network`` line, or the one the
+job's ``generate_network`` key synthesizes. A model carrying any other action, whether a
+leftover ``simulate`` or a ``setParameter``, is refused by the same check the fit runs when the
+job loads, with the same message naming the model file and the line (#969). Delete leftover
+simulations and file writes, and move a parameter or species change into a ``condition:`` or
+into the model itself.
 
 .. _petab_bngl_loader:
 

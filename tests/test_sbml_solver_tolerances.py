@@ -1967,10 +1967,10 @@ def test_a_tolerance_for_an_undeclared_model_is_refused():
 
 @pytest.mark.parametrize('mf', ['m.bngl', 'm.target'])
 def test_a_model_with_no_cvode_tolerance_to_state_is_refused(mf):
-    """A BNGL model states ``atol``/``rtol`` in its own ``begin actions`` block."""
+    """Only a CVODE-integrated SBML/Antimony model on bngsim takes the record."""
     cfg = _per_model_config(mf, {'atol': 1e-4})
 
-    with pytest.raises(PybnfError, match='begin actions'):
+    with pytest.raises(PybnfError, match='only an SBML'):
         cfg._resolve_model_tolerances()
 
 

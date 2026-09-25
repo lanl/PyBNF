@@ -388,3 +388,143 @@ end actions
             m.copy_with_param_set(None)
         with pytest.raises(NotImplementedError):
             m.save('some_prefix')
+
+
+_ACTIONS_MODEL = """\
+begin model
+begin parameters
+  k 0.5
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  1 A() 100
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  1 A() -> 0 k
+end reaction rules
+end model
+"""
+
+
+def _scan(actions):
+    """The scanner's reading of ``_ACTIONS_MODEL`` followed by ``actions``, and the file's own
+    1-based line numbers (counted here, not by the scanner) keyed by the stripped line."""
+    text = _ACTIONS_MODEL + actions
+    numbers = {line.strip(): i + 1 for i, line in enumerate(text.splitlines())}
+    return pset.BNGLModel('m.bngl', suppress_free_param_error=True, text=text), numbers
+
+
+class TestNumberedActionLines:
+    """#963 item 3: BNG2.pl removes a leading line index from an action and ignores it
+    (``BNGModel.pm``: ``$entry =~ s/^\\d+\\s+//``), so the scanner does too, for every use it
+    makes of an action line."""
+
+    def test_a_numbered_block_reads_as_its_unnumbered_twin(self):
+        numbered, lines = _scan(
+            'begin actions\n'
+            '1 generate_network({overwrite=>1,max_iter=>3})\n'
+            '2 simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"tc"})\n'
+            '  10   parameter_scan({parameter=>"k",par_scan_vals=>[1,2],method=>"ode",'
+            't_end=>1,n_steps=>1,suffix=>"sc"})\n'
+            'end actions\n')
+        plain, _ = _scan(
+            'begin actions\n'
+            'generate_network({overwrite=>1,max_iter=>3})\n'
+            'simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"tc"})\n'
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],method=>"ode",'
+            't_end=>1,n_steps=>1,suffix=>"sc"})\n'
+            'end actions\n')
+        assert numbered.generate_network_line == 'generate_network({overwrite=>1,max_iter=>3})'
+        for attr in ('generate_network_line', 'actions', 'suffixes', 'generates_network'):
+            assert getattr(numbered, attr) == getattr(plain, attr), attr
+        assert numbered.suffixes == [('simulate', 'tc'), ('parameter_scan', 'sc')]
+        sim = 'simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"tc"})'
+        assert numbered.hand_written_actions[0] == (lines[f'2 {sim}'], sim)
+        assert numbered.generate_network_lines == [
+            (lines['1 generate_network({overwrite=>1,max_iter=>3})'],
+             'generate_network({overwrite=>1,max_iter=>3})')]
+
+    def test_the_bngsim_classifier_reads_numbered_simulations(self):
+        # Before #963 a numbered line matched no action the classifier knows, so the model fell
+        # back to BNG2.pl (auto) or was refused (bngl_backend = bngsim).
+        from pybnf.bngsim_model import (BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF,
+                                        classify_actions_for_bngsim)
+        ode, _ = _scan('begin actions\n1 generate_network({overwrite=>1})\n'
+                       '2 simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"tc"})\n'
+                       'end actions\n')
+        assert classify_actions_for_bngsim(ode.actions) == BNGSIM_BACKEND_NET
+        nf, _ = _scan('begin actions\n'
+                      '1 simulate({method=>"nf",t_end=>5,n_steps=>5,suffix=>"tc"})\n'
+                      'end actions\n')
+        if classify_actions_for_bngsim(['simulate({method=>"nf",t_end=>5,n_steps=>5})']) is None:
+            pytest.skip('this bngsim has no network-free backend')
+        assert classify_actions_for_bngsim(nf.actions) == BNGSIM_BACKEND_NF
+
+    def test_a_numbered_setoption_stays_in_the_model_without_its_index(self):
+        # The model text keeps setOption where it stood, which moves it out of the actions
+        # block; outside a block BNG2.pl does not strip the index and skips the line.
+        m, _ = _scan('begin actions\n3 setOption("NumberPerQuantityUnit",6.0221e23)\n'
+                     'end actions\n')
+        assert 'setOption("NumberPerQuantityUnit",6.0221e23)' in m.model_lines
+        assert not any(line.startswith('3 ') for line in m.model_lines)
+        assert m.actions == [] and m.hand_written_actions == []
+
+    def test_a_numbered_protocol_line_is_stored_without_its_index(self):
+        m, _ = _scan('begin protocol\n1 setParameter("k",2)\n2 simulate({t_end=>1})\n'
+                     'end protocol\n')
+        assert m.protocol == ['setParameter("k",2)', 'simulate({t_end=>1})']
+
+    def test_a_number_inside_a_model_block_is_left_alone(self):
+        # Species and rules may carry an index of their own, which BNG2.pl reads itself.
+        m, _ = _scan('')
+        assert '1 A() 100' in m.model_lines and '1 A() -> 0 k' in m.model_lines
+
+
+class TestRequireNoProtocolActions:
+    """#969: the one check the fit, the PEtab export and the PEtab import apply."""
+
+    def test_the_network_definition_passes(self):
+        m, _ = _scan('setOption("NumberPerQuantityUnit",6.0221e23)\nbegin actions\n'
+                     '# a comment\n\ngenerate_network({overwrite=>1})\nend actions\n')
+        m.require_no_protocol_actions()
+        m.require_no_protocol_actions(where='petab')
+
+    @pytest.mark.parametrize('where, reason, remedy', [
+        ('conf', 'In an edition-2 job the model file defines the model',
+         "into a 'condition:' line"),
+        ('petab', 'In a PEtab problem the tables define the protocol',
+         'into the PEtab condition table'),
+    ])
+    def test_the_message_names_the_file_and_every_line(self, where, reason, remedy):
+        m, lines = _scan('begin actions\ngenerate_network({overwrite=>1})\n'
+                         'setParameter("k", 2)\n'
+                         'simulate({method=>"ode",\\\n  t_end=>5})  # continued\n'
+                         'end actions\nwriteXML()\n')
+        set_line = lines['setParameter("k", 2)']
+        sim_line = lines['simulate({method=>"ode",\\']
+        xml_line = lines['writeXML()']
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('models/m.bngl', where=where)
+        message = str(refused.value)
+        assert message.startswith(
+            "Model file 'models/m.bngl' carries BNGL actions that are not network-definition "
+            f'directives -- line {set_line}: setParameter("k", 2); '
+            f'line {sim_line}: simulate({{method=>"ode",t_end=>5}}); '
+            f'line {xml_line}: writeXML(). {reason}')
+        assert remedy in message and message.endswith('(#969).')
+
+    def test_a_long_list_is_cut_after_ten_lines(self):
+        m, _ = _scan('begin actions\n' + ''.join(f'writeXML({{suffix=>"s{i}"}})\n'
+                                                   for i in range(13)) + 'end actions\n')
+        with pytest.raises(PybnfError, match=r's9"\}\); and 3 more\. In an edition-2'):
+            m.require_no_protocol_actions()
+
+    def test_a_note_ends_the_message(self):
+        m, _ = _scan('simulate({t_end=>1})\n')
+        with pytest.raises(PybnfError, match=r'\(#969\)\. Look here\.$'):
+            m.require_no_protocol_actions(note='Look here.')
