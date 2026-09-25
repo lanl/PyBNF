@@ -90,7 +90,8 @@ class PetabMeasurementRow:
 # ---------------------------------------------------------------------------
 
 def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
-                               sd_suffix='_SD', model_id='', measurement_params=None):
+                               sd_suffix='_SD', model_id='', measurement_params=None,
+                               noise_values=None):
     """Pivot one experiment's wide :class:`~pybnf.data.Data` to long measurement rows.
 
     ``column_to_observable_id`` maps a ``Data`` column header (a model
@@ -120,6 +121,13 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     :class:`~pybnf.measurement.PerMeasurementModel` scale/offset). The default (``None`` /
     absent) leaves both blank, so a non-row-varying export is byte-identical.
 
+    ``noise_values`` (``{column: sigma}``, #894) gives a column one numeric ``noiseParameters``
+    value for every row of this experiment: a column-mean sigma whose mean differs between
+    experiments, exported through a noise placeholder. Such a column reads no ``_SD``
+    companion. A per-row sidecar noise token for the same column would bind the same
+    placeholder, so that pairing raises ``NotImplementedError`` instead of letting the token
+    win silently.
+
     Raises ``NotImplementedError`` if the independent variable is not ``time`` (a
     dose-response / ``parameter_scan`` ``.exp`` -- a later export chunk).
     """
@@ -134,6 +142,7 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
 
     iv = data.cols[indvar]
     params = measurement_params or {}
+    noise_values = noise_values or {}
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
@@ -145,12 +154,13 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
         # observableId suffix, so a sidecar the importer keyed to the source PEtab observableId
         # still resolves. A multi-token noiseFormula carries >1 noise series (ADR-0075).
         noise_by_time, obs_by_time = _column_placeholder_series(params.get(col, {}))
+        fixed_noise = _fixed_noise_value(col, noise_values, sd_ci, noise_by_time)
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):
                 continue
             t = float(data.data[i, iv])
-            noise = None if sd_ci is None else float(data.data[i, sd_ci])
+            noise = fixed_noise if sd_ci is None else float(data.data[i, sd_ci])
             noise_tokens = tuple(_token_at_time(d, t) for d in noise_by_time)
             obs_params = tuple(_token_at_time(d, t) for d in obs_by_time)
             # A lone noise token keeps the dedicated ``noise_parameter_id`` field (byte-identical
@@ -164,6 +174,28 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
                 noise_param_tokens=(noise_tokens if len(noise_tokens) > 1 else ()),
                 observable_parameters=obs_params))
     return rows
+
+
+def _fixed_noise_value(col, noise_values, sd_ci, noise_by_time=()):
+    """The one numeric ``noiseParameters`` value column ``col`` carries on every row of this
+    experiment (``noise_values[col]``, a per-experiment column-mean sigma -- #894), or ``None``.
+
+    Such a column's noise placeholder is fed by that number alone. A ``_SD`` companion
+    (``sd_ci``) or a sidecar noise token (``noise_by_time``) would compete for the same
+    ``noiseParameters`` cell, and the writer lets a token win (:func:`_noise_cell`), so either
+    pairing is refused rather than exported with the wrong sigma."""
+    value = noise_values.get(col)
+    if value is None:
+        return None
+    if sd_ci is not None or noise_by_time:
+        source = ('an _SD data column' if sd_ci is not None
+                  else 'a per-measurement noise token in the measurement_params sidecar')
+        raise NotImplementedError(
+            f"Observable column '{col}': its sigma is its column mean, exported per experiment "
+            f"through a noise placeholder (#894), but the data also supply {source} for it, "
+            f"which would bind the same placeholder. Drop the unused noise values for '{col}', "
+            f"or give it a sigma source that reads them.")
+    return float(value)
 
 
 def _column_placeholder_series(col_params):
@@ -202,7 +234,7 @@ def _token_at_time(by_time, t):
 
 
 def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids,
-                                   scan_time, sd_suffix='_SD', model_id=''):
+                                   scan_time, sd_suffix='_SD', model_id='', noise_values=None):
     """Pivot a dose-response (swept-axis) wide :class:`~pybnf.data.Data` to long rows.
 
     The dual of :func:`measurement_rows_from_data` for a Parameter Scan ``.exp`` whose
@@ -214,8 +246,10 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
     ``<col><sd_suffix>`` noise companion behave as in the time-course pivot (``sd_suffix=None``
     disables per-point noise); the swept-parameter column 0 is not in the map, so it is never
     emitted as a measurement. ``model_id`` is the optional model->data link (ADR-0041), stamped
-    on every row (``''`` for a single-model job).
+    on every row (``''`` for a single-model job). ``noise_values`` is the time-course pivot's
+    per-experiment numeric noise (#894): the scan's one column mean, written on every dose.
     """
+    noise_values = noise_values or {}
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
@@ -223,11 +257,12 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
         # (the per-observable-noise form -- ADR-0021/0045), mirroring the time-course pivot.
         suffix = sd_suffix.get(col) if isinstance(sd_suffix, dict) else sd_suffix
         sd_ci = None if suffix is None else data.cols.get(col + suffix)
+        fixed_noise = _fixed_noise_value(col, noise_values, sd_ci)
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):
                 continue
-            noise = None if sd_ci is None else float(data.data[i, sd_ci])
+            noise = fixed_noise if sd_ci is None else float(data.data[i, sd_ci])
             rows.append(PetabMeasurementRow(
                 observable_id=observable_id, time=float(scan_time),
                 measurement=float(value), experiment_id=experiment_ids[i],

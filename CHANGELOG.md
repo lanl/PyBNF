@@ -259,6 +259,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
+  experiment's own mean (#894).** The fit scales each experiment by its own mean, but the export
+  wrote one mean pooled over all experiments, so the exported problem had a different optimum.
+  When the experiments' means differ, each measurement row now carries its own experiment's mean.
+  The import restores `column_mean` only when every value matches its experiment's mean.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

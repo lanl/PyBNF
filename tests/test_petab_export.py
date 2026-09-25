@@ -563,6 +563,261 @@ class TestExportObjectiveFamily:
 
 
 # ---------------------------------------------------------------------------
+# A column-mean sigma is per EXPERIMENT (#894). The fit scores one experiment at a time and
+# gives each point its own experiment's column mean (replicates pooled; a dose-response scan is
+# one experiment however many PEtab experiments its doses become). The export used to write one
+# mean pooled over every experiment, which reweights experiments of different magnitude and
+# moves the optimum. The fixture below measures one decay observable in three experiments of
+# very different size: a two-replicate wildtype time course, a conditioned time course 10x
+# larger, and a finite-time dose-response scan. The oracle is libpetab's own likelihood on the
+# exported tables against a numpy hand calculation and PyBNF's objective, at three k.
+# ---------------------------------------------------------------------------
+
+_DECAY_MODEL = """begin model
+begin parameters
+  k      0.5
+  A0     100
+  scale  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A()  A0*scale
+end seed species
+begin observables
+  Molecules  Obs_A  A()
+end observables
+begin reaction rules
+  A() -> 0  k
+end reaction rules
+end model
+"""
+
+_DECAY_TIMES = [0.5 * i for i in range(11)]
+_DECAY_DOSES = [2.0, 5.0, 20.0]
+_DECAY_SCAN_T = 1.0
+
+
+def _decay_series(amplitude, rate, times=_DECAY_TIMES):
+    return [amplitude * np.exp(-rate * t) for t in times]
+
+
+def _exp_text(header, xs, ys):
+    return f'# {header} Obs_A\n' + ''.join(f'{float(x)!r}\t{float(y)!r}\n' for x, y in zip(xs, ys))
+
+
+def _write_exp(path, header, xs, ys):
+    path.write_text(_exp_text(header, xs, ys))
+
+
+def _write_decay_job(src, noise_lines):
+    """The #894 fixture job: one observable in three experiments of very different size."""
+    (src / 'decay.bngl').write_text(_DECAY_MODEL)
+    _write_exp(src / 'lo.exp', 'time', _DECAY_TIMES, _decay_series(100, 0.5))
+    _write_exp(src / 'lo_rep.exp', 'time', _DECAY_TIMES, _decay_series(90, 0.45))
+    _write_exp(src / 'hi.exp', 'time', _DECAY_TIMES, _decay_series(1000, 0.7))
+    scan = [100 * d * np.exp(-0.6 * _DECAY_SCAN_T) * f
+            for d, f in zip(_DECAY_DOSES, (1.05, 0.97, 1.02))]
+    _write_exp(src / 'scan.exp', 'scale', _DECAY_DOSES, scan)
+    (src / 'job.conf').write_text(
+        'edition = 2\njob_type = de\nmodel: decay.bngl\n' + noise_lines +
+        'condition: high, perturbations: scale = 10\n'
+        'experiment: lo, data: lo.exp, lo_rep.exp\n'
+        'experiment: hi, condition: high, data: hi.exp\n'
+        f'experiment: scan, type: parameter_scan, t_end: {_DECAY_SCAN_T:g}, data: scan.exp\n'
+        'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+    return src / 'job.conf'
+
+
+def _decay_experiment_values(src):
+    """{experiment: (xs, ys)} straight from the .exp files (numpy, not pybnf); the two
+    replicate files of 'lo' are one experiment."""
+    def load(name):
+        arr = np.loadtxt(src / name)
+        return arr[:, 0], arr[:, 1]
+    t_lo, y_lo = load('lo.exp')
+    t_rep, y_rep = load('lo_rep.exp')
+    return {'lo': (np.r_[t_lo, t_rep], np.r_[y_lo, y_rep]),
+            'hi': load('hi.exp'),
+            'scan': load('scan.exp')}
+
+
+def _decay_prediction(k, name, x):
+    """The closed-form decay model: A(t) = 100 * scale * exp(-k t)."""
+    if name == 'scan':
+        return 100.0 * x * np.exp(-k * _DECAY_SCAN_T)
+    return 100.0 * (10.0 if name == 'hi' else 1.0) * np.exp(-k * x)
+
+
+def _hand_column_mean_objective(src, k, family):
+    """The fit's objective by hand: each experiment's residuals scaled by ITS OWN mean."""
+    total = 0.0
+    for name, (xs, ys) in _decay_experiment_values(src).items():
+        pred = _decay_prediction(k, name, xs)
+        sigma = ys.mean()
+        if family == 'gaussian':
+            total += 0.5 * (((pred - ys) / sigma) ** 2).sum()
+        elif family == 'laplace':
+            total += (np.abs(pred - ys) / sigma).sum()
+        else:   # lnnormal
+            total += 0.5 * (((np.log(pred) - np.log(ys)) / sigma) ** 2).sum()
+    return total
+
+
+def _petab_nll(out, k):
+    """The exported problem's negative log-likelihood, computed by libpetab from the tables."""
+    import pandas as pd
+    from petab.v2.calculate import calculate_llh
+
+    mdf = pd.read_csv(out / 'measurements.tsv', sep='\t', keep_default_na=False,
+                      dtype={'experimentId': str, 'noiseParameters': str})
+    odf = pd.read_csv(out / 'observables.tsv', sep='\t', keep_default_na=False,
+                      dtype=str).set_index('observableId')
+    # experimentId -> the scale its condition sets (1 when it sets none), read from the tables.
+    def rows(name):
+        return _tsv_rows(out / name) if (out / name).exists() else []
+    cond_of = {r['experimentId']: r['conditionId'] for r in rows('experiments.tsv')}
+    scale_of_cond = {r['conditionId']: float(r['targetValue'])
+                     for r in rows('conditions.tsv') if r['targetId'] == 'scale'}
+    scale = [scale_of_cond.get(cond_of.get(e), 1.0) for e in mdf['experimentId']]
+    sim = mdf.drop(columns=['measurement']).copy()
+    sim['simulation'] = [100.0 * s * np.exp(-k * t) for s, t in zip(scale, mdf['time'])]
+    pdf = pd.DataFrame({'parameterId': ['k'], 'nominalValue': [k]}).set_index('parameterId')
+    return -calculate_llh(mdf, sim, odf, pdf)
+
+
+def _pybnf_objective(conf_path, k, monkeypatch):
+    """PyBNF's own objective for the job at ``conf_path``, on closed-form simulations."""
+    import types
+    from pybnf import config as config_mod
+    from pybnf.parse import ploop
+
+    monkeypatch.chdir(conf_path.parent)
+    cfg = config_mod.Configuration(ploop(conf_path.read_text().splitlines(keepends=True)))
+    sims = {}
+    for name, (base, key) in cfg._experiment_data_keys.items():
+        exp = cfg.exp_data[base][key]
+        xs = np.array(sorted(set(exp[exp.indvar])))
+        # Every measured column observes the one species A (a fixture may measure it twice).
+        columns = [c for c in exp.cols if c != exp.indvar and not c.endswith('_SD')]
+        arr = np.column_stack([xs] + [_decay_prediction(k, name, xs)] * len(columns))
+        sims.setdefault(base, {})[key] = Data.from_columns(arr, [exp.indvar] + columns)
+    pset = [types.SimpleNamespace(name='k', value=k)]
+    return cfg.obj.evaluate_multiple(sims, cfg.exp_data, pset)
+
+
+# Every spelling of a column-mean sigma: (conf noise lines, PyBNF family, PEtab distribution).
+_COLUMN_MEAN_SPELLINGS = {
+    'ave_norm_sos': ('objective = ave_norm_sos\n', 'gaussian', 'normal'),
+    'gaussian_override': ('objective = sos\nnoise_model Obs_A = gaussian, '
+                          'sigma = column_mean\n', 'gaussian', 'normal'),
+    'laplace_whole_fit': ('noise_model = laplace, scale = column_mean\n',
+                          'laplace', 'laplace'),
+    'lnnormal_whole_fit': ('noise_model = lnnormal, sigma = column_mean\n',
+                           'lnnormal', 'log-normal'),
+}
+
+
+class TestColumnMeanSigmaIsPerExperiment:
+    """#894: a column-mean sigma exports as each experiment's own mean, row by row."""
+
+    SPELLINGS = _COLUMN_MEAN_SPELLINGS
+
+    def _export(self, tmp_path, spelling):
+        noise_lines = self.SPELLINGS[spelling][0]
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_decay_job(src, noise_lines)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        return conf, out
+
+    @pytest.mark.parametrize('spelling', sorted(SPELLINGS))
+    def test_rows_carry_their_own_experiments_mean(self, tmp_path, spelling):
+        # Oracle: numpy means of the .exp files. The replicate files pool into ONE mean for
+        # 'lo' (the fit stacks them), and every dose of the scan carries the scan's one mean
+        # -- not a per-dose value, and never the mean pooled over all three experiments.
+        conf, out = self._export(tmp_path, spelling)
+        values = _decay_experiment_values(conf.parent)
+        expected = {'': values['lo'][1].mean(), 'hi': values['hi'][1].mean()}
+        expected.update({f'scan_{i}': values['scan'][1].mean() for i in range(3)})
+        (obs,) = _tsv_rows(out / 'observables.tsv')
+        assert obs['noiseDistribution'] == self.SPELLINGS[spelling][2]
+        assert obs['noiseFormula'] == 'noiseParameter1_obs_Obs_A'
+        assert obs['noisePlaceholders'] == 'noiseParameter1_obs_Obs_A'
+        rows = _tsv_rows(out / 'measurements.tsv')
+        assert len(rows) == 22 + 11 + 3
+        for r in rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                expected[r['experimentId']], rel=1e-15)
+        pooled = np.r_[values['lo'][1], values['hi'][1], values['scan'][1]].mean()
+        assert not any(float(r['noiseParameters']) == pytest.approx(pooled) for r in rows)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('spelling', sorted(SPELLINGS))
+    def test_exported_objective_is_the_fits_up_to_a_constant(
+            self, tmp_path, spelling, monkeypatch):
+        # Three independent evaluations of the same objective at three k: numpy by hand from
+        # the .exp files, PyBNF's own objective, and libpetab's likelihood of the exported
+        # tables. PEtab keeps the parameter-free normalizer PyBNF drops for a fixed sigma, so
+        # the libpetab NLL may differ from the fit by a constant -- but only a constant.
+        pytest.importorskip('petab.v2')
+        conf, out = self._export(tmp_path, spelling)
+        family = self.SPELLINGS[spelling][1]
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        hand = [_hand_column_mean_objective(conf.parent, k, family) for k in ks]
+        petab = [_petab_nll(out, k) for k in ks]
+        assert fit == pytest.approx(hand, rel=1e-10)
+        offsets = [p - f for p, f in zip(petab, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8 * max(fit))
+
+    def test_exported_optimum_is_the_fits(self, tmp_path):
+        # The issue's symptom, stated directly: the exported problem's optimum in k is the
+        # fit's. With the pooled mean the two optima were 0.6975 vs 0.6129 in the issue.
+        pytest.importorskip('petab.v2')
+        from scipy.optimize import minimize_scalar
+        conf, out = self._export(tmp_path, 'ave_norm_sos')
+        opts = dict(bounds=(0.05, 3.0), method='bounded', options={'xatol': 1e-10})
+        best_fit = minimize_scalar(
+            lambda k: _hand_column_mean_objective(conf.parent, k, 'gaussian'), **opts).x
+        best_petab = minimize_scalar(lambda k: _petab_nll(out, k), **opts).x
+        assert best_petab == pytest.approx(best_fit, abs=1e-6)
+
+    def test_equal_means_keep_the_constant_noise_formula(self, tmp_path):
+        # Two experiments whose means are identical (the same data under two names) need no
+        # placeholder: the constant is each experiment's own mean, as for a single experiment,
+        # and the tables stay as they were before #894. An experiment whose column has no
+        # observed value has no mean and does not force the per-row form either.
+        src = tmp_path / 'src'
+        src.mkdir()
+        _write_decay_job(src, 'objective = ave_norm_sos\n')
+        _write_exp(src / 'blank.exp', 'time', [0.0, 1.0], [float('nan'), float('nan')])
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+            'experiment: lo, data: lo.exp\nexperiment: again, data: lo.exp\n'
+            'experiment: blank, data: blank.exp\n'
+            'uniform_var = k 0.05 3.0\n')
+        out = tmp_path / 'petab'
+        export_job(src / 'job.conf', out)
+        (obs,) = _tsv_rows(out / 'observables.tsv')
+        assert float(obs['noiseFormula']) == np.loadtxt(src / 'lo.exp')[:, 1].mean()
+        assert obs['noisePlaceholders'] == ''
+        assert all(r['noiseParameters'] == '' for r in _tsv_rows(out / 'measurements.tsv'))
+
+    def test_a_sidecar_noise_token_on_a_column_mean_column_is_refused(self):
+        # A per-row sidecar token would bind the same noise placeholder as the column mean
+        # and win (the writer prefers a token), so the pairing is refused, naming the column.
+        data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        times = [float(t) for t in data['time']]
+        sidecar = {'x': {'noiseParameter1_obs_x': {t: 'sd_x' for t in times}}}
+        with pytest.raises(NotImplementedError, match=r"column 'x'.*column mean"):
+            measurement_rows_from_data(data, {'x': 'obs_x'}, sd_suffix=None,
+                                       measurement_params=sidecar, noise_values={'x': 3.0})
+
+
+# ---------------------------------------------------------------------------
 # Per-observable + row-varying export round trip (ADR-0044/0045, #428 Milestone 2): the closing
 # half of the per-measurement placeholder frontier. The importer (test_petab_import.py) recovers
 # three crafted problems -- a per-observable FormulaSigma (scaling_v2), a row-varying noise id

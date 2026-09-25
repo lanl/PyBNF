@@ -185,3 +185,43 @@ Two seams moved to make this honest:
   grows, with no importer edit per new method (the ADR-0012 payoff, now bidirectional).
 - See ADR-0019 (parameters), 0023 (observables), 0025 (exporter-first), 0026 (BNGL model),
   0027 (conditions/experiments), 0028 (new-era config), 0031 (objective surface).
+
+## Addendum (2026-09-25): a column-mean sigma is per experiment, on both sides (issue #894)
+
+The directive recovery above says a constant "equal to each observable's column mean" comes
+back as `ave_norm_sos`. The mean it compared against was pooled over every experiment, and the
+exporter wrote that same pooled mean. The fit uses neither. `Objective.evaluate_multiple`
+scores one experiment at a time, and `ColumnMeanSigma` (like the legacy `ave_norm_sos`) takes
+the mean of **that experiment's** observed values, with its replicate files stacked (ADR-0039).
+So when one observable was measured in experiments of different magnitude, the exported
+problem weighted them differently from the fit and had a different optimum. The import then
+matched the pooled constant and restored `ave_norm_sos`, which hid the mismatch.
+
+- **Export.** A `column_mean` sigma (`objective = ave_norm_sos`, or `<family>, <param> =
+  column_mean` on a whole-fit or per-observable `noise_model` line) is written as the fit's
+  number. If every experiment measuring the column has the same mean (always true for one
+  experiment), the noiseFormula is that constant, and the export is unchanged. Otherwise the
+  observable declares a noise placeholder, and each measurement row carries its own
+  experiment's mean in `noiseParameters`. A dose-response scan is one PyBNF experiment, so all
+  of its N PEtab experiments carry the scan's single mean. A sidecar noise token for such a
+  column would bind the same placeholder, so the export refuses that pairing.
+- **Import.** `_ColumnMeans` recovers `column_mean` only when every scored point's sigma
+  (the constant, or the row's rebuilt `_SD` cell) equals the mean of the experiment that
+  point belongs to **in the imported job**. For a time course that experiment is its
+  `(experimentId, modelId)` group with its replicates. For a scan it is the reconstructed
+  scan. The comparison is purely relative (1e-9). The former `max(1, |mean|)` floor let a sigma
+  several times too large "match" for data below 1. Anything that fails the test stays a
+  fixed sigma (`fix_at`, or the per-point `_SD` column), which is always exact. Two PyBNF
+  experiments that PEtab cannot tell apart (two wildtype time courses on one model share
+  experimentId `''`) re-import as one experiment, so their per-row means stay per-point.
+- **`_SD` companions.** The measurement pivot rebuilds an `_SD` column for every column of an
+  experiment in which some row has a numeric `noiseParameters`. The importer now keeps only the
+  companions that a recovered sigma reads. A recovered `column_mean` reads none. An
+  observable that shares an experiment with a per-row sigma got an all-NaN companion, and the
+  fitter refused it as an unmatched column.
+
+Oracles: `test_petab_export.py::TestColumnMeanSigmaIsPerExperiment`, which checks libpetab's
+likelihood of the exported tables against a numpy hand calculation and PyBNF's objective, and
+`test_petab_import.py::TestColumnMeanSigmaImport`, which covers the round trip in every
+experiment shape, a pooled constant, a row off its experiment's mean, and a small-magnitude
+sigma.
