@@ -101,6 +101,7 @@ from .conditions import (
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
+    refuse_inexact_unperturbed_periods,
     refuse_measurements_inside_fixed_equilibration,
 )
 from .measurements import (
@@ -263,6 +264,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
+    # A period read as the model as is (a blank -inf period, a pins-only condition -- #906,
+    # ADR-0150) must be the model as is in PEtab too; refuse the ones that are not, on the tables
+    # as written, before the base condition below is dropped.
+    refuse_inexact_unperturbed_periods(
+        condition_rows, experiment_rows, surrogate_params,
+        {row.experiment_id for row in measurement_rows})
     # The exporter's synthesized base condition cond_wildtype re-pins M at base (p = p__REF),
     # read as the identity once p__REF is renamed back to p: drop it, and blank its periods, so
     # every reconstruction below reads "no condition" there. A cond_wildtype carrying any real
@@ -446,7 +453,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         preequil_scans, out_dir, model_location_of, files=files)
     # The `perturbations: none` conditions the experiments apply (#906, ADR-0150).
     experiments = _declare_unperturbed_conditions(
-        conditions, experiments, tc_condition_rows, experiment_rows, unperturbed)
+        conditions, experiments, tc_condition_rows, experiment_rows, unperturbed, measured_ids)
     _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
@@ -1638,7 +1645,7 @@ def _write_exp(path, data):
 # ---------------------------------------------------------------------------
 
 def _declare_unperturbed_conditions(conditions, experiments, condition_rows, experiment_rows,
-                                    synthesized):
+                                    synthesized, measured_ids):
     """Add to ``conditions`` (as empty perturbation lists, written ``perturbations: none``) the
     conditions the imported ``experiments`` apply that change nothing (#906, ADR-0150), and
     return the experiments.
@@ -1654,12 +1661,14 @@ def _declare_unperturbed_conditions(conditions, experiments, condition_rows, exp
       it. It is the model as is wherever it is applied: as ``preequilibrate:`` an equilibration
       with nothing changed, as ``condition:`` the same as none.
 
-    Only an id the experiments table actually applies counts, and only if it has rows. A name
-    whose applied id has no rows at all is left undeclared, even when another, unapplied id of
-    the same name has rows: the experiments table then applies a condition the problem never
-    defines, and loading the conf says so.
+    Only an id a measured experiment (``measured_ids``) applies counts, and only if it has rows.
+    A name whose applied id has no rows at all is left undeclared, even when another id of the
+    same name has rows but is applied by no measured experiment: the experiments table then
+    applies a condition the problem never defines, and loading the conf says so. The periods
+    whose reading as the model as is PEtab does not share were refused before this
+    (:func:`~pybnf.petab.conditions.refuse_inexact_unperturbed_periods`).
     """
-    applied_ids = {r.condition_id for r in experiment_rows}
+    applied_ids = {r.condition_id for r in experiment_rows if r.experiment_id in measured_ids}
     defined = {condition_name_from_id(r.condition_id) for r in condition_rows
                if r.condition_id in applied_ids} - {None}
     for exp in experiments:

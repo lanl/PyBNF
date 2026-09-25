@@ -835,6 +835,87 @@ def name_unperturbed_equilibrations(condition_rows, experiment_rows):
              if unconditioned_equilibration(r) else r for r in experiment_rows], name)
 
 
+def refuse_inexact_unperturbed_periods(condition_rows, experiment_rows, surrogate_params,
+                                       measured_ids):
+    """Refuse the periods the importer would read as the model as is when PEtab does not
+    (#906, ADR-0150).
+
+    The importer turns a blank ``-inf`` period into the synthesized ``perturbations: none``
+    condition :func:`name_unperturbed_equilibrations` names, and a named condition whose rows
+    are all base pins ``p = p__REF`` into a ``none`` condition of its own. In PyBNF a ``none``
+    condition leaves every parameter as it stands: a fit parameter at its trial value, and
+    whatever an earlier period of the experiment set. Two PEtab readings differ from that, and
+    are refused here, before anything is dropped or renamed. The rows are the tables as read;
+    ``surrogate_params`` is the set M of parameters estimated through a ``<p>__REF`` surrogate;
+    only the experiments in ``measured_ids`` are checked, since only they reach the conf.
+
+    * **A first period that leaves a parameter of M unset.** Each ``p`` in M is a condition
+      target, not a parameter-table entry, so until a period sets it PEtab runs it at the model
+      file's value, where PyBNF would run the trial value. So a ``-inf`` period that is blank or
+      applies a pins-only condition, and a first measured period that applies a pins-only named
+      condition, must pin all of M. The exporter's own periods always do. The exact import,
+      which would set such a ``p`` to its model-file value, is left to #948.
+    * **A pins-only named condition after an earlier period changed what it pins.** ``p =
+      p__REF`` is the identity only while nothing earlier in the experiment set ``p``. After a
+      pre-equilibration that set ``k = 2``, PEtab's pin restores ``k`` to its estimate, which a
+      ``none`` condition would not do. Importing such a re-pin exactly is #948. (The exporter's
+      pins-only ``cond_wildtype`` in that position is the older #948 case and is left as it is.)
+
+    Raises ``NotImplementedError`` naming the experiment and the parameters.
+    """
+    rows_of = {}
+    for row in condition_rows:
+        rows_of.setdefault(row.condition_id, []).append(row)
+
+    def pins_only(cid):
+        rows = rows_of.get(cid)
+        return bool(rows) and all(_is_base_pin(r, surrogate_params) for r in rows)
+
+    periods_of = {}
+    for row in experiment_rows:
+        if row.experiment_id in measured_ids:
+            periods_of.setdefault(row.experiment_id, []).append(row)
+    for eid in sorted(periods_of):
+        periods = sorted(periods_of[eid], key=lambda r: r.time)
+        first, cid = periods[0], periods[0].condition_id
+        equilibration = math.isinf(first.time) and first.time < 0
+        if surrogate_params and ((equilibration and (not cid or pins_only(cid)))
+                                 or (cid and cid != WILDTYPE_CONDITION_ID and pins_only(cid))):
+            unset = sorted(set(surrogate_params) - {r.target_id for r in rows_of.get(cid, [])})
+            if unset:
+                applied = (f"condition '{cid}', whose rows only re-pin fit parameters"
+                           if cid else 'no condition (a blank conditionId)')
+                where = "to the period's condition" if cid else 'as a condition of that period'
+                names = ', '.join(unset)
+                raise NotImplementedError(
+                    f"Experiment '{eid}' starts with a period that applies {applied}, which "
+                    f"PyBNF imports as the model as is (a `perturbations: none` condition), with "
+                    f"{names} at the fitted value. But {names} "
+                    f"{'is' if len(unset) == 1 else 'are'} estimated through "
+                    f"{', '.join(surrogate_name(p) for p in unset)} and set by conditions, so "
+                    f"PEtab runs that period at the model file's value instead. Add "
+                    f"{', '.join(f'{p} = {surrogate_name(p)}' for p in unset)} {where} if the "
+                    f"fitted value is meant (as PyBNF's exporter writes it); importing the model "
+                    f"file's value is not supported yet (#948).")
+        for later in periods[1:]:
+            cid = later.condition_id
+            if not cid or cid == WILDTYPE_CONDITION_ID or not pins_only(cid):
+                continue
+            for p in sorted({r.target_id for r in rows_of[cid]}):
+                setters = [e.condition_id for e in periods if e.time < later.time
+                           and any(r.target_id == p and not _is_base_pin(r, surrogate_params)
+                                   for r in rows_of.get(e.condition_id, []))]
+                if setters:
+                    raise NotImplementedError(
+                        f"Experiment '{eid}' applies condition '{cid}' at time "
+                        f"{num(later.time)}, whose only rows re-pin fit parameters, after an "
+                        f"earlier period set {p} (condition '{setters[-1]}'). PEtab's "
+                        f"{p} = {surrogate_name(p)} restores {p} to its estimate there, but PyBNF "
+                        f"reads a condition of only such pins as the model as is (a "
+                        f"`perturbations: none` condition) and would keep the earlier value of "
+                        f"{p}. Importing that re-pin exactly is not supported yet (#948).")
+
+
 def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
                          free_names=frozenset(), fixed_params=None, applied=None):
     """Invert :func:`build_experiment_conditions`' condition rows to new-era

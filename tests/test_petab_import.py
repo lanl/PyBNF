@@ -1531,10 +1531,11 @@ class TestImportUnperturbedEquilibration:
     @pytest.mark.bionetgen
     @pytest.mark.bngsim
     @pytest.mark.parametrize('equilibration, conditions, preequilibrate, declared, a_start', [
-        # a blank -inf period: "the model as is"
-        ('', 'cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
-         'unperturbed', 'condition: unperturbed, perturbations: none', 1.0),
-        # the exporter's base condition made only of pins: #905 drops it, so it is blank too
+        # a blank -inf period: with k in M, PEtab runs it at the model file's k, not the fitted
+        # one, which a `none` condition cannot say (#948), so it is refused, naming k
+        ('', 'cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n', None, None, None),
+        # the exporter's base condition made only of pins: #905 drops it and blanks the period,
+        # but it pins k at the fitted value, so it is the model as is and imports as `none`
         ('cond_wildtype', 'cond_wildtype\tk\tk__REF\ncond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
          'unperturbed', 'condition: unperturbed, perturbations: none', 1.0),
         # a cond_wildtype with a real target is a condition in its own right (#905): equilibrate
@@ -1548,10 +1549,11 @@ class TestImportUnperturbedEquilibration:
             self, tmp_path, monkeypatch, equilibration, conditions, preequilibrate, declared,
             a_start):
         # k is fit and perturbed (k__REF, the set M), so every period re-pins it. A pins-only
-        # cond_wildtype on the -inf period is the model as is, like a blank one, and becomes the
-        # synthesized `none` condition; one with a real target keeps it. The oracle is the closed
-        # form of the PEtab problem as written: equilibrate at flag = f0 and the trial k, then
-        # measure at flag = 2: A(t) = 1/(2k) + (a_start/k - 1/(2k)) exp(-2kt).
+        # cond_wildtype on the -inf period is the model as is and becomes the synthesized `none`
+        # condition; one with a real target keeps it; a blank one, which PEtab runs at the model
+        # file's k, is refused. The oracle is the closed form of the PEtab problem as written:
+        # equilibrate at flag = f0 and the trial k, then measure at flag = 2:
+        # A(t) = 1/(2k) + (a_start/k - 1/(2k)) exp(-2kt).
         yaml = _write_relax_problem(
             tmp_path / 'problem', f'relax\t-inf\t{equilibration}\nrelax\t0\tcond_meas\n',
             conditions=conditions, parameters='k__REF\ttrue\t0.1\t10\n')
@@ -1559,6 +1561,12 @@ class TestImportUnperturbedEquilibration:
         from petab.v2 import Problem
         from petab.v2.lint import lint_problem
         assert not lint_problem(Problem.from_yaml(str(yaml)))
+        if declared is None:
+            with pytest.raises(NotImplementedError,
+                               match=r"(?s)Experiment 'relax' starts with a period that applies "
+                                     r"no condition.*k is estimated through k__REF"):
+                import_job(yaml, tmp_path / 'imported')
+            return
         out = import_job(yaml, tmp_path / 'imported')
         lines = (out / 'imported.conf').read_text().splitlines()
         assert declared in lines
@@ -1571,41 +1579,25 @@ class TestImportUnperturbedEquilibration:
                     for t in _RELAX_TIMES]
             np.testing.assert_allclose(data.data[:, data.cols['A_tot']], want, rtol=1e-6)
 
-    @pytest.mark.bionetgen
-    @pytest.mark.bngsim
-    @pytest.mark.xfail(strict=True, reason=(
-        "a blank -inf period with k fit and perturbed (k__REF) imports as the `none` condition "
-        "`unperturbed`, which equilibrates at the fitted k; PEtab equilibrates at the model "
-        "file's k = 1. The 'blank' case of "
-        "test_the_equilibration_period_imports_by_the_cond_wildtype_rules asserts the former"))
-    def test_a_blank_equilibration_runs_at_the_model_value_of_a_fit_and_perturbed_parameter(
-            self, tmp_path, monkeypatch):
+    def test_a_blank_equilibration_with_a_fit_and_perturbed_parameter_is_refused(self, tmp_path):
         # Independent review of the merge of #947. k is a condition target here (cond_meas sets
         # k = k__REF), and PEtab v2 does not allow a condition target in the parameters table, so
-        # a period that sets no k runs at the model file's k = 1. The blank -inf period therefore
-        # equilibrates at k = 1, where A = p/(k flag) = 1, whatever k__REF is. The exporter reads
-        # a blank period the same way: for a `none` equilibration with M non-empty it writes
-        # cond_wildtype, not a blank (test_none_preequilibration_re_pins_a_fit_and_perturbed_
-        # parameter). Oracle, the PEtab problem as written: equilibrate at k = 1 and flag = 1,
-        # then measure at k = k__REF and flag = 2: A = 1/(2k) + (1 - 1/(2k)) exp(-2kt). The import
-        # instead equilibrates at the trial k, A(0) = 1/k, which is 2.70 at k = 0.37. Either the
-        # import reproduces the oracle or it refuses the problem, naming the experiment.
+        # a period that sets no k runs at the model file's k = 1: the blank -inf period
+        # equilibrates at k = 1, A = p/(k flag) = 1, whatever k__REF is. The exporter reads a
+        # blank period the same way (for a `none` equilibration with M non-empty it writes
+        # cond_wildtype, not a blank). The synthesized `unperturbed` condition would equilibrate
+        # at the fitted k instead (A(0) = 1/k, 2.70 at k = 0.37), so the import refuses, naming
+        # the experiment and k. Main imported it without any equilibration at all.
         yaml = _write_relax_problem(
             tmp_path / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\n',
             conditions='cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
             parameters='k__REF\ttrue\t0.1\t10\n')
-        k = 0.37
-        try:
-            out = import_job(yaml, tmp_path / 'imported')
-            _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
-        except (NotImplementedError, PybnfError) as err:
-            assert 'relax' in str(err)
-            return
-        data = sims['relax']['relax']
-        np.testing.assert_allclose(
-            data.data[:, data.cols['A_tot']],
-            [1 / (2 * k) + (1 - 1 / (2 * k)) * np.exp(-2 * k * t) for t in _RELAX_TIMES],
-            rtol=1e-6)
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Experiment 'relax' starts with a period that applies no "
+                                 r"condition \(a blank conditionId\).*k at the fitted value.*"
+                                 r"k is estimated through k__REF.*model file's value.*Add "
+                                 r"k = k__REF"):
+            import_job(yaml, tmp_path / 'imported')
 
     @pytest.mark.bionetgen
     @pytest.mark.bngsim
@@ -2666,51 +2658,73 @@ class TestRealTargetWildtypeCondition:
             [a_end + (a0 - a_end) * np.exp(-1.5 * t) for t in data.data[:, data.cols['time']]],
             rtol=1e-6)
 
-    @pytest.mark.bionetgen
-    @pytest.mark.bngsim
-    @pytest.mark.xfail(strict=True, reason=(
-        "#948 through #906: a pins-only condition applied after an equilibration that changed "
-        "k imports as `perturbations: none`, so the measured phase keeps the equilibration's "
-        "k = 2, where PEtab restores k to k__REF; main refused this conf at load"))
-    def test_a_pins_only_condition_after_an_equilibration_that_changed_k_is_not_the_model_as_is(
-            self, tmp_path, monkeypatch):
-        # Independent review of the merge of #947. 'a' only re-pins k = k__REF, which is the
+    _PINS_AFTER_CHANGE_MATCH = (r"(?s)Experiment 'e1' applies condition '{cid}' at time 0, whose "
+                                r"only rows re-pin fit parameters, after an earlier period set k "
+                                r"\(condition 'pre'\).*k = k__REF restores k to its estimate.*#948")
+
+    @pytest.mark.parametrize('conditions, experiments, cid', [
+        # the direct route: 'a' only re-pins k, applied after pre set k = 2
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('a', 'k', 'k__REF')],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'a')], 'a'),
+        # the unapplied-namesake route: cond_a (pins only) is applied and imports as 'a'; the
+        # unapplied a sets L = 3
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('cond_a', 'k', 'k__REF'), ('a', 'L', 3),
+          ('a', 'k', 'k__REF')],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'cond_a')], 'cond_a'),
+        # one condition, two roles: 'a' is e2's pre-equilibration (exact there, it pins all of M)
+        # and e1's measured condition after pre set k = 2 (not exact)
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('a', 'k', 'k__REF'), ('m', 'flag', 3)],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'a'), ('e2', '-inf', 'a'), ('e2', '0', 'm')], 'a'),
+    ], ids=['direct', 'unapplied_namesake', 'two_roles'])
+    def test_a_pins_only_condition_after_an_equilibration_that_changed_k_is_refused(
+            self, tmp_path, conditions, experiments, cid):
+        # Independent review of the merge of #947. A pins-only condition (only k = k__REF) is the
         # identity only when nothing earlier in the experiment changed k. Here the -inf period
-        # sets k = 2 and L = 5, so A = (5 + 1)/2 = 3 at its end. Under PEtab v2 the measured
-        # period restores k to its estimate and keeps L = 5: A = 6/k + (3 - 6/k) exp(-k t).
-        # Imported as `none`, the measured phase runs at k = 2, A stays 3, and k has no effect
-        # on the objective. On main 'a' imported as an undefined condition and the conf refused
-        # to load. Either the import reproduces the oracle or it refuses, naming the experiment.
+        # sets k = 2 and L = 5, so under PEtab v2 the measured period restores k to its estimate
+        # and keeps L = 5: A = 6/k + (3 - 6/k) exp(-k t) (20.99 at k = 0.7). Imported as `none`,
+        # the measured phase would keep k = 2, so A stays 3 and k drops out of the objective
+        # (1.625). Main refused this conf at load (the condition came out undefined); the import
+        # now refuses it, naming the experiment and k, until #948 decides how to import the pin.
+        root = tmp_path / 'problem'
+        measured = sorted({eid for eid, _t, _c in experiments})
+        yaml = _write_periods_problem(root, conditions, experiments,
+                                      [('obs_A', eid, t, 1.0 + t) for eid in measured
+                                       for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root)
+        with pytest.raises(NotImplementedError,
+                           match=self._PINS_AFTER_CHANGE_MATCH.format(cid=cid)):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_first_pins_only_condition_that_leaves_a_fit_parameter_unset_is_refused(
+            self, tmp_path):
+        # k and L are both fit and perturbed (k__REF, L__REF). cond_a pins only k, so PEtab runs
+        # e1 at the model file's L = 1, where a `none` condition would run the fitted L. Refused,
+        # naming L; pinning both is exact and imports.
         root = tmp_path / 'problem'
         yaml = _write_periods_problem(
-            root, [('pre', 'k', 2), ('pre', 'L', 5), ('a', 'k', 'k__REF')],
-            [('e1', '-inf', 'pre'), ('e1', '0', 'a')],
-            [('obs_A', 'e1', t, 1.0 + t) for t in (0.5, 1, 2)])
-        self._surrogate_parameters(root)
-        k = 0.7
-        try:
-            out = import_job(yaml, tmp_path / 'out')
-            _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
-        except (NotImplementedError, PybnfError) as err:
-            assert 'e1' in str(err)
-            return
-        data = sims['model']['e1']
-        np.testing.assert_allclose(
-            data.data[:, data.cols['A_tot']],
-            [6 / k + (3 - 6 / k) * np.exp(-k * t) for t in data.data[:, data.cols['time']]],
-            rtol=1e-6)
+            root, [('a', 'k', 'k__REF'), ('b', 'k', 'k__REF'), ('b', 'L', 'L__REF'),
+                   ('c', 'L', 2)],
+            [('e1', '0', 'a'), ('e2', '0', 'c')],
+            [('obs_A', eid, t, 1.0 + t) for eid in ('e1', 'e2') for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root, 'k__REF\t0.1\t10\t1\ttrue\nL__REF\t0.1\t10\t1\ttrue\n')
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Experiment 'e1' starts with a period that applies "
+                                 r"condition 'a', whose rows only re-pin fit parameters.*L is "
+                                 r"estimated through L__REF.*Add L = L__REF"):
+            import_job(yaml, tmp_path / 'out')
+        (root / 'experiments.tsv').write_text(
+            'experimentId\ttime\tconditionId\ne1\t0\tb\ne2\t0\tc\n')
+        text = (import_job(yaml, tmp_path / 'out_b') / 'imported.conf').read_text()
+        assert 'condition: b, perturbations: none' in text.splitlines()
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "_declare_unperturbed_conditions counts ids applied by unmeasured experiments too, so an "
-        "undefined cond_a imports as `none` when an unmeasured experiment applies a pins-only "
-        "namesake a; main refused this conf at load"))
     def test_an_undefined_applied_id_fails_even_when_an_unmeasured_experiment_applies_its_namesake(
             self, tmp_path, monkeypatch):
         # Independent review of the merge of #947: the case beside
         # test_an_applied_id_with_no_rows_is_not_read_as_a_none_condition in which the namesake
         # IS applied, by eX, which has no measurements. e1 applies cond_a, which the conditions
         # table never defines (libpetab: "requires conditions that are not present in the
-        # condition table"), so the import must not read it as a `none` condition.
+        # condition table"), so the import must not read it as a `none` condition: only ids a
+        # measured experiment applies count, and the conf refuses to load, as on main.
         root = tmp_path / 'problem'
         yaml = _write_periods_problem(
             root, [('a', 'k', 'k__REF')], [('e1', '0', 'cond_a'), ('eX', '0', 'a')],

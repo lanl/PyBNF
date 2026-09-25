@@ -78,7 +78,27 @@ to `p`, imports as a `none` condition under its own name. The exporter's own bas
 before the rewrite, so on a `-inf` period it becomes the synthesized `none` condition; with any
 real target it imports as the condition `cond_wildtype`, so a `-inf` period applying it imports
 as `preequilibrate: cond_wildtype` with those targets. A blank id on a measured period is still
-"no condition".
+"no condition". Only condition ids a measured experiment applies count when a name is declared
+`none`, so an id the conditions table never defines still fails at load.
+
+Two readings of "the model as is" differ between PEtab and a `none` condition, and the import
+refuses both, naming the experiment and the parameter (`NotImplementedError`), rather than import
+them silently wrong:
+
+- **A first period that leaves a parameter of `M` unset.** A parameter estimated through a
+  `p__REF` surrogate is a condition target, so PEtab runs a period that does not set it at the
+  model file's value; a `none` condition would run the fitted value. So a blank `-inf` period is
+  refused whenever `M` is non-empty, and a pins-only condition on a first period is refused
+  unless it pins all of `M`. The exporter never writes either shape.
+- **A pins-only named condition after an earlier period of the same experiment changed what it
+  pins.** `p = p__REF` restores `p` to its estimate there; a `none` condition keeps the earlier
+  value. This covers a pins-only id imported through an unapplied namesake, and a condition that
+  is one experiment's pre-equilibration and another's measured condition after a change.
+
+Main failed loudly on the second (the condition came out undefined) and was silently wrong on
+the first (it imported no equilibration). The exact imports, setting `p` to its model-file value
+in the synthesized condition and restoring a re-pinned `p` mid-protocol, depend on #948's
+decision on how to import a re-pin, and are a follow-up there.
 
 ## Experiments written before a `none` equilibration
 

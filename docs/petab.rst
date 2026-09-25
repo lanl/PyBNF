@@ -188,7 +188,12 @@ following all survive an import and an export:
   pre-equilibration writes a blank ``-inf`` ``conditionId``, or the synthesized base
   condition ``cond_wildtype`` when fit-and-perturbed parameters must be re-pinned there,
   and a ``none`` measured ``condition:`` exports exactly as an omitted one. A blank
-  ``conditionId`` on a measured period stays "no condition" (ADR-0150). A ``none``
+  ``conditionId`` on a measured period stays "no condition" (ADR-0150). Where PEtab's
+  reading of such a period differs from the model as is, the import refuses it, naming the
+  experiment and the parameter: a blank ``-inf`` period, or a first period whose condition
+  only re-pins, that leaves a parameter estimated through ``p__REF`` unset (PEtab runs it at
+  the model file's value), and a pins-only condition after an earlier period changed what it
+  pins (PEtab restores the estimate). A ``none``
   pre-equilibration with ``equil_t_end:`` exports as a blank ``-T`` period, which the
   importer does not read back yet.
 
