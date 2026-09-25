@@ -5,6 +5,12 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+Entries for the next release are staged one file per change under
+[`changelog.d/`](changelog.d/) and assembled into a version section by the
+release commit, so no two branches edit this file (#800). Add a fragment, as
+[`changelog.d/README.md`](changelog.d/README.md) describes, rather than an entry
+here.
+
 ### Added
 
 - **`tools/changelog_merge.py` resolves a `CHANGELOG.md` merge conflict by appending rather than

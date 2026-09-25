@@ -25,48 +25,40 @@ than making it directly, so these are usually handled in-house.
 
 ## Changelog
 
-A change that a user would notice gets an entry in `CHANGELOG.md`, under
-`## [Unreleased]`.
-
-Two rules are enforced by `tests/test_changelog_structure.py`, so a pull request
-that breaks either fails CI:
-
-1. One `###` heading per kind. If a section for your kind already exists, add
-   your entry to it rather than opening a second one.
-2. Headings in Keep a Changelog order, which is `Added`, `Changed`,
-   `Deprecated`, `Removed`, `Fixed`, `Security`.
-
-Both rules are checked only under `[Unreleased]`. A released section is the
-record of what shipped and is not edited.
-
-Keep the entry short. Say what changed and what a reader has to do differently,
-give the issue and pull request numbers, and put the reasoning, the measurements
-and the alternatives you rejected in an ADR under `docs/adr/`. Issue #809 tracks
-bringing the existing entries back to that length.
-
-### Resolving a conflict in the file
-
-Nearly every pull request adds an entry to the same region, so two open branches
-collide there often. Do not hand-edit the conflict. Hand-editing is what opens a
-duplicate section and what drops an entry that landed on `main` while your
-branch sat.
-
-Run this instead, from the repository root, while the merge is stopped:
+**Do not edit [`CHANGELOG.md`](CHANGELOG.md).** A change that a user would
+notice gets one file of its own instead:
 
 ```sh
-git merge origin/main
-python tools/changelog_merge.py
-git commit --no-edit -s
+cat > changelog.d/856.fixed.md <<'EOF'
+- **One sentence saying what was wrong and for whom (#856).** Then one or two
+  saying what the fix changes and what a reader has to do differently.
+EOF
+python tools/changelog.py check
 ```
 
-It takes the incoming version of the file whole and re-inserts the entries your
-branch added, so no line of an entry is ever merged against another line and
-nothing on the incoming side can be lost. It prints what it carried and what it
-re-inserted. Pass `--no-add` to read the diff before staging it.
+The name is `<issue>.<category>.md`, with `<category>` one of `added`,
+`changed`, `deprecated`, `removed`, `fixed`, `security`. The file holds the
+bullet exactly as it will read in the changelog, leading `- ` and two-space
+continuation indent included.
 
-It refuses, rather than guessing, if your branch removed or reworded an entry
-that was already there. That is no longer a pair of appends, so resolve it by
-hand.
+Keep it short. 1,200 characters is a hard limit, and 400 to 600, a short
+paragraph, is the aim. Say what changed and what a reader has to do differently,
+and give the issue and pull request numbers. The evidence, the measurements and
+the alternatives you rejected belong in the issue, the commit message, or an ADR
+under `docs/adr/`, where no limit constrains them and where a reader who wants
+them will look (#809).
+
+The reason for the separate files is that `CHANGELOG.md` has one place a new
+entry can go, so any two open branches edit the same region of it and git stops
+on a conflict (#800). Every merge put every other open pull request into
+conflict, and GitHub runs no CI on a pull request that conflicts with its base. A
+fragment has no shared anchor; the release commit assembles them. CI enforces
+both halves: a branch that changes `pybnf/` must stage a fragment, and no branch
+may edit `CHANGELOG.md`. A maintainer can label a pull request
+`changelog exempt` if its change is genuinely invisible to users.
+
+[`changelog.d/README.md`](changelog.d/README.md) has the rest: several entries
+for one issue, entries with no issue number, and what the release step does.
 
 ## Development setup
 
