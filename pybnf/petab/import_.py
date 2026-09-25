@@ -16,7 +16,8 @@ model) but deliberately says nothing about *how to search it* -- no optimizer/sa
 algorithm settings, no simulation method, no seed -- because PEtab is a cross-tool
 exchange format and the *method* belongs to the tool. So ``import = PEtab problem +
 a supplied run-recipe``. The *problem* half is recovered exactly (and round-trips
-byte-for-byte through a re-export); the *recipe* half -- ``job_type`` + that fit's
+byte-for-byte through a re-export; a table the problem splits over several files is read in
+full and re-exports as one file, #902); the *recipe* half -- ``job_type`` + that fit's
 algorithm settings (SEARCH), the per-experiment ``method:`` (SIMULATION), and
 ``output_dir`` / ``verbosity`` / required keys (PLUMBING) -- is **supplied, not
 recovered**, and is excluded from the round-trip identity. The recipe is not a new
@@ -43,8 +44,9 @@ Concretely, the recipe is supplied through :func:`import_job`'s parameters:
 
 **Dependency-free + simulator-free on the bare-name path.** Like the other read-path
 chunks, the import path uses only stdlib + ``pybnf.data.Data`` + the asset mappers, so the
-bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-parsed (the
-exporter emits a fixed, simple shape). The ``petab`` library is the test-only oracle for the
+bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-parsed: block
+and one-line flow lists, every file a key lists, and a refusal for any shape it cannot read
+(#902). The ``petab`` library is the test-only oracle for the
 bare-name path, and the optional ``pybnf[petab]`` extra for an expression ``observableFormula``.
 
 **Scope (read path: BNGL and SBML, one or many models).** Both model languages import
@@ -201,7 +203,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     new-era PyBNF job: the ``.exp`` data files, a verbatim copy of the BNGL model (new-era
     binds free parameters by id, so the model needs no re-instrumentation -- ADR-0034), and
     one or more ``.conf`` files. The *problem* (parameters/priors, observables/noise,
-    measurements, conditions/experiments) is recovered exactly; the *run-recipe*
+    measurements, conditions/experiments) is recovered exactly, from every file each
+    ``problem.yaml`` key lists (#902); the *run-recipe*
     (``job_type``, ``method``, ``settings``) is supplied by the caller (see the module
     docstring). Returns the ``out_dir`` path.
 
@@ -232,8 +235,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``targetValue`` is a per-condition estimated initial condition and imports, ADR-0076; a
     **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder;
     replicate rows) and ``PybnfError``
-    for a malformed problem (an ``observableFormula`` symbol that is not a model entity, or an
-    ambiguous dose-response group).
+    for a malformed problem (an ``observableFormula`` symbol that is not a model entity, an
+    ambiguous dose-response group, an id defined twice across a table's files, or a
+    ``problem.yaml`` shape the reader cannot read -- #902).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -244,17 +248,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     _require_supported_model(problem, problem_yaml_path)
     models = problem['models']
 
-    parameter_rows = read_parameter_table(base / problem['parameter_files'][0])
-    observable_rows = read_observable_table(base / problem['observable_files'][0])
-    measurement_rows = read_measurement_table(base / problem['measurement_files'][0])
-    condition_rows = (read_condition_table(base / problem['condition_files'][0])
-                      if problem['condition_files'] else [])
-    experiment_rows = (read_experiment_table(base / problem['experiment_files'][0])
-                       if problem['experiment_files'] else [])
+    # Every file listed under each table key, concatenated in list order (#902). The condition,
+    # experiment and mapping tables are optional (an empty list reads as no rows).
+    (parameter_rows, observable_rows, measurement_rows, condition_rows, experiment_rows,
+     mapping_rows) = _read_problem_tables(problem, base)
     # The species-amount mapping table (ADR-0062): a {petab_id: BNGL pattern} inversion of the
     # exporter's species setConcentration aliasing. Absent for a job with no species conditions.
-    mapping_rows = (read_mapping_table(base / problem['mapping_files'][0])
-                    if problem['mapping_files'] else [])
     species_by_id = {r.petab_id: r.model_id for r in mapping_rows}
 
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
@@ -417,6 +416,80 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
             method_overrides=method_overrides or {}, settings=merged_settings,
             multi=len(job_types) > 1)
     return out_dir
+
+
+# ---------------------------------------------------------------------------
+# Tables: every file under each problem.yaml key, concatenated (#902)
+# ---------------------------------------------------------------------------
+
+def _read_problem_tables(problem, base):
+    """Read every table file the ``problem.yaml`` lists, concatenated in list order (#902).
+
+    PEtab v2 types each ``*_files`` key as a *list*, and libpetab reads a problem by reading
+    every listed file and chaining their rows in list order (``Problem.from_yaml``; the
+    ``measurements`` / ``parameters`` / ... properties). A problem may therefore split its
+    measurements (or any other table) over several files, and ``petab1to2`` keeps a v1
+    problem's several measurement/observable/condition files as such a list. The importer used
+    to read element ``[0]`` of each list and nothing else, so a split problem was fitted to
+    part of its data, and a parameter declared only in a later file stayed fixed at its
+    model-file value, with no message.
+
+    Returns ``(parameter_rows, observable_rows, measurement_rows, condition_rows,
+    experiment_rows, mapping_rows)``. An id that identifies one table entity may be defined in
+    only one place, exactly where libpetab's ``lint_problem`` reports a duplicate
+    (``CheckUniquePrimaryKeys`` / ``CheckMappingTable``); :func:`_require_unique_ids` refuses
+    it with a ``PybnfError`` naming the id and the file(s). Concatenating instead would let the
+    later row silently win, or double-declare a free parameter. Measurement rows carry no id:
+    a repeated row is a replicate in PEtab and is kept, as libpetab keeps it.
+    """
+    def read_all(key, reader):
+        return [(name, row) for name in problem[key] for row in reader(base / name)]
+
+    parameters = read_all('parameter_files', read_parameter_table)
+    observables = read_all('observable_files', read_observable_table)
+    measurements = read_all('measurement_files', read_measurement_table)
+    conditions = read_all('condition_files', read_condition_table)
+    experiments = read_all('experiment_files', read_experiment_table)
+    mappings = read_all('mapping_files', read_mapping_table)
+
+    # One row per parameter / observable / mapping alias, wherever it sits: a repeat inside
+    # one file is the same lint error as a repeat across two.
+    _require_unique_ids(parameters, lambda r: r.parameter_id, 'parameter', 'parameterId')
+    _require_unique_ids(observables, lambda r: r.observable_id, 'observable', 'observableId')
+    _require_unique_ids(mappings, lambda r: r.petab_id, 'mapping', 'petabEntityId')
+    # A condition (or experiment) is SEVERAL rows of one file -- one per target (or period)
+    # -- so only a second file defining the same id is a duplicate. libpetab groups each
+    # file's rows by id into one Condition/Experiment, so the id then occurs twice.
+    _require_unique_ids(conditions, lambda r: r.condition_id, 'condition', 'conditionId',
+                        across_files_only=True)
+    _require_unique_ids(experiments, lambda r: r.experiment_id, 'experiment', 'experimentId',
+                        across_files_only=True)
+    return tuple([row for _name, row in table] for table in
+                 (parameters, observables, measurements, conditions, experiments, mappings))
+
+
+def _require_unique_ids(sourced_rows, id_of, table, column, across_files_only=False):
+    """Refuse an id defined more than once in one table kind (#902).
+
+    ``sourced_rows`` is ``[(file_name, row), ...]`` over every file of the table, in list
+    order. With ``across_files_only`` a repeat inside one file is allowed (a condition's or an
+    experiment's several rows) and only the same id in a second file is refused. The message
+    names the id and the file(s) so the user knows which rows to merge or delete."""
+    first_file = {}
+    for name, row in sourced_rows:
+        rid = id_of(row)
+        if rid not in first_file:
+            first_file[rid] = name
+            continue
+        prev = first_file[rid]
+        if prev == name and across_files_only:
+            continue
+        where = f'twice in {prev}' if prev == name else f'in both {prev} and {name}'
+        raise PybnfError(
+            f"The PEtab {table} tables define {column} '{rid}' more than once ({where}). "
+            f"PEtab allows each {column} to be defined in one place only (libpetab's "
+            f"lint_problem reports it as a duplicate), and the importer cannot tell which "
+            f"definition is meant. Keep one definition and delete or merge the other.")
 
 
 # ---------------------------------------------------------------------------
@@ -1418,74 +1491,272 @@ def _emit_all_job_types():
 
 
 # ---------------------------------------------------------------------------
-# problem.yaml reader (hand-parsed; the exporter emits a fixed, simple shape)
+# problem.yaml reader (hand-parsed, dependency-free; refuses what it cannot read)
 # ---------------------------------------------------------------------------
 
+# The six table keys of a PEtab v2 problem.yaml. The schema types each one as a LIST of files,
+# and libpetab reads every file in the list (#902).
+_TABLE_FILE_KEYS = ('parameter_files', 'observable_files', 'measurement_files',
+                    'condition_files', 'experiment_files', 'mapping_files')
+
+# Every top-level key the PEtab v2 schema allows (its additionalProperties is false). ``id`` and
+# ``extensions`` carry nothing the importer reads.
+_PROBLEM_YAML_KEYS = (*_TABLE_FILE_KEYS, 'format_version', 'id', 'model_files', 'extensions')
+
+# A leading character that makes a YAML scalar something other than a plain name: a nested flow
+# collection, an anchor, alias or tag, a block scalar, or a reserved indicator.
+_YAML_NON_PLAIN = frozenset('[]{}&*!|>%@`')
+
+
 def read_problem_yaml(path):
-    """Hand-parse the minimal ``problem.yaml`` shape :func:`write_problem_yaml` emits.
+    """Read a PEtab v2 ``problem.yaml`` without a YAML library.
 
     Returns a dict with the table-file lists (``parameter_files`` / ``observable_files`` /
-    ``measurement_files`` / ``condition_files`` / ``experiment_files`` / ``mapping_files``) and a ``models`` list
-    -- one ``{model_id, location, language}`` entry per ``model_files`` entry, in declaration
-    order (one or many, ADR-0041). For single-model convenience the first model is also
-    surfaced as ``model_file`` / ``model_id`` / ``model_language``. Dependency-free (no YAML
-    library): the writer emits a flat ``key:`` + ``  - item`` list shape and a two-level
-    ``model_files`` block, which a small indentation-aware scan reads exactly. The scan is
-    **order-independent** (a real v2 ``problem.yaml`` that lists ``model_files`` first, where
-    our writer emits it last, reads identically) **and list-indent-independent**: a
-    column-0 ``- item`` list -- YAML-legal, and what the official ``petab.v2.petab1to2``
-    converter emits -- reads the same as our own two-space-indented items.
+    ``measurement_files`` / ``condition_files`` / ``experiment_files`` / ``mapping_files``, each
+    holding every file listed, in order) and a ``models`` list -- one ``{model_id, location,
+    language}`` entry per ``model_files`` entry, in declaration order (one or many, ADR-0041).
+    For single-model convenience the first model is also surfaced as ``model_file`` /
+    ``model_id`` / ``model_language``.
+
+    A small indentation-aware scan reads the shapes a problem file is written in: our own
+    writer's (``key:`` then two-space-indented ``- item`` lines, ``model_files`` last), the
+    column-0 ``- item`` lists ``petab.v2.petab1to2`` writes, keys in any order, and the one-line
+    flow list ``key: [a.tsv, b.tsv]`` (``[]`` included). Items may be quoted, ``#`` comments
+    are dropped, a model entry's fields other than location and language are passed over with
+    everything nested beneath them, and a leading directive or ``---`` and a closing ``...``
+    are allowed. Whatever else it meets raises ``PybnfError`` naming the line or key rather than
+    being skipped: a scalar where a list belongs, a flow list continued over several lines, a
+    flow-form ``model_files`` entry, a key the PEtab v2 schema does not allow, a key or model
+    given twice, a file listed twice under one key, a ``format_version`` other than 2 (#902).
+    The scan used to skip what it did not recognize, so ``condition_files: [conditions.tsv]``
+    read as no condition table at all.
 
     This is a pure *reader*: it records each model's ``language`` but does not enforce a
     policy on it. The supported-language scope (BNGL or SBML, ADR-0036) is enforced by the
     importer (:func:`_require_supported_model`), not here.
     """
-    file_keys = ('parameter_files', 'observable_files', 'measurement_files',
-                 'condition_files', 'experiment_files', 'mapping_files')
-    files = {k: [] for k in file_keys}
+    files = {k: [] for k in _TABLE_FILE_KEYS}
     models = []         # [{model_id, location, language}, ...] in declaration order
     current = None      # the model entry being filled (set by a `<modelId>:` line)
+    model_indent = None   # the indentation of the `<modelId>:` lines
+    field_indent = None   # the indentation of the current model entry's own fields
+    field = None          # the model entry's field whose value nested lines belong to
 
-    section = None      # the current top-level *_files key (list items follow)
+    seen_keys, unknown_keys = set(), []
+    format_version = None
+    section = None      # the current top-level *_files key (block list items follow)
     in_model = False    # inside the model_files: block
-    for raw in path.read_text().splitlines():
-        if not raw.strip() or raw.lstrip().startswith('#'):
+    in_other = False    # inside a key whose nested content the importer does not read
+    started = ended = False
+    # utf-8-sig drops a byte-order mark, which PyYAML (libpetab's reader) also ignores.
+    for raw in path.read_text(encoding='utf-8-sig').splitlines():
+        line = _strip_yaml_comment(raw).rstrip()
+        if not line.strip():
             continue
-        indent = len(raw) - len(raw.lstrip())
-        stripped = raw.strip()
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if not started and (stripped == '---' or stripped.startswith('%')):
+            continue            # a directive (%YAML, %TAG) or the document-start marker
+        if stripped == '...' and indent == 0:
+            ended = True        # the document-end marker PyYAML writes with explicit_end
+            continue
+        if ended:
+            raise PybnfError(f"problem.yaml at {path} holds more than one YAML document: "
+                             f"the line {stripped!r} follows the '...' end marker.")
+        started = True
+        is_item = stripped == '-' or stripped.startswith(('- ', '-\t'))
         # A column-0 list item (`- item`) is YAML-legal and is exactly what the official
         # petab v1->v2 converter emits (`petab.v2.petab1to2`); it belongs to the *current*
         # section, not a new key, so it must not reset the scan. Only a non-list line at
         # column 0 opens/closes a section -- our own writer indents its list items, so
         # honoring the unindented shape too makes the reader a strict superset of both.
-        if indent == 0 and not stripped.startswith('-'):
-            section, in_model, current = None, False, None
-            if stripped.endswith(':') and stripped[:-1] in files:
-                section = stripped[:-1]
-            elif stripped == 'model_files:':
-                in_model = True
-            # format_version and any other scalar top-level key: ignored
+        if indent == 0 and not is_item:
+            section, in_model, in_other, current = None, False, False, None
+            key, colon, rest = stripped.partition(':')
+            if not colon:
+                raise PybnfError(f"problem.yaml at {path}: cannot read the line {stripped!r} "
+                                 f"(expected '<key>: <value>').")
+            key, rest = _yaml_scalar(key, 'a top-level key', path), rest.strip()
+            if key in seen_keys:
+                raise PybnfError(f"problem.yaml at {path} gives the key '{key}' twice.")
+            seen_keys.add(key)
+            if key in files:
+                if rest:
+                    files[key] = _yaml_flow_list(rest, key, path)
+                else:
+                    section = key         # block `- item` lines follow
+            elif key == 'model_files':
+                if rest and rest != '{}':
+                    raise PybnfError(
+                        f"problem.yaml at {path}: model_files is written in YAML flow form "
+                        f"({rest!r}), which this reader does not read. Write each model as an "
+                        f"indented block: '<modelId>:' with 'location:' and 'language:' lines "
+                        f"beneath it.")
+                in_model, model_indent = True, None
+            elif key == 'format_version':
+                format_version = _yaml_scalar(rest, key, path)
+            else:
+                # `id` / `extensions` carry nothing the importer reads; any other key is not
+                # PEtab v2 and is refused after the scan (a v1 problem is named as such first).
+                in_other = True
+                if key not in _PROBLEM_YAML_KEYS:
+                    unknown_keys.append(key)
             continue
-        if section is not None and stripped.startswith('-'):
-            files[section].append(stripped[1:].strip())
+        if section is not None:
+            if not is_item:
+                raise PybnfError(
+                    f"problem.yaml at {path}: '{section}' must be a list of files, one "
+                    f"'- <file>' line each; cannot read the line {stripped!r}.")
+            files[section].append(_yaml_scalar(stripped[1:], section, path))
         elif in_model:
-            if stripped.startswith('location:') and current is not None:
-                current['location'] = stripped.split(':', 1)[1].strip()
-            elif stripped.startswith('language:') and current is not None:
-                current['language'] = stripped.split(':', 1)[1].strip()
-            elif stripped.endswith(':'):
-                # A new `<modelId>:` block (the location/language lines follow, indented).
-                current = {'model_id': stripped[:-1].strip(), 'location': None,
-                           'language': None}
+            key, colon, rest = stripped.partition(':')
+            key, rest = key.strip(), rest.strip()
+            if model_indent is None or indent <= model_indent:
+                # A `<modelId>:` line: the entry's fields follow on deeper-indented lines.
+                if model_indent is not None and indent < model_indent:
+                    raise PybnfError(f"problem.yaml at {path}: the model_files entry "
+                                     f"{stripped!r} is not indented like the entries before it.")
+                model_indent = indent
+                if is_item or not colon or rest:
+                    raise PybnfError(
+                        f"problem.yaml at {path}: cannot read the model_files entry "
+                        f"{stripped!r}. Write each model as '<modelId>:' with indented "
+                        f"'location:' and 'language:' lines beneath it (a list, or a "
+                        f"flow-form entry such as '{{location: ..., language: ...}}', is not "
+                        f"read).")
+                model_id = _yaml_scalar(key, 'model_files', path)
+                if any(m['model_id'] == model_id for m in models):
+                    raise PybnfError(
+                        f"problem.yaml at {path} declares the model '{model_id}' twice.")
+                current = {'model_id': model_id, 'location': None, 'language': None}
                 models.append(current)
+                field_indent = field = None
+            elif field_indent is None or indent == field_indent:
+                # One of the entry's own fields. The schema allows fields beyond location and
+                # language on a model entry; they carry nothing the importer reads.
+                field_indent, field = indent, (key if colon else None)
+                if key in ('location', 'language') and colon:
+                    current[key] = _yaml_scalar(
+                        rest, f'model_files: {current["model_id"]}: {key}', path)
+            elif indent > field_indent:
+                # The nested value of the field above. It is never this model's location or
+                # language, even when it holds a `location:` key of its own; only the value
+                # of location or language itself continuing on this line is unreadable.
+                if field in ('location', 'language'):
+                    raise PybnfError(
+                        f"problem.yaml at {path}: the {field} of model '{current['model_id']}' "
+                        f"continues on the line {stripped!r}. Write it on one line.")
+            else:
+                raise PybnfError(
+                    f"problem.yaml at {path}: the line {stripped!r} of model "
+                    f"'{current['model_id']}' is not indented like the fields before it.")
+        elif not in_other:
+            raise PybnfError(
+                f"problem.yaml at {path}: cannot read the line {stripped!r}; it is not part of "
+                f"a list of files or of model_files.")
 
-    _require_problem(files, models, path)
+    _require_problem(files, models, path, format_version, unknown_keys)
     first = models[0]
     return {**files, 'models': models, 'model_file': first['location'],
             'model_id': first['model_id'], 'model_language': first['language']}
 
 
-def _require_problem(files, models, path):
+def _strip_yaml_comment(line):
+    """``line`` without its YAML comment: a ``#`` at the start of the line or after
+    whitespace, outside a quoted scalar (a ``#`` inside a plain word, as in ``a#b.tsv``, is
+    part of the word, as it is in YAML)."""
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if quote == '"' and ch == '\\':
+                i += 1                      # skip the escaped character
+            elif ch == quote:
+                quote = None
+        elif ch in '"\'' and (i == 0 or line[i - 1] in ' \t[,'):
+            quote = ch                      # a quote opens only at the start of a scalar
+        elif ch == '#' and (i == 0 or line[i - 1] in ' \t'):
+            return line[:i]
+        i += 1
+    return line
+
+
+def _yaml_scalar(text, key, path):
+    """One YAML scalar (a file name, a model id or field, a key), with its quotes removed.
+
+    A plain or quoted string is returned as its value. An empty entry, an unterminated quote,
+    a backslash escape, and any construct that is not a plain string (a nested list, an
+    anchor, a block scalar, ...) raise ``PybnfError`` naming ``key`` -- never a guess."""
+    text = text.strip()
+    if not text:
+        raise PybnfError(f"problem.yaml at {path}: '{key}' has an empty entry.")
+    if text[0] in '"\'':
+        quote = text[0]
+        if len(text) < 2 or text[-1] != quote:
+            raise PybnfError(
+                f"problem.yaml at {path}: '{key}' has an unterminated quoted entry {text!r}.")
+        inner = text[1:-1]
+        if quote == "'":
+            return inner.replace("''", "'")
+        if '\\' in inner:
+            raise PybnfError(
+                f"problem.yaml at {path}: '{key}' has the entry {text!r}, whose backslash "
+                f"escape this reader does not interpret. Write the name without escapes.")
+        return inner
+    if text[0] in _YAML_NON_PLAIN:
+        raise PybnfError(
+            f"problem.yaml at {path}: '{key}' has the entry {text!r}, which uses YAML syntax "
+            f"this reader does not read. Write a plain file name or id.")
+    return text
+
+
+def _yaml_flow_list(text, key, path):
+    """The items of a one-line YAML flow list, ``[a.tsv, 'b.tsv']`` (``[]`` is empty).
+
+    A value that is not a complete one-line ``[...]`` -- a bare scalar (the PEtab v2 schema
+    types every ``*_files`` key as a list) or a flow list continued on the next line -- raises
+    ``PybnfError`` naming ``key``. A trailing comma is allowed, as YAML allows it."""
+    if not (text.startswith('[') and text.endswith(']')):
+        raise PybnfError(
+            f"problem.yaml at {path}: '{key}' must be a list of files, written either as "
+            f"'- <file>' lines beneath the key or as '[<file>, <file>]' on the key's own line; "
+            f"got {text!r}.")
+    items, start, quote = [], 1, None
+    for i in range(1, len(text) - 1):
+        ch = text[i]
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in '"\'' and not text[start:i].strip():
+            quote = ch
+        elif ch == ',':
+            items.append(text[start:i])
+            start = i + 1
+    items.append(text[start:-1])
+    if not items[-1].strip():
+        items.pop()         # `[]`, or a trailing comma
+    return [_yaml_scalar(item, key, path) for item in items]
+
+
+def _require_problem(files, models, path, format_version=None, unknown_keys=()):
+    """Refuse a ``problem.yaml`` that is not a readable PEtab v2 problem (#902)."""
+    if format_version is not None and format_version.split('.')[0] != '2':
+        raise PybnfError(
+            f"problem.yaml at {path} declares format_version {format_version}, but the "
+            f"importer reads PEtab v2 problems.",
+            hint="Convert a PEtab v1 problem first with pybnf.petab.petab1to2_preserve_scale.")
+    if unknown_keys:
+        raise PybnfError(
+            f"problem.yaml at {path} has the key(s) {unknown_keys}, which PEtab v2 does not "
+            f"define; the importer would ignore them. The allowed keys are "
+            f"{list(_PROBLEM_YAML_KEYS)}.")
+    for key, listed in files.items():
+        repeated = sorted(name for name, n in Counter(listed).items() if n > 1)
+        if repeated:
+            raise PybnfError(
+                f"problem.yaml at {path} lists {repeated} more than once under {key}, which "
+                f"would read the same rows twice. List each file once.")
     for key in ('parameter_files', 'observable_files', 'measurement_files'):
         if not files[key]:
             raise PybnfError(f"problem.yaml at {path} has no {key}.")
