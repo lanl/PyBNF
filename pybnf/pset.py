@@ -51,6 +51,15 @@ STOCHASTIC_METHODS = frozenset({
     'ssa', 'pla', 'nf', 'nf_reject', 'nfsim', 'nf_exact', 'rm', 'rulemonkey',
 })
 
+# The label under which a BNGL model's synthesized experiments save the parameter values they
+# all start from (#830, #831, ADR-0151). ``BNGLModel.add_action`` writes
+# ``saveParameters("<label>")`` before the first experiment it synthesizes and
+# ``resetParameters("<label>")`` before every later one, so no experiment runs under a
+# parameter value an earlier one set: a pre-equilibration's inline condition, or the last dose
+# of a BNG2.pl ``parameter_scan``. A label rather than the default slot keeps these lines apart
+# from any ``saveParameters()`` / ``resetParameters()`` in the model's own actions block.
+EXPERIMENT_START_LABEL = 'pybnf_experiment_start'
+
 
 def _format_bngl_number(x):
     """Format a float for a BNGL ``sample_times`` / ``par_scan_vals`` list (ADR-0028).
@@ -1086,15 +1095,12 @@ class BNGLModel(Model):
             line = self._paramscan_line(action)
         else:
             raise RuntimeError(f'Unknown action type {type(action)}')
-        # Config actions are assumed to be independent, so reset concentrations before each one --
-        # EXCEPT on the network-free (method=>nf) path. The bngsim NF bridge rejects
-        # resetConcentrations() (NFsim re-seeds from the seed species every run, so it is a no-op),
-        # and an NF model must not force network generation (its reaction network is unbounded and
-        # cannot be generated). Leaving both off routes an NF experiment to the pure network-free
-        # bridge (writeXML -> BngsimNfModel), matching a hand-written NF actions block.
+        # Each config action is an experiment of its own, so it starts from the model as written
+        # (#830, #831, #875) -- see _append_experiment_start. An NF model must still not force
+        # network generation (its reaction network is unbounded and cannot be generated), which
+        # routes an NF experiment to the pure network-free bridge (writeXML -> BngsimNfModel).
         is_nf = getattr(action, 'method', None) == 'nf'
-        if not is_nf:
-            self.actions.append('resetConcentrations()')
+        self._append_experiment_start()
         self.actions.append(line)
         if not is_nf:
             self.generates_network = True
@@ -1107,6 +1113,40 @@ class BNGLModel(Model):
         if getattr(action, 'method', None) in STOCHASTIC_METHODS:
             self.stochastic = True
         self.suffixes.append((action.bng_codeword, action.suffix))
+
+    def _append_experiment_start(self):
+        """Emit the lines that make the next synthesized experiment start from the model as
+        written, whatever the experiments before it did (#830, #831, #875; ADR-0151).
+
+        PyBNF writes every experiment of a model into one action list, and BNGL actions carry
+        their effects forward, so each experiment needs both halves of its state put back:
+
+        * **Parameters.** ``saveParameters("<EXPERIMENT_START_LABEL>")`` before the first
+          experiment records the parameters as the model file (and, for a condition run, its
+          mutation) left them, the trial point's free parameters included;
+          ``resetParameters("<EXPERIMENT_START_LABEL>")`` before every later experiment puts them
+          back. Without it a pre-equilibration's inline condition, or the last dose of a
+          BNG2.pl ``parameter_scan`` (which never restores the scanned parameter), stayed in
+          force for every experiment written after it, so the order of the ``experiment:``
+          lines changed the fit.
+        * **Species.** ``resetConcentrations()`` returns to the seed species. No synthesized
+          action redefines what it restores: a pre-equilibrated scan records its own snapshot
+          under a label (:meth:`_append_preequilibration_actions`). It is emitted on the
+          network-free path too: BioNetGen's ``simulate_nf`` reads its final state back into the
+          model, and the bngsim network-free bridge keeps one live session, so without it an NF
+          experiment continued from where the previous one stopped (#875).
+
+        The first experiment's save comes after any hand-written action, so an edition-1
+        ``begin actions`` block that sets a parameter before a legacy ``time_course`` still sets
+        it for every synthesized experiment, as before. ``resetParameters`` precedes
+        ``resetConcentrations`` so a seed species whose amount names a parameter is reseeded at
+        the restored value."""
+        save = f'saveParameters("{EXPERIMENT_START_LABEL}")'
+        if save in self.actions:
+            self.actions.append(f'resetParameters("{EXPERIMENT_START_LABEL}")')
+        else:
+            self.actions.append(save)
+        self.actions.append('resetConcentrations()')
 
     @staticmethod
     def _timecourse_line(action):
@@ -1204,30 +1244,35 @@ class BNGLModel(Model):
         """Emit the new-era pre-equilibration action block for a measurement ``TimeCourse`` or
         ``ParamScan`` (ADR-0052, #440; #474): a single simulation in two (or three) phases.
 
-        ``resetConcentrations()`` (clean ICs -- independence from any other experiment's
-        simulation) -> the pre-equilibration condition inline (``setParameter`` /
-        ``setConcentration``) -> an UNMEASURED equilibration ``simulate`` (``steady_state=>1``,
-        early-stops on ``||dx/dt||``, ``t_end`` its max-time bound -- or a fixed ``equil_t_end``)
-        -> the intervention (measurement ``condition:``) inline -> the measured phase. There is
-        deliberately NO ``resetConcentrations()`` between the phases: the equilibrated species
-        state carries into the measurement (verified on bngsim).
+        The experiment start (:meth:`_append_experiment_start`: the parameters and seed species
+        the model was written with -- independence from any other experiment's simulation) ->
+        the pre-equilibration condition inline (``setParameter`` / ``setConcentration``) -> an
+        UNMEASURED equilibration ``simulate`` (``steady_state=>1``, early-stops on ``||dx/dt||``,
+        ``t_end`` its max-time bound -- or a fixed ``equil_t_end``) -> the intervention
+        (measurement ``condition:``) inline -> the measured phase. There is deliberately NO
+        ``resetConcentrations()`` between the phases: the equilibrated species state carries into
+        the measurement (verified on bngsim).
 
         For a **time course** the measured phase is the ``simulate`` over the data grid. For a
         **parameter_scan** (#474, the preincubate->wash->dose-scan protocol) the intervention is
-        followed by ``saveConcentrations()`` and a ``parameter_scan(..., reset_conc=>1)``: each
-        dose resets to the carried post-intervention state (bngsim's native reset_conc-to-snapshot
-        scan, lanl/bngsim#11), and a species ``setConcentration`` expression that tracks the
-        scanned parameter (the titrated competitor) is replayed per dose. Only the measurement
-        suffix is registered, so the equilibration phase runs but is never scored."""
+        followed by ``saveConcentrations("<name>_scan_start")`` and a
+        ``parameter_scan(..., reset_conc=>1)``: each dose resets to the carried
+        post-intervention state, and a species ``setConcentration`` expression that tracks the
+        scanned parameter (the titrated competitor) is replayed per dose. The scan takes that
+        state itself, at its invocation, on both backends (BNG2.pl saves it under its own
+        ``SCAN`` label; bngsim's native scan, lanl/bngsim#11, captures its live state), so the
+        labelled save is a record of it, not an input. It is labelled so it cannot become what a
+        later experiment's ``resetConcentrations()`` restores (#830), and it keeps a
+        network-free pre-equilibrated scan off the network-free bridge, which has no snapshot
+        store and would start every dose from the seed (``saveConcentrations`` is classified
+        network-only). Only the measurement suffix is registered, so the equilibration phase
+        runs but is never scored."""
         is_scan = isinstance(action, ParamScan)
         _mt = float(action.equil_max_time)
         max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
         equil_suffix = f'{action.suffix}_preequil'
-        # Skip the leading resetConcentrations() on the NF path (bngsim's NF bridge rejects it;
-        # NFsim re-seeds each run, so it is a no-op there) -- see add_action for the rationale.
         is_nf = getattr(action, 'method', None) == 'nf'
-        if not is_nf:
-            self.actions.append('resetConcentrations()')
+        self._append_experiment_start()
         for pert in action.equil_perturbations:
             self.actions.append(self._preequilibration_perturbation_line(pert))
         # The equilibration phase relaxes to STEADY STATE (steady_state=>1; t_end is only the
@@ -1248,10 +1293,12 @@ class BNGLModel(Model):
         for pert in action.measure_perturbations:
             self.actions.append(self._preequilibration_perturbation_line(pert))
         if is_scan:
-            # Snapshot the post-intervention state and sweep the dose from it: each scan point
-            # resets to this snapshot (reset_conc=>1) -- the bngsim carried-state scan -- rather
-            # than re-deriving from the seed (which would discard the pre-equilibration).
-            self.actions.append('saveConcentrations()')
+            # Sweep the dose from the post-intervention state: each scan point resets to the
+            # state at the scan's invocation (reset_conc=>1) rather than re-deriving from the
+            # seed (which would discard the pre-equilibration). The labelled save records that
+            # state without redefining the default snapshot every later experiment's
+            # resetConcentrations() restores (#830); see the docstring.
+            self.actions.append(f'saveConcentrations("{action.suffix}_scan_start")')
             self.actions.append(self._paramscan_line(action, reset_conc=1))
         else:
             self.actions.append(self._timecourse_line(action))

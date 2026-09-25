@@ -26,6 +26,7 @@ from .parsing import (
     _is_reset_parameters,
     _is_save_concentrations,
     _is_save_parameters,
+    _snapshot_label,
 )
 
 
@@ -334,10 +335,20 @@ def _allowed_bngsim_backends_for_action(action_line):
     if _parse_set_concentration_nf(line) is not None:
         return frozenset((BNGSIM_BACKEND_NF,)), False
 
-    if _is_reset_concentrations(line) or _is_reset_parameters(line):
+    # Both bridges keep parameter snapshots, and the network-free one runs an unlabelled
+    # resetConcentrations() by starting its next session from the seed species (#875) -- the
+    # line every synthesized experiment starts with. A species snapshot
+    # (saveConcentrations) exists only on the network bridge, so it, and a reset to a
+    # labelled one, keep a model off the network-free bridge.
+    if _is_reset_parameters(line) or _is_save_parameters(line):
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    if _is_reset_concentrations(line):
+        if _snapshot_label(line) is None:
+            return _BNGSIM_ACTION_BACKENDS, False
         return frozenset((BNGSIM_BACKEND_NET,)), False
 
-    if _is_save_concentrations(line) or _is_save_parameters(line):
+    if _is_save_concentrations(line):
         return frozenset((BNGSIM_BACKEND_NET,)), False
 
     return frozenset(), False

@@ -284,7 +284,7 @@ def test_copies_do_not_share_an_engine_model_they_mutate(tmp_path, codegen_env):
     assert base_engine.get_param('k1') == base_k1
     assert first._engine_model.get_param('k1') == base_k1
 
-    mutant = first._get_mutant_model_bngsim(first.mutants[0])
+    mutant = first._get_mutant_model_bngsim(first.mutants[0], first._engine_model)
     assert mutant._engine_model is not first._engine_model
     assert _artifact(mutant._engine_model) == _artifact(base_engine)
 

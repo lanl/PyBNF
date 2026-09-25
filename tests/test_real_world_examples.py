@@ -127,10 +127,12 @@ def test_real_world_has_workstation_ssa_recovery_coverage():
                          ids=lambda e: e.folder)
 def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
     """Regression for the edition-2 NF synthesis fix: a ``method: nf`` experiment must
-    synthesise a *network-free* action set -- no ``resetConcentrations()`` (the bngsim
-    NF bridge rejects it; NFsim re-seeds each run) and ``generates_network`` left False
-    (NFsim models have unbounded networks) -- so it classifies as the NF bridge and
-    routes to writeXML -> BngsimNfModel rather than (impossible) network generation.
+    synthesise a *network-free* action set -- ``generates_network`` left False (NFsim models
+    have unbounded networks) -- so it classifies as the NF bridge and routes to writeXML ->
+    BngsimNfModel rather than (impossible) network generation. Each experiment still opens
+    with the experiment start, ``resetConcentrations()`` included: BioNetGen's simulate_nf and
+    the bngsim NF bridge both carry state from one simulation to the next, and the bridge runs
+    the reset by starting a fresh session (#875, ADR-0151).
 
     The network-free *shape* checks are backend-free (run everywhere). The NF-bridge
     routing check needs bngsim: ``classify_actions_for_bngsim`` normalizes the method
@@ -141,9 +143,10 @@ def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
     conf = _load_conf(example, tmp_path)
     m = list(conf.models.values())[0]
     assert not m.generates_network, f'{example.folder}: NF experiment forces network generation'
-    assert not any('resetConcentrations' in a for a in m.actions), (
-        f'{example.folder}: synthesized NF actions contain resetConcentrations (rejected by '
-        f'the bngsim NF bridge)')
+    starts = [i for i, a in enumerate(m.actions) if 'Parameters("pybnf_experiment_start")' in a]
+    assert len(starts) == len(m.suffixes), (example.folder, m.actions)
+    assert all(m.actions[i + 1] == 'resetConcentrations()' for i in starts), (
+        f'{example.folder}: an NF experiment does not start from the seed species: {m.actions}')
     if _bngsim_caps.BNGSIM_AVAILABLE:
         assert classify_actions_for_bngsim(m.actions) == 'nf', (
             f'{example.folder}: actions do not classify as the bngsim NF bridge')

@@ -33,6 +33,7 @@ from .parsing import (
     _is_reset_parameters,
     _is_save_concentrations,
     _is_save_parameters,
+    _snapshot_label,
 )
 from .expressions import (
     _build_safe_eval_namespace,
@@ -86,14 +87,13 @@ class _SimulateActionState:
     ICs are seeded from the equilibration steady-state sensitivity ``dx_ss/dθ``
     instead of zero (ADR-0052).
 
-    ``carried_baseline`` is what a ``resetConcentrations()`` resets *to*. A
+    ``carried_baseline`` is what a ``resetConcentrations()`` resets *to*. An unlabelled
     ``saveConcentrations()`` redefines the reset target to the live state, so once one
     has been taken of an advanced state, a later reset returns to a carried state rather
     than to the seed initial conditions -- and bngsim restores that state's ``dx/dθ``
-    with it. Two pre-equilibration experiments in one model make exactly that sequence
-    (#532): the second one's leading reset lands on the first one's saved snapshot, and
-    reading it as a fresh start had the measured phase refuse ("output sensitivities were
-    requested on a carried-over species state").
+    with it (#532). A hand-written block can make that sequence; the synthesized
+    experiments no longer do, since a pre-equilibrated scan labels its snapshot (#830,
+    ADR-0151). A labelled snapshot's own carried flag is kept beside it in the action loop.
     """
     sim: object
     method: str = 'ode'
@@ -162,6 +162,87 @@ class _SensitivityRequest:
     """
     params: list   # native model parameter ids -> sensitivity_params
     ic: list       # species initial-value names -> sensitivity_ic
+
+
+def _save_parameters(model):
+    """A snapshot of ``model``'s parameters for :func:`_restore_parameters` (BNG
+    ``saveParameters``): ``[(name, value, tracks_its_expression)]`` for every parameter the
+    model declares.
+
+    bngsim's own synthesized slots (``param_is_internal``: a function's evaluated value, an
+    SBML compartment's load size) are left out: they are not parameters a BNGL action sets, and
+    BioNetGen's snapshot keeps only ``Constant`` and ``ConstantExpression`` parameters
+    (``ParamList::copyConstant``). Whether a derived parameter tracks its defining expression
+    is recorded with its value, because a ``setParameter`` on it overrides the expression
+    (bngsim #188) and a reset has to lift that override, not pin the value."""
+    return [(name, model.get_param(name), bool(tracks))
+            for name, internal, tracks in zip(
+                model.param_names, model.param_is_internal, model.param_is_expression)
+            if not internal]
+
+
+def _initial_parameter_snapshots(model, action_lines):
+    """The parameter snapshots an action loop starts with: the default slot holds the
+    parameters the run was given, so a ``resetParameters()`` with no ``saveParameters()``
+    before it returns there. Taken only when some unlabelled ``resetParameters()`` could read
+    it, so a model that never resets its parameters that way pays nothing per evaluation."""
+    for action_line in action_lines:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if (line and not line.startswith('#') and _is_reset_parameters(line)
+                and _snapshot_label(line) is None):
+            return {None: _save_parameters(model)}
+    return {}
+
+
+def _restore_parameters(model, snapshot, model_name):
+    """Put back a :func:`_save_parameters` snapshot (BNG ``resetParameters``, #830).
+
+    BioNetGen restores the whole constant parameter list, expressions included, so a derived
+    parameter reads its primaries again afterwards. Here a primary -- or a derived parameter
+    that was already overridden when the snapshot was taken -- gets its saved value back. A
+    derived parameter that was tracking its expression is re-attached: once its inputs are
+    restored, writing the value the expression then gives lifts an override a later
+    ``setParameter`` put on it (bngsim #188). Written before its inputs, the same value would
+    pin it instead, so the primaries go first and the derived parameters are rewritten until
+    every one tracks again (one that reads another derived one can need a second pass).
+
+    Only what differs from the snapshot is written. A parameter that cannot be put back raises:
+    the experiments after it would otherwise run under the wrong value."""
+    def current():
+        return {name: (value, bool(tracks)) for name, value, tracks in zip(
+            model.param_names, (model.get_param(n) for n in model.param_names),
+            model.param_is_expression)}
+
+    def write(name, value):
+        try:
+            model.set_param(name, value)
+        except Exception as exc:
+            raise PybnfError(
+                "Model %s: resetParameters could not restore parameter %s to %r (%s), so the "
+                "actions after it would run under a value an earlier action set."
+                % (model_name, name, value, exc)) from exc
+
+    now = current()
+    derived = []
+    for name, value, tracks in snapshot:
+        if tracks:
+            derived.append((name, value))
+        elif now[name] != (value, False):
+            write(name, value)
+    for _ in range(len(derived)):
+        now = current()
+        pinned = [(name, value) for name, value in derived if not now[name][1]]
+        if not pinned:
+            break
+        for name, value in pinned:
+            write(name, value)
+    now = current()
+    wrong = [name for name, value, tracks in snapshot if now[name] != (value, tracks)]
+    if wrong:
+        raise PybnfError(
+            "Model %s: resetParameters could not restore parameter(s) %s to their saved values "
+            "and definitions, so the actions after it would run under values an earlier action "
+            "set." % (model_name, ', '.join(wrong)))
 
 
 def _attach_codegen(engine_model):
@@ -717,6 +798,22 @@ class BngsimModel(NetModel):
 
         model = self._engine_model
 
+        # A condition run starts from the engine as this run received it, before its actions
+        # changed anything (#869): the base run's setParameter lines -- a pre-equilibration's
+        # inline condition, or a hand-written one -- are the base run's own, and a mutant cloned
+        # from the engine after the run started under them (and read a relative perturbation's
+        # base value from them). The mutant's execute applies its own fit vector and mutation.
+        mutants_to_run = []
+        if with_mutants:
+            # Off-diagonal cross-product pruning (#484): skip building/running a condition
+            # mutant entirely when no action pairs with it (its whole column is off-diagonal).
+            # A no-op when emit_suffixes is unset.
+            mutants_to_run = [
+                mut for mut in self.mutants
+                if self.emit_suffixes is None
+                or any((s[1] + mut.suffix) in self.emit_suffixes for s in self.suffixes)]
+        unrun_engine = model.clone() if mutants_to_run else None
+
         if self.param_set is not None:
             for pname in self.param_set.keys():
                 try:
@@ -793,30 +890,23 @@ class BngsimModel(NetModel):
         if self.save_files:
             _write_saved_action_outputs(folder, filename, self.suffixes, ds)
 
-        if with_mutants:
-            for mut in self.mutants:
-                # Off-diagonal cross-product pruning (#484): skip building/running a
-                # condition mutant entirely when no action pairs with it (its whole column
-                # is off-diagonal). A no-op when emit_suffixes is unset.
-                if self.emit_suffixes is not None and not any(
-                        (s[1] + mut.suffix) in self.emit_suffixes for s in self.suffixes):
-                    continue
-                logger.debug('Working on mutant %s', mut.suffix)
-                mut_model = self._get_mutant_model_bngsim(mut)
-                # The mutant runs under its own condition suffix, so _execute_actions keys
-                # its emit-set lookups by <action suffix><mut.suffix> (the diagonal for the
-                # experiments this condition owns). Shares the base model's emit_suffixes via
-                # copy.copy in _get_mutant_model_bngsim (like _sensitivity_offset).
-                mut_model._emit_context_suffix = mut.suffix
-                mut_data = mut_model.execute(
-                    folder,
-                    filename + mut.suffix,
-                    timeout,
-                    with_mutants=False,
-                )
-                for suff in mut_data:
-                    ds[suff + mut.suffix] = mut_data[suff]
-                logger.debug('Finished mutant %s', mut.suffix)
+        for mut in mutants_to_run:
+            logger.debug('Working on mutant %s', mut.suffix)
+            mut_model = self._get_mutant_model_bngsim(mut, unrun_engine)
+            # The mutant runs under its own condition suffix, so _execute_actions keys
+            # its emit-set lookups by <action suffix><mut.suffix> (the diagonal for the
+            # experiments this condition owns). Shares the base model's emit_suffixes via
+            # the shallow copy in _get_mutant_model_bngsim (like _sensitivity_offset).
+            mut_model._emit_context_suffix = mut.suffix
+            mut_data = mut_model.execute(
+                folder,
+                filename + mut.suffix,
+                timeout,
+                with_mutants=False,
+            )
+            for suff in mut_data:
+                ds[suff + mut.suffix] = mut_data[suff]
+            logger.debug('Finished mutant %s', mut.suffix)
 
         return ds
 
@@ -833,12 +923,15 @@ class BngsimModel(NetModel):
                 model, method='ode',
                 **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')))
 
-        base_params = {}
-        for pname in model.param_names:
-            try:
-                base_params[pname] = model.get_param(pname)
-            except Exception:
-                pass
+        # Parameter snapshots by label (None: the default slot), for saveParameters /
+        # resetParameters. The default slot starts as the parameters this run was given, so a
+        # resetParameters() with no save before it returns there. A labelled reset needs its
+        # own save first, as in BioNetGen (#830).
+        param_snapshots = _initial_parameter_snapshots(model, self.actions)
+        # Labelled species snapshots (saveConcentrations("x")) -> whether the state saved was
+        # a carried one. bngsim keeps them apart from the default slot, as BioNetGen does, so
+        # saving one does not change what a plain resetConcentrations() restores (#830).
+        labelled_carried = {}
         # Active setConcentration() expressions waiting to be replayed at the
         # next parameter_scan(). Cleared on resetConcentrations and
         # saveConcentrations. See issue #46.
@@ -897,20 +990,31 @@ class BngsimModel(NetModel):
                 continue
 
             if _is_reset_concentrations(line):
-                model.reset()
-                # The reset target is the seed ICs -- or, once a saveConcentrations() has
-                # redefined it, that snapshot, which is carried if the state it captured was.
-                state.carried_state = state.carried_baseline
+                label = _snapshot_label(line)
+                if label is None:
+                    model.reset()
+                    # The reset target is the seed ICs -- or, once a saveConcentrations() has
+                    # redefined it, that snapshot, which is carried if the state it captured was.
+                    state.carried_state = state.carried_baseline
+                else:
+                    if label not in labelled_carried:
+                        raise PybnfError(
+                            "Model %s: the action %s restores species concentrations saved "
+                            "under the label '%s', but no saveConcentrations(\"%s\") runs "
+                            "before it." % (self.name, line, label, label))
+                    model.restore_concentrations(label)
+                    state.carried_state = labelled_carried[label]
                 concentration_overrides.clear()
                 continue
 
             if _is_reset_parameters(line):
-                for pname, pval in base_params.items():
-                    try:
-                        model.set_param(pname, pval)
-                    except Exception:
-                        logger.debug(
-                            "resetParameters: could not restore %s=%s", pname, pval)
+                label = _snapshot_label(line)
+                if label not in param_snapshots:
+                    raise PybnfError(
+                        "Model %s: the action %s restores parameters saved under the label "
+                        "'%s', but no saveParameters(\"%s\") runs before it."
+                        % (self.name, line, label, label))
+                _restore_parameters(model, param_snapshots[label], self.name)
                 continue
 
             if _is_save_concentrations(line):
@@ -922,18 +1026,19 @@ class BngsimModel(NetModel):
                 # then titrates the competitor per dose -- issue #474). So the
                 # overrides carry THROUGH a save (only resetConcentrations(), which
                 # returns to the seed, clears them, above).
-                model.save_concentrations()
-                # ...and it becomes the reset target, carried iff the live state is.
-                state.carried_baseline = state.carried_state
+                label = _snapshot_label(line)
+                if label is None:
+                    model.save_concentrations()
+                    # ...and it becomes the reset target, carried iff the live state is.
+                    state.carried_baseline = state.carried_state
+                else:
+                    # A labelled snapshot leaves the default reset target alone (#830).
+                    model.save_concentrations(label)
+                    labelled_carried[label] = state.carried_state
                 continue
 
             if _is_save_parameters(line):
-                for pname in model.param_names:
-                    try:
-                        base_params[pname] = model.get_param(pname)
-                    except Exception:
-                        logger.debug(
-                            "saveParameters: could not read %s", pname)
+                param_snapshots[_snapshot_label(line)] = _save_parameters(model)
                 continue
 
             sc_expr = _parse_set_concentration_expr(line)
@@ -1027,13 +1132,9 @@ class BngsimModel(NetModel):
                 **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')))
         last_result = None
 
-        # Baseline saved parameters (used by saveParameters/resetParameters)
-        saved_params = {}
-        for pname in model.param_names:
-            try:
-                saved_params[pname] = model.get_param(pname)
-            except Exception:
-                pass
+        # Saved parameters and labelled species snapshots, as in _execute_actions.
+        param_snapshots = _initial_parameter_snapshots(model, self._protocol)
+        labelled_carried = {}
 
         for action_index, action_line in enumerate(self._protocol):
             line = _collapse_action_line_continuations(action_line).strip()
@@ -1089,37 +1190,47 @@ class BngsimModel(NetModel):
 
             # ── resetConcentrations() ──
             if _is_reset_concentrations(line):
-                model.reset()
-                # The reset target, which a saveConcentrations() may have redefined to a
-                # carried state (as in _execute_actions).
-                state.carried_state = state.carried_baseline
+                label = _snapshot_label(line)
+                if label is None:
+                    model.reset()
+                    # The reset target, which a saveConcentrations() may have redefined to a
+                    # carried state (as in _execute_actions).
+                    state.carried_state = state.carried_baseline
+                else:
+                    if label not in labelled_carried:
+                        raise PybnfError(
+                            "Model %s: the protocol action %s restores species concentrations "
+                            "saved under the label '%s', but no saveConcentrations(\"%s\") "
+                            "runs before it." % (self.name, line, label, label))
+                    model.restore_concentrations(label)
+                    state.carried_state = labelled_carried[label]
                 continue
 
             # ── saveConcentrations() ──
             if _is_save_concentrations(line):
-                model.save_concentrations()
-                state.carried_baseline = state.carried_state
+                label = _snapshot_label(line)
+                if label is None:
+                    model.save_concentrations()
+                    state.carried_baseline = state.carried_state
+                else:
+                    model.save_concentrations(label)
+                    labelled_carried[label] = state.carried_state
                 continue
 
             # ── saveParameters() ──
             if _is_save_parameters(line):
-                saved_params = {}
-                for pname in model.param_names:
-                    try:
-                        saved_params[pname] = model.get_param(pname)
-                    except Exception:
-                        logger.debug(
-                            "protocol: saveParameters could not read %s", pname)
+                param_snapshots[_snapshot_label(line)] = _save_parameters(model)
                 continue
 
             # ── resetParameters() ──
             if _is_reset_parameters(line):
-                for pname, pval in saved_params.items():
-                    try:
-                        model.set_param(pname, pval)
-                    except Exception:
-                        logger.debug(
-                            "protocol: resetParameters could not restore %s=%s", pname, pval)
+                label = _snapshot_label(line)
+                if label not in param_snapshots:
+                    raise PybnfError(
+                        "Model %s: the protocol action %s restores parameters saved under the "
+                        "label '%s', but no saveParameters(\"%s\") runs before it."
+                        % (self.name, line, label, label))
+                _restore_parameters(model, param_snapshots[label], self.name)
                 state.sim = _runtime.bngsim.Simulator(
                     model, method=state.method,
                     **self._codegen_kwargs(state.method),
@@ -2463,10 +2574,25 @@ class BngsimModel(NetModel):
             return None
         return self._extract_output_sensitivities(result, print_functions)
 
-    def _get_mutant_model_bngsim(self, mut):
-        """Create a mutant copy using a cloned engine model."""
-        mut_model = copy.copy(self)  # clones the engine model (__copy__)
-        mut_model.param_set = _build_mutant_param_set(self.param_set, mut, self._engine_model)
+    def _get_mutant_model_bngsim(self, mut, unrun_engine):
+        """Create a mutant copy on its own clone of ``unrun_engine``: this model's engine as
+        :meth:`execute` received it, before the base run's actions changed any parameter (#869).
+
+        The base value a relative perturbation of a non-free target starts from is read from
+        the mutant's clone once this point's free parameters are written into it, so it is the
+        model's declared value, not one the base run left -- and a derived target (``kd =
+        koff/kon`` with ``kon`` free) is read at this point's ``kon``, not at the value the
+        ``.net`` was generated with. The mutant's own execute writes the same values again."""
+        mut_model = self._copy_with_engine(unrun_engine)
+        base_engine = mut_model.__dict__.get('_engine_model')
+        if base_engine is not None and self.param_set is not None:
+            # A free parameter this model does not declare belongs to another model of a
+            # multi-model fit; execute warns about it when it applies the vector.
+            declared = set(base_engine.param_names)
+            for pname in self.param_set.keys():
+                if pname in declared:
+                    base_engine.set_param(pname, self.param_set[pname])
+        mut_model.param_set = _build_mutant_param_set(self.param_set, mut, base_engine)
         # A mutant's action output is scored under ``<action suffix><mut.suffix>``
         # in the parent's dataset, so fold its suffix onto each action's own suffix
         # when keying the scored set for the #475 gate (the shallow copy already
@@ -2484,9 +2610,13 @@ class BngsimModel(NetModel):
         It is taken here rather than left to the callers, so no copy can share an
         engine model, and so a ``set_param`` on one, with the model it came from.
         """
+        return self._copy_with_engine(self.__dict__.get('_engine_model'))
+
+    def _copy_with_engine(self, engine):
+        """A shallow copy of this model whose engine model is a fresh clone of ``engine``
+        (``None`` leaves the copy without one, as for an unpickled template)."""
         new = object.__new__(type(self))
         new.__dict__.update(self.__dict__)
-        engine = self.__dict__.get('_engine_model')
         if engine is not None:
             new._engine_model = engine.clone()
         return new

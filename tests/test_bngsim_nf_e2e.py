@@ -23,6 +23,8 @@ import pytest
 from scipy.integrate import solve_ivp
 
 import pybnf.bngsim_model as bngsim_model
+from pybnf import pset
+from pybnf.printing import PybnfError
 
 
 pytestmark = pytest.mark.bngsim
@@ -261,3 +263,78 @@ def test_nf_print_functions_emits_function_column(tmp_path):
         'print_functions=>0 should not emit the function column; got %s' % cols_off)
     # Sanity: observables are present either way.
     assert {'time', 'bound', 'Afree'} <= set(cols_on)
+
+
+# Several synthesized experiments on one network-free model (#875, ADR-0151). PyBNF writes each
+# experiment's start -- resetParameters to the saved parameters, then resetConcentrations() --
+# before it. The bridge used to keep one live session for the whole action list and had no
+# resetConcentrations() at all, so the second experiment continued from the molecules the first
+# left behind, at the parameters it left behind.
+_START = pset.EXPERIMENT_START_LABEL
+
+
+def _nf_actions_model(actions):
+    return bngsim_model.BngsimNfModel(
+        'e2e_nf_binding', list(actions), [('simulate', 'tc1'), ('simulate', 'tc2')], [],
+        str(NF_XML), bngl_model_lines=_read_bngl_lines(), param_names=())
+
+
+def _nf_tc(suffix):
+    return ('simulate({method=>"nf",t_start=>0,t_end=>%g,n_steps=>10,gml=>1000,suffix=>"%s"})'
+            % (T_END, suffix))
+
+
+@pytest.mark.bngsim_nfsim
+def test_each_synthesized_nf_experiment_starts_from_the_seed_and_the_saved_parameters(tmp_path):
+    """The second experiment starts with no molecule bound (the seed, exactly), at the saved
+    k_on even though the first experiment's condition set it to 0, so its bound count at t_end
+    matches the master-equation oracle rather than continuing the first run's."""
+    model = _nf_actions_model([
+        f'saveParameters("{_START}")', 'resetConcentrations()', _nf_tc('tc1'),
+        'setParameter("k_on",0)',
+        f'resetParameters("{_START}")', 'resetConcentrations()', _nf_tc('tc2')])
+    finals = []
+    for i in range(N_REPLICATES):
+        model._pybnf_replicate_index = i
+        ds = model.execute(str(tmp_path), 'reset_%d' % i, 60)
+        first, second = ds['tc1'], ds['tc2']
+        assert first.data[-1, first.cols['bound']] > 0
+        assert second.data[0, second.cols['bound']] == 0
+        assert second.data[0, second.cols['Afree']] == N0
+        finals.append(second.data[-1, second.cols['bound']])
+    _assert_matches_master_equation('NFsim after a reset', np.asarray(finals))
+
+
+@pytest.mark.bngsim_nfsim
+def test_a_handwritten_nf_block_without_a_reset_still_continues_its_state(tmp_path):
+    """BioNetGen's simulate_nf reads its final state back into the model, so with no reset
+    between them a hand-written block's second simulate continues from the first. The reset is
+    what makes an experiment start afresh; without one the carry-over stays."""
+    ds = _nf_actions_model([_nf_tc('tc1'), _nf_tc('tc2')]).execute(str(tmp_path), 'carry', 60)
+    first, second = ds['tc1'], ds['tc2']
+    assert second.data[0, second.cols['bound']] == first.data[-1, first.cols['bound']] > 0
+
+
+@pytest.mark.bngsim_nfsim
+def test_a_labelled_species_reset_is_refused_on_the_nf_bridge(tmp_path):
+    """The network-free bridge keeps no species snapshot, so it cannot honour
+    resetConcentrations("label"); it refuses rather than restarting from the seed."""
+    model = _nf_actions_model(['resetConcentrations("equilibrated")', _nf_tc('tc1')])
+    with pytest.raises(PybnfError, match='keeps no labelled species snapshot'):
+        model.execute(str(tmp_path), 'labelled', 60)
+
+
+def test_experiment_start_lines_route_to_the_nf_bridge():
+    """The lines each synthesized experiment starts with must not push a network-free model
+    off the network-free bridge (resetConcentrations() and the parameter snapshots were
+    classified network-only); a species snapshot still does, since only the network bridge
+    keeps one."""
+    tc = _nf_tc('tc1')
+    start = [f'saveParameters("{_START}")', 'resetConcentrations()']
+    again = [f'resetParameters("{_START}")', 'resetConcentrations()']
+    nf = bngsim_model.BNGSIM_BACKEND_NF
+    assert bngsim_model.classify_actions_for_bngsim(start + [tc] + again + [tc]) == nf
+    assert bngsim_model.classify_actions_for_bngsim(
+        ['saveConcentrations("x")', tc]) is None
+    assert bngsim_model.classify_actions_for_bngsim(
+        ['resetConcentrations("x")', tc]) is None

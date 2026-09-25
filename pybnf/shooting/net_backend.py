@@ -186,7 +186,8 @@ class NetSegmentBackend(SegmentBackend):
         if self._lanes[lane] is not None:
             return self._lanes[lane]
         try:
-            prepared = self.model._get_mutant_model_bngsim(self.mutant)
+            # This backend never runs the model's actions, so its engine is the unrun one.
+            prepared = self.model._get_mutant_model_bngsim(self.mutant, self.model._engine_model)
             engine = prepared._engine_model
             for name in (prepared.param_set or {}).keys():
                 try:
