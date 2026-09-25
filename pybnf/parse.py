@@ -629,8 +629,18 @@ def parse(s):
     # amount); a relative op raises there rather than as a generic parse failure.
     cond_species_op = pp.Group(pp.QuotedString('"') - _one_of('+ - * / =') - cond_species_val)
     cond_op = cond_species_op | cond_param_op
+    # ``perturbations: none`` (#906, ADR-0150): a condition that declares it changes nothing --
+    # as a ``preequilibrate:`` it equilibrates the model as it stands (PEtab v2's blank
+    # ``conditionId`` on a ``time = -inf`` period). A perturbation always carries an operator
+    # after its target, so a bare ``none`` (caseless, a whole word) is unambiguous; the
+    # ``~FollowedBy`` keeps a model parameter that happens to be named ``none`` usable as an
+    # ordinary target (``none = 2``). Tried before ``cond_op``, whose error stop after the
+    # identifier would otherwise reject a bare ``none`` for its missing operator. ploop keeps it
+    # as the plain string ``'none'`` among the perturbation groups and refuses it anywhere but
+    # as the entire list.
+    cond_none = pp.CaselessKeyword('none') + ~pp.FollowedBy(_one_of('+ - * / ='))
     cond_model_ref = pp.Group(pp.Suppress(',') + cond_model_key + colon + model_file)
-    cond_perts = pp.Group(_DelimitedList(cond_op))
+    cond_perts = pp.Group(_DelimitedList(cond_none | cond_op))
     condition_gram = condition_key + colon - cond_name + pp.Optional(cond_model_ref) + \
         pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
 
@@ -954,7 +964,21 @@ def ploop(ls):  # parse loop
                 # The perturbations are always the last group; the optional model ref is
                 # l[2][0], present iff len(l) == 4 (one optional + one required group).
                 name = l[1]
-                perts = [tuple(op) for op in l[-1]]
+                # ``perturbations: none`` (#906, ADR-0150) arrives as the plain string 'none'
+                # among the perturbation groups and stores as an EMPTY list: a condition that
+                # changes nothing. It must be the whole list -- ``none, L = 2`` contradicts
+                # itself, so it is refused here, naming the condition.
+                raw_perts = list(l[-1])
+                if any(isinstance(op, str) for op in raw_perts):
+                    if len(raw_perts) > 1:
+                        raise PybnfError(
+                            f"Condition '{name}' lists 'none' together with other "
+                            f"perturbations. 'perturbations: none' declares a condition that "
+                            f"changes nothing, so 'none' must be the whole list; remove it, or "
+                            f"remove the other perturbations.")
+                    perts = []
+                else:
+                    perts = [tuple(op) for op in raw_perts]
                 model_ref = l[2][0] if len(l) == 4 else None
                 cond_key = ('condition', name)
                 if cond_key in d:
@@ -1294,7 +1318,8 @@ def ploop(ls):  # parse loop
                       "arguments are strings"
             elif key == 'condition':
                 fmt = "'condition: name, perturbations: var1 op val1, var2 op val2, ...' where op is one of " \
-                      "= * / + - , optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
+                      "= * / + - , or 'condition: name, perturbations: none' for a condition that changes " \
+                      "nothing, optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
             elif key == 'experiment':
                 fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' (data files may be .exp " \
                       "measurements and/or .con/.prop constraints) optionally with 'condition: c', " \

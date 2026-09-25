@@ -23,6 +23,7 @@ Its contracts, by strength of oracle:
    refused, non-uniform prior, no-``_SD`` noise, SBML model, PEtab-inexpressible objective).
 """
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -2709,6 +2710,351 @@ class TestExportPreequilibratedDoseResponse:
             + self._PARAMS)
         with pytest.raises(NotImplementedError, match='inline-only|pre-equilibration protocol'):
             export_job(src / 'job.conf', src / 'out')
+
+
+# ---------------------------------------------------------------------------
+# `perturbations: none` (#906, ADR-0150): a condition that changes nothing. As `preequilibrate:`
+# its -inf period is the model as is -- a blank conditionId, or cond_wildtype re-pinning a
+# non-empty surrogate set M -- and as the measured `condition:` it exports exactly as an omitted
+# one. It never becomes a conditionId of its own (PEtab has no zero-row condition).
+# ---------------------------------------------------------------------------
+
+class TestExportUnperturbedCondition:
+
+    _HEAD = TestExportPreequilibration._HEAD
+    _PARAMS = TestExportPreequilibration._PARAMS
+
+    def _export(self, tmp_path_factory, name, body, files=(), model=_PREEQUIL_MODEL):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'm.bngl').write_text(model)
+        (src / 'relax.exp').write_text('# time A_tot\n0\t10\n1\t6\n2\t4\n')
+        for fname, text in files:
+            (src / fname).write_text(text)
+        (src / 'job.conf').write_text(self._HEAD + body + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        return out
+
+    @staticmethod
+    def _experiments(out):
+        return [(r['experimentId'], r['time'], r['conditionId'])
+                for r in _tsv_rows(out / 'experiments.tsv')]
+
+    @staticmethod
+    def _conditions(out):
+        path = out / 'conditions.tsv'
+        return ({(r['conditionId'], r['targetId'], r['targetValue']) for r in _tsv_rows(path)}
+                if path.exists() else set())
+
+    def test_none_preequilibration_is_a_blank_minus_inf_period(self, tmp_path_factory):
+        out = self._export(tmp_path_factory, 'none_pre', (
+            'condition: basal, perturbations: none\n'
+            'condition: meas, perturbations: flag = 2\n'
+            'experiment: relax, preequilibrate: basal, condition: meas, data: relax.exp\n'))
+        assert self._experiments(out) == [('relax', '-inf', ''), ('relax', '0', 'cond_meas')]
+        assert self._conditions(out) == {('cond_meas', 'flag', '2')}
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        # libpetab's own reading: a pre-equilibration period with an empty condition list.
+        from petab.v2 import Problem
+        (experiment,) = Problem.from_yaml(str(out / 'problem.yaml')).experiments
+        assert [(p.time, list(p.condition_ids)) for p in experiment.periods] == [
+            (float('-inf'), []), (0.0, ['cond_meas'])]
+
+    def test_none_preequilibration_re_pins_a_fit_and_perturbed_parameter(self, tmp_path_factory):
+        # Another experiment perturbs the fit parameter k, so M = {k}: k is renamed k__REF in the
+        # parameter table and every period must set k, the -inf one included -- through the same
+        # base condition a wildtype experiment gets.
+        out = self._export(tmp_path_factory, 'none_pre_fit', (
+            'condition: basal, perturbations: none\n'
+            'condition: meas, perturbations: flag = 2\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: relax, preequilibrate: basal, condition: meas, data: relax.exp\n'
+            'experiment: other, condition: fast, data: relax.exp\n'))
+        assert {r['parameterId'] for r in _tsv_rows(out / 'parameters.tsv')} == {'k__REF'}
+        assert ('relax', '-inf', 'cond_wildtype') in self._experiments(out)
+        conditions = self._conditions(out)
+        assert ('cond_wildtype', 'k', 'k__REF') in conditions
+        assert ('cond_meas', 'k', 'k__REF') in conditions
+        assert not any(cid == 'cond_basal' for cid, _t, _v in conditions)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_none_measured_condition_exports_as_an_omitted_one(self, tmp_path_factory):
+        # Byte-for-byte the problem an experiment with no condition exports, as a plain time
+        # course, as a wash-out after a pre-equilibration, and on a plain dose-response scan
+        # (which refuses a real named condition).
+        dose = ('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')
+        for label, with_none, without in (
+                ('tc', 'experiment: relax, condition: basal, data: relax.exp\n',
+                 'experiment: relax, data: relax.exp\n'),
+                ('washout', 'condition: pre, perturbations: flag = 0\n'
+                            'experiment: relax, preequilibrate: pre, condition: basal, '
+                            'data: relax.exp\n',
+                 'condition: pre, perturbations: flag = 0\n'
+                 'experiment: relax, preequilibrate: pre, data: relax.exp\n'),
+                ('scan', 'experiment: scan, condition: basal, data: dose.exp\n',
+                 'experiment: scan, data: dose.exp\n')):
+            a = self._export(tmp_path_factory, f'none_meas_{label}',
+                             'condition: basal, perturbations: none\n' + with_none, [dose])
+            b = self._export(tmp_path_factory, f'omitted_{label}', without, [dose])
+            assert sorted(f.name for f in a.iterdir()) == sorted(f.name for f in b.iterdir())
+            for f in a.iterdir():
+                assert f.read_text() == (b / f.name).read_text(), (label, f.name)
+
+    def test_none_preequilibrated_scan_is_a_blank_minus_inf_period(self, tmp_path_factory):
+        out = self._export(tmp_path_factory, 'none_pdr', (
+            'condition: basal, perturbations: none\n'
+            'experiment: scan, preequilibrate: basal, t_end: 1, data: dose.exp\n'),
+            [('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')])
+        assert self._experiments(out) == [
+            ('scan_0', '-inf', ''), ('scan_0', '0', 'cond_scan_0'),
+            ('scan_1', '-inf', ''), ('scan_1', '0', 'cond_scan_1')]
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_none_preequilibrated_scan_re_pins_a_fit_and_perturbed_parameter(
+            self, tmp_path_factory):
+        # With M = {k} (another experiment perturbs the fit k), every simulation must set k before
+        # it starts (#892). A named pre-equilibration condition does that on its leading period; a
+        # `none` one uses the base condition, which pins k = k__REF there and nothing else. The
+        # measured period carries only the dose, so k keeps that value through the scan.
+        out = self._export(tmp_path_factory, 'none_pdr_fit', (
+            'condition: basal, perturbations: none\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: scan, preequilibrate: basal, t_end: 1, data: dose.exp\n'
+            'experiment: other, condition: fast, data: relax.exp\n'),
+            [('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')])
+        assert {r['parameterId'] for r in _tsv_rows(out / 'parameters.tsv')} == {'k__REF'}
+        rows = self._experiments(out)
+        assert ('scan_0', '-inf', 'cond_wildtype') in rows
+        assert ('scan_1', '-inf', 'cond_wildtype') in rows
+        assert ('scan_0', '0', 'cond_scan_0') in rows
+        conditions = self._conditions(out)
+        assert {(t, v) for cid, t, v in conditions if cid == 'cond_wildtype'} == {('k', 'k__REF')}
+        assert not any(cid == 'cond_basal' for cid, _t, _v in conditions)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_an_empty_condition_is_never_written_as_a_condition_id(self):
+        # The builders' own net: a condition with no rows cannot be expressed in PEtab.
+        from pybnf.petab.conditions import _condition_rows_for
+        with pytest.raises(PybnfError, match="would be exported with no rows"):
+            _condition_rows_for('cond_basal', [], set(), lambda v: None)
+
+    # The #906 model: A' = p - k*flag*A, seed A = 10, p = k = flag = 1.
+    _RELAX_MODEL = _PREEQUIL_MODEL.replace('  k     1.0\n', '  p     1\n  k     1.0\n').replace(
+        'A() -> 0 deg()', '0 -> A() p\n  A() -> 0 deg()')
+    _RELAX_TIMES = (0.0, 0.5, 1.0, 2.0)
+
+    @staticmethod
+    def _petab_sos(out, estimates, defaults):
+        """Half the sum of squared residuals of the exported problem at ``estimates``, computed
+        from its TSVs alone for the one-species model A' = p - k*flag*A (seed 10), under PEtab
+        v2 period semantics: each period assigns its conditions' targets at its start (the rest
+        keep their values), a ``-inf`` period relaxes to the steady state p/(k*flag), and the
+        state carries into the next period, integrated with scipy."""
+        import re
+        from scipy.integrate import solve_ivp
+
+        def value(expr):
+            m = re.fullmatch(r'\s*([A-Za-z_]\w*)\s*(?:([*/+-])\s*([0-9.eE+-]+))?\s*', expr)
+            if not m:
+                return float(expr)
+            x = estimates[m.group(1)]
+            if m.group(2):
+                y = float(m.group(3))
+                x = {'*': x * y, '/': x / y, '+': x + y, '-': x - y}[m.group(2)]
+            return x
+
+        conditions = {}
+        for r in _tsv_rows(out / 'conditions.tsv'):
+            conditions.setdefault(r['conditionId'], []).append((r['targetId'], r['targetValue']))
+        periods = {}
+        for r in _tsv_rows(out / 'experiments.tsv'):
+            periods.setdefault(r['experimentId'], []).append((float(r['time']), r['conditionId']))
+        measured = {}
+        for r in _tsv_rows(out / 'measurements.tsv'):
+            measured.setdefault(r['experimentId'], []).append(
+                (float(r['time']), float(r['measurement'])))
+        total = 0.0
+        for eid, rows in periods.items():
+            entity, a = dict(defaults), 10.0
+            for t0, cid in sorted(rows):
+                for target, expr in conditions.get(cid, []):
+                    entity[target] = value(expr)
+                if t0 == float('-inf'):
+                    a = entity['p'] / (entity['k'] * entity['flag'])
+            times = sorted({t for t, _y in measured[eid]})
+            sol = solve_ivp(lambda _t, y, e=entity: [e['p'] - e['k'] * e['flag'] * y[0]],
+                            (0.0, times[-1]), [a], t_eval=times, rtol=1e-11, atol=1e-13)
+            sim = dict(zip(times, sol.y[0]))
+            total += sum(0.5 * (sim[t] - y) ** 2 for t, y in measured[eid])
+        return total
+
+    def test_exported_problem_scores_the_declared_protocol(self, tmp_path_factory):
+        # An oracle for the export with a fit-and-perturbed k (M = {k}, `fast`): the `none`
+        # pre-equilibration's -inf period must re-pin k at its estimate (cond_wildtype), and a
+        # `none` measured condition after a named pre-equilibration is a wash-out whose measured
+        # period re-pins k and keeps flag = 3. The exported TSVs, evaluated independently of
+        # PyBNF's simulators, must score what the conf declares, in closed form:
+        #   other: seed 10 at 2k      -> 1/(2k) + (10 - 1/(2k)) exp(-2kt)
+        #   relax: 1/k, then flag = 2 -> 1/(2k) + (1/k - 1/(2k)) exp(-2kt)
+        #   wash:  1/(3k), unchanged  -> 1/(3k)
+        # A blank -inf period would equilibrate relax at the model file's k = 1 instead.
+        data = [1 / 2 + 1 / 2 * math.exp(-2 * t) for t in self._RELAX_TIMES]
+        src = tmp_path_factory.mktemp('none_oracle')
+        (src / 'm.bngl').write_text(self._RELAX_MODEL)
+        (src / 'relax.exp').write_text(
+            '# time A_tot\n' + ''.join(f'{t}\t{y}\n' for t, y in zip(self._RELAX_TIMES, data)))
+        (src / 'job.conf').write_text(self._HEAD + (
+            'condition: basal, perturbations: none\n'
+            'condition: stim, perturbations: flag = 2\n'
+            'condition: hiflag, perturbations: flag = 3\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: other, condition: fast, data: relax.exp\n'
+            'experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp\n'
+            'experiment: wash, preequilibrate: hiflag, condition: basal, data: relax.exp\n')
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        for k in (0.6, 1.7):
+            want = 0.0
+            for curve in ([1 / (2 * k) + (10 - 1 / (2 * k)) * math.exp(-2 * k * t)
+                           for t in self._RELAX_TIMES],
+                          [1 / (2 * k) + (1 / k - 1 / (2 * k)) * math.exp(-2 * k * t)
+                           for t in self._RELAX_TIMES],
+                          [1 / (3 * k)] * len(self._RELAX_TIMES)):
+                want += sum(0.5 * (s - y) ** 2 for s, y in zip(curve, data))
+            got = self._petab_sos(out, {'k__REF': k}, {'p': 1.0, 'k': 1.0, 'flag': 1.0})
+            assert got == pytest.approx(want, rel=1e-8), k
+
+    def test_exported_none_preequilibrated_scans_score_the_declared_protocol(
+            self, tmp_path_factory):
+        # The pre-equilibrated-scan shape of the oracle above, with M = {k} (`fast`): each dose
+        # experiment's -inf period must pin k at its estimate before equilibrating. Evaluated from
+        # the TSVs alone, the problem must score the conf's protocol in closed form (p = 1):
+        #   other:            seed 10 at 2k -> 1/(2k) + (10 - 1/(2k)) exp(-2kt)
+        #   scan, flag f:     1/k, then 1 time unit at f -> 1/(kf) + (1/k - 1/(kf)) exp(-kf)
+        #   kscan, k = d:     1/k, then 1 time unit at k = d -> 1/d + (1/k - 1/d) exp(-d)
+        # kscan sweeps k itself, which is in M: the -inf period pins it, the dose period resets it.
+        # A blank -inf period would equilibrate both scans at the model file's k = 1 instead.
+        flags, ks = (1.0, 2.0, 4.0), (0.5, 2.0)
+        data = [1 / 2 + 1 / 2 * math.exp(-2 * t) for t in self._RELAX_TIMES]
+        src = tmp_path_factory.mktemp('none_scan_oracle')
+        (src / 'm.bngl').write_text(self._RELAX_MODEL)
+        (src / 'relax.exp').write_text(
+            '# time A_tot\n' + ''.join(f'{t}\t{y}\n' for t, y in zip(self._RELAX_TIMES, data)))
+        (src / 'dose.exp').write_text('# flag A_tot\n1\t0.9\n2\t0.6\n4\t0.3\n')
+        (src / 'kdose.exp').write_text('# k A_tot\n0.5\t1.2\n2\t0.7\n')
+        (src / 'job.conf').write_text(self._HEAD + (
+            'condition: basal, perturbations: none\n'
+            'condition: fast, perturbations: k * 2\n'
+            'experiment: other, condition: fast, data: relax.exp\n'
+            'experiment: scan, preequilibrate: basal, t_end: 1, data: dose.exp\n'
+            'experiment: kscan, preequilibrate: basal, t_end: 1, data: kdose.exp\n')
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+        for k in (0.6, 1.7):
+            want = sum(0.5 * (1 / (2 * k) + (10 - 1 / (2 * k)) * math.exp(-2 * k * t) - y) ** 2
+                       for t, y in zip(self._RELAX_TIMES, data))
+            want += sum(0.5 * (1 / (k * f) + (1 / k - 1 / (k * f)) * math.exp(-k * f) - y) ** 2
+                        for f, y in zip(flags, (0.9, 0.6, 0.3)))
+            want += sum(0.5 * (1 / d + (1 / k - 1 / d) * math.exp(-d) - y) ** 2
+                        for d, y in zip(ks, (1.2, 0.7)))
+            got = self._petab_sos(out, {'k__REF': k}, {'p': 1.0, 'k': 1.0, 'flag': 1.0})
+            assert got == pytest.approx(want, rel=1e-8), k
+
+    # A job condition named `wildtype` (p = 3) applied by a plain time course, beside M = {k}.
+    _JOB_WILDTYPE = ('condition: fast, perturbations: k * 2\n'
+                     'condition: wildtype, perturbations: p = 3\n'
+                     'experiment: other, condition: fast, data: relax.exp\n')
+
+    @pytest.mark.parametrize('body', [
+        # a `none` pre-equilibration before a measured condition
+        'condition: basal, perturbations: none\n'
+        'condition: stim, perturbations: flag = 2\n'
+        'experiment: tcw, condition: wildtype, data: relax.exp\n'
+        'experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp\n',
+        # a `none` pre-equilibration before a dose scan
+        'condition: basal, perturbations: none\n'
+        'experiment: tcw, condition: wildtype, data: relax.exp\n'
+        'experiment: scan, preequilibrate: basal, t_end: 1, data: dose.exp\n',
+        # a wash-out, whose measured period re-pins M through the same base condition
+        'condition: hiflag, perturbations: flag = 3\n'
+        'experiment: tcw, condition: wildtype, data: relax.exp\n'
+        'experiment: wash, preequilibrate: hiflag, data: relax.exp\n',
+        # the job's `wildtype` applied inside a pre-equilibration, beside a wildtype time course
+        'condition: stim, perturbations: flag = 2\n'
+        'experiment: plain, data: relax.exp\n'
+        'experiment: relax, preequilibrate: stim, condition: wildtype, data: relax.exp\n',
+    ], ids=['none_preequilibration', 'none_preequilibrated_scan', 'wash_out',
+            'wildtype_time_course'])
+    def test_a_job_condition_named_wildtype_is_refused_where_the_base_condition_is_used(
+            self, tmp_path_factory, body):
+        # With M non-empty, a period that applies no condition (a `none` equilibration, a
+        # wash-out's measured period, a wildtype time course) is written as the synthesized base
+        # condition cond_wildtype, which pins M at its estimate. A job condition named `wildtype`
+        # is exported under that same id, so only one set of rows is written, and whichever shape
+        # is built first supplies it to the other. Before this was refused, the `none`
+        # equilibration above ran with the job's p = 3 instead of the model's p = 1 (and the
+        # exported problem scored differently from the fit), silently and with a clean lint. The
+        # name is reserved (#905), so these are refused by that one check.
+        with pytest.raises(PybnfError, match=r"(?s)Condition 'wildtype' cannot be exported to "
+                                             r"PEtab.*'cond_wildtype'.*Rename the condition"):
+            self._export(tmp_path_factory, 'wt_clash', self._JOB_WILDTYPE + body,
+                         [('dose.exp', '# flag A_tot\n1\t10\n2\t5\n')], self._RELAX_MODEL)
+
+    @pytest.mark.parametrize('body', [
+        'condition: wildtype, perturbations: none\n'
+        'condition: stim, perturbations: flag = 2\n'
+        'experiment: relax, preequilibrate: wildtype, condition: stim, data: relax.exp\n',
+        'condition: wildtype, perturbations: none\n'
+        'experiment: relax, condition: wildtype, data: relax.exp\n',
+    ], ids=['none_preequilibration', 'none_measured'])
+    def test_a_none_condition_named_wildtype_is_refused_too(self, tmp_path_factory, body):
+        # A `none` condition is never written as a conditionId of its own, so it could not
+        # collide; the name is refused anyway, so the rule is simply that `wildtype` is reserved
+        # whenever an experiment applies it (#905), with or without M.
+        with pytest.raises(PybnfError, match="Condition 'wildtype' cannot be exported to PEtab"):
+            self._export(tmp_path_factory, 'wt_none', body, model=self._RELAX_MODEL)
+        # A `none` condition of that name no experiment applies blocks nothing.
+        out = self._export(tmp_path_factory, 'wt_none_unused', (
+            'condition: wildtype, perturbations: none\n'
+            'experiment: relax, data: relax.exp\n'), model=self._RELAX_MODEL)
+        assert not (out / 'conditions.tsv').exists()
+
+    def test_a_measured_none_condition_of_another_model_is_refused(self, tmp_path_factory):
+        # A condition belongs to one model (ADR-0041). The fitter looks a measured `none`
+        # condition up on the experiment's own model and refuses another model's; the exporter
+        # read it as an omitted condition before checking whose it was, and exported the job.
+        src = tmp_path_factory.mktemp('none_other_model')
+        for name in ('m.bngl', 'm2.bngl'):
+            (src / name).write_text(self._RELAX_MODEL)
+        (src / 'relax.exp').write_text('# time A_tot\n0\t10\n1\t6\n2\t4\n')
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\nmodel: m2.bngl\n'
+            'condition: basal, model: m.bngl, perturbations: none\n'
+            'experiment: e1, model: m.bngl, data: relax.exp\n'
+            'experiment: e2, model: m2.bngl, condition: basal, data: relax.exp\n'
+            + self._PARAMS)
+        with pytest.raises(PybnfError, match=r"Experiment 'e2' simulates model 'm2.bngl' but "
+                                             r"applies condition 'basal', which belongs to "
+                                             r"model 'm.bngl'"):
+            export_job(src / 'job.conf', src / 'petab')
+        # the sibling: the fitter refuses the same job at load
+        import os
+        from pybnf.config import Configuration
+        from pybnf.parse import ploop
+        text = (src / 'job.conf').read_text() + 'population_size = 4\nmax_iterations = 1\n'
+        home = os.getcwd()
+        os.chdir(src)
+        try:
+            with pytest.raises(PybnfError, match=r"Experiment 'e2' references condition 'basal', "
+                                                 r"but no condition with that name is defined "
+                                                 r"on model 'm2'"):
+                Configuration(ploop(text.splitlines(keepends=True)))
+        finally:
+            os.chdir(home)
 
 
 # ---------------------------------------------------------------------------

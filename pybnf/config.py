@@ -1536,6 +1536,11 @@ class Configuration:
         # the new-era typo check (_check_variable_correspondence_modern) treats them as
         # nuisances -- legitimate, condition-wired free parameters, not typos.
         self._condition_free_params = set()
+        # `perturbations: none` conditions (#906, ADR-0150), model name -> condition names. Such a
+        # condition changes nothing, so it never becomes a mutant (no model copy to simulate):
+        # as `preequilibrate:` it contributes no perturbation, and as a measured `condition:` the
+        # experiment is read exactly as if `condition:` were omitted (_load_experiments).
+        self._unperturbed_conditions = {}
         conditions = [(k[1], v) for k, v in self.config.items()
                       if isinstance(k, tuple) and k[0] == 'condition']
         if not conditions:
@@ -1556,6 +1561,11 @@ class Configuration:
                     f"Condition '{name}' does not name a model, but the job declares "
                     f"{len(self.models)} models. Add 'model: <file>' to the condition to "
                     f"say which model it perturbs.")
+            if not perts:
+                self._unperturbed_conditions.setdefault(base, set()).add(name)
+                logger.debug(f"Condition '{name}' on model '{base}' changes nothing "
+                             f"(perturbations: none)")
+                continue
             mut_objects = [self._build_condition_mutation(name, var, op, val)
                            for var, op, val in perts]
             self._condition_free_params.update(
@@ -1563,6 +1573,11 @@ class Configuration:
             self.models[base].add_mutant(MutationSet(mut_objects, name))
             logger.debug(f"Condition '{name}' applied to model '{base}' "
                          f"({len(mut_objects)} perturbation(s))")
+
+    def _is_unperturbed_condition(self, model, condition_name):
+        """Whether ``condition_name`` is a ``perturbations: none`` condition of ``model``
+        (#906, ADR-0150)."""
+        return condition_name in getattr(self, '_unperturbed_conditions', {}).get(model.name, ())
 
     @staticmethod
     def _build_condition_mutation(cond_name, var, op, val):
@@ -1667,6 +1682,13 @@ class Configuration:
         for name, fields in experiments:
             base = self._resolve_experiment_model(name, fields.get('model'))
             model = self.models[base]
+            if self._is_unperturbed_condition(model, fields.get('condition')):
+                # A measured `condition:` naming a `perturbations: none` condition (#906,
+                # ADR-0150) is the experiment with `condition:` omitted, read that way here so it
+                # takes the omitted path on every backend: the base run, the bare data key, no
+                # mutant. (A mutant copy of the model is not the same run on bngsim, where it is
+                # cloned after the base run and inherits its inline setParameters, #869.)
+                fields = {**fields, 'condition': None}
             exp_files, constraint_files = self._partition_experiment_data(name, fields['data'])
             preequilibrate = fields.get('preequilibrate')
             data_key = self._resolve_experiment_data_key(
@@ -1808,7 +1830,10 @@ class Configuration:
         ``'param'`` for a parameter target (emitted as ``setParameter``, what receptor's
         ``Ligand_isPresent = 1`` uses) or ``'species'`` for a BNGL species pattern target
         (emitted as ``setConcentration`` -- a wash / bolus, #474); a species ``value`` may be a
-        number or a param-expression string (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated."""
+        number or a param-expression string (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated.
+        A ``perturbations: none`` condition (#906, ADR-0150) has no mutant and no perturbation."""
+        if self._is_unperturbed_condition(model, condition_name):
+            return []
         mut_set = next((m for m in model.mutants if m.suffix == condition_name), None)
         if mut_set is None:
             raise PybnfError(
@@ -1898,6 +1923,9 @@ class Configuration:
                 f"type '{action_type}'. The measured phase must be a time_course, a "
                 "steady_state or a parameter_scan.")
         preequil_cond = fields['preequilibrate']
+        # A `perturbations: none` condition (#906, ADR-0150) contributes nothing: the experiment
+        # equilibrates the model as it stands (free parameters at the trial point), which the
+        # experiment start's resetParameters (ADR-0151) restores whatever experiment ran before.
         equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
         consumed_conditions.setdefault(base, set()).add(preequil_cond)
         meas_cond = fields.get('condition')

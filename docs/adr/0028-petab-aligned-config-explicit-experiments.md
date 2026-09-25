@@ -408,3 +408,11 @@ still runs the job. Refusing the whole experiment (rather than silently dropping
 constraint and exporting its `.exp` alone) is deliberate — a dropped constraint would make
 the exported problem a *different*, weaker fit. (Considered and rejected: skip-and-export the
 `.exp` with a warning; it violates "don't mis-export".)
+
+## Addendum (2026-09-25): `perturbations: none`
+
+A `condition:` may declare that it changes nothing: `condition: basal, perturbations: none`
+(`none` caseless, and only as the whole list). It exists so that `preequilibrate:` can name an
+equilibration of the model as it stands, PEtab v2's `-inf` period with a blank `conditionId`;
+as a measured `condition:` it is the same as omitting one. The decision and the alternatives it
+beat are in ADR-0150 (#906).

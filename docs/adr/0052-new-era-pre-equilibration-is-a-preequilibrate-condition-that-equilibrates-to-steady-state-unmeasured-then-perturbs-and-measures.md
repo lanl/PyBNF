@@ -199,3 +199,14 @@ this one, so the order of the `experiment:` lines changed the fit. Since ADR-015
 synthesized experiment opens with `resetParameters("pybnf_experiment_start")` (the first saves
 them) before its `resetConcentrations()`, on the network-free path too. Nothing inside the
 block changes: the equilibrated state and both conditions still carry into the measured phase.
+
+## Addendum (2026-09-25): a `perturbations: none` pre-equilibration condition (#906)
+
+`preequilibrate:` may now name a condition declared `perturbations: none`, which equilibrates
+the model as it stands and is PEtab's `-inf` period with a blank `conditionId` (ADR-0150).
+Two rules above change for such a condition only. It emits no `setParameter` before the
+equilibration. And the "a condition cannot be both consumed and a live mutant" refusal does not
+arise for it: a `none` condition is never a mutant, and a regular experiment that names it as
+its measured `condition:` is read as having no condition at all. Because every experiment now
+opens by restoring the parameters (the #830 addendum above), a `none` equilibration runs on the
+model as it stands, free parameters at the trial point, whatever experiment is written before it.

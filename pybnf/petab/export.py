@@ -438,9 +438,15 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             f"each with a 'condition:' line.")
     # A condition named 'wildtype' would be written as conditionId cond_wildtype, the id the
     # exporter reserves for its synthesized base condition (ADR-0027). A reader cannot tell the
-    # two apart by id -- PyBNF 1.8.1's importer dropped every cond_wildtype row (#905) -- so the
-    # name is refused whenever such a condition is exported, not only when the base is emitted.
-    clash = sorted(c for c in referenced if f'cond_{c}' == WILDTYPE_CONDITION_ID)
+    # two apart by id -- PyBNF 1.8.1's importer dropped every cond_wildtype row (#905) -- and the
+    # builders write each id once, so where the base is also needed (M non-empty: a wildtype time
+    # course, a wash-out, a `none` equilibration period, #906) one set of rows would silently serve
+    # both. So the name is refused whenever an experiment applies such a condition, not only when
+    # the base is emitted -- a `perturbations: none` one too, measured or pre-equilibration, so the
+    # rule is simply that the name is reserved.
+    applied = referenced | {exp['unperturbed_condition'] for exp in experiments
+                            if exp['unperturbed_condition'] is not None}
+    clash = sorted(c for c in applied if f'cond_{c}' == WILDTYPE_CONDITION_ID)
     if clash:
         raise PybnfError(
             f"Condition '{clash[0]}' cannot be exported to PEtab: it would be written as "
@@ -455,7 +461,7 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     # job the fitter refuses. Refuse it here too: the condition's model is what its fixed-target
     # relative ops are computed against (#897), so there is no single right base otherwise.
     for exp in experiments:
-        for c in (exp['condition'], exp['preequilibrate']):
+        for c in (exp['condition'], exp['preequilibrate'], exp['unperturbed_condition']):
             if c is not None and c in condition_models and condition_models[c] != exp['model']:
                 raise PybnfError(
                     f"Experiment '{exp['name']}' simulates model '{exp['model']}' but applies "
@@ -647,10 +653,12 @@ def _read_experiments(conf, conf_path, models):
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
     mf?, 'type': t?, 'method': m?, 't_end': t?, 'preequilibrate': p?, 'measurement_params':
     mp?, 'equil_t_end': T?}``. ``models`` is the ordered list of the job's model files. Returns a
-    list (declaration order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data,
-    ...], 'data_files': [str, ...], 'type', 'scan_time', 'preequilibrate': cond?,
-    'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed equilibration duration,
-    :func:`_equil_t_end`) -- the ``data:`` files (``data_files``, as written in the conf, for
+    list (declaration order) of dicts ``{'name', 'condition', 'unperturbed_condition',
+    'model': model_file, 'datas': [Data, ...], 'data_files': [str, ...], 'type', 'scan_time',
+    'preequilibrate': cond?, 'measurement_params': table?, 'equil_t_end': T?}`` (``T`` the fixed
+    equilibration duration, :func:`_equil_t_end`; a measured ``perturbations: none`` condition
+    reads as ``'condition': None`` with its name in ``'unperturbed_condition'``, #906) -- the
+    ``data:`` files (``data_files``, as written in the conf, for
     error messages) read as individual
     :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
     rows, so they are not pre-stacked), each experiment's resolved model
@@ -671,11 +679,23 @@ def _read_experiments(conf, conf_path, models):
       be exported (the fitter still runs it -- ADR-0028 addendum).
     """
     stem_to_model = {Path(mf).stem: mf for mf in models}
+    # A `perturbations: none` condition (#906, ADR-0150) changes nothing, so as the measured
+    # `condition:` it is exactly an omitted one and exports as such (read here as None). As
+    # `preequilibrate:` it keeps its name -- that is what makes the experiment two-period -- and
+    # the builders write its -inf period as the model as is.
+    unperturbed = {k[1] for k, v in conf.items()
+                   if isinstance(k, tuple) and len(k) == 2 and k[0] == 'condition' and not v[1]}
     experiments = []
     for key, fields in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
             continue
         name = key[1]
+        condition = fields.get('condition')
+        # Kept, so the model-ownership check can still refuse another model's `none` condition
+        # exactly as the fitter does (which looks it up on the experiment's own model).
+        unperturbed_condition = None
+        if condition in unperturbed:
+            condition, unperturbed_condition = None, condition
         model_file = _resolve_experiment_model(name, fields.get('model'), models,
                                                stem_to_model)
         data_files = fields.get('data', [])
@@ -709,17 +729,18 @@ def _read_experiments(conf, conf_path, models):
             # condition on it has no export route. A PRE-EQUILIBRATED dose-response (ADR-0062),
             # by contrast, names its measurement (wash) condition, applied alongside the per-dose
             # condition in the measurement period -- that route exists, so allow it there.
-            if fields.get('condition') is not None and preequilibrate is None:
+            if condition is not None and preequilibrate is None:
                 raise NotImplementedError(
                     f"Experiment '{name}' is a parameter_scan that also names a condition "
-                    f"('{fields['condition']}'). A dose-response already makes each dose its "
+                    f"('{condition}'). A dose-response already makes each dose its "
                     f"own condition (ADR-0046); combining it with a named condition has no "
                     f"export route yet.")
         measurement_params = None
         mp_file = fields.get('measurement_params')
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
-        experiments.append({'name': name, 'condition': fields.get('condition'),
+        experiments.append({'name': name, 'condition': condition,
+                            'unperturbed_condition': unperturbed_condition,
                             'model': model_file, 'datas': datas, 'data_files': list(data_files),
                             'type': exp_type,
                             'scan_time': scan_time, 'preequilibrate': preequilibrate,

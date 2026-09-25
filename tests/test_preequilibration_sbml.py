@@ -385,3 +385,24 @@ def test_two_conf_experiments_sharing_a_preequilibration_condition_differ(tmp_pa
     assert not np.allclose(off, high)
     np.testing.assert_allclose(off, _analytic(0.0, [0.0, 0.5, 1.0]), rtol=1e-5, atol=1e-8)
     np.testing.assert_allclose(high, _analytic(2.0, [0.0, 0.5, 1.0]), rtol=1e-5, atol=1e-8)
+
+
+def test_a_none_preequilibration_equilibrates_the_model_as_it_stands(tmp_path, monkeypatch):
+    """``perturbations: none`` (#906, ADR-0150) on the SBML backend: the equilibration runs
+    with nothing changed -- the free ``k_prod`` at its trial value (5, not the file's 3) and
+    ``flag`` at the model's 1 -- so ``A_ss = 5/2``. Each experiment builds its own simulation
+    here, so two ``none`` experiments in a row are both exact (no parameter carries over)."""
+    (tmp_path / 'bd.xml').write_text(_SBML)
+    (tmp_path / 'relax.exp').write_text(_EXP)
+    monkeypatch.chdir(tmp_path)
+    text = _CONF.replace('condition: basal, perturbations: flag = 1',
+                         'condition: basal, perturbations: none')
+    conf = config.Configuration(parse.ploop(text.splitlines(keepends=True)))
+
+    result = conf.models['bd'].copy_with_param_set(_pset(k_prod=5.0)).execute(
+        str(tmp_path), 'conf_none', 1000)
+    times = [0.0, 0.5, 1.0]
+    for name, dose in (('e_off', 0.0), ('e_high', 2.0)):
+        np.testing.assert_allclose(
+            result[name]['A'], _analytic(dose, times, a_start=2.5, k_prod=5.0),
+            rtol=1e-5, atol=1e-8)
