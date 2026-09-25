@@ -1130,7 +1130,9 @@ class TestImportUnperturbedEquilibration:
         assert 'condition: basal, perturbations: none' in text
         assert 'experiment: relax, preequilibrate: basal, condition: meas' in text
         cfg = _load_imported(out, monkeypatch)
-        assert set(cfg.exp_data['relax']) == {'relax', 'plainbasal'}
+        # the measured use reads as an omitted condition: bare data key, no mutant
+        assert set(cfg.exp_data['relax']) == {'relax', 'plain'}
+        assert cfg.models['relax'].mutants == []
 
     def test_an_equilibration_condition_the_problem_never_defines_still_fails(
             self, tmp_path, monkeypatch):

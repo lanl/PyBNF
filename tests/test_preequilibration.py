@@ -521,17 +521,25 @@ class TestUnperturbedConditionSynthesis:
         assert "relax_preequil" in acts[0] and "steady_state" not in acts[0]
         assert acts[1:2] == ['setParameter("flag",2)']
 
-    def test_none_measured_condition_is_the_unperturbed_mutant(self, tmp_path):
-        # As a measured condition, `none` is a mutant that changes nothing: the same actions as an
-        # experiment with no condition, scored under the conditioned data key.
+    def test_none_measured_condition_is_an_omitted_condition(self, tmp_path):
+        # As a measured condition, `none` is read exactly as `condition:` omitted: the same
+        # actions, no mutant (so no model copy to simulate), and the bare data key.
         conf = _issue_conf(tmp_path / "none", [
             "condition: basal, perturbations: none",
             "experiment: relax, condition: basal, data: relax.exp"])
         plain = _issue_conf(tmp_path / "plain", ["experiment: relax, data: relax.exp"])
         assert conf.models["relax"].actions == plain.models["relax"].actions
-        (mutant,) = conf.models["relax"].mutants
-        assert (mutant.suffix, list(mutant.mutations)) == ("basal", [])
-        assert list(conf.exp_data["relax"]) == ["relaxbasal"]
+        assert conf.models["relax"].mutants == []
+        assert list(conf.exp_data["relax"]) == list(plain.exp_data["relax"]) == ["relax"]
+        assert conf.models["relax"].get_suffixes() == plain.models["relax"].get_suffixes()
+
+    def test_an_unused_none_condition_makes_no_mutant(self, tmp_path):
+        # A named condition no experiment applies still runs as a mutant; a `none` one would only
+        # repeat the base run, so it never becomes one.
+        conf = _issue_conf(tmp_path, [
+            "condition: basal, perturbations: none",
+            "experiment: relax, data: relax.exp"])
+        assert conf.models["relax"].mutants == []
 
     def test_none_measured_condition_after_preequilibration_is_a_wash_out(self, tmp_path):
         # `preequilibrate: stim, condition: <none>` is the wash-out `preequilibrate: stim`.
@@ -546,12 +554,12 @@ class TestUnperturbedConditionSynthesis:
         assert not none.models["relax"].mutants
 
     def test_none_can_be_both_a_preequilibration_and_a_measured_condition(self, tmp_path):
-        # A named condition may not be both consumed inline and a live mutant (ADR-0052), but a
-        # `none` one means the same thing in both roles, so its empty mutant is kept.
+        # A named condition may not be both consumed inline and a live mutant (ADR-0052). A `none`
+        # one is never a mutant: measured, it is simply an omitted condition.
         conf = _issue_conf(tmp_path, _UNPERTURBED_RELAX + [
             "experiment: plain, condition: basal, data: relax.exp"])
-        assert [m.suffix for m in conf.models["relax"].mutants] == ["basal"]
-        assert set(conf.exp_data["relax"]) == {"relax", "plainbasal"}
+        assert conf.models["relax"].mutants == []
+        assert set(conf.exp_data["relax"]) == {"relax", "plain"}
 
     @pytest.mark.parametrize("earlier", [
         # another pre-equilibration's measured condition leaves flag = 2 behind (#830)
@@ -639,6 +647,7 @@ class TestUnperturbedPreequilibrationOracle:
             d = tmp_path / label
             conf, alg = _issue_algorithm(d, lines, backend)
             (key,) = conf.exp_data["relax"]
+            assert key == "relax"      # the omitted form's data key, for both
             data = _simulate_at(alg, d, 0.5, "x")[key]
             pset = PSet([v.set_value(0.5) for v in alg.variables])
             scores[label] = (_a_tot(data), conf.obj.evaluate_multiple(
@@ -652,12 +661,13 @@ class TestUnperturbedPreequilibrationOracle:
     @pytest.mark.bionetgen
     @pytest.mark.bngsim
     def test_gradient_through_a_none_measured_condition_matches_the_closed_form(self, tmp_path):
-        # The empty mutant on the sensitivity path: A = 1/k + (10 - 1/k) exp(-k t) from the seed.
+        # A measured `none` condition on the sensitivity path is the base run's gradient:
+        # A = 1/k + (10 - 1/k) exp(-k t) from the seed.
         _conf, alg = _issue_algorithm(tmp_path, [
             "condition: basal, perturbations: none",
             "experiment: relax, condition: basal, data: relax.exp"], "bngsim")
         k = 0.37
-        data = _simulate_at(alg, tmp_path, k, "gm", sensitivities=True)["relaxbasal"]
+        data = _simulate_at(alg, tmp_path, k, "gm", sensitivities=True)["relax"]
         t = np.array(_ISSUE_TIMES)
         np.testing.assert_allclose(_a_tot(data), 1 / k + (10 - 1 / k) * np.exp(-k * t), rtol=1e-6)
         np.testing.assert_allclose(
@@ -676,28 +686,22 @@ class TestUnperturbedPreequilibrationOracle:
                 data.output_sensitivities.slice_for("observable:A_tot")[:, 0],
                 _issue_closed_form_dk(k), rtol=1e-5, atol=1e-7)
 
-    @pytest.mark.parametrize("backend", [
-        pytest.param("bionetgen", marks=pytest.mark.bionetgen),
-        pytest.param("bngsim", marks=[
-            pytest.mark.bionetgen, pytest.mark.bngsim,
-            pytest.mark.xfail(strict=True, reason=(
-                "#869: on bngsim a condition mutant's engine is cloned from the base run after "
-                "that run, so the empty `basal` mutant starts with relax's inline "
-                "setParameter(flag, 2) still in force; the same experiment with its condition "
-                "omitted runs in the base run and is right"))]),
-    ])
+    @pytest.mark.parametrize("backend", _BNGL_BACKENDS)
     def test_measured_none_condition_beside_an_inline_perturbation_is_no_condition(
             self, tmp_path, backend):
         # ADR-0150 says a measured `none` condition is the same as omitting `condition:`. Here
         # `plain` applies one and is declared first, so nothing written before it changes a
         # parameter: omitted, it is the seed-started A = 1/k + (10 - 1/k) exp(-k t) at flag = 1.
-        # `relax`, declared after it, sets flag = 2 inline for its measured phase.
+        # `relax`, declared after it, sets flag = 2 inline for its measured phase. When the `none`
+        # condition was an empty mutant, bngsim cloned that mutant's engine after the base run
+        # (#869), so `plain` started with flag = 2; it now runs in the base run, as omitted.
         _conf, alg = _issue_algorithm(tmp_path, [
             _UNPERTURBED_RELAX[0], "experiment: plain, condition: basal, data: relax.exp",
             *_UNPERTURBED_RELAX[1:]], backend)
         k = 0.37
         sims = _simulate_at(alg, tmp_path, k, "m")
         t = np.array(_ISSUE_TIMES)
+        assert "plainbasal" not in sims    # no mutant copy of the model was simulated
         np.testing.assert_allclose(_a_tot(sims["relax"]), _issue_closed_form(k), rtol=1e-6)
-        np.testing.assert_allclose(_a_tot(sims["plainbasal"]),
+        np.testing.assert_allclose(_a_tot(sims["plain"]),
                                    1 / k + (10 - 1 / k) * np.exp(-k * t), rtol=1e-6)

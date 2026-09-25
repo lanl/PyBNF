@@ -120,8 +120,10 @@ Required Keys
   ``preequilibrate:`` condition that equilibrates the model **as it stands** — free
   parameters at their trial values, everything else at its value in the model — before the
   measured ``condition:`` perturbs it: PEtab v2's ``time = -inf`` period with a blank
-  ``conditionId``. As a measured ``condition:`` it is exactly the same as omitting
-  ``condition:``. The name is yours; ``none`` is not a reserved condition name. (ADR-0150)
+  ``conditionId``. As a measured ``condition:`` it is read exactly as if ``condition:`` were
+  omitted: the experiment is simulated in the base run and its data key is the experiment's
+  own name, with no condition copy of the model. The name is yours; ``none`` is not a
+  reserved condition name. (ADR-0150)
 
   Examples:
 

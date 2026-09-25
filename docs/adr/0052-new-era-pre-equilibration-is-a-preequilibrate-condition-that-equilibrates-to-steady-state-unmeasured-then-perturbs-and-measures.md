@@ -165,8 +165,8 @@ rewriting a simulator. BNG2.pl honors `simulate({…,steady_state=>1})` natively
 `preequilibrate:` may now name a condition declared `perturbations: none`, which equilibrates
 the model as it stands and is PEtab's `-inf` period with a blank `conditionId` (ADR-0150).
 Two rules above change for such a condition only. It emits no `setParameter` before the
-equilibration. And the "a condition cannot be both consumed and a live mutant" refusal no longer
-applies to it, since changing nothing inline and changing nothing as a mutant are the same
-thing; its empty mutant is kept for the regular experiment that names it. A `none`
+equilibration. And the "a condition cannot be both consumed and a live mutant" refusal does not
+arise for it: a `none` condition is never a mutant, and a regular experiment that names it as
+its measured `condition:` is read as having no condition at all. A `none`
 pre-equilibration after an experiment that changed a parameter on the same model's action list
 is refused, because parameters are not restored between experiments (#830, #831).

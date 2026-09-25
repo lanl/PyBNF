@@ -46,11 +46,14 @@ experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp
   applies. As a measured `condition:` it is the same as omitting `condition:`.
 - The user names the condition. No reserved word enters `preequilibrate:` or `condition:`.
 
-The fitter needs almost nothing new: the condition becomes a `MutationSet` with no mutations,
-which every backend already runs (the RoadRunner and bngsim SBML backends start from exactly
-such a set for the base model). A `none` pre-equilibration emits the ordinary block with no
-`setParameter` before the equilibration. Because a `none` condition means the same thing inline
-and as a mutant, it may also serve as both a pre-equilibration and a regular experiment's
+In the fitter a `none` condition never becomes a mutant, so no model copy is ever made or
+simulated for it. As `preequilibrate:` it contributes no perturbation, and the ordinary block is
+emitted with no `setParameter` before the equilibration. As a measured `condition:` the
+experiment is read at load exactly as if `condition:` were omitted: the base run, the bare
+experiment name as its data key. That makes "the same as omitting it" hold by construction on
+every backend. An empty mutant would not have been the same run on bngsim, which clones a
+condition mutant's engine after the base run, inline `setParameter`s included (#869). A `none`
+condition can therefore also serve as both a pre-equilibration and a regular experiment's
 measured condition, which a named condition may not (ADR-0052).
 
 PEtab export writes a `none` pre-equilibration as a `-inf` period with a blank `conditionId`,
