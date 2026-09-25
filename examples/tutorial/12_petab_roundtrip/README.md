@@ -67,6 +67,17 @@ import_job("petab/problem.yaml", "imported/", job_type="de")
 # -> imported/imported.conf + imported/*.exp + the model, ready for `pybnf -c`
 ```
 
+**Fixed parameters.** Every row of this problem's `parameters.tsv` has
+`estimate = true`. A row with `estimate = false` fixes that parameter at the row's
+`nominalValue`, and PEtab gives the table precedence over the model file. If the row names
+a model parameter whose value in the `.bngl` is different, the importer writes the table's
+value into its copy of the model, for example
+`k1 0.5  # PEtab parameters.tsv: estimate=false, nominalValue 0.5 (model file: 1)`, lists
+the change at the top of `imported.conf` and prints it. Your own files are not changed.
+The exporter never writes such a row: a parameter a PyBNF job does not fit simply keeps its
+value in the exported model, which is what PEtab assumes for a parameter the table leaves
+out (ADR-0149).
+
 ## What to notice
 
 - **The same model, three representations** — a `.bngl` you fit directly (Lesson

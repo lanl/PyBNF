@@ -540,3 +540,135 @@ class TestInitialAssignmentEvaluation:
         # Not an exception: the entity simply has no value the file settles, and it is recorded
         # as derived like any other.
         assert self._value('<apply><divide/><cn>1</cn><cn>0</cn></apply>') is None
+
+
+# ---------------------------------------------------------------------------
+# #907: which constructs assign an entity, and the value-attribute editor
+# ---------------------------------------------------------------------------
+
+class TestAssignedBy:
+    """``assigned_by`` names every construct that gives an entity a value other than its
+    declared attribute: the importer's gate before it writes a fixed PEtab nominalValue into a
+    ``value`` attribute (#907)."""
+
+    def test_each_construct_is_recorded(self):
+        ent = parse_model(SBML_INITIAL)
+        assert ent.assigned_by['ruled'] == ('assignment rule',)
+        assert ent.assigned_by['rated'] == ('rate rule',)
+        assert ent.assigned_by['evented'] == ('event assignment',)
+        assert ent.assigned_by['settled'] == ('initial assignment',)
+        assert ent.assigned_by['A'] == ('initial assignment',)
+        # Constant or not, a parameter nothing assigns is absent.
+        assert 'k' not in ent.assigned_by
+        assert 'moving' not in ent.assigned_by
+
+    def test_an_algebraic_rule_lists_only_what_it_can_determine(self):
+        # An algebraic rule can only determine a non-constant symbol, so the constant k1 it
+        # mentions is not listed and the non-constant x is.
+        text = SBML_L3.replace(
+            '      <parameter id="scale" value="100" constant="true"/>\n',
+            '      <parameter id="scale" value="100" constant="true"/>\n'
+            '      <parameter id="x" value="1" constant="false"/>\n').replace(
+            '    <listOfReactions>\n',
+            '    <listOfRules><algebraicRule>'
+            '<math xmlns="http://www.w3.org/1998/Math/MathML">'
+            '<apply><minus/><ci>x</ci><ci>k1</ci></apply></math>'
+            '</algebraicRule></listOfRules>\n'
+            '    <listOfReactions>\n')
+        ent = parse_model(text)
+        assert ent.assigned_by == {'x': ('algebraic rule',)}
+
+
+def _note(pid, old):
+    return f'NOTE {pid} was {old}'
+
+
+# SBML L2: a reaction's kineticLaw may declare a LOCAL <parameter> with a global's id.
+SBML_L2_SHARED_ID = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model id="l2">
+    <listOfParameters>
+      <parameter id="k1" value="0.5"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="r1">
+        <kineticLaw>
+          <listOfParameters>
+            <parameter id="k1" value="7"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+# Start-tag shapes the editor must read by attribute, not by pattern.
+SBML_SHAPES = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="shapes">
+    <listOfParameters>
+      <parameter id="a" name="the value='9' x" value="1" constant="true"/>
+      <parameter metaid="b" id="b" value='2' constant="true"/>
+      <parameter
+          id="c"
+          value = "3" constant="true"/>
+      <parameter id="d" name="a>b" value="4" constant="true"></parameter>
+    </listOfParameters>
+  </model>
+</sbml>
+"""
+
+
+class TestSetParameterValues:
+    """``set_parameter_values`` edits only the start tag of each global ``<parameter>`` it is
+    given, writes a value that reads back as the same float, and leaves every other byte."""
+
+    def test_a_local_parameter_with_the_same_id_is_not_touched(self):
+        from pybnf.petab._sbml import set_parameter_values
+        new, changed = set_parameter_values(SBML_L2_SHARED_ID, {'k1': 2.0}, _note)
+        assert changed == {'k1': '0.5'}
+        assert new == SBML_L2_SHARED_ID.replace(
+            '      <parameter id="k1" value="0.5"/>\n',
+            '      <!-- NOTE k1 was 0.5 -->\n      <parameter id="k1" value="2"/>\n')
+
+    def test_each_start_tag_shape_is_edited_by_attribute(self):
+        from pybnf.petab._sbml import set_parameter_values
+        new, changed = set_parameter_values(
+            SBML_SHAPES, {'a': 10, 'b': 20, 'c': 30, 'd': 40}, _note)
+        assert changed == {'a': '1', 'b': '2', 'c': '3', 'd': '4'}
+        assert new == (SBML_SHAPES
+                       .replace('      <parameter id="a" name="the value=\'9\' x" value="1"',
+                                '      <!-- NOTE a was 1 -->\n'
+                                '      <parameter id="a" name="the value=\'9\' x" value="10"')
+                       .replace("      <parameter metaid=\"b\" id=\"b\" value='2'",
+                                '      <!-- NOTE b was 2 -->\n'
+                                '      <parameter metaid="b" id="b" value="20"')
+                       .replace('      <parameter\n          id="c"\n          value = "3"',
+                                '      <!-- NOTE c was 3 -->\n'
+                                '      <parameter\n          id="c"\n          value = "30"')
+                       .replace('      <parameter id="d" name="a>b" value="4"',
+                                '      <!-- NOTE d was 4 -->\n'
+                                '      <parameter id="d" name="a>b" value="40"'))
+        assert parse_model(new).parameter_values == {'a': 10., 'b': 20., 'c': 30., 'd': 40.}
+
+    def test_the_written_value_reads_back_as_the_same_float(self):
+        from pybnf.petab._sbml import set_parameter_values
+        v = 0.1 + 0.2              # libsbml would write this as 0.3
+        new, _ = set_parameter_values(SBML_L3, {'k1': v}, _note)
+        assert parse_model(new).parameter_values['k1'] == v
+
+    def test_an_equal_value_returns_the_text_unchanged(self):
+        from pybnf.petab._sbml import set_parameter_values
+        assert set_parameter_values(SBML_L3, {'k1': 0.5, 'nope': 1.0}, _note) == (SBML_L3, {})
+
+    def test_the_comment_stays_well_formed_and_inline_when_the_tag_is(self):
+        import xml.etree.ElementTree as ET
+
+        from pybnf.petab._sbml import set_parameter_values
+        one_line = ('<sbml><model id="m"><listOfParameters><parameter id="p" value="1"/>'
+                    '</listOfParameters></model></sbml>')
+        new, _ = set_parameter_values(one_line, {'p': 2.0}, lambda pid, old: 'a -- b')
+        assert new == ('<sbml><model id="m"><listOfParameters><!-- a - - b -->'
+                       '<parameter id="p" value="2"/></listOfParameters></model></sbml>')
+        ET.fromstring(new)

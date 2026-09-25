@@ -72,3 +72,17 @@ catalog is richer than PyBNF's (it adds `cauchy`, `gamma`, `exponential`,
   reasoning): the prior families are single-sourced in the registry; a second table would
   drift. The adapter owns only the PEtab vocabulary, and the synthesized keyword is checked
   against the registry-derived map.
+
+## Addendum (2026-09-25): `estimate=false` is no longer a boundary of the import (issue #907)
+
+The `estimate=false` boundary above was never enforced where it mattered. `free_parameter_from_row`
+raises for a fixed row, but the importer never passed it one: `import_job` skipped every fixed
+row, so a fixed row that named a model parameter was dropped silently and the imported job
+simulated the model file's value instead of the table's. PEtab gives the table precedence.
+
+ADR-0149 settles it. A fixed row is still not a `FreeParameter`, and `free_parameter_from_row`
+still refuses one, but the importer now applies it: a fixed model parameter's `nominalValue` is
+written into the imported copy of every model that declares it, marked there and in the conf
+header and printed; any other fixed row is inlined as a constant where the tables use it. A
+fixed row with no `nominalValue`, or one naming a model entity PEtab does not allow in the
+parameters table, is refused.

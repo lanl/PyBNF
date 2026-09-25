@@ -274,3 +274,14 @@ A condition made only of pins takes part in that check like any other, so its ex
 never imported under another id's targets. The pins themselves are read as the identity, as they
 always were; that is exact only when no earlier period of the experiment changed the pinned
 parameter, which is left to a separate issue.
+
+## Addendum (2026-09-25): the model passes through unchanged unless the parameters table fixes it (issue #907)
+
+"The model passes through `_bngl.parse_model` unchanged" now has one exception. A parameters-table
+row with `estimate = false` that names a model parameter fixes it at the row's `nominalValue`,
+which PEtab gives precedence over the model file. Where the model file disagrees, the importer
+writes that value into its copy of the model, marks the edit with a comment, lists it in the
+conf header and prints it (ADR-0149). A model that agrees with its table is still copied byte
+for byte. The exporter never writes an `estimate = false` row, so the round trip still holds:
+re-exporting an imported job writes the edited model and no fixed row, which is the same
+problem.

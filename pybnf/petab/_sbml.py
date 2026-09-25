@@ -12,7 +12,11 @@ Only **global** parameters are collected: a ``listOfParameters`` nested in a rea
 valid top-level formula symbol, so the scan reads only the ``listOf*`` containers that are
 *direct children of the model element* and never descends into reactions. SBML uses XML
 namespaces (``{http://www.sbml.org/...}species``), so every tag is matched by its *local*
-name. The model file itself is carried **verbatim** (ADR-0036); this reads it, never edits it.
+name. The model file itself is carried **verbatim** (ADR-0036) with one exception:
+:func:`set_parameter_values` writes the value a PEtab parameters table fixes (``estimate =
+false``) into a global parameter's ``value`` attribute, marked with an XML comment, when the
+file disagrees with the table (#907, ADR-0149). That edit touches only the start tag of the
+edited element; the scan itself never edits anything.
 
 A ``<listOfInitialAssignments>`` entry supersedes the value an entity declares as an attribute,
 so it is read here too: the assignment settles the value when it is arithmetic over numbers, and
@@ -21,9 +25,13 @@ model never starts from (#795).
 """
 
 import math
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import NamedTuple
+from xml.parsers import expat
+
+from ._tsv import num
 
 
 class DerivedSymbol(NamedTuple):
@@ -118,6 +126,11 @@ class SbmlEntities:
     assignment_rules: dict    # 'Epo_cells' -> 'Epo_EpoRi + dEpoi'  (RHS infix; None if untranslatable)  (#465)
     derived_initial_values: dict = None   # 'beta_N' -> '(R0_ * gamma_) / N_'  (None if not inlinable)  (#795)
     derived_refusals: dict = None         # 'beta_N' -> the clause naming why its RHS is None  (#795)
+    # 'k' -> ('initial assignment', 'event assignment'): every construct that gives an id a
+    # value other than its declared attribute. The importer reads it before it writes a fixed
+    # PEtab nominalValue into a parameter's `value` attribute, because that write means
+    # nothing for an id one of these constructs overrides (#907).
+    assigned_by: dict = None
 
     @property
     def namespace_symbols(self):
@@ -284,6 +297,18 @@ def parse_model(text):
     derived_all = set(assignment_rules) | set(derived_initial_values)
     parameter_values = {k: v for k, v in {**parameters, **compartments}.items()
                         if v is not None and k not in derived_all}
+    # Every construct that gives an entity a value other than its declared attribute (#907).
+    # An algebraic rule can determine only a non-constant symbol, so a constant parameter or
+    # compartment that merely appears in one is not listed.
+    declared_constant = (set(parameters) | set(compartments)) - non_constant
+    assigned_by = {}
+    for construct, ids in (('initial assignment', initial_elems),
+                           ('assignment rule', assignment_rules),
+                           ('rate rule', rate_rule_targets),
+                           ('event assignment', event_targets),
+                           ('algebraic rule', algebraic_symbols - declared_constant)):
+        for name in ids:
+            assigned_by.setdefault(name, []).append(construct)
     return SbmlEntities(
         text=text,
         species_names=frozenset(species),
@@ -294,7 +319,119 @@ def parse_model(text):
         assignment_rules=assignment_rules,
         derived_initial_values=derived_initial_values,
         derived_refusals=derived_refusals,
+        assigned_by={name: tuple(c) for name, c in assigned_by.items()},
     )
+
+
+def set_parameter_values(text, values, note):
+    """Set global ``<parameter>`` ``value`` attributes of the SBML ``text`` (#907).
+
+    ``values`` maps a global parameter id to a float. ``note(id, old_value)`` returns the text
+    of an XML comment written just before each edited ``<parameter>`` element, so the edit
+    stays visible in the file; ``old_value`` is the attribute as written, or ``None`` when
+    the element has no ``value``. Returns ``(new_text, changed)``, where ``changed`` maps each
+    edited id to that old attribute text.
+
+    A parameter whose declared ``value`` already equals its new value is not touched, so a
+    model that agrees with ``values`` comes back byte-identical. Any other value is replaced,
+    or added when absent, and written with :func:`~pybnf.petab._tsv.num` so it reads back as
+    exactly the same float. Only the start tag of each edited element changes; every other
+    byte of the file is preserved.
+
+    This is a byte-level edit located by the stdlib ``expat`` parser, not a libsbml
+    read-modify-write, for two reasons. libsbml re-serializes the whole document, so the
+    copy would no longer be the author's file with one marked change. And libsbml writes a
+    double with 15 significant digits (``0.1 + 0.2`` is written as ``0.3``), so a value that
+    needs 17 would come back as a different number, both the one set here and any other in
+    the file that libsbml did not originally write. Whether the new value governs the whole
+    simulation is the caller's question (see :attr:`SbmlEntities.assigned_by`); this only
+    writes it.
+    """
+    data = text.encode('utf-8')
+    edits = []
+    changed = {}
+    for start, pid in _global_parameter_tags(data, set(values)):
+        end = _start_tag_end(data, start)
+        tag = data[start:end]
+        span, insert_at = _value_attribute(tag)
+        old = None if span is None else tag[span[0] + 1:span[1] - 1].decode('utf-8')
+        value = float(values[pid])
+        if old is not None and _float_or_none(old) == value:
+            continue
+        quoted = f'"{num(value)}"'.encode('utf-8')
+        if span is None:
+            new_tag = tag[:insert_at] + b' value=' + quoted + tag[insert_at:]
+        else:
+            new_tag = tag[:span[0]] + quoted + tag[span[1]:]
+        # An XML comment may not contain '--'; a value attribute never does, but be safe.
+        comment = f'<!-- {note(pid, old).replace("--", "- -")} -->'.encode('utf-8')
+        line_start = data.rfind(b'\n', 0, start) + 1
+        indent = data[line_start:start]
+        if indent.strip() == b'':
+            comment += b'\n' + indent       # its own line, at the element's indentation
+        edits.append((start, end, comment + new_tag))
+        changed[pid] = old
+    for start, end, replacement in sorted(edits, reverse=True):
+        data = data[:start] + replacement + data[end:]
+    return data.decode('utf-8'), changed
+
+
+def _global_parameter_tags(data, ids):
+    """``[(byte_offset, id)]`` of each global ``<parameter>`` start tag whose ``id`` is in
+    ``ids`` -- a direct child of the ``listOfParameters`` that is a direct child of
+    ``<model>``, the same elements :func:`parse_model` reads (a reaction's local
+    parameters are never matched)."""
+    parser = expat.ParserCreate()
+    stack, found = [], []
+
+    def start(name, attrs):
+        local = name.rsplit(':', 1)[-1]
+        if (local == 'parameter' and stack[-2:] == ['model', 'listOfParameters']
+                and attrs.get('id') in ids):
+            found.append((parser.CurrentByteIndex, attrs['id']))
+        stack.append(local)
+
+    def end(_name):
+        stack.pop()
+
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.Parse(data, True)
+    return found
+
+
+def _start_tag_end(data, start):
+    """The index just past the ``>`` that closes the start tag at ``data[start]``; a ``>``
+    inside a quoted attribute value does not close it."""
+    quote = None
+    for i in range(start, len(data)):
+        c = data[i:i + 1]
+        if quote is not None:
+            if c == quote:
+                quote = None
+        elif c in (b'"', b"'"):
+            quote = c
+        elif c == b'>':
+            return i + 1
+    raise ValueError('unterminated start tag')     # expat has already accepted the file
+
+
+# One attribute of a start tag, matched in sequence so a quoted value is never mistaken for
+# an attribute name (``name="the value='1'"`` does not contain a ``value`` attribute).
+_ATTRIBUTE = re.compile(rb'\s+([^\s=/>]+)\s*=\s*("[^"]*"|\'[^\']*\')')
+
+
+def _value_attribute(tag):
+    """``(span, insert_at)`` for a start tag: ``span`` is the ``(start, end)`` of the quoted
+    ``value`` attribute (quotes included), or ``None`` when there is none; ``insert_at`` is
+    the index just after the last attribute, where a missing one is added."""
+    pos = re.match(rb'<[^\s/>]+', tag).end()
+    span = None
+    while (m := _ATTRIBUTE.match(tag, pos)) is not None:
+        if m.group(1) == b'value':
+            span = m.span(2)
+        pos = m.end()
+    return span, pos
 
 
 def _local(tag):
