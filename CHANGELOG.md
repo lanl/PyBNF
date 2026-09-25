@@ -259,12 +259,16 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
-- **PEtab export with `inline_functions=True` now writes a BNGL function body with the value
-  BioNetGen gives it (#908).** The body was read as PEtab math, so `-k^2` (BNGL: `(-k)^2`) and
-  `a^b^c` (BNGL: `(a^b)^c`) were exported as formulas with different values and no error. The
-  body is now read with BioNetGen's grammar and checked against it numerically; a construct
-  with no exact PEtab reading, or whose value depends on the simulator, such as `rint`,
-  `time()`, `(-2)^x` or an `if()` whose condition is not a comparison, is refused.
+- **PEtab export now simulates a dose-response at the estimate of a parameter that is fit and
+  perturbed by a condition elsewhere in the job (#892).** Each dose condition set only the
+  swept parameter, so PEtab ran every dose at the parameter's model-file value. Each dose
+  condition now pins it to its estimate. A pre-equilibrated dose-response in such a job, until
+  now refused, exports too, except for three combinations that are still refused with a message.
+- **PEtab export pairs every replicate's dose-response measurements with the dose they were
+  measured at (#895).** A second `data:` file's rows were paired with the first file's doses by
+  row position, so reordered or missing doses were exported against the wrong doses, and an
+  extra dose raised a bare `IndexError`. The dose axis is now every dose any replicate measures.
+  A dose the fitter itself cannot match is refused, with the file and dose named.
 - **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
   experiment's own mean (#894).** The fit scales each experiment by its own mean, but the export
   wrote one mean pooled over all experiments, so the exported problem had a different optimum.
