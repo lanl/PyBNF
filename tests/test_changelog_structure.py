@@ -144,14 +144,6 @@ def test_the_frozen_list_names_only_sections_that_need_it():
         assert _repeated(kinds) or _misordered(kinds), f"{label} no longer needs to be frozen"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "[Unreleased] still holds the entries written before changelog.d/ existed. The "
-        "next commit on this branch moves them into fragments and removes this marker; "
-        "strict=True fails the suite if the marker outlives the entries."
-    ),
-)
 def test_unreleased_holds_no_entries():
     """Entries are staged under ``changelog.d/`` and nowhere else. A heading or a
     bullet here is an entry someone wrote into the shared file, which is the
