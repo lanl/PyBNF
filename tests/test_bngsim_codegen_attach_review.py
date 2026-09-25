@@ -202,8 +202,12 @@ def test_plain_runs_after_a_sensitivity_probe_on_the_base_engine(tmp_path, codeg
 
 
 def _net_codegen_path_present():
-    import bngsim._codegen as cg
-
+    # Evaluated at collection, so it must not raise where bngsim is absent; the
+    # bngsim marker skips these tests there.
+    try:
+        import bngsim._codegen as cg
+    except ImportError:
+        return False
     return hasattr(cg, 'generate_rhs_c')
 
 
