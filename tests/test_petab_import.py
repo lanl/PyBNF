@@ -1318,6 +1318,133 @@ class TestDosePointIsOnePeriod:
         assert remaining == ([] if claimed else rows)
 
 
+def _imported_objective_at(out, monkeypatch, **values):
+    """The objective of the job imported into ``out`` at a fixed parameter vector, through the
+    real bngsim backend: BNG2.pl generates the network, each model is simulated once, and the
+    conf's own objective scores every data file the conf loaded."""
+    from pybnf.config import Configuration
+    from pybnf.pset import PSet
+    from . import recovery_harness as H
+    H.require_bng2pl()
+    monkeypatch.chdir(out)
+    overrides = {'bngl_backend': 'bngsim', 'population_size': 4, 'max_iterations': 1,
+                 'delete_old_files': 1, 'wall_time_sim': 0, 'output_dir': str(out / 'eval_out')}
+    lines = [line for line in (out / 'imported.conf').read_text().splitlines()
+             if line.replace(' ', '').split('=')[0] not in overrides]
+    lines += [f'{key} = {value}' for key, value in overrides.items()]
+    conf = Configuration(ploop([line + '\n' for line in lines]))
+    alg = H.build(conf, 'de')
+    pset = PSet([v.set_value(values[v.name]) for v in alg.variables])
+    folder = out / 'eval_out' / 'sim'
+    folder.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(folder)
+    simdata = {m.name: m.copy_with_param_set(pset).execute(str(folder), 'eval', 0)
+               for m in alg.model_list}
+    return conf.obj.evaluate_multiple(simdata, conf.exp_data, pset, conf.constraints)
+
+
+class TestRaggedPreequilibratedScanThroughTheSimulator:
+    """Independent review of #903 x #904: a pre-equilibrated dose-response in the petab1to2 shape
+    whose doses are measured a different number of times -- dose 1 once, dose 2 three times,
+    dose 3 twice -- so the second and third replicate grids ([2, 3] and [2]) are not a prefix
+    of the first ([1, 2, 3]). The author's ragged test is white-box on the pivot and the
+    objective tests score an analytic simulation; this one scores the imported job through
+    bngsim against a scipy integration of the PEtab problem itself."""
+
+    # (dose, measurement) per measurement row, all read at t = 1 after equilibrating at L = 5.
+    ROWS = [(1, 3.5), (2, 4.0), (2, 4.1), (2, 4.25), (3, 4.8), (3, 4.7)]
+
+    @pytest.fixture
+    def imported(self, tmp_path):
+        eid = 'experiment__pre___dose_{}'.format
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', _PETAB1TO2_CONDITIONS,
+            _PETAB1TO2_EXPERIMENTS, [('obs_A', eid(L), 1, y) for L, y in self.ROWS])
+        return import_job(yaml, tmp_path / 'out')
+
+    @staticmethod
+    def _petab_objective(rows, k, pre_L=5.0, flag=1.0):
+        """Half the sum of squared residuals (sigma 1) over every PEtab measurement row, with
+        PEtab v2 period semantics: the -inf period under 'pre' is the steady state
+        (pre_L + flag)/k, then the time-0 period sets L to the dose and dA/dt = L + flag - k*A
+        is integrated by scipy to the row's time."""
+        from scipy.integrate import solve_ivp
+        total = 0.0
+        for dose, y in rows:
+            sol = solve_ivp(lambda _t, a, d=dose: d + flag - k * a, (0.0, 1.0),
+                            [(pre_L + flag) / k], rtol=1e-10, atol=1e-12)
+            total += 0.5 * (sol.y[0, -1] - y) ** 2
+        return total
+
+    def test_ragged_replicates_deal_into_non_prefix_grids(self, imported):
+        stem = 'experiment__pre___dose'
+        assert (f'experiment: {stem}, preequilibrate: pre, method: ode, t_end: 1, data: '
+                f'{stem}.exp, {stem}_rep2.exp, {stem}_rep3.exp') in (
+                    imported / 'imported.conf').read_text()
+        grids = [Data(file_name=str(imported / f'{stem}{suffix}.exp'))
+                 for suffix in ('', '_rep2', '_rep3')]
+        assert [list(g['L']) for g in grids] == [[1, 2, 3], [2, 3], [2]]
+        assert sorted((L, y) for g in grids for L, y in zip(g['L'], g['A_tot'])) == sorted(
+            self.ROWS)
+
+    @pytest.mark.bngsim
+    @pytest.mark.newera
+    @pytest.mark.parametrize('k', [0.6, 1.0, 1.7])
+    def test_imported_objective_is_the_petab_objective_over_every_row(self, imported, k,
+                                                                      monkeypatch):
+        assert _imported_objective_at(imported, monkeypatch, k=k) == pytest.approx(
+            self._petab_objective(self.ROWS, k), rel=1e-5)
+
+
+class TestReplicateFileNamesAreDistinct:
+    """Independent review of #903: every experiment writes its data as ``<name>.exp`` and
+    ``<name>_rep<k>.exp``, so an experiment whose experimentId is literally ``<other>_rep2`` and a
+    replicated experiment ``<other>`` write the same file. The later write wins, and one
+    experiment is fitted against the other's measurements with no error (checked by hand: the
+    imported objective of the scan case at k = 1 is 0.06 against 0.2826 for the PEtab problem).
+    #903 extended the replicate naming to dose-response scans; the time-course case is the
+    older ADR-0039 sibling."""
+
+    CASES = {
+        # A replicated steady-state scan 's' (doses s_1, s_2) next to a time course 's_rep2'.
+        'scan': ([('d1', 'L', 1), ('d2', 'L', 2), ('c', 'L', 3)],
+                 [('s_1', '0', 'd1'), ('s_2', '0', 'd2'), ('s_rep2', '0', 'c')],
+                 [('obs_A', 's_1', 'inf', 2.1), ('obs_A', 's_1', 'inf', 1.9),
+                  ('obs_A', 's_2', 'inf', 3.1), ('obs_A', 's_2', 'inf', 2.8)]),
+        # A replicated time course 's' next to a time course 's_rep2'.
+        'time course': ([('c', 'L', 3), ('c2', 'L', 2)],
+                        [('s', '0', 'c2'), ('s_rep2', '0', 'c')],
+                        [('obs_A', 's', t, v + t) for v in (1.0, 1.1) for t in (0.5, 1, 2)]),
+    }
+
+    @pytest.mark.parametrize('replicated', [
+        pytest.param('scan', marks=pytest.mark.xfail(strict=True, reason=(
+            "introduced by #903: the scan's second replicate grid is written to s_rep2.exp, "
+            "over the time course s_rep2's data"))),
+        pytest.param('time course', marks=pytest.mark.xfail(strict=True, reason=(
+            "pre-existing (ADR-0039): the time course's second replicate and the time course "
+            "s_rep2 both write s_rep2.exp"))),
+    ])
+    def test_no_experiment_reads_another_experiments_data_file(self, replicated, tmp_path):
+        conditions, experiments, measurements = self.CASES[replicated]
+        measurements = measurements + [('obs_A', 's_rep2', t, 1.0 + t) for t in (0.5, 1, 2)]
+        yaml = _write_periods_problem(tmp_path / 'problem', conditions, experiments,
+                                      measurements)
+        try:
+            out = import_job(yaml, tmp_path / 'out')
+        except PybnfError as err:          # a refusal that names the clashing file is fine too
+            assert 's_rep2.exp' in str(err)
+            return
+        files = {}
+        for line in (out / 'imported.conf').read_text().splitlines():
+            if line.startswith('experiment:'):
+                name = line.split(',')[0].split(':')[1].strip()
+                files[name] = [f.strip() for f in line.split('data:')[1].split(',')]
+        assert set(files['s']).isdisjoint(files['s_rep2'])
+        tc = Data(file_name=str(out / files['s_rep2'][0]))
+        assert tc.indvar == 'time' and list(tc['A_tot']) == [1.5, 2.0, 3.0]
+
+
 # ---------------------------------------------------------------------------
 # A cond_wildtype carrying real targets (#905). The exporter's synthesized base condition
 # cond_wildtype holds only surrogate base pins (p = p__REF), the identity after import. The
@@ -1466,6 +1593,20 @@ class TestRealTargetWildtypeCondition:
         with pytest.raises(PybnfError, match=rf"PEtab conditions '{ids[0]}' and '{ids[1]}' "
                                              r"both import as the PyBNF condition"):
             conditions_from_rows(rows, set())
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "the #905 name-collision refusal also fires on conditions no experiment applies; "
+        "libpetab only warns about unused conditions, and main imported this problem exactly"))
+    def test_colliding_ids_that_no_experiment_applies_do_not_block_the_import(self, tmp_path):
+        # Independent review of #905: cond_a and a would import under one name, but neither
+        # reaches the fit, so there is nothing to merge wrongly. The time course's own condition
+        # must import exactly.
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('cond_a', 'L', 2), ('a', 'L', 3), ('c', 'L', 4)],
+            [('tc', '0', 'c')], [('obs_A', 'tc', t, 1.0 + t) for t in (0.5, 1, 2)])
+        text = (import_job(yaml, tmp_path / 'out') / 'imported.conf').read_text()
+        assert 'experiment: tc, condition: c, method: ode, data: tc.exp' in text
+        assert 'condition: c, perturbations: L = 4' in text
 
 
 # ---------------------------------------------------------------------------
