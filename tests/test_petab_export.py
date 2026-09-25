@@ -3124,6 +3124,94 @@ class TestExportRefusesStateChangingActions:
         with pytest.raises(NotImplementedError, match='setParameter'):
             export_job(conf, tmp_path / 'out')
 
+    # Review additions. The tests above write each action on one clean line, and their oracle
+    # is BNG2.pl only. A legacy file carries its leftovers indented, tab-indented, commented,
+    # continued across lines with a backslash, and loose after `end actions`; and the default
+    # backend is bngsim's in-process runner, which none of the tests above reaches.
+
+    @pytest.mark.bngsim
+    def test_leftover_actions_in_legacy_shapes_drop_to_the_fitters_bngsim_simulation(
+            self, tmp_path, monkeypatch):
+        # The fitter's own action list for the model (its hand-written lines, then
+        # resetConcentrations() + the synthesized simulate) is run through BngsimModel on the
+        # fitter's own network, exactly as algorithms/base.py builds it, and so is the
+        # exported -> re-imported job's. Both must be the closed form 100 exp(-k L t) at
+        # k = 0.5, L = 1: the hand-written equilibration runs in the fit, and the reset before
+        # the experiment undoes it, so dropping it changes nothing.
+        pytest.importorskip('petab.v2')
+        from pybnf.bngsim_model import BNGSIM_BACKEND_NET, BngsimModel
+        from pybnf.bngsim_model.classification import classify_actions_for_bngsim
+        from pybnf.parse import load_config
+        from pybnf.petab.import_ import import_job
+        from pybnf.pset import PSet
+        _bng2_or_skip()
+        actions = ('begin actions\n'
+                   f'  {self.GEN}\n'
+                   '# equilibrate first\n'
+                   '\tsimulate({method=>"ode",\\\n'
+                   '\t    t_end=>5,n_steps=>5})\n'
+                   '\n'
+                   '  resetConcentrations()\n'
+                   'end actions\n'
+                   'simulate({method=>"ode",t_end=>3,n_steps=>3})\n')
+        conf = _decay_job(tmp_path / 'job', actions)
+        export_job(conf, tmp_path / 'petab')
+        exported = (tmp_path / 'petab' / 'decay.bngl').read_text()
+        assert exported == _DECAY_BNGL + f'\nbegin actions\n{self.GEN}\nend actions\n'
+        imp = import_job(tmp_path / 'petab' / 'problem.yaml', tmp_path / 'imp')
+
+        def bngsim_trajectory(job_dir, conf_name, tag):
+            monkeypatch.chdir(job_dir)
+            cfg = load_config(conf_name)
+            model = cfg.models['decay']
+            # The fitter routes this model to bngsim's `.net` bridge (no BNG2.pl fallback).
+            assert classify_actions_for_bngsim(model.actions) == BNGSIM_BACKEND_NET
+            pset = PSet([v.set_value(0.5) for v in cfg.variables])
+            work = _run_bng2(model.copy_with_param_set(pset).model_text(gen_only=True),
+                             tmp_path / tag, 'gen')
+            sim = BngsimModel(model.name, model.actions, model.suffixes, model.mutants,
+                              nf=str(work / 'gen.net'), protocol=model.protocol)
+            result = sim.copy_with_param_set(pset).execute(str(work), 'run', 60)
+            (experiment,) = [s for _kind, s in model.suffixes]    # the one experiment
+            return model.actions, result[experiment]
+
+        fit_actions, fit = bngsim_trajectory(tmp_path / 'job', conf.name, 'fit')
+        # The hand-written equilibrations really are in the fit's action list.
+        assert sum('t_end=>5' in a for a in fit_actions) == 1
+        assert sum('t_end=>3' in a for a in fit_actions) == 1
+        rt_actions, rt = bngsim_trajectory(imp, 'imported.conf', 'rt')
+        assert not any('t_end=>5' in a or 't_end=>3' in a for a in rt_actions)
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_array_equal(rt.data[:, rt.cols['time']], t)
+        closed_form = 100 * np.exp(-0.5 * 1.0 * t)
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']], closed_form, rtol=1e-5)
+        np.testing.assert_allclose(rt.data[:, rt.cols['A_tot']], closed_form, rtol=1e-5)
+
+    @pytest.mark.parametrize('actions', [
+        # Continued across lines with a trailing comment, tab-indented, inside the block.
+        'begin actions\n\tsetParameter("L",\\ # the ligand dose\n\t    5)\nend actions\n',
+        # Loose after `end model`, with a space before the parenthesis and a semicolon.
+        'generate_network({overwrite=>1})\n  setParameter ("L", 5);\n',
+    ], ids=['continued-in-block', 'loose-spaced-semicolon'])
+    def test_a_setparameter_in_a_legacy_shape_is_run_by_the_fit_and_refused(
+            self, tmp_path, monkeypatch, actions):
+        # BNG2.pl joins a backslash continuation after stripping each line's comment, and
+        # accepts `name (args);`, so the fit runs these as setParameter("L", 5): the fitter's
+        # own model text decays at the L = 5 closed form. The export must see through the
+        # shape and refuse, naming the action.
+        _bng2_or_skip()
+        conf = _decay_job(tmp_path / 'job', actions)
+        fit_text = _fitter_model_text(tmp_path / 'job', conf.name, 'decay', monkeypatch, 0.5)
+        fit = Data(file_name=str(_run_bng2(fit_text, tmp_path / 'bng', 'fit') / 'fit_tc.gdat'))
+        t = fit.data[:, fit.cols['time']]
+        np.testing.assert_allclose(fit.data[:, fit.cols['A_tot']],
+                                   100 * np.exp(-0.5 * 5.0 * t), rtol=1e-5)
+        out = tmp_path / 'out'
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Model 'decay\.bngl'.*would drop: setParameter"):
+            export_job(conf, out)
+        assert not out.exists() or not any(out.iterdir())
+
 
 _CHAIN_BNGL = """\
 begin model
@@ -3238,6 +3326,29 @@ class TestExportWritesTheJobNetworkCap:
             assert fitted.models[stem].generate_network_line == self.LINE
             assert (tmp_path / 'petab' / f'{stem}.bngl').read_text().endswith(
                 f'begin actions\n{self.LINE}\nend actions\n')
+
+    @pytest.mark.bngsim_sbml
+    def test_a_mixed_bngl_sbml_job_caps_its_bngl_model_and_carries_sbml_verbatim(
+            self, tmp_path, monkeypatch):
+        # Review addition: the other multi-model sibling. The fitter passes the key to BNGL
+        # models only (config._load_models), so in the shipped BNGL + SBML lesson the BNGL model
+        # gets exactly the fitter's line and the SBML model is still copied byte for byte.
+        import shutil
+        from pybnf.parse import load_config
+        job = tmp_path / 'job'
+        shutil.copytree(Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+                        / '31_bngl_sbml_fit', job)
+        conf = job / 'bngl_sbml_fit.conf'
+        conf.write_text(conf.read_text() + '\ngenerate_network = max_iter=>1\n')
+        monkeypatch.chdir(job)
+        fitted = load_config(conf.name)
+        assert fitted.models['binding_low'].generate_network_line == self.LINE
+        assert not hasattr(fitted.models['binding_high'], 'generate_network_line')
+        export_job(conf, tmp_path / 'petab')
+        assert (tmp_path / 'petab' / 'binding_low.bngl').read_text() == (
+            (job / 'binding_low.bngl').read_text() + f'begin actions\n{self.LINE}\nend actions\n')
+        assert (tmp_path / 'petab' / 'binding_high.xml').read_bytes() == \
+            (job / 'binding_high.xml').read_bytes()
 
     def test_no_key_writes_no_line(self, tmp_path):
         # The bare default is what every consumer does unasked; the model stays as it was.
