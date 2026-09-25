@@ -39,6 +39,7 @@ from pybnf.petab import (
     read_problem_yaml,
 )
 from pybnf.petab._bngl import parse_model
+from pybnf.petab._tsv import num
 from pybnf.petab.import_ import _condition_and_preequilibrate
 from pybnf.petab.conditions import (
     PetabConditionRow,
@@ -58,6 +59,19 @@ from pybnf.petab.measurements import (
     read_measurement_table,
     row_varying_noise_ids,
     row_varying_observable_ids,
+)
+
+# The #894 column-mean fixture and its three objective oracles live with the exporter tests.
+from .test_petab_export import (
+    _COLUMN_MEAN_SPELLINGS,
+    _DECAY_MODEL,
+    _DECAY_TIMES,
+    _decay_series,
+    _exp_text,
+    _petab_nll,
+    _pybnf_objective,
+    _write_decay_job,
+    _write_ragged_job,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -874,11 +888,247 @@ class TestImportPreequilibratedDoseResponseRoundTrip:
         assert 't_end:' not in imported_conf.read_text()
 
 
+# ---------------------------------------------------------------------------
+# #896: a fixed-duration equilibration (``equil_t_end: T``) exports as a leading PEtab period at
+# time -T and imports back as ``preequilibrate:`` + ``equil_t_end: T``: the same protocol, the
+# same objective at a fixed parameter vector, and a byte-equal re-export.
+# ---------------------------------------------------------------------------
+
+# dA/dt = kp - k*flag*A, A(0) = 10 (the #896 reproduction model).
+_FIXED_EQUIL_MODEL = _PREEQUIL_MODEL.replace(
+    'begin parameters\n  k     1.0', 'begin parameters\n  kp    5\n  k     1.0').replace(
+    '  A() -> 0 deg()', '  0 -> A() kp\n  A() -> 0 deg()')
+
+_FIXED_EQUIL_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+    'condition: pre,  perturbations: flag = 2\n'
+    'condition: meas, perturbations: flag = 1\n'
+    'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 0.1, '
+    'data: relax.exp\n'
+    'uniform_var = k 0.1 10\n')
+
+_FIXED_EQUIL_EXP = '# time A_tot\n0\t8.64\n1\t6.34\n2\t5.49\n'
+
+
+def _simulate_and_score(conf_path, k, monkeypatch):
+    """PyBNF's own simulation (BNG2.pl) of the job at ``conf_path`` at ``k``, scored with the
+    job's own objective. Returns ``(A_tot over the measured phase, objective value)``."""
+    import os
+    from pybnf.parse import load_config
+    from pybnf.pset import PSet
+    monkeypatch.chdir(conf_path.parent)
+    text = conf_path.read_text()
+    if 'population_size' not in text:
+        text += 'population_size = 4\nmax_iterations = 1\n'
+    (conf_path.parent / 'sim.conf').write_text(text)
+    conf = load_config('sim.conf')
+    name, model = next(iter(conf.models.items()))
+    ps = PSet([v.set_value(k) for v in conf.variables])
+    folder = f'sim_{k}'
+    os.makedirs(folder, exist_ok=True)
+    out = model.copy_with_param_set(ps).execute(folder, folder, 60)
+    data = out['relax']
+    return (list(data.data[:, data.cols['A_tot']]),
+            conf.obj.evaluate_multiple({name: out}, conf.exp_data, ps))
+
+
+class TestImportFixedDurationEquilibrationRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+        assert [(r['time'], r['conditionId']) for r in _tsv_rows(petab1 / 'experiments.tsv')] \
+            == [('-0.1', 'cond_pre'), ('0', 'cond_meas')]
+
+    def test_imported_conf_carries_equil_t_end(self, imported):
+        # The -0.1 leading period reads back as the fixed duration, not a refusal (the old
+        # "fixed-time equilibration is deferred") and not a steady state.
+        _, _, _, conf = imported
+        assert ('experiment: relax, preequilibrate: pre, condition: meas, method: ode, '
+                'equil_t_end: 0.1, data: relax.exp') in conf.read_text()
+
+    def test_imported_conf_synthesizes_the_fixed_duration_equilibration(self, imported,
+                                                                        monkeypatch):
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        acts = Configuration(ploop(conf.read_text().splitlines(keepends=True))).models['m'].actions
+        equil = [a for a in acts if '_preequil' in a]
+        assert equil == ['simulate({method=>"ode",t_start=>0,t_end=>0.1,n_steps=>1,'
+                         'suffix=>"relax_preequil",print_functions=>1})']
+
+    def test_original_and_imported_jobs_score_the_same(self, imported, monkeypatch):
+        # Oracle: the native job and its round-tripped import simulate the same trajectory and
+        # score the same objective at fixed k, and the trajectory is the hand-derived fixed 0.1
+        # equilibration (A(0) = 2.5/k + (10 - 2.5/k)*exp(-0.2k), then relaxation to 5/k).
+        import math
+        from .recovery_harness import require_bng2pl
+        require_bng2pl()
+        petab1, imported_dir, _, conf = imported
+        src = petab1.parent / 'src'
+        for k in (1.0, 0.4):
+            native_a, native_obj = _simulate_and_score(src / 'job.conf', k, monkeypatch)
+            imported_a, imported_obj = _simulate_and_score(conf, k, monkeypatch)
+            a0 = 2.5 / k + (10 - 2.5 / k) * math.exp(-0.2 * k)
+            closed = [5 / k + (a0 - 5 / k) * math.exp(-k * t) for t in (0, 1, 2)]
+            np.testing.assert_allclose(native_a, closed, rtol=1e-5)
+            np.testing.assert_allclose(imported_a, native_a, rtol=1e-12)
+            assert imported_obj == pytest.approx(native_obj, rel=1e-12)
+            # edition 2 reads `objective = sos` as a unit-sigma Gaussian: 1/2 * sum(residual^2).
+            data = (8.64, 6.34, 5.49)
+            assert native_obj == pytest.approx(
+                0.5 * sum((p - d) ** 2 for p, d in zip(closed, data)), rel=1e-4, abs=1e-7)
+
+    def test_fit_parameter_perturbation_round_trips_with_equil_t_end(self, tmp_path_factory):
+        # The surrogate split (ADR-0027, #443) composes with the -T period: the equilibration
+        # condition sets the FIT parameter k (so k is exported as k__REF and re-pinned on the
+        # measured period) and the fixed duration survives the round trip alongside it.
+        conf = _FIXED_EQUIL_CONF.replace('condition: pre,  perturbations: flag = 2',
+                                         'condition: pre,  perturbations: k = 0.5')
+        petab1, _, petab2, imported_conf = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_fit'), conf,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert {(r['conditionId'], r['targetId'], r['targetValue'])
+                for r in _tsv_rows(petab1 / 'conditions.tsv')} == {
+            ('cond_pre', 'k', '0.5'), ('cond_meas', 'k', 'k__REF'), ('cond_meas', 'flag', '1')}
+        text = imported_conf.read_text()
+        assert 'condition: pre, perturbations: k = 0.5' in text
+        assert 'preequilibrate: pre, condition: meas, method: ode, equil_t_end: 0.1' in text
+
+    def test_preequilibrated_scan_round_trips_its_equil_t_end(self, tmp_path_factory,
+                                                              monkeypatch):
+        # The ADR-0062 sibling: each dose's -7200 leading period reads back as ONE scan experiment
+        # carrying equil_t_end: 7200, and the fitter synthesizes a fixed 7200 equilibration.
+        conf = _PDR_CONF.replace(', t_end: 500,', ', t_end: 500, equil_t_end: 7200,')
+        petab1, imported_dir, petab2, imported_conf = _roundtrip(
+            tmp_path_factory.mktemp('pdr_fixed'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert {r['time'] for r in _tsv_rows(petab1 / 'experiments.tsv')} == {'-7200', '0'}
+        text = imported_conf.read_text()
+        assert ('experiment: scan, preequilibrate: incubate, condition: wash, method: ode, '
+                't_end: 500, equil_t_end: 7200, data: scan.exp') in text
+        from pybnf.config import Configuration
+        monkeypatch.chdir(imported_dir)
+        acts = Configuration(ploop(text.splitlines(keepends=True))).models['m'].actions
+        assert any('t_end=>7200' in a and '_preequil' in a and 'steady_state' not in a
+                   for a in acts)
+
+    def test_time_dependent_model_is_refused(self, tmp_path_factory):
+        # PEtab runs the leading period on [-T, 0]; PyBNF would run equil_t_end on [0, T] and
+        # restart the clock, so a model reading time() would see a different protocol.
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_time'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        (petab1 / 'm.bngl').write_text(
+            _FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*(1 + time())'))
+        with pytest.raises(NotImplementedError,
+                           match="Experiment 'relax'.*reads the simulation time"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_time')
+
+    def test_scan_with_a_finite_leading_period_not_followed_by_time_zero_is_not_a_scan(self):
+        # Only the exporter's -T / 0 shape is a fixed-duration pre-equilibrated scan; a leading
+        # finite period followed by one at t=1 would shift the dose period, so it is not read as one.
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id='scan_0')]
+        conds = [PetabConditionRow('cond_scan_0', 'L', '1'),
+                 PetabConditionRow('cond_pre', 'kd', '2')]
+        for times in ((-5.0, 1.0), (-5.0, 0.0)):
+            exps = [PetabExperimentRow('scan_0', times[0], 'cond_pre'),
+                    PetabExperimentRow('scan_0', times[1], 'cond_scan_0')]
+            scans, *_ = reconstruct_preequilibrated_dose_responses(
+                meas, conds, exps, {'obs_resp': 'resp'})
+            if times[1] == 0.0:
+                assert [(s['preequilibrate'], s['equil_t_end']) for s in scans] == [('pre', 5.0)]
+            else:
+                assert scans == []
+
+    def test_scan_with_a_blank_fixed_duration_period_is_refused(self):
+        # No condition to carry equil_t_end on -> refused, not imported as an un-equilibrated scan.
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id='scan_0')]
+        conds = [PetabConditionRow('cond_scan_0', 'L', '1')]
+        exps = [PetabExperimentRow('scan_0', -5.0, ''),
+                PetabExperimentRow('scan_0', 0.0, 'cond_scan_0')]
+        with pytest.raises(NotImplementedError, match="'scan_0'.*fixed-duration equilibration"):
+            reconstruct_preequilibrated_dose_responses(meas, conds, exps, {'obs_resp': 'resp'})
+
+    def test_scan_whose_doses_equilibrate_for_different_durations_is_ambiguous(self):
+        from pybnf.petab.measurements import reconstruct_preequilibrated_dose_responses
+        meas = [PetabMeasurementRow('obs_resp', 20.0, 1.0, experiment_id=f'scan_{i}')
+                for i in range(2)]
+        conds = [PetabConditionRow(f'cond_scan_{i}', 'L', str(i + 1)) for i in range(2)]
+        exps = [PetabExperimentRow('scan_0', -5.0, 'cond_pre'),
+                PetabExperimentRow('scan_0', 0.0, 'cond_scan_0'),
+                PetabExperimentRow('scan_1', -7.0, 'cond_pre'),
+                PetabExperimentRow('scan_1', 0.0, 'cond_scan_1')]
+        with pytest.raises(PybnfError, match='ONE duration'):
+            reconstruct_preequilibrated_dose_responses(meas, conds, exps, {'obs_resp': 'resp'})
+
+    @staticmethod
+    def _retime_measurements(petab_dir, retime):
+        """Rewrite measurements.tsv, mapping each row's time string through ``retime`` (a row it
+        maps to ``None`` is kept unchanged)."""
+        rows = _tsv_rows(petab_dir / 'measurements.tsv')
+        header = list(rows[0])
+        lines = ['\t'.join(header)]
+        for r in rows:
+            r = dict(r, time=retime(r['time']) or r['time'])
+            lines.append('\t'.join(r[h] for h in header))
+        (petab_dir / 'measurements.tsv').write_text('\n'.join(lines) + '\n')
+
+    def test_measurement_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # A PEtab measurement at a time in [-T, 0) is taken DURING the equilibration period, which
+        # PEtab lint accepts. PyBNF's `preequilibrate:` + `equil_t_end:` equilibration is
+        # unmeasured and its measured phase starts at the intervention (t = 0), so the point has
+        # no PyBNF representation. Imported as-is it landed on the measured phase's time grid,
+        # where bngsim starts integrating at the earliest sample time: every measurement of the
+        # experiment was then scored 0.05 time units late, with no error. Refused instead.
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('fixed_equil_early'), _FIXED_EQUIL_CONF,
+            extra_files={'m.bngl': _FIXED_EQUIL_MODEL, 'relax.exp': _FIXED_EQUIL_EXP},
+            model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-0.05' if t == '0' else None)
+        assert '-0.05' in [r['time'] for r in _tsv_rows(petab1 / 'measurements.tsv')]
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'relax'.*-0\.05.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+        # A measurement at exactly 0 is the post-intervention state PyBNF measures: still imported.
+        self._retime_measurements(petab1, lambda t: '0' if t == '-0.05' else None)
+        import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_zero')
+
+    def test_scan_measured_inside_the_fixed_duration_period_is_refused(self, tmp_path_factory):
+        # The pre-equilibrated scan sibling: every dose read at t = -100, inside the -7200
+        # equilibration (before the wash and the dose are even applied). It imported as a scan
+        # with `t_end: -100`, which BNG2.pl runs as no integration at all and bngsim rejects.
+        conf = _PDR_CONF.replace(', t_end: 500,', ', t_end: 500, equil_t_end: 7200,')
+        petab1, _, _, _ = _roundtrip(
+            tmp_path_factory.mktemp('pdr_fixed_early'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        self._retime_measurements(petab1, lambda t: '-100' if t == '500' else None)
+        with pytest.raises(NotImplementedError,
+                           match=r"Experiment 'scan_0'.*-100.*inside its fixed-duration "
+                                 r"equilibration period"):
+            import_job(petab1 / 'problem.yaml', petab1.parent / 'imported_early')
+
+
 class TestPreequilibrationPeriodGrouping:
     """White-box on the multi-period resolver (`_condition_and_preequilibrate`, ADR-0052/#442):
     a single period is a plain time course; a leading time=-inf steady-state period + a finite
-    measurement period is a pre-equilibration; only steady-state -inf equilibration is in scope
-    (Phase 1/2), so a finite leading period or >2 periods raises rather than silently flattens."""
+    measurement period is a pre-equilibration; a leading finite time=-T period + a measurement
+    period at exactly 0 is a fixed-duration one (#896); any other finite leading period or >2
+    periods raises rather than silently flattens."""
 
     def _row(self, time, cid):
         return PetabExperimentRow('relax', time, cid)
@@ -901,11 +1151,31 @@ class TestPreequilibrationPeriodGrouping:
         periods = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, '')]
         assert _condition_and_preequilibrate(periods, 'relax') == (None, 'pre')
 
-    def test_finite_leading_equilibration_period_is_deferred(self):
-        # A FINITE leading period is fixed-time equilibration (ADR-0052 "Out"), not steady state;
-        # refuse rather than flatten to the last period.
-        periods = [self._row(100.0, 'cond_pre'), self._row(200.0, 'cond_meas')]
-        with pytest.raises(NotImplementedError, match='fixed-time equilibration'):
+    def test_finite_leading_period_not_followed_by_time_zero_is_refused(self):
+        # A finite leading period is a fixed-duration equilibration only in the exporter's shape
+        # (-T, then the measured period at exactly 0 -- #896); any other finite pair would shift
+        # the data times or the equilibration's duration, so refuse rather than flatten it.
+        for times in ((100.0, 200.0), (-5.0, 1.0), (0.0, 3.0)):
+            periods = [self._row(times[0], 'cond_pre'), self._row(times[1], 'cond_meas')]
+            with pytest.raises(NotImplementedError, match='exactly time=0'):
+                _condition_and_preequilibrate(periods, 'relax')
+
+    def test_finite_leading_period_before_time_zero_is_a_fixed_duration_preequilibration(self):
+        # #896: a leading period at -T followed by the measured period at 0 is preequilibrate:
+        # with equil_t_end: T (the duration is read separately, by _fixed_equilibration_time).
+        from pybnf.petab.import_ import _fixed_equilibration_time
+        periods = [self._row(-7.5, 'cond_pre'), self._row(0.0, 'cond_meas')]
+        assert _condition_and_preequilibrate(periods, 'relax') == ('meas', 'pre')
+        assert _fixed_equilibration_time(periods) == 7.5
+        # the steady-state shape carries no duration
+        assert _fixed_equilibration_time(
+            [self._row(float('-inf'), 'cond_pre'), self._row(0.0, 'cond_meas')]) is None
+
+    def test_fixed_duration_period_with_a_blank_condition_is_refused(self):
+        # An equilibration at the model defaults has no preequilibrate: condition to carry the
+        # duration, so it is refused rather than imported as no equilibration at all (#896).
+        periods = [self._row(-7.5, ''), self._row(0.0, 'cond_meas')]
+        with pytest.raises(NotImplementedError, match='fixed-duration equilibration period'):
             _condition_and_preequilibrate(periods, 'relax')
 
     def test_more_than_two_periods_is_deferred(self):
@@ -1207,6 +1477,35 @@ class TestImportMultiModelCondition:
                 settings={'population_size': 10, 'max_iterations': 5, 'verbosity': 1},
                 multi=False)
 
+    def test_relative_condition_round_trips_against_its_own_model(self, tmp_path):
+        # #897: two models give the fixed parameter L different values (a: 1, b: 5); the
+        # condition `L * 2` belongs to b. It must round-trip as b's doubled value, L = 10 -- the
+        # base the fitter uses -- not a's (L = 2, which moved the optimum from k = 1 to k = 4.2).
+        model = _GROWTH_BNGL.replace('    a2 2\n', '    a2 2\n    L 1\n')
+        assert '    L 1\n' in model
+        conf = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
+                f'model: {DEMO_MODEL}\nmodel: growth_v2.bngl\n'
+                'condition: dbl, model: growth_v2.bngl, perturbations: L * 2\n'
+                f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+                'experiment: gr, model: growth_v2.bngl, condition: dbl, data: gr.exp\n'
+                + _PARAMS_U + 'uniform_var = a2 0 10\n')
+        demo_with_l = (DEMO_DIR / DEMO_MODEL).read_text().replace(
+            'begin parameters', 'begin parameters\n    L 5', 1)
+        petab1, _, petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files={**self._EXTRA, 'growth_v2.bngl': model,
+                                         DEMO_MODEL: demo_with_l})
+        _assert_problem_round_trips(petab1, petab2)
+        assert ('condition: dbl, model: growth_v2.bngl, perturbations: L = 2'
+                in imported_conf.read_text())
+        # ...and with the models' values swapped, the same condition folds to 10.
+        (tmp_path / 'swapped').mkdir()
+        petab1, _, _, imported_conf = _roundtrip(
+            tmp_path / 'swapped', conf,
+            extra_files={**self._EXTRA, 'growth_v2.bngl': model.replace('    L 1', '    L 5'),
+                         DEMO_MODEL: demo_with_l.replace('    L 5', '    L 1')})
+        assert ('condition: dbl, model: growth_v2.bngl, perturbations: L = 10'
+                in imported_conf.read_text())
+
 
 # ---------------------------------------------------------------------------
 # Extensions: prior catalog, objective family, conditions, emit-all
@@ -1437,6 +1736,321 @@ class TestPerObservableNoiseImport:
 
 
 # ---------------------------------------------------------------------------
+# A column-mean sigma comes back as column_mean only when it IS each experiment's own mean
+# (#894). The exporter writes it per experiment (a constant, or each row's noiseParameters);
+# the importer compares every value with the mean of the experiment it will belong to in the
+# imported job, and anything else stays a fixed sigma. The old check compared a constant with
+# one mean pooled over every experiment, so a problem with a pooled sigma (the pre-#894
+# export, or any foreign problem that happens to use one) came back as ave_norm_sos and was
+# fitted with per-experiment weights it never had.
+# ---------------------------------------------------------------------------
+
+_CM_SS_MODEL = _SS_MODEL.replace('  k_deg   2.0\n', '  k_deg   2.0\n  u       1\n')
+
+# Each experiment shape with two experiments of different magnitude under ave_norm_sos:
+# (conf, extra files, model file, {petab experimentId -> the .exp files of its PyBNF experiment}).
+_CM_SHAPES = {
+    'preequilibration': (
+        _PREEQUIL_CONF.replace('objective = sos', 'objective = ave_norm_sos')
+        + 'experiment: relax10, preequilibrate: pre, condition: meas, data: relax10.exp\n',
+        {'m.bngl': _PREEQUIL_MODEL, 'relax.exp': _PREEQUIL_EXP,
+         'relax10.exp': '# time A_tot\n0\t100\n1\t60\n2\t40\n'},
+        'm.bngl', lambda row: {'relax': ['relax.exp'], 'relax10': ['relax10.exp']}[
+            row['experimentId']]),
+    # A two-target condition, so the conditioned steady state is not read as a one-dose scan.
+    'steady_state': (
+        'edition = 2\njob_type = de\nobjective = ave_norm_sos\nmodel: ss.bngl\n'
+        'condition: slow, perturbations: k_deg = 0.2, u = 2\n'
+        'experiment: eq, data: eq.exp\nexperiment: eq_slow, condition: slow, data: slow.exp\n'
+        'uniform_var = k_prod 0.1 10\n',
+        {'ss.bngl': _CM_SS_MODEL, 'eq.exp': _SS_EXP, 'slow.exp': '# time A_tot\ninf\t15\n'},
+        'ss.bngl', lambda row: {'': ['eq.exp'], 'eq_slow': ['slow.exp']}[row['experimentId']]),
+    'preequilibrated_dose_response': (
+        _PDR_CONF.replace('objective = sos', 'objective = ave_norm_sos')
+        + 'experiment: scan2, preequilibrate: incubate, condition: wash, '
+          'type: parameter_scan, t_end: 500, data: dose2.exp\n',
+        {'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP,
+         'dose2.exp': '# L resp\n1\t5\n2\t10\n5\t25\n'},
+        'm.bngl', lambda row: {'scan': ['dose.exp'], 'scan2': ['dose2.exp']}[
+            row['experimentId'].rsplit('_', 1)[0]]),
+    # Two wildtype experiments on two models share experimentId ''; the modelId tells them apart.
+    'multi_model': (
+        'edition = 2\njob_type = de\nobjective = ave_norm_sos\n'
+        'model: decay.bngl\nmodel: decay2.bngl\n'
+        'experiment: lo, model: decay.bngl, data: lo.exp\n'
+        'experiment: big, model: decay2.bngl, data: hi.exp\n'
+        'uniform_var = k 0.05 3.0\n',
+        {'decay.bngl': _DECAY_MODEL, 'decay2.bngl': _DECAY_MODEL,
+         'lo.exp': _exp_text('time', _DECAY_TIMES, _decay_series(100, 0.5)),
+         'hi.exp': _exp_text('time', _DECAY_TIMES, _decay_series(1000, 0.7))},
+        'decay.bngl', lambda row: {'decay': ['lo.exp'], 'decay2': ['hi.exp']}[row['modelId']]),
+}
+
+
+def _column_mean_of_files(src, files):
+    """The mean of the measured column (column 1) over an experiment's .exp files, by numpy."""
+    return np.concatenate([np.atleast_2d(np.loadtxt(src / f))[:, 1] for f in files]).mean()
+
+
+def _pooled_form(petab, sigma):
+    """Rewrite an exported problem so its one observable carries the constant ``sigma`` and
+    no per-row noise -- what the pre-#894 exporter wrote."""
+    obs = _tsv_rows(petab / 'observables.tsv')
+    header = list(obs[0])
+    for r in obs:
+        r['noiseFormula'], r['noisePlaceholders'] = repr(float(sigma)), ''
+    (petab / 'observables.tsv').write_text(
+        '\t'.join(header) + '\n' + ''.join('\t'.join(r[h] for h in header) + '\n' for r in obs))
+    lines = (petab / 'measurements.tsv').read_text().splitlines()
+    assert lines[0].split('\t')[-1] == 'noiseParameters'
+    (petab / 'measurements.tsv').write_text(
+        '\n'.join([lines[0]] + [ln.rsplit('\t', 1)[0] + '\t' for ln in lines[1:]]) + '\n')
+
+
+class TestColumnMeanSigmaImport:
+    """#894: the importer's side of the per-experiment column-mean sigma."""
+
+    RECOVERED = {
+        'ave_norm_sos': 'objective = ave_norm_sos',
+        'gaussian_override': 'objective = ave_norm_sos',    # its only observable -> uniform
+        'laplace_whole_fit': 'noise_model = laplace, scale = column_mean',
+        'lnnormal_whole_fit': 'noise_model = lnnormal, sigma = column_mean',
+    }
+
+    def _decay_round_trip(self, tmp_path, noise_lines):
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_decay_job(src, noise_lines)
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        return conf, petab1, imported, petab2
+
+    @pytest.mark.parametrize('spelling', sorted(RECOVERED))
+    def test_round_trip_restores_the_column_mean(self, tmp_path, spelling, monkeypatch):
+        # Time courses (one with two replicate files), a conditioned time course and a
+        # dose-response scan: the per-row export comes back as a column_mean sigma, the
+        # rebuilt _SD companions are gone (column_mean reads no data column, and the fitter
+        # refuses one nothing reads), the re-export is byte-identical, and the imported job
+        # scores exactly as the source job does at three k.
+        noise_lines = _COLUMN_MEAN_SPELLINGS[spelling][0]
+        conf, petab1, imported, petab2 = self._decay_round_trip(tmp_path, noise_lines)
+        text = (imported / 'imported.conf').read_text()
+        assert self.RECOVERED[spelling] in text.splitlines()
+        assert 'fix_at' not in text and 'read_exp_file' not in text
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+        for k in (0.4, 0.6, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
+
+    @pytest.mark.parametrize('shape', sorted(_CM_SHAPES))
+    def test_every_experiment_shape_round_trips(self, tmp_path, shape):
+        # Each row carries its own PyBNF experiment's mean (numpy over that experiment's .exp
+        # files: a pre-equilibrated scan's doses all share the scan's mean, two models' wildtype
+        # experiments keep theirs), and the import restores ave_norm_sos byte-for-byte.
+        conf_text, files, model_name, files_of = _CM_SHAPES[shape]
+        petab1, imported, petab2, conf = _roundtrip(
+            tmp_path, conf_text, extra_files=files, model_name=model_name)
+        src = tmp_path / 'src'
+        rows = _tsv_rows(petab1 / 'measurements.tsv')
+        means = {float(r['noiseParameters']) for r in rows}
+        assert len(means) == 2           # two experiments, two different means
+        for r in rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                _column_mean_of_files(src, files_of(r)), rel=1e-15)
+        assert 'objective = ave_norm_sos' in conf.read_text().splitlines()
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_per_observable_column_mean_comes_back_as_its_own_line(self, tmp_path, monkeypatch):
+        # Two observables: Obs_A's sigma is its column mean (per row -- the experiments differ),
+        # Obs_B keeps the unit sigma of sos. The import restores one line per observable and
+        # drops both rebuilt _SD companions -- Obs_B's is all NaN, and a leftover one would
+        # make the fitter refuse the data -- so the imported job scores like the source.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL.replace(
+            '  Molecules  Obs_A  A()\n', '  Molecules  Obs_A  A()\n  Molecules  Obs_B  A()\n'))
+        for name, amp, rate in (('lo', 100, 0.5), ('hi', 1000, 0.7)):
+            a, b = _decay_series(amp, rate), _decay_series(1.1 * amp, rate)
+            (src / f'{name}.exp').write_text('# time Obs_A Obs_B\n' + ''.join(
+                f'{t!r}\t{float(x)!r}\t{float(y)!r}\n' for t, x, y in zip(_DECAY_TIMES, a, b)))
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = sos\n'
+            'noise_model Obs_A = gaussian, sigma = column_mean\n'
+            'condition: high, perturbations: scale = 10\n'
+            'experiment: lo, data: lo.exp\nexperiment: hi, condition: high, data: hi.exp\n'
+            'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'noise_model Obs_A = gaussian, sigma = column_mean' in lines
+        assert 'noise_model Obs_B = gaussian, sigma = fix_at 1' in lines
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        _assert_problem_round_trips(petab1, petab2)
+        for k in (0.4, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
+
+    def test_a_pooled_constant_is_a_fixed_sigma_not_a_column_mean(self, tmp_path, monkeypatch):
+        # A constant sigma equal to the mean pooled over experiments of different magnitude
+        # (the pre-#894 export; a foreign problem could carry one too) is NO experiment's
+        # column mean. It must import as that fixed sigma: libpetab's likelihood of the problem
+        # and the imported job's objective then differ only by a constant. Imported as
+        # ave_norm_sos, the job would weight each experiment by its own mean instead.
+        pytest.importorskip('petab.v2')
+        conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        values = [np.atleast_2d(np.loadtxt(conf.parent / f))[:, 1]
+                  for f in ('lo.exp', 'lo_rep.exp', 'hi.exp', 'scan.exp')]
+        pooled = float(np.concatenate(values).mean())
+        _pooled_form(petab1, pooled)
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'pooled_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'ave_norm_sos' not in text and 'column_mean' not in text
+        assert f'noise_model = gaussian, sigma = fix_at {num(pooled)}' in text.splitlines()
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_a_row_off_its_experiment_mean_stays_a_per_point_sigma(self, tmp_path, monkeypatch):
+        # Every number must match: one row's noiseParameters 1% off its experiment's mean and
+        # the observable is not a column mean. It stays a per-point sigma (chi_sq, reading
+        # the rebuilt _SD column), which scores exactly what the PEtab problem says.
+        pytest.importorskip('petab.v2')
+        _conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        lines = (petab1 / 'measurements.tsv').read_text().splitlines()
+        head, sigma = lines[5].rsplit('\t', 1)
+        lines[5] = f'{head}\t{float(sigma) * 1.01!r}'
+        (petab1 / 'measurements.tsv').write_text('\n'.join(lines) + '\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'off_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        assert any('Obs_A_SD' in Data(file_name=str(p)).cols for p in out.glob('*.exp'))
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_two_wildtype_experiments_merge_and_stay_per_point(self, tmp_path, monkeypatch):
+        # Two wildtype time courses on one model share PEtab experimentId '' (nothing tells
+        # them apart), so the import rebuilds them as ONE experiment with two replicates, whose
+        # mean is neither of theirs. Their per-row means are therefore not that experiment's
+        # column mean: they stay per-point sigmas, and the imported job still scores exactly
+        # what the exported problem and the source fit do.
+        pytest.importorskip('petab.v2')
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL)
+        (src / 'lo.exp').write_text(_exp_text('time', _DECAY_TIMES, _decay_series(100, 0.5)))
+        (src / 'lo2.exp').write_text(_exp_text('time', _DECAY_TIMES, _decay_series(30, 0.4)))
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+            'experiment: lo, data: lo.exp\nexperiment: lo2, data: lo2.exp\n'
+            'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+        petab1, imported, petab2 = tmp_path / 'petab1', tmp_path / 'imported', tmp_path / 'petab2'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        export_job(imported / 'imported.conf', petab2)
+        text = (imported / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        _assert_problem_round_trips(petab1, petab2)
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        back = [_pybnf_objective(imported / 'imported.conf', k, monkeypatch) for k in ks]
+        assert back == pytest.approx(fit, rel=1e-12)
+        offsets = [_petab_nll(petab1, k) - f for k, f in zip(ks, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_a_small_magnitude_sigma_is_compared_relatively(self, tmp_path):
+        # Data of order 1e-11 with a fixed sigma five times their mean. The old comparison
+        # had an absolute floor of 1e-9, under which the two "matched" and the problem came
+        # back as ave_norm_sos -- a sigma five times too small, weights 25 times too large.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'decay.bngl').write_text(_DECAY_MODEL)
+        ys = [1e-12 * y for y in _decay_series(100, 0.5)]
+        (src / 'lo.exp').write_text(_exp_text('time', _DECAY_TIMES, ys))
+        sigma = 5 * float(np.mean(ys))
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\n'
+            f'noise_model = gaussian, sigma = fix_at {sigma!r}\n'
+            'experiment: lo, data: lo.exp\nuniform_var = k 0.05 3.0\n')
+        petab1, petab2 = tmp_path / 'petab1', tmp_path / 'petab2'
+        export_job(src / 'job.conf', petab1)
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'ave_norm_sos' not in text
+        assert f'noise_model = gaussian, sigma = fix_at {num(sigma)}' in text.splitlines()
+        export_job(out / 'imported.conf', petab2)
+        _assert_problem_round_trips(petab1, petab2)
+
+    @pytest.mark.parametrize('edit', ['each_dose_its_own_value', 'one_dose_off'])
+    def test_doses_with_different_sigmas_stay_per_point(self, tmp_path, edit, monkeypatch):
+        # Added in independent review. The doses of a scan are separate PEtab experiments that
+        # import into ONE PyBNF experiment, so their sigmas must all equal that one scan's mean
+        # before the import may say column_mean. Two edits of the scan rows break that: every
+        # dose carries its own measurement (the mean of its own one-row PEtab experiment), or
+        # one dose is 1% off the scan mean while the others keep it. Either way the scan stays
+        # a per-point sigma, and libpetab's likelihood of the problem and the imported job's
+        # objective differ only by a constant.
+        pytest.importorskip('petab.v2')
+        _conf, petab1, _, _ = self._decay_round_trip(tmp_path, 'objective = ave_norm_sos\n')
+        lines = (petab1 / 'measurements.tsv').read_text().splitlines()
+        head = lines[0].split('\t')
+        rows = [ln.split('\t') for ln in lines[1:]]
+        eid, meas = head.index('experimentId'), head.index('measurement')
+        scan_rows = [r for r in rows if r[eid].startswith('scan_')]
+        assert len(scan_rows) == 3
+        if edit == 'each_dose_its_own_value':
+            for r in scan_rows:
+                r[-1] = r[meas]
+        else:
+            scan_rows[1][-1] = repr(float(scan_rows[1][-1]) * 1.01)
+        (petab1 / 'measurements.tsv').write_text(
+            '\n'.join(['\t'.join(head)] + ['\t'.join(r) for r in rows]) + '\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'edited_import')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text.splitlines() and 'column_mean' not in text
+        assert 'Obs_A_SD' in Data(file_name=str(out / 'scan.exp')).cols
+        ks = (0.4, 0.6, 0.9)
+        offsets = [_petab_nll(petab1, k) - _pybnf_objective(out / 'imported.conf', k, monkeypatch)
+                   for k in ks]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8)
+
+    def test_ragged_replicates_round_trip_to_the_column_mean(self, tmp_path, monkeypatch):
+        # Added in independent review. Ragged replicates on different time grids, NaN cells, and
+        # one table mixing the constant form (Obs_A, one experiment) with the per-row form
+        # (Obs_B, two experiments). The import regroups the replicate rows by time, so its mean
+        # is summed in another order than the export's; both observables must still come back
+        # as ONE ave_norm_sos line, with no _SD companion left for the fitter to refuse, and the
+        # imported job must score exactly like the source job.
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_ragged_job(src)
+        petab1, imported = tmp_path / 'petab1', tmp_path / 'imported'
+        export_job(conf, petab1)
+        import_job(petab1 / 'problem.yaml', imported)
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'objective = ave_norm_sos' in lines
+        assert not any('noise_model' in ln for ln in lines)
+        for exp in imported.glob('*.exp'):
+            assert not any(c.endswith('_SD') for c in Data(file_name=str(exp)).cols), exp.name
+        for k in (0.4, 0.6, 0.9):
+            assert _pybnf_objective(imported / 'imported.conf', k, monkeypatch) == \
+                pytest.approx(_pybnf_objective(conf, k, monkeypatch), rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
 # Reverse-asset unit tests (the seam, not the orchestrator)
 # ---------------------------------------------------------------------------
 
@@ -1535,7 +2149,7 @@ class TestReverseAssets:
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
         conds = {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '*', 5.0)]}
         cond_rows, _, surrogate, _ = build_experiment_conditions(
-            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda v: 2.0)
+            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda _c, _v: 2.0)
         recovered = conditions_from_rows(cond_rows, surrogate)
         # The fit op recovers exactly; the fixed relative op recovers as its precomputed
         # absolute value (s*5 with nominal 2 -> s = 10); base pins are dropped.

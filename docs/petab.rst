@@ -127,7 +127,11 @@ following all survive an import and an export:
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by
-  measurement row.
+  measurement row. A column-mean sigma (``ave_norm_sos`` or ``column_mean``) is the
+  mean of each experiment's own data. When an observable's experiments have different
+  means, each measurement row carries its own experiment's mean in
+  ``noiseParameters``. The import restores ``column_mean`` only when every value
+  equals its experiment's mean.
 - **Observable and noise parameters** — a constant-per-observable
   ``observableParameters`` scale/offset is substituted in, and the Boehm-style
   ``sd_*`` pattern (a parameter id in the ``noiseParameters`` column, e.g.
@@ -143,7 +147,11 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such.
+  **pre-equilibration** phase round-trips as such. An equilibration to steady state is a
+  leading period at time ``-inf``; a fixed-duration one (``equil_t_end: T``) is a leading
+  period at time ``-T``. The fixed-duration form is refused for a model that reads the
+  simulation time, because PEtab runs that period from ``-T`` to 0 while PyBNF runs it from 0
+  to ``T``.
 
 Tutorial lessons
 ----------------

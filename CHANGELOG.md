@@ -265,6 +265,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   BNG2.pl scan stayed in force for every experiment after it; on bngsim a condition run
   started under the base run's parameters, and network-free experiments shared one live
   session. Parameters and seed species are now restored before every experiment.
+- **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
+  experiment's own mean (#894).** The fit scales each experiment by its own mean, but the export
+  wrote one mean pooled over all experiments, so the exported problem had a different optimum.
+  When the experiments' means differ, each measurement row now carries its own experiment's mean.
+  The import restores `column_mean` only when every value matches its experiment's mean.
+- **The PEtab export keeps an experiment's `equil_t_end:` (#896).** A fixed-duration
+  equilibration was exported as PEtab's steady-state (`-inf`) period, a different protocol from
+  the one the fit scores. It now exports as a leading period at time `-equil_t_end` and imports
+  back as `equil_t_end:`. A model that reads the simulation time is refused, because PEtab runs
+  that period on `[-T, 0]` while PyBNF runs it on `[0, T]`.
+- **In a multi-model job, the PEtab export computes a relative condition on a fixed parameter
+  from the condition's own model (#897).** It used the first declared model that defines the
+  parameter, so the exported problem could have a different best fit. A multi-model condition
+  with no `model:`, or applied to another model's experiment, is now refused, as the fitter does.
 - **`petab1to2_preserve_scale` converts every declared PEtab v1 prior to a v2 prior with the
   same distribution (#893).** A `log10` `parameterScaleNormal` prior used to import with its
   mean and sd divided by ln 10 (six priors in `Schwen_PONE2014`, others in `Isensee_JCB2018`,
