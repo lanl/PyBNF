@@ -124,3 +124,21 @@ not just PEtab imports. Also affected in the benchmark collection: `Blasi_CellSy
 preservation on `_stack_replicates` directly) and
 `test_petab_import.py::TestRaggedReplicateImport` (a ragged measurement table imports and its
 conf loads end to end).
+
+## Addendum: dose-response replicates are dealt the same way (issue #903)
+
+**Accepted and implemented 2026-09-25.** The dealing above ran only on the time-course pivot. A
+dose-response point is one PEtab experiment measured at one time, so its replicates are repeated
+observable rows under one dose experimentId (the exporter tags every replicate `.exp` of a scan
+with the same `<stem>_<i>` ids). `_dose_response_data` pivoted each point into a single row, so
+each replicate overwrote the one before it and only the last reached the fit — for the plain
+and the pre-equilibrated (ADR-0063) scans alike. The pivot is now `_dose_response_datas`: each
+point's rows go through `_deal_replicates`, grid k takes the k-th occurrence of each point's
+cells (one row per dose measured at least k+1 times), and the importer writes the grids as
+`<name>.exp`, `<name>_rep2.exp`, ... on the scan's `data:` list, the naming this ADR gives a time
+course. Per-point `noiseParameters` travel with their rows, as here. A homogeneous replicate set
+round-trips byte for byte; a ragged one (a dose measured more often than the others) yields a
+later grid holding only the repeated doses, which is fit-preserving. Oracles:
+`test_petab_import.py::TestDoseResponseReplicates` — the closed-form least-squares `kd` over all
+six rows of the issue's scan, the imported objective against a hand sum over every measurement
+row, the issue's external triplicates, and the pre-equilibrated scan with per-replicate sigmas.

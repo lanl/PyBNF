@@ -125,6 +125,88 @@ class TestFullConversion:
         assert 'objective = lognormal' not in conf
 
 
+# Production L, first-order decay k*V, V(0) = 0: equilibrating at L = 5 settles V = 5/k.
+_DOSE_SBML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model id="m">
+    <listOfCompartments><compartment id="c" size="1"/></listOfCompartments>
+    <listOfSpecies><species id="V" compartment="c" initialConcentration="0"/></listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="1" constant="true"/>
+      <parameter id="L" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="prod" reversible="false">
+        <listOfProducts><speciesReference species="V"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>L</ci></math></kineticLaw>
+      </reaction>
+      <reaction id="deg" reversible="false">
+        <listOfReactants><speciesReference species="V"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>V</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+
+def _write_v1_preequilibrated_dose_problem(root):
+    """A PEtab **v1** dose-response measured after pre-equilibration: every row carries
+    ``preequilibrationConditionId = pre`` (L = 5) and a ``simulationConditionId`` ``dose_<i>``
+    (L = i), measured once at t = 1. The values are the closed form at k = 1."""
+    import math
+    root.mkdir(parents=True, exist_ok=True)
+    (root / 'model.xml').write_text(_DOSE_SBML)
+    (root / 'observables.tsv').write_text(
+        'observableId\tobservableFormula\tobservableTransformation\tnoiseDistribution\t'
+        'noiseFormula\nobs_V\tV\tlin\tnormal\t1\n')
+    (root / 'conditions.tsv').write_text('conditionId\tL\npre\t5\ndose_1\t1\ndose_2\t2\ndose_3\t3\n')
+    rows = ['observableId\tpreequilibrationConditionId\tsimulationConditionId\tmeasurement\ttime']
+    rows += [f'obs_V\tpre\tdose_{L}\t{L + (5 - L) * math.exp(-1)!r}\t1' for L in (1, 2, 3)]
+    (root / 'measurements.tsv').write_text('\n'.join(rows) + '\n')
+    (root / 'parameters.tsv').write_text(
+        'parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n'
+        'k\tlin\t0.1\t10\t0.5\t1\n')
+    yaml = root / 'problem.yaml'
+    yaml.write_text(
+        'format_version: 1\nparameter_file: parameters.tsv\nproblems:\n'
+        '  - sbml_files: [model.xml]\n    condition_files: [conditions.tsv]\n'
+        '    measurement_files: [measurements.tsv]\n    observable_files: [observables.tsv]\n')
+    return yaml
+
+
+class TestConvertedPreequilibratedDoseResponse:
+    """Issue #904 through both converters: a v1 ``preequilibrationConditionId`` +
+    ``simulationConditionId`` pair becomes a two-period v2 experiment
+    ``experiment__pre___dose_<i>`` (``-inf -> pre``, ``0 -> dose_<i>``). The importer used to read
+    only the last period and import a plain dose scan without the pre-equilibration. It now
+    imports one pre-equilibrated scan over the doses."""
+
+    @pytest.mark.parametrize('converter', ['petab1to2', 'petab1to2_preserve_scale'])
+    def test_converted_problem_imports_as_a_preequilibrated_scan(self, tmp_path, converter):
+        import math
+
+        from petab.v2.petab1to2 import petab1to2
+
+        from pybnf.data import Data
+        from pybnf.petab import import_job
+        yaml = _write_v1_preequilibrated_dose_problem(tmp_path / 'v1')
+        convert = petab1to2 if converter == 'petab1to2' else petab1to2_preserve_scale
+        convert(str(yaml), str(tmp_path / 'v2'))
+        exps = pd.read_csv(tmp_path / 'v2' / 'experiments.tsv', sep='\t')
+        assert list(exps['experimentId'].unique()) == [
+            f'experiment__pre___dose_{i}' for i in (1, 2, 3)]
+        out = import_job(tmp_path / 'v2' / 'problem.yaml', tmp_path / 'imported')
+        conf = (out / 'imported.conf').read_text()
+        assert ('experiment: experiment__pre___dose, preequilibrate: pre, method: ode, '
+                't_end: 1, data: experiment__pre___dose.exp') in conf
+        assert 'condition: pre, perturbations: L = 5' in conf
+        data = Data(file_name=str(out / 'experiment__pre___dose.exp'))
+        assert list(data['L']) == [1, 2, 3]
+        assert list(data['V']) == pytest.approx([L + (5 - L) * math.exp(-1) for L in (1, 2, 3)])
+
+
 class TestInjectLogUniformPriors:
 
     def _petab1to2_shape(self):

@@ -89,6 +89,7 @@ from .conditions import (
     REF_MARKER,
     condition_name_from_id,
     conditions_from_rows,
+    drop_synthesized_wildtype,
     is_species_target,
     read_condition_table,
     read_experiment_table,
@@ -227,8 +228,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``bngl``/``sbml``; the five unsupported prior families; a log-normal/log-laplace noise
     distribution; a **multi-symbol** condition expression -- a single parameter-valued
     ``targetValue`` is a per-condition estimated initial condition and imports, ADR-0076; a
-    **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder;
-    replicate rows) and ``PybnfError``
+    **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder) and
+    ``PybnfError``
     for a malformed problem (an ``observableFormula`` symbol that is not a model entity, or an
     ambiguous dose-response group).
     """
@@ -257,6 +258,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
+    # The exporter's synthesized base condition cond_wildtype re-pins M at base (p = p__REF), the
+    # identity once p__REF is renamed back to p: drop it, and blank the periods that apply it, so
+    # every reconstruction below reads "no condition" there. A cond_wildtype carrying any real
+    # target is a condition in its own right and is kept (#905).
+    condition_rows, experiment_rows = drop_synthesized_wildtype(
+        condition_rows, experiment_rows, surrogate_params)
 
     # Fixed PEtab parameters carrying a numeric value: the constants a measurement-model
     # observableFormula may reference that live only in the parameters table, not the
@@ -311,10 +318,14 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
     # dose-response and time-course reconstructions below never see them. Only the per-dose
     # conditions are consumed; the shared pre-equilibration + wash conditions stay in the condition
-    # table (they become preequilibrate:/condition: lines).
+    # table (they become preequilibrate:/condition: lines). Only a model parameter can be a scan's
+    # swept axis, so a condition setting a species amount is never read as a dose (#904).
+    sweepable = set().union(*(_model_parameter_ids(model_texts[m['location']], m['language'])
+                              for m in models))
     preequil_scans, meas_rows_1, pdr_condition_ids, pdr_experiment_ids = \
         reconstruct_preequilibrated_dose_responses(
-            measurement_rows, condition_rows, experiment_rows, observable_id_to_column)
+            measurement_rows, condition_rows, experiment_rows, observable_id_to_column,
+            sweepable=sweepable)
 
     # Dose-response (parameter_scan) reconstruction (ADR-0046): pull out the experiment groups
     # whose N conditions each set one swept parameter at a constant measurement time (inf =>
@@ -354,8 +365,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         tc_rows, observable_id_to_column, row_varying_noise, row_varying_obs_params)
     # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
     # time courses and dose-response scans (plain + pre-equilibrated) alike.
-    dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
-    pdr_datas = {(s['name'], s['model_id']): [s['data']] for s in preequil_scans}
+    dr_datas = {(dr['name'], dr['model_id']): dr['datas'] for dr in dose_responses}
+    pdr_datas = {(s['name'], s['model_id']): s['datas'] for s in preequil_scans}
     # A noiseFormula symbol is prediction-dependent (a simulated column) only if it is a model
     # entity that is NOT a declared free parameter: a fit parameter (even one that binds a model
     # parameter by id, ADR-0034) resolves from the PSet, not the trajectory. So the σ scales with
@@ -525,6 +536,15 @@ def _model_namespace(model_text, language):
     entity_names = (namespace | set(ent.molecule_type_names)
                     | set(ent.compartment_names))
     return namespace, entity_names, {}
+
+
+def _model_parameter_ids(model_text, language):
+    """The model's parameter ids (BNGL ``begin parameters``; SBML ``listOfParameters``) -- the
+    entities a ``parameter_scan`` can sweep. A species amount or a compartment size is not one
+    (#904)."""
+    if (language or 'bngl').lower() == 'sbml':
+        return set(parse_sbml_model(model_text).parameter_names)
+    return set(parse_bngl_model(model_text).parameters)
 
 
 def _shared_bare_entities(observable_rows, namespace, derived, row_varying_obs_params):
@@ -1139,6 +1159,7 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
         periods_of.setdefault(row.experiment_id, []).append(row)
     for rows in periods_of.values():
         rows.sort(key=lambda r: r.time)
+    _refuse_simultaneous_conditions(periods_of, {eid for eid, _mid in datas})
     experiments = []
     for (eid, mid), group in datas.items():
         if eid:
@@ -1164,24 +1185,48 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     return experiments
 
 
+def _refuse_simultaneous_conditions(periods_of, measured):
+    """Refuse a measured experiment that applies two or more conditions at the same time (#904).
+
+    PEtab v2 writes such a period as several experiments-table rows sharing one
+    ``(experimentId, time)``, and applies their conditions together. A PyBNF ``experiment:``
+    applies one ``condition:`` (and one ``preequilibrate:``), so the shape has no PyBNF form
+    here; refusing it names the cause instead of letting :func:`_condition_and_preequilibrate`
+    read the rows as a sequence of periods. (A pre-equilibrated dose-response's wash + dose
+    period is claimed before this, by ``reconstruct_preequilibrated_dose_responses``.)
+    ``periods_of`` maps an experimentId to its time-sorted rows; only the ``measured`` ids are
+    checked, since an experiment with no measurements is never written to the conf."""
+    for eid, rows in periods_of.items():
+        if eid not in measured:
+            continue
+        for time in sorted({r.time for r in rows}):
+            cids = [r.condition_id for r in rows if r.time == time]
+            if len(cids) > 1:
+                raise NotImplementedError(
+                    f"Experiment '{eid}' applies {len(cids)} conditions at the same time "
+                    f"({num(time)}): {cids}. A PyBNF experiment applies one condition per "
+                    f"period, so conditions applied together have no PyBNF representation. "
+                    f"Merge their targets into a single PEtab condition.")
+
+
 def _dose_response_experiments(dose_responses, out_dir, model_location_of):
     """Build the conf experiment entries for the reconstructed dose-response scans (ADR-0046).
 
-    Each scan's swept-axis :class:`~pybnf.data.Data` is written to ``<name>.exp`` (column 0 the
-    swept parameter, so ``config._infer_experiment_type`` reads it as a parameter_scan -- no
-    ``type:`` field needed). A steady-state scan (``scan_time`` inf) carries ``t_end = None`` (it
-    runs to steady state, PEtab time=inf); a finite scan carries that endpoint. Returns the same
+    Each scan's swept-axis :class:`~pybnf.data.Data` replicate grids are written to ``<name>.exp``
+    and ``<name>_rep<k>.exp`` (:func:`_write_replicate_exps`; column 0 the swept parameter, so
+    ``config._infer_experiment_type`` reads it as a parameter_scan -- no ``type:`` field needed).
+    A steady-state scan (``scan_time`` inf) carries ``t_end = None`` (it runs to steady state,
+    PEtab time=inf); a finite scan carries that endpoint. Returns the same
     :class:`ImportedExperiment` records as :func:`_experiments` (condition / preequilibrate /
     measparams are always ``None`` -- a dose is the scan axis, not a named condition, a scan is
     never a pre-equilibration, and a dose-response carries no per-measurement sidecar)."""
     experiments = []
     for dr in dose_responses:
         name = dr['name']
-        data_file = f'{name}.exp'
-        _write_exp(out_dir / data_file, dr['data'])
+        data_files = _write_replicate_exps(out_dir, name, dr['datas'])
         model_location = model_location_of.get(dr['model_id'])
         t_end = None if math.isinf(dr['scan_time']) else dr['scan_time']
-        experiments.append(ImportedExperiment(name, None, None, [data_file], model_location,
+        experiments.append(ImportedExperiment(name, None, None, data_files, model_location,
                                               None, t_end))
     return experiments
 
@@ -1190,23 +1235,36 @@ def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of
     """Build the conf experiment entries for the reconstructed pre-equilibrated dose-response scans
     (#477; ADR-0062) -- the two-period sibling of :func:`_dose_response_experiments`.
 
-    Each scan's swept-axis :class:`~pybnf.data.Data` is written to ``<name>.exp`` (column 0 the
-    swept parameter, so ``config._infer_experiment_type`` reads it as a parameter_scan -- no
-    ``type:`` field needed), and the experiment carries its ``preequilibrate:`` (the ``-inf``
-    pre-equilibration condition) and its optional measurement ``condition:`` (the wash). A
-    steady-state scan (``scan_time`` inf) carries ``t_end = None``; a finite scan carries that
-    endpoint. Returns :class:`ImportedExperiment` records (``measparams`` always ``None`` -- a
-    dose-response carries no per-measurement sidecar)."""
+    Each scan's swept-axis :class:`~pybnf.data.Data` replicate grids are written to ``<name>.exp``
+    and ``<name>_rep<k>.exp`` (:func:`_write_replicate_exps`; column 0 the swept parameter, so
+    ``config._infer_experiment_type`` reads it as a parameter_scan -- no ``type:`` field needed),
+    and the experiment carries its ``preequilibrate:`` (the ``-inf`` pre-equilibration condition)
+    and its optional measurement ``condition:`` (the wash). A steady-state scan (``scan_time``
+    inf) carries ``t_end = None``; a finite scan carries that endpoint. Returns
+    :class:`ImportedExperiment` records (``measparams`` always ``None`` -- a dose-response
+    carries no per-measurement sidecar)."""
     experiments = []
     for s in scans:
         name = s['name']
-        data_file = f'{name}.exp'
-        _write_exp(out_dir / data_file, s['data'])
+        data_files = _write_replicate_exps(out_dir, name, s['datas'])
         model_location = model_location_of.get(s['model_id'])
         t_end = None if math.isinf(s['scan_time']) else s['scan_time']
         experiments.append(ImportedExperiment(
-            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end))
+            name, s['wash'], s['preequilibrate'], data_files, model_location, None, t_end))
     return experiments
+
+
+def _write_replicate_exps(out_dir, name, datas):
+    """Write a dose-response scan's replicate grids and return their file names, in order: the
+    first as ``<name>.exp`` and the k-th (k >= 2) as ``<name>_rep<k>.exp`` -- the naming
+    :func:`_experiments` gives a time course's replicates (ADR-0039), so the single-replicate
+    case keeps the bare ``<name>.exp`` and its round trip is byte-stable (#903)."""
+    data_files = []
+    for k, data in enumerate(datas):
+        data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
+        _write_exp(out_dir / data_file, data)
+        data_files.append(data_file)
+    return data_files
 
 
 def _write_exp(path, data):

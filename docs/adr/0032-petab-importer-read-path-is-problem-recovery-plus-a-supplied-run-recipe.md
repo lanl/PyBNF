@@ -185,3 +185,18 @@ Two seams moved to make this honest:
   grows, with no importer edit per new method (the ADR-0012 payoff, now bidirectional).
 - See ADR-0019 (parameters), 0023 (observables), 0025 (exporter-first), 0026 (BNGL model),
   0027 (conditions/experiments), 0028 (new-era config), 0031 (objective surface).
+
+## Addendum: a `cond_wildtype` with real targets is a condition (issue #905)
+
+**Accepted and implemented 2026-09-25.** The importer treated every `conditionId` equal to
+`cond_wildtype` as the synthesized base above and dropped all of its rows. A condition of that id
+that sets real targets — another tool's, or a PyBNF condition named `wildtype` exported when the
+exporter checked the name only while it also emitted the base — was lost without a message, and
+its experiments were fitted against the unperturbed model. The importer now drops `cond_wildtype`
+only when every row is a surrogate base pin (`p = p__REF`, the identity after import); it
+blanks the periods that apply it, so every reconstruction reads "no condition" there. A
+`cond_wildtype` with any other row imports as a condition named `cond_wildtype` (its literal id,
+with only the identity pins dropped); it re-exports as `cond_cond_wildtype` and imports back under
+the same name. On the export side the name `wildtype` is now reserved outright: a condition of
+that name that some experiment applies is refused, whatever else the job contains. Two
+conditionIds that would import under one name (`cond_a` and `a`) are refused rather than merged.

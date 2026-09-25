@@ -136,7 +136,14 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such.
+  **pre-equilibration** phase round-trips as such. Replicate measurements at a dose
+  import as replicate ``.exp`` files, as a time course's do. A dose applied after a
+  pre-equilibration imports as a pre-equilibrated scan, including the
+  ``experiment__<pre>___<sim>`` experiments that ``petab1to2`` writes from a v1
+  ``preequilibrationConditionId``. An experiment that applies two conditions at the
+  same time is refused on import. The condition name ``wildtype`` is reserved: the
+  exporter writes its own base condition as ``cond_wildtype``, so a condition of that
+  name is refused on export.
 
 Tutorial lessons
 ----------------

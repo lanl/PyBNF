@@ -127,3 +127,22 @@ steady-state), and a config-load check that the imported conf synthesizes the
   export — extended here to a scan measured phase), 0046 (dose-response export —
   the fresh-from-seed sibling), 0027 (conditions/experiments), 0026
   (`register_bngl` / the `BnglModel` validation loader). Advances #477.
+
+## Addendum: pre-equilibrated doses from other sources (issue #904)
+
+**Accepted and implemented 2026-09-25.** The detector above matched only the exporter's
+per-dose condition id `cond_<eid>`. A problem from any other source — notably one converted from
+PEtab v1 by `petab1to2` or `petab1to2_preserve_scale`, which writes experiment
+`experiment__<pre>___<sim>` with periods `-inf -> <pre>`, `0 -> <sim>` — fell through to the plain
+dose detector, which read only the last period and dropped the pre-equilibration (ADR-0046
+addendum). When `cond_<eid>` is absent, the measurement period's lone condition applied at
+`time = 0` is now the dose, provided it sets exactly one numeric target and that target is a model
+parameter (a species amount is a bolus, which a `parameter_scan` cannot sweep). A group of such
+points is claimed only if it is one scan (one swept parameter, scan time and pre-equilibration
+condition); otherwise its experiments import one by one through the time-course path, which
+represents each exactly. A dose condition that an unclaimed experiment also applies stays a
+`condition:` line. The exporter's own shape is detected and refused exactly as before. Oracle:
+`test_petab_import.py::TestDosePointIsOnePeriod` fits the issue's problem through bngsim and
+recovers `k = 1` (the pre-#904 import ran to the lower bound), and
+`test_petab_convert.py::TestConvertedPreequilibratedDoseResponse` runs a v1 problem through both
+converters.

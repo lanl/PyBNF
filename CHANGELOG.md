@@ -259,6 +259,18 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **PEtab import keeps every replicate of a dose-response experiment (#903).** Repeated
+  measurements at one dose now import as `<name>.exp`, `<name>_rep2.exp`, ..., as time-course
+  replicates already did, for plain and pre-equilibrated scans. Before, each replicate
+  overwrote the one before it, so only the last reached the fit.
+- **PEtab import reads a dose experiment from all its periods, not its last row (#904).** A
+  dose after a pre-equilibration (the shape `petab1to2` writes) imports as a pre-equilibrated
+  scan, and an experiment applying two conditions at once is refused, naming both. Before, the
+  pre-equilibration or the other condition was dropped.
+- **PEtab import keeps a `cond_wildtype` condition that sets real targets (#905).** It imports
+  as condition `cond_wildtype`; only the exporter's base, made of surrogate pins, is dropped.
+  The exporter now refuses a condition named `wildtype`. Before, such a condition was dropped
+  and its experiment fitted against the unperturbed model.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration
