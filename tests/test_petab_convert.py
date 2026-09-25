@@ -125,6 +125,75 @@ class TestFullConversion:
         assert 'objective = lognormal' not in conf
 
 
+class TestSplitV1ProblemConversion:
+    """A v1 problem that splits its measurements, observables and conditions over several files
+    converts to a v2 problem that LISTS those files, and the import reads every one (#902)."""
+
+    _MODEL = _SBML_MODEL.replace(
+        '<species id="V" compartment="c" initialConcentration="10"/>',
+        '<species id="V" compartment="c" initialConcentration="10"/>'
+        '<species id="W" compartment="c" initialConcentration="0"/>').replace(
+        '<parameter id="k" value="0.1" constant="true"/>',
+        '<parameter id="k" value="0.1" constant="true"/>'
+        '<parameter id="s" value="1" constant="true"/>')
+
+    def _write(self, root):
+        root.mkdir(parents=True)
+        (root / 'model.xml').write_text(self._MODEL)
+        head = 'observableId\tobservableFormula\tnoiseDistribution\tnoiseFormula\n'
+        (root / 'observables.tsv').write_text(head + 'obs_V\tV\tnormal\t1\n')
+        (root / 'observables2.tsv').write_text(head + 'obs_W\tW\tnormal\t1\n')
+        (root / 'conditions.tsv').write_text('conditionId\ts\nc0\t1\n')
+        (root / 'conditions2.tsv').write_text('conditionId\ts\nc1\t2\n')
+        head = 'observableId\tsimulationConditionId\tmeasurement\ttime\n'
+        (root / 'measurements.tsv').write_text(
+            head + 'obs_V\tc0\t5\t0\nobs_V\tc0\t3\t1\nobs_V\tc1\t4\t1\n')
+        (root / 'measurements2.tsv').write_text(
+            head + 'obs_W\tc0\t1\t1\nobs_W\tc1\t2\t1\nobs_W\tc1\t2.5\t2\n')
+        (root / 'parameters.tsv').write_text(
+            'parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n'
+            'k\tlin\t1e-3\t1e3\t0.1\t1\n')
+        (root / 'problem.yaml').write_text(
+            'format_version: 1\nparameter_file: parameters.tsv\nproblems:\n'
+            '  - sbml_files: [model.xml]\n'
+            '    condition_files: [conditions.tsv, conditions2.tsv]\n'
+            '    measurement_files: [measurements.tsv, measurements2.tsv]\n'
+            '    observable_files: [observables.tsv, observables2.tsv]\n')
+        return root / 'problem.yaml'
+
+    def test_every_converted_file_is_imported(self, tmp_path):
+        # Oracle: libpetab's own reading of the converted v2 problem (six measurements, two
+        # conditions, two observables). On main the import kept only the first file of each
+        # list: three of the six measurements, obs_V alone, and no definition for condition c1.
+        import numpy as np
+        import petab.v2 as petab_v2
+        from pybnf.data import Data
+        from pybnf.petab import import_job
+        v2_yaml = petab1to2_preserve_scale(self._write(tmp_path / 'v1'), tmp_path / 'v2')
+        oracle = petab_v2.Problem.from_yaml(str(v2_yaml))
+        assert len(oracle.measurements) == 6
+        out = import_job(v2_yaml, tmp_path / 'imported')
+        conf = (out / 'imported.conf').read_text()
+        for cond in oracle.conditions:
+            (change,) = cond.changes
+            assert f'condition: {cond.id}, perturbations: s = {float(change.target_value):g}' \
+                in conf
+        # Every measurement libpetab reads, keyed by (condition, observed species, time).
+        cond_of = {e.id: e.periods[0].condition_ids[0] for e in oracle.experiments}
+        species_of = {o.id: str(o.formula) for o in oracle.observables}
+        want = sorted((cond_of[m.experiment_id], species_of[m.observable_id], float(m.time),
+                       float(m.measurement)) for m in oracle.measurements)
+        got = []
+        for line in conf.splitlines():
+            if line.startswith('experiment:'):
+                fields = dict(f.split(': ', 1) for f in line.split(', ') if ': ' in f)
+                data = Data(file_name=str(out / fields['data']))
+                got += [(fields['condition'], col, float(t), float(v))
+                        for col in data.cols if col != 'time'
+                        for t, v in zip(data['time'], data[col]) if not np.isnan(v)]
+        assert sorted(got) == want
+
+
 class TestInjectLogUniformPriors:
 
     def _petab1to2_shape(self):

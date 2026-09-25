@@ -185,3 +185,30 @@ Two seams moved to make this honest:
   grows, with no importer edit per new method (the ADR-0012 payoff, now bidirectional).
 - See ADR-0019 (parameters), 0023 (observables), 0025 (exporter-first), 0026 (BNGL model),
   0027 (conditions/experiments), 0028 (new-era config), 0031 (objective surface).
+
+## Addendum (2026-09-25): every file under a `*_files` key is read, and the yaml reader refuses what it cannot read (issue #902)
+
+The importer read element `[0]` of each `problem.yaml` table list and nothing else. PEtab v2
+types every `*_files` key as a list, libpetab reads a problem by chaining every listed file's
+rows in list order, and `petab1to2` keeps a v1 problem's several measurement, observable and
+condition files as such a list. So a split problem imported silently as part of itself: the
+rows of the later measurement files were not fitted, and a parameter declared only in a later
+parameter file stayed fixed at its model value. `import_job` now reads every listed file and
+concatenates the rows in list order (`_read_problem_tables`).
+
+An id that names one table entity must then be defined once across the files, exactly where
+libpetab's `lint_problem` reports a duplicate: a `parameterId`, `observableId` or mapping
+`petabEntityId` repeated anywhere, and a `conditionId` or `experimentId` whose rows sit in two
+files (one file legitimately holds several rows of one condition or experiment). Each is a
+`PybnfError` naming the id and the files, not a last-row-wins merge. Measurement rows carry no
+id; a repeated row is a replicate, kept as libpetab keeps it.
+
+The hand-parsed reader stays dependency-free (PyYAML is present only as a transitive dependency
+of dask, and this ADR's reason for the hand parse still holds), but it no longer skips what it
+does not recognize. It reads the one-line flow list (`condition_files: [conditions.tsv]`, which
+it used to read as no condition table at all), quoted items and `#` comments, and it refuses a
+scalar where a list belongs, a flow list continued over several lines, a flow-form
+`model_files` entry, a key the PEtab v2 schema does not define (the v1 `condition_file`
+spelling, say), a key or model given twice, a file listed twice under one key, and a
+`format_version` other than 2. The tests compare the reader's lists with PyYAML's on every
+accepted shape.

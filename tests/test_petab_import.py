@@ -1629,6 +1629,387 @@ class TestProblemYamlReader:
         assert (read_problem_yaml(tmp_path / 'col0.yaml')
                 == read_problem_yaml(tmp_path / 'indented.yaml'))
 
+    # #902: the reader keeps EVERY file listed under a key, reads the one-line flow form
+    # (`key: [a.tsv, b.tsv]`) on every key, and refuses what it cannot read. Each shape below
+    # is a valid PEtab v2 problem.yaml; the oracle is PyYAML, the parser libpetab reads it with.
+    _VALID_SHAPES = {
+        'block_lists_two_files_each': (
+            'format_version: 2.0.0\n'
+            'parameter_files:\n  - parameters.tsv\n  - parameters2.tsv\n'
+            'observable_files:\n  - observables.tsv\n  - observables2.tsv\n'
+            'measurement_files:\n  - measurements.tsv\n  - measurements2.tsv\n'
+            'condition_files:\n  - conditions.tsv\n  - conditions2.tsv\n'
+            'experiment_files:\n  - experiments.tsv\n  - experiments2.tsv\n'
+            'mapping_files:\n  - mapping.tsv\n  - mapping2.tsv\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+        'petab1to2_column0_lists': (
+            'format_version: 2.0.0\n'
+            'id: split_problem\n'
+            'model_files:\n  m:\n    location: m.xml\n    language: sbml\n'
+            'parameter_files:\n- parameters.tsv\n'
+            'measurement_files:\n- measurements.tsv\n- measurements2.tsv\n'
+            'condition_files:\n- conditions.tsv\n- conditions2.tsv\n'
+            'experiment_files:\n- experiments.tsv\n'
+            'observable_files:\n- observables.tsv\n- observables2.tsv\n'
+            'mapping_files: []\n'
+            'extensions: {}\n'),
+        'flow_lists_on_every_key': (
+            'format_version: 2.0.0\n'
+            'parameter_files: [parameters.tsv, parameters2.tsv]\n'
+            'observable_files: [observables.tsv]\n'
+            'measurement_files: [measurements.tsv, measurements2.tsv]\n'
+            'condition_files: [conditions.tsv]\n'
+            'experiment_files: [experiments.tsv]\n'
+            'mapping_files: [mapping.tsv]\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+        'quotes_comments_trailing_comma': (
+            '# A problem written by hand.\n'
+            'format_version: "2.0.0"   # quoted\n'
+            "parameter_files: ['parameters.tsv', \"parameters 2.tsv\",]  # trailing comma\n"
+            "observable_files:\n  - 'observables.tsv'   # a comment after an item\n"
+            'measurement_files:\n  - "measurements.tsv"\n  - m#2.tsv\n'
+            'condition_files: []\n'
+            "model_files:\n  m:   # the only model\n    location: 'm.bngl'\n    language: bngl\n"),
+        'two_models_listed_first': (
+            '---\n'
+            'format_version: 2.0.0\n'
+            'model_files:\n'
+            '    first:\n        language: bngl\n        location: a.bngl\n'
+            '    second:\n        location: b.xml\n        language: sbml\n'
+            'parameter_files:\n    - parameters.tsv\n'
+            'observable_files: [observables.tsv]\n'
+            'measurement_files:\n    - measurements_a.tsv\n    - measurements_b.tsv\n'),
+        'byte_order_mark': (
+            '\ufeffparameter_files:\n- parameters.tsv\n'
+            'format_version: 2.0.0\n'
+            'observable_files:\n- observables.tsv\n'
+            'measurement_files:\n- measurements.tsv\n'
+            'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n'),
+    }
+
+    @pytest.mark.parametrize('shape', sorted(_VALID_SHAPES))
+    def test_reads_every_valid_shape_as_pyyaml_does(self, tmp_path, shape):
+        yaml = pytest.importorskip('yaml')
+        text = self._VALID_SHAPES[shape]
+        (tmp_path / 'problem.yaml').write_text(text)
+        got = read_problem_yaml(tmp_path / 'problem.yaml')
+        want = yaml.safe_load(text)
+        for key in ('parameter_files', 'observable_files', 'measurement_files',
+                    'condition_files', 'experiment_files', 'mapping_files'):
+            assert got[key] == (want.get(key) or []), key
+        assert ([(m['model_id'], m['location'], m['language']) for m in got['models']]
+                == [(mid, m['location'], m['language'])
+                    for mid, m in want['model_files'].items()])
+
+    def test_flow_list_on_an_optional_key_is_read(self, tmp_path):
+        # Before #902 the flow form on condition/experiment/mapping keys read as an EMPTY
+        # list with no message, so the whole table was dropped from the import.
+        (tmp_path / 'problem.yaml').write_text(self._VALID_SHAPES['flow_lists_on_every_key'])
+        problem = read_problem_yaml(tmp_path / 'problem.yaml')
+        assert problem['condition_files'] == ['conditions.tsv']
+        assert problem['experiment_files'] == ['experiments.tsv']
+        assert problem['mapping_files'] == ['mapping.tsv']
+        assert problem['measurement_files'] == ['measurements.tsv', 'measurements2.tsv']
+
+    _BASE = ('format_version: 2.0.0\n'
+             'parameter_files:\n  - parameters.tsv\n'
+             'observable_files:\n  - observables.tsv\n'
+             'measurement_files:\n  - measurements.tsv\n'
+             'model_files:\n  m:\n    location: m.bngl\n    language: bngl\n')
+
+    @pytest.mark.parametrize('extra, match', [
+        # A scalar where the schema requires a list (libpetab refuses it too).
+        ('condition_files: conditions.tsv\n', "'condition_files' must be a list of files"),
+        # A flow list continued on the next line.
+        ('condition_files: [conditions.tsv,\n  conditions2.tsv]\n',
+         "'condition_files' must be a list of files"),
+        # A plain line where a '- file' item belongs.
+        ('experiment_files:\n  experiments.tsv\n',
+         "'experiment_files' must be a list of files, one '- <file>' line each"),
+        # A nested list as an item.
+        ('mapping_files:\n  - [a.tsv, b.tsv]\n', 'uses YAML syntax this reader does not read'),
+        # The v1 singular spelling, or any key PEtab v2 does not define.
+        ('condition_file: conditions.tsv\n', r"\['condition_file'\], which PEtab v2 does not"),
+        # A key given twice (PyYAML would silently keep the second list).
+        ('measurement_files:\n  - measurements2.tsv\n',
+         "gives the key 'measurement_files' twice"),
+        # The same file twice under one key (its rows would be read twice).
+        ('condition_files: [conditions.tsv, conditions.tsv]\n',
+         r"lists \['conditions.tsv'\] more than once under condition_files"),
+    ])
+    def test_unreadable_shape_is_refused(self, tmp_path, extra, match):
+        (tmp_path / 'problem.yaml').write_text(self._BASE + extra)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    @pytest.mark.parametrize('model_block, match', [
+        ('model_files: {m: {location: m.bngl, language: bngl}}\n', 'YAML flow form'),
+        ('model_files:\n  m: {location: m.bngl, language: bngl}\n',
+         "cannot read the model_files entry 'm: {location"),
+        ('model_files:\n  m:\n    location: a.bngl\n  m:\n    location: b.bngl\n',
+         "declares the model 'm' twice"),
+    ])
+    def test_unreadable_model_files_is_refused(self, tmp_path, model_block, match):
+        # A flow-form or repeated model entry used to be skipped: with two models, the skipped
+        # one simply vanished from the import.
+        base = self._BASE.split('model_files:')[0]
+        (tmp_path / 'problem.yaml').write_text(base + model_block)
+        with pytest.raises(PybnfError, match=match):
+            read_problem_yaml(tmp_path / 'problem.yaml')
+
+    def test_petab_v1_problem_is_named_as_such(self, tmp_path):
+        (tmp_path / 'problem.yaml').write_text(
+            'format_version: 1\nparameter_file: parameters.tsv\nproblems:\n'
+            '  - sbml_files: [model.xml]\n    measurement_files: [measurements.tsv]\n')
+        with pytest.raises(PybnfError, match='declares format_version 1') as err:
+            read_problem_yaml(tmp_path / 'problem.yaml')
+        assert 'petab1to2_preserve_scale' in err.value.message
+
+
+# ---------------------------------------------------------------------------
+# A table split over several files (#902). PEtab v2 types every *_files key as a list, and
+# libpetab reads a problem by chaining every listed file's rows in list order. The importer
+# read only the first file of each list, so a split problem was fitted to part of its data.
+# Oracles: libpetab reading the same split problem, and the unsplit problem's own import.
+# ---------------------------------------------------------------------------
+
+TUTORIAL_PETAB_DIR = (Path(__file__).resolve().parents[1] / 'examples' / 'tutorial'
+                      / '12_petab_roundtrip' / 'petab')
+
+_TABLE_KEYS = ('parameter_files', 'observable_files', 'measurement_files',
+               'condition_files', 'experiment_files', 'mapping_files')
+
+
+def _split_tutorial_problem(root, flow=False):
+    """The #902 reproduction: tutorial 12's problem with its measurements split over two files
+    (obs_Obs_A rows in the first, obs_Obs_B/C in the second) and its two estimated parameters
+    one per file. ``flow`` writes the two lists in the one-line ``[a, b]`` form."""
+    shutil.copytree(TUTORIAL_PETAB_DIR, root)
+    head, *rows = (root / 'measurements.tsv').read_text().splitlines()
+    (root / 'measurements.tsv').write_text(
+        '\n'.join([head] + [r for r in rows if r.split('\t')[0] == 'obs_Obs_A']) + '\n')
+    (root / 'measurements2.tsv').write_text(
+        '\n'.join([head] + [r for r in rows if r.split('\t')[0] != 'obs_Obs_A']) + '\n')
+    (root / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\nk1\ttrue\t0.05\t3\n')
+    (root / 'parameters2.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\nk2\ttrue\t0.02\t2\n')
+    if flow:
+        lists = ('parameter_files: [parameters.tsv, parameters2.tsv]\n'
+                 'measurement_files: [measurements.tsv, measurements2.tsv]\n')
+    else:
+        lists = ('parameter_files:\n  - parameters.tsv\n  - parameters2.tsv\n'
+                 'measurement_files:\n  - measurements.tsv\n  - measurements2.tsv\n')
+    (root / 'problem.yaml').write_text(
+        'format_version: 2.0.0\n' + lists + 'observable_files:\n  - observables.tsv\n'
+        'model_files:\n  bateman_chain:\n    location: bateman_chain.bngl\n    language: bngl\n')
+    return root / 'problem.yaml'
+
+
+def _split_every_table(src, dst):
+    """Copy the PEtab problem at ``src`` to ``dst`` with EVERY table split over two files.
+
+    Rows are divided by the id in the table's first column: the first half of the distinct ids
+    (in order of appearance) go to ``<table>.tsv``, the rest to ``<table>_2.tsv`` (header only
+    when the table has one id), row order kept. Every row of one id stays in one file, so the
+    split problem is the same problem -- which libpetab confirms in the tests below."""
+    shutil.copytree(src, dst)
+    problem = read_problem_yaml(src / 'problem.yaml')
+    lines = ['format_version: 2.0.0\n']
+    for key in _TABLE_KEYS:
+        if not problem[key]:
+            continue
+        (name,) = problem[key]
+        head, *rows = (src / name).read_text().splitlines()
+        ids = list(dict.fromkeys(r.split('\t')[0] for r in rows))
+        first = set(ids[:(len(ids) + 1) // 2])
+        second_name = name.replace('.tsv', '_2.tsv')
+        (dst / name).write_text(
+            '\n'.join([head] + [r for r in rows if r.split('\t')[0] in first]) + '\n')
+        (dst / second_name).write_text(
+            '\n'.join([head] + [r for r in rows if r.split('\t')[0] not in first]) + '\n')
+        lines.append(f'{key}:\n  - {name}\n  - {second_name}\n')
+    lines.append('model_files:\n')
+    for m in problem['models']:
+        lines.append(f"  {m['model_id']}:\n    location: {m['location']}\n"
+                     f"    language: {m['language']}\n")
+    (dst / 'problem.yaml').write_text(''.join(lines))
+    return dst / 'problem.yaml'
+
+
+def _imported_files(out):
+    """``{name: text}`` of an imported job's conf, data and sidecar files."""
+    return {f.name: f.read_text() for f in sorted(out.iterdir())
+            if f.suffix in ('.conf', '.exp', '.tsv')}
+
+
+class TestSplitTableFiles:
+
+    @pytest.mark.parametrize('flow', [False, True], ids=['block_lists', 'flow_lists'])
+    def test_split_problem_imports_what_libpetab_reads(self, tmp_path, flow):
+        # The independent oracle: libpetab reads the split problem as 63 measurements and two
+        # estimated parameters and finds it valid. On main the import kept only the 21 rows of
+        # the first measurement file and declared only k1 (k2 silently held at its model
+        # value); with the flow form it refused with "has no parameter_files".
+        petab_v2 = pytest.importorskip('petab.v2')
+        from petab.v2.lint import lint_problem
+        yaml_path = _split_tutorial_problem(tmp_path / 'split', flow=flow)
+        oracle = petab_v2.Problem.from_yaml(str(yaml_path))
+        assert not lint_problem(oracle)
+        out = import_job(yaml_path, tmp_path / 'imported')
+
+        conf = ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+        free = [k[1] for k in conf if isinstance(k, tuple) and k[0].endswith('_var')]
+        assert free == list(oracle.x_free_ids) == ['k1', 'k2']
+
+        # Every (observable column, time, value) libpetab reads is in the imported data, and
+        # nothing else is.
+        column_of = {o.id: str(o.formula) for o in oracle.observables}
+        want = sorted((column_of[m.observable_id], float(m.time), float(m.measurement))
+                      for m in oracle.measurements)
+        data = Data(file_name=str(out / 'experiment1.exp'))
+        got = sorted((col, float(t), float(v))
+                     for col in data.cols if col != 'time'
+                     for t, v in zip(data['time'], data[col]) if not np.isnan(v))
+        assert len(want) == 63
+        assert got == want
+
+    def test_split_problem_imports_like_the_unsplit_one(self, tmp_path):
+        # Splitting a table over two files changes nothing about the problem, so the import
+        # must be byte-identical to the unsplit tutorial problem's. Dependency-free.
+        whole = import_job(TUTORIAL_PETAB_DIR / 'problem.yaml', tmp_path / 'whole')
+        split = import_job(_split_tutorial_problem(tmp_path / 'split'), tmp_path / 'split_out')
+        assert _imported_files(split) == _imported_files(whole)
+
+    # Exported jobs that between them populate all six tables: conditions/experiments (a
+    # surrogate-base condition with several target rows), the mapping table (a pre-equilibrated
+    # dose response, whose experiments have several period rows), and two models.
+    _JOBS = {
+        'conditions': (
+            'edition = 2\njob_type = de\nobjective = chi_sq\nmodel: parabola2.bngl\n'
+            'condition: doubled, perturbations: v1 * 2\n'
+            'condition: scaled, perturbations: s * 5\n'
+            'experiment: wt, data: wt.exp\n'
+            'experiment: dbl, condition: doubled, data: dbl.exp\n'
+            'experiment: scl, condition: scaled, data: scl.exp\n' + _PARAMS_U,
+            {'parabola2.bngl': _PARABOLA2_BNGL,
+             'wt.exp': '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n',
+             'dbl.exp': '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n',
+             'scl.exp': '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n'},
+            'parabola2.bngl'),
+        'mapping_and_periods': (
+            _PDR_CONF, {'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, 'm.bngl'),
+        'two_models': (
+            TestImportMultiModelRoundTrip.CONF, TestImportMultiModelRoundTrip.EXTRA, DEMO_MODEL),
+    }
+
+    @pytest.mark.parametrize('job', sorted(_JOBS))
+    def test_every_table_split_imports_like_the_unsplit_one(self, tmp_path, job):
+        conf_text, extra, model_name = self._JOBS[job]
+        petab1, whole, _petab2, _conf = _roundtrip(
+            tmp_path, conf_text, extra_files=extra, model_name=model_name)
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        listed = read_problem_yaml(split_yaml)
+        split_keys = [k for k in _TABLE_KEYS if listed[k]]
+        assert len(split_keys) >= 3 and all(len(listed[k]) == 2 for k in split_keys)
+        split = import_job(split_yaml, tmp_path / 'split_out')
+        assert _imported_files(split) == _imported_files(whole)
+
+    @pytest.mark.parametrize('job', sorted(_JOBS))
+    def test_libpetab_reads_the_split_problem_as_the_unsplit_one(self, tmp_path, job):
+        # The split helper is itself checked against the oracle: libpetab reads the split and
+        # the unsplit problem as the same entities and the same measurements, so the identity
+        # above compares two imports of one problem.
+        petab_v2 = pytest.importorskip('petab.v2')
+        conf_text, extra, model_name = self._JOBS[job]
+        petab1, _whole, _petab2, _conf = _roundtrip(
+            tmp_path, conf_text, extra_files=extra, model_name=model_name)
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        import re
+        a = petab_v2.Problem.from_yaml(str(petab1 / 'problem.yaml'))
+        b = petab_v2.Problem.from_yaml(str(split_yaml))
+
+        def entities(problem, attr):
+            # Each entity's full content, minus its row position inside its own file. A
+            # condition's numeric targetValue is compared as a number: libpetab types a column
+            # per file, so '2' reads as Integer(2) beside an expression and Float(2) without one.
+            if attr == 'conditions':
+                return sorted((c.id, ch.target_id,
+                               float(ch.target_value) if ch.target_value.is_number
+                               else str(ch.target_value))
+                              for c in problem.conditions for ch in c.changes)
+            return sorted(re.sub(r'index=\d+', '', repr(e)) for e in getattr(problem, attr))
+
+        for attr in ('parameters', 'observables', 'measurements', 'conditions',
+                     'experiments', 'mappings'):
+            assert entities(a, attr) == entities(b, attr), attr
+        assert len(b.measurements) == len(a.measurements) > 0
+
+    # A repeated id: each is a duplicate libpetab's lint_problem reports as an error, and the
+    # import used to either never see it (it sat in a later file) or let one row silently win.
+    @pytest.mark.parametrize('table, edit, match', [
+        ('parameters2.tsv', 'k1\ttrue\t0.05\t3\n',
+         r"parameterId 'k1' more than once \(in both parameters.tsv and parameters2.tsv\)"),
+        ('parameters.tsv', 'k1\ttrue\t0.05\t3\n',
+         r"parameterId 'k1' more than once \(twice in parameters.tsv\)"),
+    ])
+    def test_repeated_parameter_is_refused(self, tmp_path, table, edit, match):
+        yaml_path = _split_tutorial_problem(tmp_path / 'split')
+        with open(yaml_path.parent / table, 'a') as fh:
+            fh.write(edit)
+        with pytest.raises(PybnfError, match=match):
+            import_job(yaml_path, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(yaml_path, 'Parameter table contains duplicate IDs')
+
+    def test_observable_in_two_files_is_refused(self, tmp_path):
+        yaml_path = _split_tutorial_problem(tmp_path / 'split')
+        (yaml_path.parent / 'observables2.tsv').write_text(
+            'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+            'obs_Obs_A\tObs_B\t1\tnormal\n')
+        yaml_path.write_text(yaml_path.read_text().replace(
+            '  - observables.tsv\n', '  - observables.tsv\n  - observables2.tsv\n'))
+        with pytest.raises(PybnfError, match=r"observableId 'obs_Obs_A' more than once "
+                                             r"\(in both observables.tsv and observables2.tsv\)"):
+            import_job(yaml_path, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(yaml_path, 'Observable table contains duplicate IDs')
+
+    @pytest.mark.parametrize('table, row, match, lint', [
+        # A condition's target rows split between two files: two definitions of one id.
+        ('conditions', 'cond_incubate\tspecies_B\t1\n',
+         r"conditionId 'cond_incubate' more than once \(in both conditions.tsv and "
+         r"conditions_2.tsv\)", 'Condition table contains duplicate IDs'),
+        ('experiments', 'scan_0\t1\tcond_scan_0\n',
+         r"experimentId 'scan_0' more than once \(in both experiments.tsv and "
+         r"experiments_2.tsv\)", 'Experiment table contains duplicate IDs'),
+        ('mapping', 'species_A\tB()\n',
+         r"petabEntityId 'species_A' more than once \(in both mapping.tsv and mapping_2.tsv\)",
+         'Mapping table contains non-unique IDs'),
+    ])
+    def test_id_defined_in_two_files_is_refused(self, tmp_path, table, row, match, lint):
+        petab1, _whole, _petab2, _conf = _roundtrip(
+            tmp_path, _PDR_CONF, extra_files={'m.bngl': _PDR_MODEL,
+                                                     'dose.exp': _PDR_DOSE_EXP},
+            model_name='m.bngl')
+        split_yaml = _split_every_table(petab1, tmp_path / 'split')
+        with open(split_yaml.parent / f'{table}_2.tsv', 'a') as fh:
+            fh.write(row)
+        with pytest.raises(PybnfError, match=match):
+            import_job(split_yaml, tmp_path / 'out')
+        _assert_libpetab_reports_duplicate(split_yaml, lint)
+
+
+def _assert_libpetab_reports_duplicate(yaml_path, message):
+    """The oracle for a duplicate-id refusal: libpetab's lint reports the same problem as an
+    error, so the importer refuses exactly what PEtab itself calls invalid."""
+    petab_v2 = pytest.importorskip('petab.v2')
+    from petab.v2.lint import CheckMappingTable, CheckUniquePrimaryKeys
+    from petab.v2.lint import ValidationIssueSeverity
+    problem = petab_v2.Problem.from_yaml(str(yaml_path))
+    issues = [task.run(problem) for task in (CheckUniquePrimaryKeys(), CheckMappingTable())]
+    errors = [str(i) for i in issues
+              if i is not None and i.level == ValidationIssueSeverity.ERROR]
+    assert any(message in e for e in errors), errors
+
 
 class TestBoundaries:
 
