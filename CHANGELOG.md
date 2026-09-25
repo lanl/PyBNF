@@ -261,8 +261,9 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 - **PEtab import keeps every replicate of a dose-response experiment (#903).** Repeated
   measurements at one dose now import as `<name>.exp`, `<name>_rep2.exp`, ..., as time-course
-  replicates already did, for plain and pre-equilibrated scans. Before, each replicate
-  overwrote the one before it, so only the last reached the fit.
+  replicates already did. Before, only the last replicate reached the fit. Every data file now
+  gets a name no other experiment's file has, so an experiment named `s_rep2` is no longer
+  fitted to the replicate of an experiment `s`.
 - **PEtab import reads a dose experiment from all its periods, not its last row (#904).** A
   dose after a pre-equilibration (the shape `petab1to2` writes) imports as a pre-equilibrated
   scan, and an experiment applying two conditions at once is refused, naming both. Before, the

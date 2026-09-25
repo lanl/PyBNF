@@ -89,6 +89,7 @@ from .conditions import (
     REF_MARKER,
     condition_name_from_id,
     conditions_from_rows,
+    drop_base_pins,
     drop_synthesized_wildtype,
     is_species_target,
     read_condition_table,
@@ -264,6 +265,10 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # target is a condition in its own right and is kept (#905).
     condition_rows, experiment_rows = drop_synthesized_wildtype(
         condition_rows, experiment_rows, surrogate_params)
+    # Every other pin is the identity too. Drop them all here, the one place every condition
+    # reader below -- both dose-response detectors and conditions_from_rows -- takes its rows
+    # from, so a pinned per-dose condition (#892) is still read as the one-target dose it is.
+    condition_rows = drop_base_pins(condition_rows, surrogate_params)
 
     # Fixed PEtab parameters carrying a numeric value: the constants a measurement-model
     # observableFormula may reference that live only in the parameters table, not the
@@ -386,8 +391,14 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # ``free_names`` / ``fixed_params`` resolve a parameter-valued targetValue -- a per-condition
     # estimated initial condition (ADR-0076): a target set to an estimated parameter id becomes a
     # parameter-reference perturbation (bound from the PSet at apply time), a fixed one inlines.
-    conditions = conditions_from_rows(tc_condition_rows, surrogate_params, species_by_id,
-                                      free_names=free_names, fixed_params=fixed_params)
+    # ``applied`` -- the conditions some measured experiment applies, in any period -- decides
+    # which of two ids that import under one name (cond_a and a) is kept; two applied ones are
+    # refused (#905).
+    measured_ids = {row.experiment_id for row in measurement_rows}
+    conditions = conditions_from_rows(
+        tc_condition_rows, surrogate_params, species_by_id, free_names=free_names,
+        fixed_params=fixed_params,
+        applied={r.condition_id for r in experiment_rows if r.experiment_id in measured_ids})
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
     # a single-model job carries modelId '' and emits no per-experiment model: field. A group
     # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045). The
@@ -396,15 +407,21 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     absorbed_experiment_ids = dr_experiment_ids | pdr_experiment_ids
     tc_experiment_rows = [r for r in experiment_rows
                           if r.experiment_id not in absorbed_experiment_ids]
+    # Every file the three builders below write is named from ONE registry, so no experiment's
+    # data can overwrite another's (#903 review): each experiment's <name>.exp first, then its
+    # replicates and sidecar, a taken name moved to a free one (the model files are reserved).
+    files = _DataFileNames(_experiment_names(datas, dose_responses, preequil_scans),
+                           reserved=model_texts)
     experiments = _experiments(datas, tc_experiment_rows, out_dir, model_location_of,
-                               param_bindings)
+                               param_bindings, files=files)
     # Dose-response scans become parameter_scan experiments: a steady-state scan (scan_time inf)
     # carries no t_end: (the .exp's swept-axis column 0 infers the type); a finite scan carries
     # t_end: <t> (ADR-0046). Their .exp files are written here.
-    experiments += _dose_response_experiments(dose_responses, out_dir, model_location_of)
+    experiments += _dose_response_experiments(dose_responses, out_dir, model_location_of,
+                                              files=files)
     # Pre-equilibrated scans become preequilibrate:+condition: parameter_scan experiments (ADR-0062).
     experiments += _preequilibrated_dose_response_experiments(
-        preequil_scans, out_dir, model_location_of)
+        preequil_scans, out_dir, model_location_of, files=files)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -1121,7 +1138,8 @@ def _condition_and_preequilibrate(periods, name):
         f"two periods are deferred (Phase 1/2 cover steady-state -inf only).")
 
 
-def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None):
+def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None, *,
+                 files):
     """Assemble the conf's experiments and write each one's ``.exp`` file(s).
 
     The set of experiments is the measurement groups (the replicate grids per
@@ -1130,17 +1148,22 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     all bound to the one experiment's ``data:`` list -- the inverse of the forward export,
     which stacks an experiment's replicate ``Data`` objects into repeated measurement rows
     (ADR-0039). The single-replicate case keeps the bare ``<name>.exp`` name, so the common
-    round trip is byte-stable. The experiment's condition comes from its experiments-table
-    period rows, grouped by experimentId: a single period gives the measurement condition
-    (``cond_<c>`` -> ``c``; the synthesized ``cond_wildtype`` and an absent row -> no
-    condition); a two-period ``-inf``/finite pair recovers ``preequilibrate:`` + ``condition:``
-    (ADR-0052, :func:`_condition_and_preequilibrate`). A ``''`` experimentId is the "model as
-    is" base time course (PEtab erased its name because the job had no fit-and-perturbed
-    parameters); it is synthesized a name, which never reaches the PEtab output (it re-exports
-    to ``''`` again) -- a name keyed on the modelId when set, so two wildtype experiments on
-    different models stay distinct. Each experiment's model is the ``modelId`` on its rows:
-    ``model_location_of`` maps it to the model file, emitted as a per-experiment ``model:``
-    field (omitted for a single-model job, whose modelId is ``''``).
+    round trip is byte-stable. Those are the preferred names: ``files`` (the import's one
+    :class:`_DataFileNames` registry) moves any name another written file already holds, so no
+    experiment's data can overwrite another's. The experiment's condition comes from its
+    experiments-table period rows, grouped by experimentId: a single period gives the
+    measurement condition (``cond_<c>`` -> ``c``; a blank ``conditionId`` or an absent row -> no
+    condition, and so does the exporter's pins-only ``cond_wildtype``, which the importer has
+    already blanked -- :func:`~pybnf.petab.conditions.drop_synthesized_wildtype`; a
+    ``cond_wildtype`` with real targets keeps its literal id, #905); a two-period
+    ``-inf``/finite pair recovers ``preequilibrate:`` + ``condition:`` (ADR-0052,
+    :func:`_condition_and_preequilibrate`). A ``''`` experimentId is the "model as is" base time
+    course (PEtab erased its name because the job had no fit-and-perturbed parameters); it is
+    synthesized a name (:func:`_experiment_name`), which never reaches the PEtab output (it
+    re-exports to ``''`` again) -- a name keyed on the modelId when set, so two wildtype
+    experiments on different models stay distinct. Each experiment's model is the ``modelId`` on
+    its rows: ``model_location_of`` maps it to the model file, emitted as a per-experiment
+    ``model:`` field (omitted for a single-model job, whose modelId is ``''``).
 
     ``param_bindings`` (ADR-0045/0083) is the ``{(experiment_id, model_id): {column:
     {placeholder: {key: token}}}}`` per-measurement binding table, where a multi-replicate
@@ -1162,23 +1185,14 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     _refuse_simultaneous_conditions(periods_of, {eid for eid, _mid in datas})
     experiments = []
     for (eid, mid), group in datas.items():
-        if eid:
-            name = eid
-        elif mid:
-            name = f'experiment_{mid}'
-        else:
-            name = 'experiment1'
+        name = _experiment_name(eid, mid)
         condition, preequilibrate = _condition_and_preequilibrate(periods_of.get(eid, []), name)
         model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
-        data_files = []
-        for k, data in enumerate(group):
-            data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
-            _write_exp(out_dir / data_file, data)
-            data_files.append(data_file)
+        data_files = _write_replicate_exps(out_dir, files, name, group)
         measparams_file = None
         binding = param_bindings.get((eid, mid))
         if binding:
-            measparams_file = f'{name}_measparams.tsv'
+            measparams_file = files.claim(f'{name}_measparams', '.tsv')
             write_measurement_params(binding, out_dir / measparams_file)
         experiments.append(ImportedExperiment(
             name, condition, preequilibrate, data_files, model_location, measparams_file, None))
@@ -1209,7 +1223,79 @@ def _refuse_simultaneous_conditions(periods_of, measured):
                     f"Merge their targets into a single PEtab condition.")
 
 
-def _dose_response_experiments(dose_responses, out_dir, model_location_of):
+def _experiment_name(experiment_id, model_id):
+    """The conf name of a time-course experiment: its experimentId, or for the ``''`` "model as
+    is" experiment a synthesized name keyed on the modelId when set (ADR-0041)."""
+    if experiment_id:
+        return experiment_id
+    return f'experiment_{model_id}' if model_id else 'experiment1'
+
+
+def _experiment_names(datas, dose_responses, preequil_scans):
+    """The conf name of every imported experiment, in the order the conf lists them: the time
+    courses, then the dose-response scans, then the pre-equilibrated scans.
+
+    Refuses two experiments that would take one name -- a scan whose stem equals another
+    experiment's id, or one experimentId measured on two models. The conf names each experiment
+    once (a repeated ``experiment:`` name fails to load), and its data files are named after it.
+    """
+    sources = {}
+    for eid, mid in datas:
+        where = f" on model '{mid}'" if mid else ''
+        sources.setdefault(_experiment_name(eid, mid), []).append(
+            f"PEtab experiment '{eid}'{where}" if eid else f"the unnamed experiment{where}")
+    for kind, scans in (('dose-response scan', dose_responses),
+                        ('pre-equilibrated dose-response scan', preequil_scans)):
+        for scan in scans:
+            where = f" on model '{scan['model_id']}'" if scan['model_id'] else ''
+            sources.setdefault(scan['name'], []).append(f"the {kind} '{scan['name']}'{where}")
+    clashes = {name: who for name, who in sources.items() if len(who) > 1}
+    if clashes:
+        name, who = next(iter(clashes.items()))
+        raise PybnfError(
+            f"{' and '.join(who)} would both import as the PyBNF experiment '{name}', and a "
+            f"PyBNF job names each experiment once. Give them distinct experimentIds (a "
+            f"dose-response scan takes its name from its experimentIds' '<name>_<i>' stem).")
+    return list(sources)
+
+
+class _DataFileNames:
+    """The one registry of the file names an import writes into its output directory.
+
+    Every experiment's first data file is ``<name>.exp``, its k-th replicate ``<name>_rep<k>.exp``
+    and its per-measurement sidecar ``<name>_measparams.tsv`` (ADR-0039/0045). Those names are not
+    unique on their own: an experiment whose experimentId is literally ``s_rep2`` and a replicated
+    experiment ``s`` both want ``s_rep2.exp``, and ``S.exp`` and ``s.exp`` are one file on a
+    case-insensitive filesystem. Before this registry the later write silently replaced the
+    earlier one, and one experiment was fitted to the other's measurements (#903 review).
+
+    The rule is deterministic and never overwrites. Every experiment's ``<name>.exp`` is claimed
+    first, in conf order, so a primary data file keeps its natural name whenever that name is
+    free; replicate files and sidecars are claimed after, as each experiment is written. A name
+    already taken -- compared case-insensitively, and including the model files -- gets the
+    first free ``_<n>`` suffix (``s_rep2_2.exp``, ``s_rep2_3.exp``, ...). The experiment's
+    ``data:`` / ``measurement_params:`` fields name the file actually written."""
+
+    def __init__(self, experiment_names, reserved=()):
+        self._taken = {name.casefold() for name in reserved}
+        self._primary = {name: self.claim(name, '.exp') for name in experiment_names}
+
+    def claim(self, stem, ext):
+        """Take ``<stem><ext>``, or the first free ``<stem>_<n><ext>`` (n = 2, 3, ...)."""
+        name, n = f'{stem}{ext}', 2
+        while name.casefold() in self._taken:
+            name, n = f'{stem}_{n}{ext}', n + 1
+        self._taken.add(name.casefold())
+        return name
+
+    def exp_files(self, name, count):
+        """The ``count`` data-file names of experiment ``name``: its claimed ``<name>.exp`` and a
+        fresh claim for each further replicate."""
+        return [self._primary[name]] + [self.claim(f'{name}_rep{k}', '.exp')
+                                        for k in range(2, count + 1)]
+
+
+def _dose_response_experiments(dose_responses, out_dir, model_location_of, *, files):
     """Build the conf experiment entries for the reconstructed dose-response scans (ADR-0046).
 
     Each scan's swept-axis :class:`~pybnf.data.Data` replicate grids are written to ``<name>.exp``
@@ -1223,7 +1309,7 @@ def _dose_response_experiments(dose_responses, out_dir, model_location_of):
     experiments = []
     for dr in dose_responses:
         name = dr['name']
-        data_files = _write_replicate_exps(out_dir, name, dr['datas'])
+        data_files = _write_replicate_exps(out_dir, files, name, dr['datas'])
         model_location = model_location_of.get(dr['model_id'])
         t_end = None if math.isinf(dr['scan_time']) else dr['scan_time']
         experiments.append(ImportedExperiment(name, None, None, data_files, model_location,
@@ -1231,7 +1317,7 @@ def _dose_response_experiments(dose_responses, out_dir, model_location_of):
     return experiments
 
 
-def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of):
+def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of, *, files):
     """Build the conf experiment entries for the reconstructed pre-equilibrated dose-response scans
     (#477; ADR-0062) -- the two-period sibling of :func:`_dose_response_experiments`.
 
@@ -1246,7 +1332,7 @@ def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of
     experiments = []
     for s in scans:
         name = s['name']
-        data_files = _write_replicate_exps(out_dir, name, s['datas'])
+        data_files = _write_replicate_exps(out_dir, files, name, s['datas'])
         model_location = model_location_of.get(s['model_id'])
         t_end = None if math.isinf(s['scan_time']) else s['scan_time']
         experiments.append(ImportedExperiment(
@@ -1254,16 +1340,13 @@ def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of
     return experiments
 
 
-def _write_replicate_exps(out_dir, name, datas):
-    """Write a dose-response scan's replicate grids and return their file names, in order: the
-    first as ``<name>.exp`` and the k-th (k >= 2) as ``<name>_rep<k>.exp`` -- the naming
-    :func:`_experiments` gives a time course's replicates (ADR-0039), so the single-replicate
-    case keeps the bare ``<name>.exp`` and its round trip is byte-stable (#903)."""
-    data_files = []
-    for k, data in enumerate(datas):
-        data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
+def _write_replicate_exps(out_dir, files, name, datas):
+    """Write experiment ``name``'s replicate grids -- a time course's or a dose-response scan's
+    (#903) -- under the names ``files`` allocates (``<name>.exp``, ``<name>_rep<k>.exp`` unless
+    taken, :class:`_DataFileNames`) and return those names, in order."""
+    data_files = files.exp_files(name, len(datas))
+    for data_file, data in zip(data_files, datas):
         _write_exp(out_dir / data_file, data)
-        data_files.append(data_file)
     return data_files
 
 

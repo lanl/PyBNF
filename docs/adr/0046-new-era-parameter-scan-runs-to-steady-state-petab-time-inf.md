@@ -152,4 +152,8 @@ its last row and imported as a plain scan, dropping the pre-equilibration or the
 The detector now claims only an experiment with exactly one experiments-table row. Anything else
 is left to the pre-equilibrated detector (ADR-0063 addendum) or to the time-course path, which
 recovers a `-inf` + finite pair as `preequilibrate:` + `condition:` and now refuses two conditions
-applied at the same time with an error naming the experiment and its conditions.
+applied at the same time with an error naming the experiment and its conditions. A dose condition
+is classified after the importer has dropped its surrogate base pins (`kd = kd__REF`, the
+identity after import), which the #892 exporter writes into every per-dose condition when a fit
+parameter is perturbed elsewhere; otherwise each pinned dose would come back as its own
+one-time time course, which a `t_end:` scan cannot even load.

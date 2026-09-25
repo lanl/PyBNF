@@ -199,4 +199,10 @@ blanks the periods that apply it, so every reconstruction reads "no condition" t
 with only the identity pins dropped); it re-exports as `cond_cond_wildtype` and imports back under
 the same name. On the export side the name `wildtype` is now reserved outright: a condition of
 that name that some experiment applies is refused, whatever else the job contains. Two
-conditionIds that would import under one name (`cond_a` and `a`) are refused rather than merged.
+conditionIds that would import under one name (`cond_a` and `a`) are refused rather than merged
+when measured experiments apply both. When at most one is applied, that one (or, with none
+applied, the first in table order) is imported under the shared name and the others are left
+out: a condition no experiment applies cannot change the fit, and libpetab only warns about it.
+Surrogate base pins are now dropped from every condition before any reconstruction reads the
+table, not only by `conditions_from_rows`, so a per-dose condition that the #892 exporter pins
+is still read as the one-target dose it is.

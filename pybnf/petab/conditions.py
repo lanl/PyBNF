@@ -553,6 +553,20 @@ def drop_synthesized_wildtype(condition_rows, experiment_rows, surrogate_params)
              for r in experiment_rows])
 
 
+def drop_base_pins(condition_rows, surrogate_params):
+    """The condition rows without the surrogate base pins ``p = p__REF``.
+
+    A pin re-supplies a fit-and-perturbed parameter at its estimate (ADR-0027); once the importer
+    renames ``p__REF`` back to ``p`` it reads ``p = p``, the identity, so it cannot change the
+    fit. :func:`conditions_from_rows` has always dropped pins; dropping them up front means the
+    dose-response detectors see a condition's real targets too. A per-dose condition the exporter
+    pins (``L = 2`` plus ``k = k__REF``, #892) is then the one-target dose it is, instead of a
+    two-target condition that re-imported every dose as its own time course. Run it after
+    :func:`drop_synthesized_wildtype`, which needs the pins to recognize the exporter's base.
+    """
+    return [r for r in condition_rows if not _is_base_pin(r, surrogate_params)]
+
+
 def condition_name_from_id(condition_id):
     """The new-era ``condition:`` name for a PEtab ``conditionId``, or ``None``.
 
@@ -575,7 +589,7 @@ def condition_name_from_id(condition_id):
 
 
 def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
-                         free_names=frozenset(), fixed_params=None):
+                         free_names=frozenset(), fixed_params=None, applied=None):
     """Invert :func:`build_experiment_conditions`' condition rows to new-era
     perturbations ``{condition_name: [(var, op, val), ...]}``.
 
@@ -585,9 +599,15 @@ def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
     machinery, so the synthesized wildtype base -- only pins -- yields no condition (the
     importer has already dropped it, :func:`drop_synthesized_wildtype`); the rest map to
     ``(var, op, val)`` perturbations (see :func:`_perturbation_from_row`). Declaration
-    order within a condition is preserved (the wide<->long byte-equal round trip). Two
-    conditionIds that map to one name (``cond_a`` and ``a``, or ``cond_cond_wildtype`` and
-    ``cond_wildtype``) raise ``PybnfError`` rather than merge their targets.
+    order within a condition is preserved (the wide<->long byte-equal round trip).
+
+    Two conditionIds can map to one name (``cond_a`` and ``a``, or ``cond_cond_wildtype`` and
+    ``cond_wildtype``). ``applied`` is the set of conditionIds some measured experiment applies
+    (``None``: treat every id as applied). If two or more of the colliding ids are applied,
+    ``PybnfError`` is raised rather than merging their targets into one condition. Otherwise one
+    id is kept under the shared name -- the applied one, or with none applied the first in
+    table order -- and the others are left out: a condition no experiment applies cannot change
+    the fit (libpetab only warns about one).
 
     ``species_by_id`` (``{petab_id: pattern}``, ADR-0062) inverts the mapping table: a target
     that is a mapping species id recovers its BNGL pattern and a verbatim ``=`` value (a species
@@ -599,22 +619,42 @@ def conditions_from_rows(condition_rows, surrogate_params, species_by_id=None,
     reference (``val`` a *string* naming that free parameter), a target set to a fixed one inlines
     its numeric value."""
     species_by_id = species_by_id or {}
+    kept = _kept_condition_ids(condition_rows, applied)
     conditions = {}
-    id_of_name = {}
     for row in condition_rows:
         name = condition_name_from_id(row.condition_id)
-        if name is None:
+        if name is None or row.condition_id not in kept:
             continue
-        if id_of_name.setdefault(name, row.condition_id) != row.condition_id:
-            raise PybnfError(
-                f"PEtab conditions {id_of_name[name]!r} and {row.condition_id!r} both import as "
-                f"the PyBNF condition {name!r}, so their targets would be merged into one "
-                f"condition. Rename one of them in the conditions and experiments tables.")
         pert = _perturbation_from_row(row, surrogate_params, species_by_id,
                                       free_names, fixed_params or {})
         if pert is not None:
             conditions.setdefault(name, []).append(pert)
     return conditions
+
+
+def _kept_condition_ids(condition_rows, applied):
+    """The conditionIds :func:`conditions_from_rows` imports: one per PyBNF condition name.
+
+    Where several ids map to one name, the applied one is kept (``applied=None`` counts every id
+    as applied); with none applied, the first in table order. Two or more applied ids raise
+    ``PybnfError`` naming them, since importing them would merge their targets (#905)."""
+    ids_of_name = {}
+    for row in condition_rows:
+        name = condition_name_from_id(row.condition_id)
+        if name is not None and row.condition_id not in ids_of_name.setdefault(name, []):
+            ids_of_name[name].append(row.condition_id)
+    kept = set()
+    for name, ids in ids_of_name.items():
+        used = [cid for cid in ids if applied is None or cid in applied]
+        if len(used) > 1:
+            listed = ', '.join(repr(cid) for cid in used[:-1]) + f' and {used[-1]!r}'
+            raise PybnfError(
+                f"PEtab conditions {listed} {'both' if len(used) == 2 else 'all'} import as the "
+                f"PyBNF condition {name!r}, and experiments apply each of them, so their targets "
+                f"would be merged into one condition. Rename one of them in the conditions and "
+                f"experiments tables.")
+        kept.add(used[0] if used else ids[0])
+    return kept
 
 
 #: A bare PEtab identifier (a parameter-valued ``targetValue`` names exactly one parameter;

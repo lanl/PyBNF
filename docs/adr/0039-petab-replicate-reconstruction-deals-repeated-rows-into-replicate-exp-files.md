@@ -142,3 +142,17 @@ later grid holding only the repeated doses, which is fit-preserving. Oracles:
 `test_petab_import.py::TestDoseResponseReplicates` — the closed-form least-squares `kd` over all
 six rows of the issue's scan, the imported objective against a hand sum over every measurement
 row, the issue's external triplicates, and the pre-equilibrated scan with per-replicate sigmas.
+
+The review of that change found that the `<name>_rep<k>.exp` naming this ADR chose is not
+unique: a replicated experiment `s` and an experiment whose experimentId is literally `s_rep2`
+both wrote `s_rep2.exp`, the later write won, and one experiment was fitted to the other's
+measurements with no error. Two time courses could always collide that way; #903 let a scan do
+it too. Every file the importer writes is now named from one registry (`_DataFileNames` in
+`import_.py`): each experiment's `<name>.exp` is claimed first, in conf order, then its
+replicates and its per-measurement sidecar as it is written, and a name already taken —
+compared case-insensitively, since `S.exp` and `s.exp` are one file on macOS and Windows, and
+including the model files — moves to the first free `_<n>` suffix (`s_rep2_2.exp`). The
+`data:` line names the file actually written. Two experiments that would take one conf name (a
+scan whose stem is another experiment's id) are refused, naming both. Oracle:
+`TestReplicateFileNamesAreDistinct`, which scores both collision cases through bngsim against a
+closed-form objective over every measurement row.

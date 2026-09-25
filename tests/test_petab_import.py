@@ -1318,10 +1318,10 @@ class TestDosePointIsOnePeriod:
         assert remaining == ([] if claimed else rows)
 
 
-def _imported_objective_at(out, monkeypatch, **values):
-    """The objective of the job imported into ``out`` at a fixed parameter vector, through the
-    real bngsim backend: BNG2.pl generates the network, each model is simulated once, and the
-    conf's own objective scores every data file the conf loaded."""
+def _imported_objective_at(out, monkeypatch, conf_name='imported.conf', **values):
+    """The objective of the job imported into ``out`` (or of the conf ``conf_name`` there) at a
+    fixed parameter vector, through the real bngsim backend: BNG2.pl generates the network, each
+    model is simulated once, and the conf's own objective scores every data file it loaded."""
     from pybnf.config import Configuration
     from pybnf.pset import PSet
     from . import recovery_harness as H
@@ -1329,7 +1329,7 @@ def _imported_objective_at(out, monkeypatch, **values):
     monkeypatch.chdir(out)
     overrides = {'bngl_backend': 'bngsim', 'population_size': 4, 'max_iterations': 1,
                  'delete_old_files': 1, 'wall_time_sim': 0, 'output_dir': str(out / 'eval_out')}
-    lines = [line for line in (out / 'imported.conf').read_text().splitlines()
+    lines = [line for line in (out / conf_name).read_text().splitlines()
              if line.replace(' ', '').split('=')[0] not in overrides]
     lines += [f'{key} = {value}' for key, value in overrides.items()]
     conf = Configuration(ploop([line + '\n' for line in lines]))
@@ -1396,14 +1396,100 @@ class TestRaggedPreequilibratedScanThroughTheSimulator:
             self._petab_objective(self.ROWS, k), rel=1e-5)
 
 
+class TestPinnedDoseConditionsImportAsOneScan:
+    """#892 (fixed in the exporter separately) makes every per-dose condition of a plain
+    dose-response re-pin the fit-and-perturbed parameters, ``cond_dr_0: L = 1, kd = kd__REF``.
+    After import a pin reads ``kd = kd``, the identity, but the dose detector counted it as a
+    second target and re-imported every dose as its own one-time time course -- which fails to
+    load for a ``t_end:`` scan (BNG2.pl needs 3 sample times). The importer now drops every pin
+    before any condition is classified. The pinned tables are written here by hand, the way the
+    #892 exporter writes them (each pin right after its dose row)."""
+
+    DOSE_EXP = '# L resp\n1\t0.5\n2\t1\n5\t2.5\n'
+    TC_EXP = '# time resp\n0.5\t0.2\n1\t0.3\n2\t0.4\n'
+
+    def _job(self, root, t_end):
+        """A t_end: (or steady-state) scan over L, plus a time course under 'fast' (kd * 2), so
+        kd is fit AND perturbed: the surrogate set M = {kd}."""
+        root.mkdir()
+        scan = f'type: parameter_scan, t_end: {t_end}, ' if t_end else ''
+        (root / 'dr.bngl').write_text(_DR_MODEL)
+        (root / 'dose.exp').write_text(self.DOSE_EXP)
+        (root / 'tc.exp').write_text(self.TC_EXP)
+        (root / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: dr.bngl\n'
+            'condition: fast, perturbations: kd * 2\n'
+            f'experiment: dr, {scan}data: dose.exp\n'
+            'experiment: tc, condition: fast, data: tc.exp\n'
+            'uniform_var = kd 0.1 10\n')
+        return root / 'job.conf'
+
+    def _pinned_import(self, tmp_path, t_end):
+        conf = self._job(tmp_path / 'src', t_end)
+        petab = tmp_path / 'petab'
+        export_job(conf, petab)
+        lines = []
+        for line in (petab / 'conditions.tsv').read_text().splitlines():
+            lines.append(line)
+            if line.startswith('cond_dr_'):
+                lines.append(line.split('\t')[0] + '\tkd\tkd__REF')
+        (petab / 'conditions.tsv').write_text('\n'.join(lines) + '\n')
+        assert ('cond_dr_0', 'kd', 'kd__REF') in {
+            (r['conditionId'], r['targetId'], r['targetValue'])
+            for r in _tsv_rows(petab / 'conditions.tsv')}
+        assert 'kd__REF' in (petab / 'parameters.tsv').read_text()   # M = {kd}
+        return tmp_path / 'src', import_job(petab / 'problem.yaml', tmp_path / 'out')
+
+    @staticmethod
+    def _closed_form_objective(kd, t_end):
+        """Half the SSR by hand: dA/dt = L - kd*A, A(0) = 0, so the scan reads
+        (L/kd)(1 - exp(-kd t_end)) (L/kd at steady state), and the time course under 'fast'
+        (L = 1, rate 2 kd) reads (1/(2 kd))(1 - exp(-2 kd t))."""
+        total = 0.0
+        for L, y in ((1, 0.5), (2, 1.0), (5, 2.5)):
+            pred = L / kd if t_end is None else L / kd * (1 - np.exp(-kd * t_end))
+            total += 0.5 * (pred - y) ** 2
+        for t, y in ((0.5, 0.2), (1, 0.3), (2, 0.4)):
+            total += 0.5 * (1 / (2 * kd) * (1 - np.exp(-2 * kd * t)) - y) ** 2
+        return total
+
+    @pytest.mark.parametrize('t_end', [0.5, None])
+    def test_pinned_dose_conditions_import_as_one_scan(self, t_end, tmp_path, monkeypatch):
+        _src, out = self._pinned_import(tmp_path, t_end)
+        text = (out / 'imported.conf').read_text()
+        tend = f't_end: {t_end}, ' if t_end else ''
+        assert f'experiment: dr, method: ode, {tend}data: dr.exp' in text
+        assert 'experiment: tc, condition: fast, method: ode, data: tc.exp' in text
+        assert 'condition: fast, perturbations: kd * 2' in text
+        assert 'condition: dr_' not in text               # each dose is the scan axis again
+        data = Data(file_name=str(out / 'dr.exp'))
+        assert data.indvar == 'L' and list(data['L']) == [1, 2, 5]
+        _load_conf(out, monkeypatch)                        # and the conf loads
+
+    @pytest.mark.bngsim
+    @pytest.mark.newera
+    @pytest.mark.parametrize('t_end', [0.5, None])
+    def test_pinned_scan_scores_the_source_jobs_objective(self, t_end, tmp_path, monkeypatch):
+        # Oracle: at fixed kd the imported job scores what the source job scores, and both equal
+        # the hand closed form over every measurement.
+        src, out = self._pinned_import(tmp_path, t_end)
+        for kd in (0.8, 1.5):
+            expected = self._closed_form_objective(kd, t_end)
+            assert _imported_objective_at(out, monkeypatch, kd=kd) == pytest.approx(
+                expected, rel=1e-5)
+            assert _imported_objective_at(src, monkeypatch, conf_name='job.conf',
+                                          kd=kd) == pytest.approx(expected, rel=1e-5)
+
+
 class TestReplicateFileNamesAreDistinct:
     """Independent review of #903: every experiment writes its data as ``<name>.exp`` and
     ``<name>_rep<k>.exp``, so an experiment whose experimentId is literally ``<other>_rep2`` and a
-    replicated experiment ``<other>`` write the same file. The later write wins, and one
-    experiment is fitted against the other's measurements with no error (checked by hand: the
-    imported objective of the scan case at k = 1 is 0.06 against 0.2826 for the PEtab problem).
-    #903 extended the replicate naming to dose-response scans; the time-course case is the
-    older ADR-0039 sibling."""
+    replicated experiment ``<other>`` wanted the same file. The later write won, and one
+    experiment was fitted against the other's measurements with no error (the imported objective
+    of the scan case at k = 1 was 0.06 against 0.2826 for the PEtab problem). #903 extended the
+    replicate naming to dose-response scans; the time-course case is the older ADR-0039 sibling.
+    Every file name now comes from one registry (``_DataFileNames``): each experiment keeps its
+    ``<name>.exp``, and a replicate whose name is taken moves to the first free ``_<n>`` suffix."""
 
     CASES = {
         # A replicated steady-state scan 's' (doses s_1, s_2) next to a time course 's_rep2'.
@@ -1416,33 +1502,85 @@ class TestReplicateFileNamesAreDistinct:
                         [('s', '0', 'c2'), ('s_rep2', '0', 'c')],
                         [('obs_A', 's', t, v + t) for v in (1.0, 1.1) for t in (0.5, 1, 2)]),
     }
+    # Each case's second replicate of 's', as written: (independent-variable column, values).
+    SECOND_REPLICATE = {'scan': ('L', [1, 2], [1.9, 2.8]),
+                        'time course': ('time', [0.5, 1, 2], [1.6, 2.1, 3.1])}
+    S_REP2 = [('obs_A', 's_rep2', t, 1.0 + t) for t in (0.5, 1, 2)]
 
-    @pytest.mark.parametrize('replicated', [
-        pytest.param('scan', marks=pytest.mark.xfail(strict=True, reason=(
-            "introduced by #903: the scan's second replicate grid is written to s_rep2.exp, "
-            "over the time course s_rep2's data"))),
-        pytest.param('time course', marks=pytest.mark.xfail(strict=True, reason=(
-            "pre-existing (ADR-0039): the time course's second replicate and the time course "
-            "s_rep2 both write s_rep2.exp"))),
-    ])
-    def test_no_experiment_reads_another_experiments_data_file(self, replicated, tmp_path):
+    def _import(self, replicated, tmp_path):
         conditions, experiments, measurements = self.CASES[replicated]
-        measurements = measurements + [('obs_A', 's_rep2', t, 1.0 + t) for t in (0.5, 1, 2)]
         yaml = _write_periods_problem(tmp_path / 'problem', conditions, experiments,
-                                      measurements)
-        try:
-            out = import_job(yaml, tmp_path / 'out')
-        except PybnfError as err:          # a refusal that names the clashing file is fine too
-            assert 's_rep2.exp' in str(err)
-            return
+                                      measurements + self.S_REP2)
+        out = import_job(yaml, tmp_path / 'out')
         files = {}
         for line in (out / 'imported.conf').read_text().splitlines():
             if line.startswith('experiment:'):
                 name = line.split(',')[0].split(':')[1].strip()
                 files[name] = [f.strip() for f in line.split('data:')[1].split(',')]
+        return out, files
+
+    @pytest.mark.parametrize('replicated', ['scan', 'time course'])
+    def test_no_experiment_reads_another_experiments_data_file(self, replicated, tmp_path):
+        out, files = self._import(replicated, tmp_path)
         assert set(files['s']).isdisjoint(files['s_rep2'])
         tc = Data(file_name=str(out / files['s_rep2'][0]))
         assert tc.indvar == 'time' and list(tc['A_tot']) == [1.5, 2.0, 3.0]
+        # The time course keeps its own name; the scan's replicate moves to the next free one,
+        # and the conf's data: line names the file actually written.
+        assert files['s_rep2'] == ['s_rep2.exp'] and files['s'] == ['s.exp', 's_rep2_2.exp']
+        indvar, xs, ys = self.SECOND_REPLICATE[replicated]
+        second = Data(file_name=str(out / 's_rep2_2.exp'))
+        assert second.indvar == indvar and list(second[indvar]) == xs
+        assert list(second['A_tot']) == ys
+
+    @staticmethod
+    def _petab_objective(conditions, experiments, measurements, k):
+        """Half the sum of squared residuals (sigma 1) over every PEtab measurement row, from the
+        closed forms of dA/dt = L + flag - k*A with A(0) = 0 and flag = 1: the steady state
+        (L + 1)/k, and (L + 1)/k * (1 - exp(-k t)) at a finite time."""
+        L_of = {cid: value for cid, _target, value in conditions}
+        condition_of = {eid: cid for eid, _time, cid in experiments}
+        total = 0.0
+        for _obs, eid, t, y in measurements:
+            steady = (L_of[condition_of[eid]] + 1) / k
+            predicted = steady if t == 'inf' else steady * (1 - np.exp(-k * float(t)))
+            total += 0.5 * (predicted - y) ** 2
+        return total
+
+    @pytest.mark.bngsim
+    @pytest.mark.newera
+    @pytest.mark.parametrize('replicated', ['scan', 'time course'])
+    def test_imported_objective_is_the_petab_objective(self, replicated, tmp_path, monkeypatch):
+        # Oracle: the imported job, simulated through bngsim, scores every PEtab measurement row
+        # once (0.2826 for the scan case at k = 1; 0.06 before the fix).
+        out, _files = self._import(replicated, tmp_path)
+        conditions, experiments, measurements = self.CASES[replicated]
+        for k in (0.7, 1.0):
+            assert _imported_objective_at(out, monkeypatch, k=k) == pytest.approx(
+                self._petab_objective(conditions, experiments, measurements + self.S_REP2, k),
+                rel=1e-5)
+
+    def test_names_that_differ_only_in_case_get_distinct_files(self, tmp_path):
+        # 'S.exp' and 's.exp' are one file on a case-insensitive filesystem (macOS, Windows).
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('c', 'L', 3)], [('S', '0', 'c'), ('s', '0', 'c')],
+            [('obs_A', eid, t, v + t) for eid, v in (('S', 1.0), ('s', 2.0)) for t in (1, 2)])
+        text = (import_job(yaml, tmp_path / 'out') / 'imported.conf').read_text()
+        assert 'experiment: S, condition: c, method: ode, data: S.exp' in text
+        assert 'experiment: s, condition: c, method: ode, data: s_2.exp' in text
+        assert list(Data(file_name=str(tmp_path / 'out' / 's_2.exp'))['A_tot']) == [3.0, 4.0]
+
+    def test_two_experiments_that_would_share_a_name_are_refused(self, tmp_path):
+        # A scan named 's' (doses s_1, s_2) and a time course whose experimentId is 's' would
+        # both be experiment 's' in the conf, which names each experiment once.
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('d1', 'L', 1), ('d2', 'L', 2), ('c', 'L', 3)],
+            [('s_1', '0', 'd1'), ('s_2', '0', 'd2'), ('s', '0', 'c')],
+            [('obs_A', 's_1', 'inf', 2.0), ('obs_A', 's_2', 'inf', 3.0)]
+            + [('obs_A', 's', t, 1.0 + t) for t in (1, 2)])
+        with pytest.raises(PybnfError, match=r"PEtab experiment 's' and the dose-response scan "
+                                             r"'s' would both import as the PyBNF experiment 's'"):
+            import_job(yaml, tmp_path / 'out')
 
 
 # ---------------------------------------------------------------------------
@@ -1594,19 +1732,43 @@ class TestRealTargetWildtypeCondition:
                                              r"both import as the PyBNF condition"):
             conditions_from_rows(rows, set())
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "the #905 name-collision refusal also fires on conditions no experiment applies; "
-        "libpetab only warns about unused conditions, and main imported this problem exactly"))
     def test_colliding_ids_that_no_experiment_applies_do_not_block_the_import(self, tmp_path):
         # Independent review of #905: cond_a and a would import under one name, but neither
         # reaches the fit, so there is nothing to merge wrongly. The time course's own condition
-        # must import exactly.
+        # must import exactly; of the unused pair only the first in table order is kept.
         yaml = _write_periods_problem(
             tmp_path / 'problem', [('cond_a', 'L', 2), ('a', 'L', 3), ('c', 'L', 4)],
             [('tc', '0', 'c')], [('obs_A', 'tc', t, 1.0 + t) for t in (0.5, 1, 2)])
         text = (import_job(yaml, tmp_path / 'out') / 'imported.conf').read_text()
         assert 'experiment: tc, condition: c, method: ode, data: tc.exp' in text
         assert 'condition: c, perturbations: L = 4' in text
+        assert 'condition: a, perturbations: L = 2' in text
+        assert 'L = 3' not in text
+
+    @pytest.mark.parametrize('applied', ['cond_a', 'a'])
+    def test_the_one_applied_id_of_a_colliding_pair_is_imported(self, applied, tmp_path):
+        # Exactly one of the pair is applied: it imports under the shared name with its OWN
+        # target, and the unused one is left out (it cannot change the fit).
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('cond_a', 'L', 2), ('a', 'L', 3)],
+            [('tc', '0', applied)], [('obs_A', 'tc', t, 1.0 + t) for t in (0.5, 1, 2)])
+        text = (import_job(yaml, tmp_path / 'out') / 'imported.conf').read_text()
+        value = {'cond_a': 2, 'a': 3}[applied]
+        assert 'experiment: tc, condition: a, method: ode, data: tc.exp' in text
+        assert f'condition: a, perturbations: L = {value}' in text
+        assert f'L = {5 - value}' not in text
+
+    def test_two_applied_ids_of_a_colliding_pair_are_refused(self, tmp_path):
+        # Both of the pair are applied -- one as a pre-equilibration condition -- so importing
+        # them under one name would merge their targets.
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('cond_a', 'L', 2), ('a', 'L', 3)],
+            [('tc', '-inf', 'a'), ('tc', '0', 'cond_a')],
+            [('obs_A', 'tc', t, 1.0 + t) for t in (0.5, 1, 2)])
+        with pytest.raises(PybnfError, match=r"PEtab conditions 'cond_a' and 'a' both import as "
+                                             r"the PyBNF condition 'a', and experiments apply "
+                                             r"each of them"):
+            import_job(yaml, tmp_path / 'out')
 
 
 # ---------------------------------------------------------------------------
