@@ -269,6 +269,50 @@ def test_samples_file_without_the_header_is_refused(tmp_path):
         ba.update_histograms('_final')
 
 
+def _nothing_written(tmp_path):
+    results = os.path.join(str(tmp_path), 'Results')
+    return (os.listdir(os.path.join(results, 'Histograms')) == []
+            and not [f for f in os.listdir(results) if f.startswith('credible')])
+
+
+def test_samples_file_with_a_column_that_is_not_a_parameter_is_refused(tmp_path):
+    """Every parameter has its column here, plus one that names no parameter of this
+    fit. Such a file belongs to another configuration, so the run must stop naming the
+    stray column, not read the columns that happen to overlap and ignore the rest."""
+    ba = _bare_ba(tmp_path, 2)
+    with open(ba.samples_file, 'w') as f:
+        f.write('# Name\tLn_probability\tp1\tp2\tq9\n')
+        f.write('s0\t-1.0\t0.1\t0.2\t0.3\n')
+    with pytest.raises(PybnfError, match='a column for q9, which is not a free parameter of this fit'):
+        ba.update_histograms('_final')
+    assert _nothing_written(tmp_path)
+
+
+def test_samples_file_with_a_repeated_column_is_refused(tmp_path):
+    """Two columns headed p2 leave no way to say which holds p2's samples, so the run
+    must stop naming it rather than take either one."""
+    ba = _bare_ba(tmp_path, 2)
+    with open(ba.samples_file, 'w') as f:
+        f.write('# Name\tLn_probability\tp1\tp2\tp2\n')
+        f.write('s0\t-1.0\t0.1\t0.2\t0.3\n')
+    with pytest.raises(PybnfError, match='more than one column for p2'):
+        ba.update_histograms('_final')
+    assert _nothing_written(tmp_path)
+
+
+def test_samples_file_refusal_names_every_mismatch(tmp_path):
+    """A missing parameter and a stray column are both named in one message, so the
+    user sees the whole mismatch at once."""
+    ba = _bare_ba(tmp_path, 3)
+    with open(ba.samples_file, 'w') as f:
+        f.write('# Name\tLn_probability\tp1\tp3\tq9\tq8\n')
+        f.write('s0\t-1.0\t0.1\t0.2\t0.3\t0.4\n')
+    with pytest.raises(PybnfError) as err:
+        ba.update_histograms('_final')
+    assert 'no column for p2' in str(err.value)
+    assert 'columns for q9, q8, which are not free parameters' in str(err.value)
+
+
 # --------------------------------------------------------------------------- #
 # Columns are found by name: the corners of the name lookup (lanl/PyBNF#856)
 # --------------------------------------------------------------------------- #
@@ -285,9 +329,8 @@ def test_samples_file_without_the_header_is_refused(tmp_path):
 ], ids=['case', 'header_tokens', 'twelve'])
 def test_columns_read_by_name_not_by_permutation(tmp_path, declared):
     """Each variable is read from the column carrying its name, including when a name
-    sorts by case, when it equals a header token, when numeric suffixes sort as
-    strings, and when the file has a column that is not a variable at all (so the
-    lookup must be by name, not a permutation of every column after the second).
+    sorts by case, when it equals a header token, and when numeric suffixes sort as
+    strings.
 
     Oracle: each parameter's own samples, drawn here in ranges that do not overlap, so
     a column read for the wrong parameter changes the bounds."""
@@ -304,9 +347,8 @@ def test_columns_read_by_name_not_by_permutation(tmp_path, declared):
     rng = np.random.default_rng(11)
     columns = {n: rng.uniform(100.0 * k, 100.0 * k + 50.0, n_samples)
                for k, n in enumerate(declared)}
-    columns['zz_not_a_variable'] = rng.uniform(-900.0, -800.0, n_samples)
     in_file = sorted(columns)                     # the order PSet.keys_to_string writes
-    assert in_file[:-1] != declared               # the declaration really is out of order
+    assert in_file != declared                    # the declaration really is out of order
     with open(ba.samples_file, 'w') as f:
         f.write('# Name\tLn_probability\t' + '\t'.join(in_file) + '\n')
         for i in range(n_samples):
@@ -353,48 +395,60 @@ _ORDER_CONF = (
 _HAS_JAX = all(importlib.util.find_spec(m) is not None for m in ('jax', 'blackjax'))
 
 _PER_SAMPLER = {
-    'mh': ('max_iterations = 300\nburn_in = 100\nsample_every = 1\npopulation_size = 2\n'
-           'output_hist_every = 100\n'),
-    'pt': ('max_iterations = 300\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
-           'reps_per_beta = 2\nbeta = 0.5 1.0\nexchange_every = 10\noutput_hist_every = 100\n'),
-    # am writes _final from samples.txt and only then repoints samples_file at
-    # combined_params.txt, so this also pins that ordering.
-    'am': ('max_iterations = 400\nburn_in = 100\nadaptive = 100\nsample_every = 1\n'
-           'population_size = 2\noutput_hist_every = 100\n'),
-    'dream': ('max_iterations = 200\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
-              'output_hist_every = 50\n'),
-    'p_dream': ('max_iterations = 200\nburn_in = 100\nsample_every = 1\npopulation_size = 4\n'
-                'output_hist_every = 50\n'),
+    'mh': ('max_iterations = 150\nburn_in = 50\nsample_every = 1\npopulation_size = 2\n'
+           'output_hist_every = 50\n'),
+    'pt': ('max_iterations = 150\nburn_in = 50\nsample_every = 1\npopulation_size = 4\n'
+           'reps_per_beta = 2\nbeta = 0.5 1.0\nexchange_every = 10\noutput_hist_every = 50\n'),
+    'am': ('max_iterations = 200\nburn_in = 50\nadaptive = 50\nsample_every = 1\n'
+           'population_size = 2\noutput_hist_every = 50\n'),
+    'dream': ('max_iterations = 120\nburn_in = 60\nsample_every = 1\npopulation_size = 4\n'
+              'output_hist_every = 30\n'),
+    'p_dream': ('max_iterations = 120\nburn_in = 60\nsample_every = 1\npopulation_size = 4\n'
+                'output_hist_every = 30\n'),
     # hmc writes only _final.
-    'hmc': 'num_warmup = 100\nnum_samples = 150\npopulation_size = 2\nmax_iterations = 150\n',
+    'hmc': 'num_warmup = 50\nnum_samples = 75\npopulation_size = 2\nmax_iterations = 75\n',
 }
 
 
-@pytest.mark.parametrize('job_type', [
-    'mh', 'pt', 'am', 'dream', 'p_dream',
-    pytest.param('hmc', marks=pytest.mark.skipif(
-        not _HAS_JAX, reason='needs the optional jax extra (pip install pybnf[jax])')),
-])
-def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, monkeypatch, job_type):
-    """#856 names six job types and two in-run call sites; the reproduction test above
-    runs mh and reads only ``_final``. Here every sampler runs with the parameters
-    declared x2, x1, a3, and
-    EVERY credible file it leaves -- the strided ``_<iter>`` writes as well as
-    ``_final`` -- must hold, on each parameter's row, the order statistics of that
-    parameter's own samples.txt column. samples.txt is append-only, so a strided write
-    saw exactly its first N rows, N being the count total of that write's histogram.
-    Each histogram must also span that parameter's samples in that parameter's scale.
-    """
+def _build_order_alg(tmp_path, monkeypatch, conf):
+    """Build the algorithm for ``conf`` under the in-process harness without running it."""
     from pybnf.parse import load_config
     from pybnf.pybnf import _create_algorithm
     H.install(monkeypatch)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / 'order.conf').write_text(
-        _ORDER_CONF + 'job_type = %s\n' % job_type + _PER_SAMPLER[job_type])
-    alg = _create_algorithm(load_config(str(tmp_path / 'order.conf')))
-    H.drive(alg)
+    (tmp_path / 'order.conf').write_text(conf)
+    return _create_algorithm(load_config(str(tmp_path / 'order.conf')))
 
-    results = tmp_path / 'out' / 'Results'
+
+def _run_order_conf(tmp_path, monkeypatch, conf):
+    """Run ``conf`` to its stop through the in-process harness; return the algorithm
+    and its ``Results`` directory."""
+    alg = _build_order_alg(tmp_path, monkeypatch, conf)
+    H.drive(alg)
+    return alg, tmp_path / 'out' / 'Results'
+
+
+def _assert_end_equals_final(results):
+    """Every ``_final`` credible file and histogram has an ``_end`` twin, byte for byte."""
+    finals = glob.glob(str(results / 'credible*_final.txt'))
+    finals += glob.glob(str(results / 'Histograms' / '*_final.txt'))
+    assert len(finals) == 2 + 3
+    for final in finals:
+        end = final.replace('_final.txt', '_end.txt')
+        assert os.path.exists(end), end
+        with open(final) as f, open(end) as g:
+            assert f.read() == g.read(), final
+
+
+def _check_every_credible_file(results):
+    """Check every credible file under ``results`` against samples.txt, and return the
+    set of extensions (``_final``, ``_<iter>``, ``_end``) found.
+
+    Each file must hold, on each parameter's row, the order statistics of that
+    parameter's own samples.txt column. samples.txt is append-only, so a strided write
+    saw exactly its first N rows, N being the count total of that write's histogram.
+    Each histogram must also span that parameter's samples in that parameter's scale.
+    """
     with open(results / 'samples.txt') as f:
         header = f.readline().lstrip('#').split()
     assert header[2:] == ['a3', 'x1', 'x2']
@@ -424,7 +478,109 @@ def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, mon
             own = space[name][0](col[:n_used])
             assert h[0, 0] == pytest.approx(own.min()), hist_path
             assert h[-1, 1] == pytest.approx(own.max()), hist_path
+    return exts
 
+
+@pytest.mark.parametrize('job_type', [
+    'mh', 'pt', 'am', 'dream', 'p_dream',
+    pytest.param('hmc', marks=pytest.mark.skipif(
+        not _HAS_JAX, reason='needs the optional jax extra (pip install pybnf[jax])')),
+])
+def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, monkeypatch, job_type):
+    """#856 names six job types and two in-run call sites; the reproduction test above
+    runs mh and reads only ``_final``. Here every sampler runs with the parameters
+    declared x2, x1, a3, and EVERY credible file it leaves -- the strided ``_<iter>``
+    writes as well as ``_final`` -- is checked against samples.txt by
+    :func:`_check_every_credible_file`.
+    """
+    _, results = _run_order_conf(
+        tmp_path, monkeypatch, _ORDER_CONF + 'job_type = %s\n' % job_type + _PER_SAMPLER[job_type])
+    exts = _check_every_credible_file(results)
     assert '_final' in exts
     if job_type != 'hmc':
         assert len(exts) > 1, 'no strided write was checked: %s' % sorted(exts)
+
+
+# --------------------------------------------------------------------------- #
+# am after its stop, through the paths main() actually takes
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize('stop', ['max_iterations', 'rhat'])
+def test_am_failure_in_the_end_of_run_tail_leaves_end_files_through_finalize(
+        tmp_path, monkeypatch, stop):
+    """The error-exit path main() takes, not a direct cleanup() call: am stops, a step
+    of run()'s end-of-run tail raises (here the best-fit BNGL write), and
+    ``pybnf._finalize(success=False, ...)`` runs the cleanup. _finalize logs and
+    swallows any exception from the cleanup, so the only visible symptom of a broken
+    cleanup is a missing ``_end`` file -- which is what this checks.
+
+    am used to point samples_file at combined_params.txt on both of its stop paths.
+    The histogram step cannot read that file, so the cleanup failed and wrote nothing.
+
+    Oracle: each parameter's own samples.txt column (_check_every_credible_file), and
+    the ``_final`` files written at the stop, byte for byte."""
+    from pybnf import pybnf as P
+    conf = _ORDER_CONF + 'job_type = am\n' + _PER_SAMPLER['am']
+    if stop == 'rhat':
+        # A threshold every R-hat meets, checked every 50 iterations: the run stops on
+        # convergence at the first check after burn_in, well before max_iterations.
+        conf = conf.replace('diagnostics_every = 1000000000\n', 'diagnostics_every = 50\n')
+        conf += 'rhat_threshold = 100\n'
+    alg = _build_order_alg(tmp_path, monkeypatch, conf)
+    results = tmp_path / 'out' / 'Results'
+
+    def fail(self, *args, **kwargs):
+        raise RuntimeError('injected failure after the stop')
+    monkeypatch.setattr(algorithms.Algorithm, '_emit_best_fit_bngl', fail)
+    monkeypatch.setattr(P, 'clear_sim_registry', lambda: None)
+    with pytest.raises(RuntimeError, match='injected failure after the stop'):
+        H.drive(alg)
+    # The failure came after the stop: the stop's _final files are already there.
+    assert (results / 'credible68.0_final.txt').exists()
+    assert not glob.glob(str(results / 'credible*_end.txt'))
+    assert os.path.samefile(alg.samples_file, results / 'samples.txt')
+    n_rows = np.genfromtxt(results / 'samples.txt', skip_header=1, ndmin=2).shape[0]
+    full_run = 2 * (200 - 50)        # population_size * (max_iterations - burn_in)
+    assert n_rows < full_run if stop == 'rhat' else n_rows == full_run
+
+    with pytest.raises(SystemExit) as exited:
+        P._finalize(False, alg, 0.0)
+    assert exited.value.code == 1
+
+    assert {'_final', '_end'} <= _check_every_credible_file(results)
+    _assert_end_equals_final(results)
+
+
+def test_am_finished_run_resumed_with_more_iterations_keeps_reading_samples_txt(
+        tmp_path, monkeypatch):
+    """``pybnf -r N`` on a finished am run: the algorithm comes back from
+    alg_finished.bp, runs N more iterations, and stops again. The pickle was taken
+    before the stop, so it points at samples.txt; after the second stop the file must
+    still be samples.txt, every credible file must match it, and an error exit after
+    the second stop must still write ``_end`` files equal to the new ``_final`` ones."""
+    from pybnf import pybnf as P
+    conf = (_ORDER_CONF + 'job_type = am\n' + _PER_SAMPLER['am']).replace(
+        'backup_every = 1000000000\n', 'backup_every = 5\n')
+    alg = _build_order_alg(tmp_path, monkeypatch, conf)
+    H.drive(alg)
+    results = tmp_path / 'out' / 'Results'
+    finished = tmp_path / 'out' / 'alg_finished.bp'
+    assert finished.exists()
+    rows_first = np.genfromtxt(results / 'samples.txt', skip_header=1, ndmin=2).shape[0]
+
+    resumed, pending, _ = P._load_resumed_algorithm(finished, SimpleNamespace(resume=40))
+    assert os.path.samefile(resumed.samples_file, results / 'samples.txt')
+    assert resumed.max_iterations == 240
+    resumed.run(H.FakeClient(), resume=pending)
+
+    assert os.path.samefile(resumed.samples_file, results / 'samples.txt')
+    rows_second = np.genfromtxt(results / 'samples.txt', skip_header=1, ndmin=2).shape[0]
+    assert rows_second >= rows_first + 2 * 40      # both chains ran the 40 extra iterations
+    assert '_final' in _check_every_credible_file(results)
+    n_final = int(np.genfromtxt(results / 'Histograms' / 'x1_final.txt', ndmin=2)[:, 2].sum())
+    assert n_final == rows_second                  # the new _final read the whole file
+
+    monkeypatch.setattr(P, 'clear_sim_registry', lambda: None)
+    with pytest.raises(SystemExit):
+        P._finalize(False, resumed, 0.0)
+    _assert_end_equals_final(results)

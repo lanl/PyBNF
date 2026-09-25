@@ -409,8 +409,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 if self.check_convergence(self.iteration[index], max_rhat):
                     self.combine_chains_params()
                     self.combine_chains_traj()
-                    out = Path(self.config.config['output_dir'])
-                    self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
                     return 'STOP'
 
             # Set here because I don't want these commands to exacute more then once.
@@ -426,14 +424,18 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.combine_chains_traj()
                 # The final histograms and credible intervals, the pair every other
                 # sampler writes at its stop point (dream's barrier, the shared
-                # check_convergence). Both calls must come BEFORE samples_file is
-                # repointed below: update_histograms reads that attribute, and
-                # combined_params.txt is a different format -- variable columns only,
-                # space separated, no '# Name  Ln_probability' prefix -- so reading it
-                # with this method's usecols would not give the sampled values back.
+                # check_convergence).
+                #
+                # samples_file stays on samples.txt after the stop. Both stop paths used
+                # to repoint it at combined_params.txt, which nothing read except
+                # update_histograms, and that cannot read it: combined_params.txt has
+                # only the variable columns, space separated, under a header without
+                # the '# Name  Ln_probability' prefix. So when a later step of the run
+                # failed, the error-exit cleanup (cleanup -> update_histograms('_end'))
+                # failed too and wrote no _end histograms or credible intervals
+                # (lanl/PyBNF#856 follow-up).
                 self.update_histograms('_final')
                 self.report_constraint_satisfaction('_final')
-                self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
