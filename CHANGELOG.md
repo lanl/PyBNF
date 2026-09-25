@@ -259,6 +259,12 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **`petab1to2_preserve_scale` converts every declared PEtab v1 prior to a v2 prior with the
+  same distribution (#893).** A `log10` `parameterScaleNormal` prior used to import with its
+  mean and sd divided by ln 10 (six priors in `Schwen_PONE2014`, others in `Isensee_JCB2018`,
+  `Raimundez_PCB2020` and `Bachmann_MSB2011`), and a natural-log `parameterScaleUniform` with
+  its bounds on the wrong scale, both silently. petab1to2 warnings the converter does not
+  repair now reach the caller, and a dropped non-default initialization prior is named.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

@@ -150,3 +150,82 @@ This is not an upstream bug. The substitution is documented and warned, and the 
 gap — no log10-normal in PEtab v2 — is a specification decision (ADR-0022's "PyBNF
 `lognormal` is log10, PEtab `log-normal` is natural log"). The preserved column is the
 workaround the specification leaves us.
+
+## Addendum (2026-09-25): declared v1 priors are rewritten from v1, and the warning filter is narrowed (issue #893)
+
+**Accepted and implemented 2026-09-25.** The converter's module docstring said petab1to2
+"already preserves scale where it is attached to an objective prior", so rows with a declared
+v1 prior were left exactly as petab1to2 wrote them. That is false for two cases. petab1to2
+renames a `parameterScale*` prior to the matching v2 family but keeps its numbers. For a
+`log10` `parameterScaleNormal` it warns ("Prior distribution `log10-normal' ... Using
+`log-normal` instead"), and v2 then reads the unchanged mean and sd as natural-log numbers,
+so the imported prior on log10(theta) has both divided by ln 10. The blanket
+`simplefilter('ignore')` described in the previous addendum hid that warning. For a
+natural-log `parameterScaleUniform(a;b)` it writes `log-uniform(a;b)` with no warning, and v2
+reads those numbers as bounds on theta rather than on ln(theta). `Schwen_PONE2014`,
+`Isensee_JCB2018`, `Raimundez_PCB2020` and `Bachmann_MSB2011` hit the first case unmodified.
+Across those four problems and `Lang_PLOSComputBiol2024`, 44 of the 72 declared objective
+priors on estimated parameters converted to a different distribution, as libpetab's own v1
+and v2 prior densities show.
+
+**Decision.** The converter no longer keeps petab1to2's translation of any prior the v1 author
+declared. `v2_prior_from_v1` maps each declared row from the v1 table to the v2 prior with the
+same distribution over theta, and `write_v2_priors` writes it. A row declares a prior if its
+`objectivePriorType` or its `objectivePriorParameters` cell is filled; a blank type under
+filled parameters is v1's default type, `parameterScaleUniform`. The v2 table is rewritten
+only when a cell changes, so a table petab1to2 already converted exactly keeps petab1to2's
+bytes. Rows with no declared prior go through the #491/#548 log-uniform re-injection as
+before.
+
+Every v1 objective prior, as petab 0.9.0's `petab1to2` treats it (theta is the parameter;
+"kept" means petab1to2's output was already exact and is unchanged):
+
+| v1 scale | v1 prior | v1 meaning | petab1to2 writes | converter now |
+|---|---|---|---|---|
+| any | `uniform` / `normal` / `laplace` (a;b) | on theta | same name, same numbers | kept |
+| any | `logNormal` / `logLaplace` (mu;s) | on ln theta | raises (pydantic `ValidationError`: not a v2 name) | still refused upstream; exact v2 is `log-normal` / `log-laplace` (mu;s) |
+| lin | `parameterScale{Uniform,Normal,Laplace}` | on theta | `uniform` / `normal` / `laplace`, same numbers | kept |
+| log | `parameterScaleNormal` / `Laplace` (mu;s) | on ln theta | `log-normal` / `log-laplace` (mu;s) | kept |
+| log | `parameterScaleUniform` (a;b) | ln theta in [a, b] | `log-uniform` (a;b), no warning; a v2 lint error if a <= 0 | **corrected** to `log-uniform` (e^a;e^b); a <= 0 still refused by petab1to2's lint |
+| log10 | `parameterScaleNormal` (mu;s) | log10 theta ~ N(mu, s) | `log-normal` (mu;s), warns | **corrected** to `log-normal` (mu ln10; s ln10) |
+| log10 | `parameterScaleUniform` (a;b) | log10 theta in [a, b] | raises `NotImplementedError` (`log10-uniform`) | still refused upstream; exact v2 is `log-uniform` (10^a;10^b) |
+| log10 | `parameterScaleLaplace` (mu;b) | log10 theta ~ Laplace | raises `NotImplementedError` (`log10-laplace`) | still refused upstream; exact v2 is `log-laplace` (mu ln10; b ln10) |
+| lin | blank type, (a;b) | = `parameterScaleUniform` | `uniform` (a;b) | kept |
+| log / log10 | blank type, (a;b) | ln / log10 theta in [a, b] | `uniform` (a;b), linear; the old converter then overwrote it with `log-uniform` over the bounds | **corrected** to `log-uniform` (e^a;e^b) / (10^a;10^b) |
+| lin / log | `parameterScaleUniform`, blank parameters | v1 default: uniform over the bounds on the scale | `uniform` / `log-uniform` over the bounds | kept |
+| log10 | `parameterScaleUniform`, blank parameters | same | raises `NotImplementedError` | still refused upstream (a blank prior cell says the same thing and converts) |
+
+Every case is exactly representable in v2: v2 has linear and natural-log forms of uniform,
+normal and laplace, a log10 location-scale prior is the natural-log one with both numbers
+times ln 10, and a log uniform prior is `log-uniform` over the exponentiated bounds. So the
+converter adds no refusal of its own. The four petab1to2 refusals are loud and are left in
+place: converting them would mean running petab1to2 on a rewritten copy of the v1 problem.
+The mapping already covers them (and its unit tests pin their values), so a petab release
+that accepts them converts them exactly.
+
+**Initialization priors.** petab1to2 drops `initializationPriorType` /
+`initializationPriorParameters` for every row and warns once. PEtab v2 has no initialization
+prior and PyBNF has no channel for one: the importer starts from `nominalValue` and draws
+initial points from the bounds on the parameter's search scale. v1's default initialization
+prior is that same box, so a blank cell, a blank `parameterScaleUniform` (the shape
+`Armistead_CellDeathDis2024` uses), or one that states the bounds is dropped without comment.
+Any other initialization prior is dropped with a warning that names the parameter, its prior
+and its scale. It is a warning rather than a refusal because the objective, the prior and the
+posterior do not depend on it.
+
+**Warnings.** `simplefilter('ignore')` is replaced by four `filterwarnings('ignore', ...)`
+patterns, one for each petab1to2 warning whose subject the converter repairs: the dropped
+`parameterScale`, the observable `log10-normal` substitution (#679), the prior `log10-normal`
+substitution (above), and the blanket initialization-prior warning (replaced by the named
+one). Every other warning petab1to2 raises now reaches the caller. An unrecognized warning is
+not made an error. With petab 0.9.0, no substitution survives uncorrected: every declared
+prior is rewritten from v1 whatever petab1to2 wrote, and every log observable's
+`noiseDistribution` is reset from v1. A future warning could be anything, including a
+library deprecation, and making all of them fatal would stop working conversions.
+
+**Left out.** A declared prior on theta itself (`uniform` / `normal` / `laplace`) on a `log` or
+`log10` parameter keeps its exact distribution, but v2 has no column for the search scale, so
+PyBNF searches that parameter linearly. The objective is unchanged. This is the
+declared-prior counterpart of the bare-scale loss #548 fixed, and it is not addressed here;
+the "Parameter scales are not supported" warning that would have covered it is still
+silenced. None of the benchmark problems above has such a row.
