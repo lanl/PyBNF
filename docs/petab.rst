@@ -138,8 +138,10 @@ following all survive an import and an export:
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
   **pre-equilibration** phase round-trips as such. An exported dose-response whose
   conditions also pin a fit-and-perturbed parameter (``p = p__REF``) comes back as
-  one conditioned experiment per dose instead. The fit is the same; only the shape
-  of the job differs.
+  one conditioned experiment per dose instead. For a steady-state scan the fit is
+  the same and only the shape of the job differs. A fixed-endpoint (``t_end:``)
+  scan of that kind does not yet load after re-import: each dose becomes a time
+  course with a single measurement time, which the simulator refuses.
 
 Tutorial lessons
 ----------------
