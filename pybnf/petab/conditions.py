@@ -520,8 +520,10 @@ def build_preequilibrated_dose_response_conditions(experiments, conditions, nomi
 
 def _is_base_pin(row, surrogate_params):
     """True iff a condition row is a surrogate base pin ``p = p__REF`` -- machinery re-supplying
-    a removed fit parameter at its estimated value, which is the identity once the importer
-    renames ``p__REF`` back to ``p`` (the row :func:`_perturbation_from_row` drops)."""
+    a removed fit parameter at its estimated value (the row :func:`_perturbation_from_row`
+    drops). The importer reads a pin as the identity once ``p__REF`` is renamed back to ``p``;
+    that is exact only when no earlier period of the experiment changed ``p``, which is left to
+    the issue that handles pins exactly."""
     return (row.target_id in surrogate_params
             and row.target_value.strip() == surrogate_name(row.target_id))
 
@@ -531,8 +533,9 @@ def drop_synthesized_wildtype(condition_rows, experiment_rows, surrogate_params)
 
     The exporter writes :data:`WILDTYPE_CONDITION_ID` to re-pin every fit-and-perturbed parameter
     at its base value (``p = p__REF``) on a wildtype time course or a wash-out measurement period
-    (ADR-0027/0052). Those rows are the identity after import, so a ``cond_wildtype`` made
-    **only** of base pins (or with no rows at all) means "no condition": its rows are dropped and
+    (ADR-0027/0052). The importer has always read those rows as "no condition" (see
+    :func:`_is_base_pin` for when that is exact), so a ``cond_wildtype`` made **only** of base
+    pins (or with no rows at all) means "no condition": its rows are dropped and
     every experiments-table period that applies it gets a blank ``conditionId``, the PEtab
     spelling of "the model as is" that the reconstruction below already reads. A
     ``cond_wildtype`` with any other row carries real targets -- a condition some other tool
@@ -551,20 +554,6 @@ def drop_synthesized_wildtype(condition_rows, experiment_rows, surrogate_params)
             [PetabExperimentRow(r.experiment_id, r.time, '')
              if r.condition_id == WILDTYPE_CONDITION_ID else r
              for r in experiment_rows])
-
-
-def drop_base_pins(condition_rows, surrogate_params):
-    """The condition rows without the surrogate base pins ``p = p__REF``.
-
-    A pin re-supplies a fit-and-perturbed parameter at its estimate (ADR-0027); once the importer
-    renames ``p__REF`` back to ``p`` it reads ``p = p``, the identity, so it cannot change the
-    fit. :func:`conditions_from_rows` has always dropped pins; dropping them up front means the
-    dose-response detectors see a condition's real targets too. A per-dose condition the exporter
-    pins (``L = 2`` plus ``k = k__REF``, #892) is then the one-target dose it is, instead of a
-    two-target condition that re-imported every dose as its own time course. Run it after
-    :func:`drop_synthesized_wildtype`, which needs the pins to recognize the exporter's base.
-    """
-    return [r for r in condition_rows if not _is_base_pin(r, surrogate_params)]
 
 
 def condition_name_from_id(condition_id):

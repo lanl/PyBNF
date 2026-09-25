@@ -89,7 +89,6 @@ from .conditions import (
     REF_MARKER,
     condition_name_from_id,
     conditions_from_rows,
-    drop_base_pins,
     drop_synthesized_wildtype,
     is_species_target,
     read_condition_table,
@@ -259,20 +258,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
-    # The exporter's synthesized base condition cond_wildtype re-pins M at base (p = p__REF), the
-    # identity once p__REF is renamed back to p: drop it, and blank the periods that apply it, so
+    # The exporter's synthesized base condition cond_wildtype re-pins M at base (p = p__REF),
+    # read as the identity once p__REF is renamed back to p: drop it, and blank its periods, so
     # every reconstruction below reads "no condition" there. A cond_wildtype carrying any real
     # target is a condition in its own right and is kept (#905).
     condition_rows, experiment_rows = drop_synthesized_wildtype(
         condition_rows, experiment_rows, surrogate_params)
-    # Every other pin is the identity too. Drop them all here, before both dose-response
-    # detectors read the conditions, so a pinned per-dose condition (#892) is still read as the
-    # one-target dose it is. conditions_from_rows gets the rows WITH their pins (it drops them
-    # itself): a condition made only of pins has no row left without them, and its id would then
-    # escape the check for two ids that import under one name (cond_a and a), letting the
-    # experiment that applies it be imported under the other id's targets.
-    pinned_condition_rows = condition_rows
-    condition_rows = drop_base_pins(condition_rows, surrogate_params)
 
     # Fixed PEtab parameters carrying a numeric value: the constants a measurement-model
     # observableFormula may reference that live only in the parameters table, not the
@@ -390,7 +381,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
     # A species target's BNGL pattern is recovered from the mapping table (ADR-0062).
     absorbed_condition_ids = dr_condition_ids | pdr_condition_ids
-    tc_condition_rows = [r for r in pinned_condition_rows
+    tc_condition_rows = [r for r in condition_rows
                          if r.condition_id not in absorbed_condition_ids]
     # ``free_names`` / ``fixed_params`` resolve a parameter-valued targetValue -- a per-condition
     # estimated initial condition (ADR-0076): a target set to an estimated parameter id becomes a

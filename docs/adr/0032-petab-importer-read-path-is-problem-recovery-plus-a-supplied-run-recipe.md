@@ -203,9 +203,7 @@ conditionIds that would import under one name (`cond_a` and `a`) are refused rat
 when measured experiments apply both. When at most one is applied, that one (or, with none
 applied, the first in table order) is imported under the shared name and the others are left
 out: a condition no experiment applies cannot change the fit, and libpetab only warns about it.
-Surrogate base pins are now dropped from every condition before either dose-response detector
-reads the table, not only by `conditions_from_rows`, so a per-dose condition that the #892
-exporter pins is still read as the one-target dose it is. `conditions_from_rows` still receives
-the pins and drops them itself, so a condition made only of pins keeps its id in the name
-check: `cond_a` holding only `k = k__REF` still collides with an `a` that sets `L = 3`, instead
-of its experiment being imported under `a`'s target.
+A condition made only of pins takes part in that check like any other, so its experiments are
+never imported under another id's targets. The pins themselves are read as the identity, as they
+always were; that is exact only when no earlier period of the experiment changed the pinned
+parameter, which is left to a separate issue.

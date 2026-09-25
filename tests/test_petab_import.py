@@ -1396,14 +1396,16 @@ class TestRaggedPreequilibratedScanThroughTheSimulator:
             self._petab_objective(self.ROWS, k), rel=1e-5)
 
 
-class TestPinnedDoseConditionsImportAsOneScan:
-    """#892 (fixed in the exporter separately) makes every per-dose condition of a plain
+class TestPinnedDoseConditionsAreNotDoses:
+    """A documented limitation, pinned until surrogate pins are handled exactly (a separate
+    issue). #892 (fixed in the exporter separately) makes every per-dose condition of a plain
     dose-response re-pin the fit-and-perturbed parameters, ``cond_dr_0: L = 1, kd = kd__REF``.
-    After import a pin reads ``kd = kd``, the identity, but the dose detector counted it as a
-    second target and re-imported every dose as its own one-time time course -- which fails to
-    load for a ``t_end:`` scan (BNG2.pl needs 3 sample times). The importer now drops every pin
-    before any condition is classified. The pinned tables are written here by hand, the way the
-    #892 exporter writes them (each pin right after its dose row)."""
+    The dose detector reads a condition with its pins, so such a condition has two targets and is
+    not a dose: each dose re-imports as its own conditioned experiment. At steady state that is
+    the same fit; a ``t_end:`` scan fails loudly at load, since BNG2.pl needs three sample times.
+    Dropping the pins first was tried and withdrawn: a pin is the identity only when its
+    surrogate is estimated and no earlier period changed the parameter. The pinned tables are
+    written here by hand, the way the #892 exporter writes them (each pin after its dose row)."""
 
     DOSE_EXP = '# L resp\n1\t0.5\n2\t1\n5\t2.5\n'
     TC_EXP = '# time resp\n0.5\t0.2\n1\t0.3\n2\t0.4\n'
@@ -1453,47 +1455,54 @@ class TestPinnedDoseConditionsImportAsOneScan:
             total += 0.5 * (1 / (2 * kd) * (1 - np.exp(-2 * kd * t)) - y) ** 2
         return total
 
-    @pytest.mark.parametrize('t_end', [0.5, None])
-    def test_pinned_dose_conditions_import_as_one_scan(self, t_end, tmp_path, monkeypatch):
-        _src, out = self._pinned_import(tmp_path, t_end)
+    def test_a_pinned_steady_state_scan_imports_one_experiment_per_dose(self, tmp_path,
+                                                                        monkeypatch):
+        _src, out = self._pinned_import(tmp_path, None)
         text = (out / 'imported.conf').read_text()
-        tend = f't_end: {t_end}, ' if t_end else ''
-        assert f'experiment: dr, method: ode, {tend}data: dr.exp' in text
-        assert 'experiment: tc, condition: fast, method: ode, data: tc.exp' in text
-        assert 'condition: fast, perturbations: kd * 2' in text
-        assert 'condition: dr_' not in text               # each dose is the scan axis again
-        data = Data(file_name=str(out / 'dr.exp'))
-        assert data.indvar == 'L' and list(data['L']) == [1, 2, 5]
+        for i, (L, y) in enumerate(((1, 0.5), (2, 1.0), (5, 2.5))):
+            assert (f'experiment: dr_{i}, condition: dr_{i}, method: ode, data: dr_{i}.exp'
+                    in text)
+            assert f'condition: dr_{i}, perturbations: L = {L}' in text
+            data = Data(file_name=str(out / f'dr_{i}.exp'))
+            assert np.isposinf(data['time'][0]) and list(data['resp']) == [y]
+        assert 'experiment: dr,' not in text
         _load_conf(out, monkeypatch)                        # and the conf loads
 
     @pytest.mark.bngsim
     @pytest.mark.newera
-    @pytest.mark.parametrize('t_end', [0.5, None])
-    def test_pinned_scan_scores_the_source_jobs_objective(self, t_end, tmp_path, monkeypatch):
+    def test_a_pinned_steady_state_scan_scores_the_source_jobs_objective(self, tmp_path,
+                                                                         monkeypatch):
         # Oracle: at fixed kd the imported job scores what the source job scores, and both equal
         # the hand closed form over every measurement.
-        src, out = self._pinned_import(tmp_path, t_end)
+        src, out = self._pinned_import(tmp_path, None)
         for kd in (0.8, 1.5):
-            expected = self._closed_form_objective(kd, t_end)
+            expected = self._closed_form_objective(kd, None)
             assert _imported_objective_at(out, monkeypatch, kd=kd) == pytest.approx(
                 expected, rel=1e-5)
             assert _imported_objective_at(src, monkeypatch, conf_name='job.conf',
                                           kd=kd) == pytest.approx(expected, rel=1e-5)
 
+    def test_a_pinned_t_end_scan_fails_loudly_at_load(self, tmp_path, monkeypatch):
+        _src, out = self._pinned_import(tmp_path, 0.5)
+        text = (out / 'imported.conf').read_text()
+        assert 'experiment: dr_0, condition: dr_0, method: ode, data: dr_0.exp' in text
+        with pytest.raises(PybnfError, match='requires 3 or more'):
+            _load_conf(out, monkeypatch)
+
 
 class TestPinAfterPreequilibrationRestoresTheParameter:
-    """Independent review of the follow-up: a pin ``k = k__REF`` is the identity only when nothing
-    earlier in the experiment changed k. Here the -inf period sets k = 2, and the measured period
-    sets L to the dose and re-pins k = k__REF. Under PEtab v2 the measured period runs with k back
-    at its estimate. The importer drops the pin, and PyBNF carries a pre-equilibration setting
-    into the measured phase (ADR-0052), so the imported job measures with k = 2 and k has no
-    effect on its objective.
+    """Independent review: a pin ``k = k__REF`` is the identity only when nothing earlier in the
+    experiment changed k. Here the -inf period sets k = 2, and the measured period sets L to the
+    dose and re-pins k = k__REF. Under PEtab v2 the measured period runs with k back at its
+    estimate. ``conditions_from_rows`` drops the pin, and PyBNF carries a pre-equilibration
+    setting into the measured phase (ADR-0052), so the imported job measures with k = 2 and k has
+    no effect on its objective.
 
-    With one measured time per experiment, the follow-up (drop_base_pins) now reads the doses as
-    one pre-equilibrated scan. It scores 2.99 at k = 0.7 against 0.45 for the PEtab problem, with
-    no error. Before, that import failed to load, on BNG2.pl's three-sample-time rule. The shape
-    with three measured times imports as time courses. It scored 8.54 against 1.73 on main
-    already, because conditions_from_rows has always dropped pins."""
+    With one measured time per experiment the import fails loudly at load, as on main: the dose
+    condition keeps its pin, so it is not a dose, and each experiment is a one-time time course,
+    which BNG2.pl cannot sample. With three measured times the experiments import as time courses
+    and score 8.54 at k = 0.7 against 1.73 for the PEtab problem, silently, on main too. That is
+    pre-existing and waits on the issue that handles pins exactly."""
 
     @staticmethod
     def _petab_A(t, dose, k):
@@ -1503,17 +1512,7 @@ class TestPinAfterPreequilibrationRestoresTheParameter:
         steady = (dose + 1) / k
         return steady + (3.0 - steady) * np.exp(-k * t)
 
-    @pytest.mark.bngsim
-    @pytest.mark.newera
-    @pytest.mark.parametrize('times', [
-        pytest.param((1.0,), id='one-time-scan', marks=pytest.mark.xfail(strict=True, reason=(
-            "made silent by drop_base_pins: the measured period's pin k = k__REF is dropped, so "
-            "the pre-equilibrated scan keeps k = 2 (it failed to load before)"))),
-        pytest.param((0.5, 1.0, 2.0), id='time-courses', marks=pytest.mark.xfail(
-            strict=True, reason=("pre-existing on main: conditions_from_rows drops the measured "
-                                 "period's pin k = k__REF, so the time courses keep k = 2"))),
-    ])
-    def test_imported_objective_is_the_petab_objective(self, times, tmp_path, monkeypatch):
+    def _import(self, times, tmp_path):
         conditions = [('pre', 'L', 5), ('pre', 'k', 2)]
         experiments, measurements = [], []
         for dose in (1, 2, 3):
@@ -1527,7 +1526,23 @@ class TestPinAfterPreequilibrationRestoresTheParameter:
         (root / 'parameters.tsv').write_text(
             'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n'
             'k__REF\t0.1\t10\t1\ttrue\n')
-        out = import_job(yaml, tmp_path / 'out')
+        return import_job(yaml, tmp_path / 'out'), measurements
+
+    def test_one_measured_time_fails_loudly_at_load(self, tmp_path, monkeypatch):
+        out, _measurements = self._import((1.0,), tmp_path)
+        text = (out / 'imported.conf').read_text()
+        assert 'experiment: scan_1, preequilibrate: pre, condition: d_1, method: ode' in text
+        with pytest.raises(PybnfError, match='requires 3 or more'):
+            _load_conf(out, monkeypatch)
+
+    @pytest.mark.bngsim
+    @pytest.mark.newera
+    @pytest.mark.xfail(strict=True, reason=(
+        "pre-existing on main, awaiting the issue that handles surrogate pins exactly: "
+        "conditions_from_rows drops the measured period's pin k = k__REF, so the time courses "
+        "keep the pre-equilibration's k = 2"))
+    def test_time_courses_score_the_petab_objective(self, tmp_path, monkeypatch):
+        out, measurements = self._import((0.5, 1.0, 2.0), tmp_path)
         for k in (0.7, 1.3):
             expected = sum(0.5 * (self._petab_A(t, int(eid.split('_')[1]), k) - y) ** 2
                            for _obs, eid, t, y in measurements)
@@ -1536,11 +1551,11 @@ class TestPinAfterPreequilibrationRestoresTheParameter:
 
 
 class TestPinnedSteadyStateConditionIsNotADose:
-    """Independent review of the follow-up: once the pins are dropped before dose detection, a
-    steady-state experiment whose condition has one real target besides its pins looks like a
-    dose point. Main gave that reading only to jobs with no fit-and-perturbed parameter. Two jobs
-    the exporter writes, each with a fit-and-perturbed parameter (k, under 'fast'), imported and
-    loaded on main and scored the source job's objective. Both fail now, loudly.
+    """Independent review: if the pins were dropped before dose detection, a steady-state
+    experiment whose condition has one real target besides its pins would look like a dose
+    point. Main gives that reading only to jobs with no fit-and-perturbed parameter. Two jobs the
+    exporter writes, each with a fit-and-perturbed parameter (k, under 'fast'), import and load,
+    as they do on main; with the pins dropped both failed, loudly.
 
     * Two steady-state experiments ss_1 and ss_2 under conditions that set different parameters
       are taken for one scan 'ss' and refused as ambiguous.
@@ -1563,11 +1578,7 @@ class TestPinnedSteadyStateConditionIsNotADose:
             'experiment: tc2, condition: hiL, data: tc.exp\n'),
     }
 
-    @pytest.mark.parametrize('shape', [
-        pytest.param(shape, marks=pytest.mark.xfail(strict=True, reason=(
-            "drop_base_pins exposes pinned steady-state conditions to the plain dose "
-            "detector's false positives; main imported this job exactly")))
-        for shape in SOURCES])
+    @pytest.mark.parametrize('shape', list(SOURCES))
     def test_exported_job_imports_and_loads(self, shape, tmp_path, monkeypatch):
         src = tmp_path / 'src'
         src.mkdir()
