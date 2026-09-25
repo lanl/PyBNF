@@ -306,3 +306,20 @@ placeholder layer too, §7).
   (dependency-free `pybnf/petab/` tier), 0026 (BNGL entity namespaces), 0028 (`observable:`
   surface), 0032 (importer read path), 0033 (the deferral), 0034 (bind-by-id; verbatim carry),
   0035 (the synthesis this supersedes; its translator/parser this reuses). Issue #407.
+
+## Addendum (2026-09-25): verbatim except for marked `estimate = false` overrides (issue #907)
+
+The model file is carried verbatim, for every language and backend, **except for marked
+`estimate = false` overrides**. A parameters-table row with `estimate = false` that names a model
+parameter fixes it at the row's `nominalValue`, and PEtab gives the table precedence over the
+model file. Carrying the file verbatim ignored that value silently, so the importer now writes
+it into its copy wherever the file disagrees: a BNGL `begin parameters` line, or an SBML
+`<parameter>` start tag, rewritten and marked with a comment, and listed in the conf header
+(ADR-0149). Nothing else in the file changes, and a model that agrees with its table is still
+byte-identical.
+
+This does not reopen the decision above. The measurement model is still a post-simulation
+observation layer and is never written into a model file; the override edits a parameter
+value the PEtab problem itself defines. It also keeps the importer off `python-libsbml`: the
+SBML edit is a byte-level rewrite of one attribute located with the stdlib `expat` parser,
+because libsbml re-serializes the whole file and writes doubles with 15 significant digits.

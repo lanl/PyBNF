@@ -22,6 +22,13 @@ repo, ``docs/bngl-grammar.md``): line continuations (a trailing ``\\``), the
 ``species`` block alias (``begin species`` = ``begin seed species``), the seed-
 species ``$`` clamp marker, and the observable/function/compartment line shapes.
 
+One function here writes rather than reads: :func:`set_parameter_values` sets a
+``begin parameters`` entry to the value a PEtab parameters table fixes (``estimate =
+false``), marked with a comment, when the model file disagrees with the table (#907,
+ADR-0149). It locates the line with this same reader, so the reader and the edit accept
+the same line shapes. It is PyBNF-only (the upstream port reads models and never edits
+them), so it is outside the drift note below.
+
 **Drift note (#420 Step B, #591):** this reader has an upstream twin — the
 standalone, pybnf-free port shipped in ``petab`` since 0.9.0
 (``petab/v1/models/bngl_model.py``, PEtab-dev/libpetab-python#508), which now backs
@@ -34,6 +41,8 @@ the mirrored grammar-hardening tests on both sides.
 
 import re
 from dataclasses import dataclass
+
+from ._tsv import num
 
 # The three observable keywords that open an observable declaration line.
 _OBS_KEYWORDS = frozenset({'Molecules', 'Species', 'Counter'})
@@ -109,9 +118,11 @@ def _names(text, block_name, extractor):
         n for n in (extractor(line) for line in _block_lines(text, block_name)) if n)
 
 
-def _logical_lines(text):
-    """The comment-stripped *logical* lines of ``text``: physical lines with BNGL
-    line continuations joined.
+def _logical_line_spans(raw_lines):
+    """The comment-stripped *logical* lines of ``raw_lines`` (the physical lines of a
+    model, without line endings), each as ``(line, first, last)``: physical lines with
+    BNGL line continuations joined, plus the indices of the first and last physical line
+    the logical line was read from.
 
     Mirrors BNG2.pl's ``readFile`` (``Perl2/BNGModel.pm``): strip the ``#``
     comment first, then while the line ends with ``\\`` (as the last non-whitespace
@@ -119,12 +130,13 @@ def _logical_lines(text):
     **directly** -- no separating space, so a token split across the break
     (``1e\\`` + ``3`` -> ``1e3``) rejoins correctly. Without this, a continued
     parameter / function / observable is truncated at the ``\\`` (e.g. a
-    ``k = \\`` line would read as the value ``'\\'``).
+    ``k = \\`` line would read as the value ``'\\'``). The physical span is what lets
+    :func:`set_parameter_values` edit a parameter the reader found without a second parser.
     """
-    raw_lines = text.splitlines()
     out = []
     i, n = 0, len(raw_lines)
     while i < n:
+        first = i
         line = raw_lines[i].split('#', 1)[0]
         i += 1
         while re.search(r'\\\s*$', line):
@@ -133,32 +145,139 @@ def _logical_lines(text):
                 break                       # a dangling continuation at EOF
             line += raw_lines[i].split('#', 1)[0]
             i += 1
-        out.append(line.strip())
+        out.append((line.strip(), first, i - 1))
     return out
 
 
-def _block_lines(text, block_name):
-    """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``.
+def _logical_lines(text):
+    """The comment-stripped *logical* lines of ``text`` (see :func:`_logical_line_spans`)."""
+    return [line for line, _, _ in _logical_line_spans(text.splitlines())]
+
+
+def _block_line_spans(raw_lines, block_name):
+    """The comment-stripped, non-blank logical lines inside a ``begin/end <block>``, each
+    as ``(line, first, last)`` (see :func:`_logical_line_spans`).
 
     ``block_name`` is the canonical (long) spelling; a BNG2.pl-accepted alias for
     it (only ``species`` for ``seed species``; see :data:`_BLOCK_ALIASES`) opens
-    and closes the same block. Lines are logical lines (continuations already
-    joined; see :func:`_logical_lines`).
+    and closes the same block.
     """
     names = '|'.join(
         re.escape(n) for n in (block_name, *_BLOCK_ALIASES.get(block_name, ())))
     begin = re.compile(rf'^begin\s+(?:{names})\b', re.I)
     end = re.compile(rf'^end\s+(?:{names})\b', re.I)
-    lines = []
+    spans = []
     in_block = False
-    for line in _logical_lines(text):
+    for line, first, last in _logical_line_spans(raw_lines):
         if begin.match(line):
             in_block = True
         elif end.match(line):
             in_block = False
         elif in_block and line:
-            lines.append(line)
-    return lines
+            spans.append((line, first, last))
+    return spans
+
+
+def _block_lines(text, block_name):
+    """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``.
+
+    Lines are logical lines (continuations already joined; see
+    :func:`_logical_line_spans`), and the block is matched as in
+    :func:`_block_line_spans`.
+    """
+    return [line for line, _, _ in _block_line_spans(text.splitlines(), block_name)]
+
+
+# An action that assigns a parameter by name: ``setParameter("k", 1)``, or the swept
+# ``parameter=>"k"`` of a ``parameter_scan`` / ``bifurcate``.
+_ACTION_PARAMETER = re.compile(r'''(?:setParameter\(\s*|parameter\s*=>\s*)["'](\w+)["']''')
+
+
+def parameters_set_by_actions(text):
+    """The names of the parameters the model file's own actions assign (``setParameter``, or
+    a scan's ``parameter=>``), read over comment-stripped logical lines.
+
+    The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907):
+    an edition-2 job runs the model file's own actions ahead of each experiment's
+    simulation, so such an action would set the parameter again.
+    """
+    return {m.group(1) for line in _logical_lines(text)
+            for m in _ACTION_PARAMETER.finditer(line)}
+
+
+# A BNGL numeric literal: an optional sign, digits with an optional point, and an optional
+# exponent. Only a right-hand side of this shape can already hold a given number; an
+# expression (``2*base``) is a different parameter definition even when it evaluates to the
+# same value, because it follows ``base`` (#907).
+_NUMBER = re.compile(r'[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\Z')
+
+
+def set_parameter_values(text, values, note):
+    """Set ``begin parameters`` entries of the BNGL ``text`` to new numeric values (#907).
+
+    ``values`` maps a parameter name to a float. ``note(name, old_rhs)`` returns the comment
+    written after each rewritten value, so the edit stays visible in the file. Returns
+    ``(new_text, changed)``, where ``changed`` maps each rewritten name to the right-hand side
+    the model file had.
+
+    A parameter whose right-hand side is a numeric literal already equal to its new value is
+    not touched, so a model that agrees with ``values`` comes back byte-identical. Any other
+    right-hand side (a different number, or an expression) is replaced by the number, written
+    with :func:`~pybnf.petab._tsv.num` so it reads back as exactly the same float. The line
+    is found with the same reader :func:`parse_model` uses, so every line shape it accepts is
+    handled: ``L 1``, ``L = 1``, a numeric or named line label, tabs, a trailing comment
+    (kept, after the new note). A parameter continued over several physical lines is
+    rewritten as one line, keeping each physical line's comment. Every byte outside the
+    rewritten lines is preserved, line endings included. A name absent from the block is
+    ignored; the caller decides whether that is an error.
+    """
+    ended = text.splitlines(keepends=True)
+    bare = text.splitlines()
+    replacements = {}               # first physical index -> (last index, new line)
+    changed = {}
+    for line, first, last in _block_line_spans(bare, 'parameters'):
+        nv = _parameter_name_value(line)
+        if nv is None or nv[0] not in values:
+            continue
+        name, rhs = nv
+        value = float(values[name])
+        if _NUMBER.match(rhs) and float(rhs) == value:
+            continue
+        comment = f'  # {note(name, rhs)}'
+        if first == last:
+            # One physical line: the right-hand side is the tail of its code part (the
+            # reader's parse runs to the end of the comment-stripped line), so replace exactly
+            # that tail and keep the indentation, label and separator as written.
+            code, has_hash, old_comment = bare[first].partition('#')
+            body = code.rstrip()
+            new_line = body[:len(body) - len(rhs)] + num(value) + comment
+            if has_hash:
+                new_line += '  #' + old_comment
+        else:
+            # A continued parameter: the logical line is the joined text, which also ends in
+            # the right-hand side. Write it back as a single line.
+            indent = bare[first][:len(bare[first]) - len(bare[first].lstrip())]
+            new_line = indent + line[:len(line) - len(rhs)] + num(value) + comment
+            for i in range(first, last + 1):
+                _, has_hash, old_comment = bare[i].partition('#')
+                if has_hash:
+                    new_line += '  #' + old_comment
+        ending = ended[last][len(bare[last]):]
+        replacements[first] = (last, new_line + ending)
+        changed[name] = rhs
+    if not replacements:
+        return text, {}
+    out = []
+    i = 0
+    while i < len(ended):
+        if i in replacements:
+            last, new_line = replacements[i]
+            out.append(new_line)
+            i = last + 1
+        else:
+            out.append(ended[i])
+            i += 1
+    return ''.join(out), changed
 
 
 def _strip_line_label(line):

@@ -1902,6 +1902,17 @@ class TestRealWorldBoehmV2:
         for sd in ('sd_pSTAT5A_rel', 'sd_pSTAT5B_rel', 'sd_rSTAT5A_rel'):
             assert f'uniform_var = {sd} 1e-05 100000' in text
 
+    def test_fixed_parameters_that_agree_leave_the_sbml_untouched(self, tmp_path, capsys):
+        # #907: Boehm fixes two parameters. `ratio` is a model parameter whose table value
+        # (0.693) is the SBML's own, and `specC17` is not a model entity at all (it is inlined
+        # into a formula). Neither edits the model, so no override is printed or listed.
+        pytest.importorskip('petab')
+        out = import_job(self.YAML, tmp_path / 'out')
+        assert ((out / 'model_Boehm_JProteomeRes2014.xml').read_bytes()
+                == (BOEHM_DIR / 'model_Boehm_JProteomeRes2014.xml').read_bytes())
+        assert 'Fixed model parameters' not in (out / 'imported.conf').read_text()
+        assert 'PEtab import' not in capsys.readouterr().out
+
     def test_imported_boehm_conf_loads_as_a_configuration(self, tmp_path, monkeypatch):
         # The imported conf is a valid end-to-end PyBNF job: the objective carries a
         # per-observable noise override for each observable, the 3 sigma parameters are
@@ -2357,6 +2368,344 @@ class TestFixedNoiseParamImport:
         # A fixed-scale Gaussian drops the normalizer: sum of res^2/(2*sigma^2), sigma = 2.
         expected = float(np.sum(np.array([1., 2., 2.]) ** 2 / (2 * 2. ** 2)))
         assert score == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# A fixed (estimate=false) MODEL parameter takes the table's nominalValue (#907, ADR-0149)
+#
+# The issue's reproduction is fixedsigma_v2 with v3 fixed at 10 in parameters.tsv while the
+# model file says `v3 3`, and measurements exact for (v1, v2, v3) = (0.5, 1, 10). PEtab gives
+# the table precedence, so the imported copy of the model must carry v3 = 10. Before the fix
+# the importer skipped the row and the job simulated v3 = 3: a check job reported 18.375
+# instead of 0, and a fit bent v1/v2 to make up the constant.
+# ---------------------------------------------------------------------------
+
+_FIXED_V3_PARAMETERS = (
+    'parameterId\tparameterName\tlowerBound\tupperBound\tnominalValue\testimate\n'
+    'v1\tv1\t0\t10\t0.5\ttrue\n'
+    'v2\tv2\t0\t10\t1\ttrue\n'
+    '{v3_row}\n'
+    'sd_c\tfixed noise\t\t\t2\tfalse\n')
+_X = np.array([-10., -9., -8.])            # the counter x at t = 0, 1, 2
+_EXACT_AT_V3_10 = (50., 41.5, 34.)         # y = 0.5 x^2 + x + 10
+_EXACT_AT_V3_3 = (43., 34.5, 27.)          # the fixture's own data: y = 0.5 x^2 + x + 3
+
+
+def _fixed_v3_problem(tmp_path, v3='10', model_text=None, data=_EXACT_AT_V3_10,
+                      v3_row=None):
+    """fixedsigma_v2 with v3 fixed at ``v3`` in the table (the model file says 3 unless
+    ``model_text`` replaces it) and measurements ``data``; returns the problem.yaml path."""
+    prob = tmp_path / 'prob'
+    shutil.copytree(FIXEDSIGMA_DIR, prob)
+    row = v3_row if v3_row is not None else f'v3\tv3\t\t\t{v3}\tfalse'
+    (prob / 'parameters.tsv').write_text(_FIXED_V3_PARAMETERS.format(v3_row=row))
+    (prob / 'measurements.tsv').write_text(
+        'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
+        + ''.join(f'obs_y\tepo\t{t}\t{y}\t\tsd_c\n' for t, y in enumerate(data)))
+    if model_text is not None:
+        (prob / 'fixedsigma_model.bngl').write_text(model_text)
+    return prob / 'problem.yaml'
+
+
+def _hand_objective(v1, v2, v3, data, sigma=2.):
+    """The fixed-sigma Gaussian objective PyBNF reports, computed by hand (no PyBNF):
+    sum(res^2) / (2 sigma^2) over y = v1 x^2 + v2 x + v3."""
+    y = v1 * _X ** 2 + v2 * _X + v3
+    return float(np.sum((np.asarray(data) - y) ** 2) / (2 * sigma ** 2))
+
+
+def _bng_objective(job_dir, values, monkeypatch, conf='imported.conf'):
+    """Simulate the job's single BNGL model at the free-parameter ``values`` with BNG2.pl and
+    score it with the job's own objective: what a ``job_type = check`` run prints, at any
+    parameter vector."""
+    from pybnf.config import Configuration
+    from pybnf.pset import PSet
+    monkeypatch.chdir(job_dir)
+    cfg = Configuration(ploop((job_dir / conf).read_text().splitlines(keepends=True)))
+    (name, model), = cfg.models.items()
+    ps = PSet([v.set_value(values[v.name]) for v in cfg.variables])
+    sim_dir = job_dir / 'sim'
+    sim_dir.mkdir(exist_ok=True)
+    ds = model.copy_with_param_set(ps).execute(str(sim_dir), 'probe', 60)
+    return cfg.obj.evaluate_multiple({name: ds}, cfg.exp_data, ps)
+
+
+class TestFixedModelParameterImport:
+    """#907: an estimate=false row naming a BNGL model parameter is written into the imported
+    model copy, marked, listed in the conf header and printed; a model that already agrees is
+    carried byte-for-byte."""
+
+    MARKED = '    v3 10  # PEtab parameters.tsv: estimate=false, nominalValue 10 (model file: 3)'
+
+    def test_the_table_value_is_written_into_the_model_copy_and_marked(self, tmp_path, capsys):
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        source = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text().splitlines()
+        copy = (out / 'fixedsigma_model.bngl').read_text().splitlines()
+        # Exactly one line differs: the v3 line, rewritten to the table's value and annotated.
+        assert len(copy) == len(source)
+        assert [(a, b) for a, b in zip(source, copy) if a != b] == [('    v3 3', self.MARKED)]
+        assert parse_model('\n'.join(copy)).parameters['v3'] == '10'
+        # The source problem is never touched.
+        assert (tmp_path / 'prob' / 'fixedsigma_model.bngl').read_text() == '\n'.join(source) + '\n'
+        # The conf names the override in its header and declares no v3 line of its own.
+        text = (out / 'imported.conf').read_text()
+        assert '#   v3 = 10 in fixedsigma_model.bngl (the model file had 3)' in text
+        assert not any(ln.split('#')[0].strip().endswith(('v3 10', 'v3'))
+                       for ln in text.splitlines() if not ln.startswith('#'))
+        # And the import says so on the console, one line per override.
+        printed = [ln for ln in capsys.readouterr().out.splitlines() if 'PEtab import' in ln]
+        assert printed == ['PEtab import: parameters.tsv fixes v3 = 10 (estimate=false); '
+                           'fixedsigma_model.bngl has 3, so the imported copy uses 10.']
+
+    def test_libpetab_fixed_values_are_the_values_in_the_model_copy(self, tmp_path):
+        # The external oracle: libpetab reads the problem and reports each fixed parameter's
+        # nominal value and which ids are model parameters; the imported copy, read back both
+        # with PyBNF's reader and with a plain regex, must carry exactly those values.
+        pytest.importorskip('petab.v2')
+        import re
+
+        from petab.v2 import Problem
+        yaml = _fixed_v3_problem(tmp_path)
+        problem = Problem.from_yaml(str(yaml))
+        fixed = problem.get_x_nominal_dict(free=False)
+        assert fixed == {'v3': 10.0, 'sd_c': 2.0}
+        model_params = set(problem.model.get_valid_parameters_for_parameter_table())
+        out = import_job(yaml, tmp_path / 'out')
+        text = (out / 'fixedsigma_model.bngl').read_text()
+        ours = parse_model(text).parameters
+        for pid in fixed.keys() & model_params:
+            assert float(ours[pid]) == fixed[pid]
+            m = re.search(rf'^\s*{pid}\s+([^\s#]+)', text, re.M)
+            assert float(m.group(1)) == fixed[pid]
+        assert fixed.keys() & model_params == {'v3'}
+
+    def test_an_agreeing_model_is_carried_byte_for_byte(self, tmp_path, capsys):
+        # 3.0 in the table, 3 in the model: equal as numbers, so no edit, no header, no print.
+        out = import_job(_fixed_v3_problem(tmp_path, v3='3.0', data=_EXACT_AT_V3_3),
+                         tmp_path / 'out')
+        assert ((out / 'fixedsigma_model.bngl').read_bytes()
+                == (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_bytes())
+        assert 'Fixed model parameters' not in (out / 'imported.conf').read_text()
+        assert 'PEtab import' not in capsys.readouterr().out
+
+    def test_an_expression_right_hand_side_is_replaced_by_the_constant(self, tmp_path):
+        # PEtab fixes the parameter at a constant, so an expression is replaced even when it
+        # evaluates to the table's value: it would follow v1 if v1 moved.
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text().replace(
+            '    v3 3\n', '    v3 = 6*v1\n')
+        out = import_job(_fixed_v3_problem(tmp_path, v3='3', model_text=model,
+                                           data=_EXACT_AT_V3_3), tmp_path / 'out')
+        copy = (out / 'fixedsigma_model.bngl').read_text()
+        assert ('    v3 = 3  # PEtab parameters.tsv: estimate=false, nominalValue 3 '
+                '(model file: 6*v1)\n') in copy
+        assert copy.replace(
+            '    v3 = 3  # PEtab parameters.tsv: estimate=false, nominalValue 3 '
+            '(model file: 6*v1)\n', '    v3 = 6*v1\n') == model
+
+    def test_a_multi_model_problem_is_edited_in_every_model_that_declares_the_parameter(
+            self, tmp_path):
+        # The parameters table is global: v3 fixed at 7 applies to both models that declare
+        # v3 (parabola says 3, the second model says 5), each copy edited and marked.
+        second = _GROWTH_BNGL.replace('    a2 2\n', '    a2 2\n    v3 5\n')
+        conf = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
+                f'model: {DEMO_MODEL}\nmodel: growth_v2.bngl\n'
+                f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+                'experiment: gr, model: growth_v2.bngl, data: gr.exp\n'
+                'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = a1 0 10\n')
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        (src / 'growth_v2.bngl').write_text(second)
+        (src / 'pa.exp').write_text((DEMO_DIR / 'par1.exp').read_text())
+        (src / 'gr.exp').write_text(TestImportMultiModelRoundTrip.EXTRA['gr.exp'])
+        (src / 'job.conf').write_text(conf)
+        petab1 = export_job(src / 'job.conf', tmp_path / 'petab1')
+        assert [r['parameterId'] for r in _tsv_rows(petab1 / 'parameters.tsv')] == [
+            'v1', 'v2', 'a1']
+        (petab1 / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'v1\ttrue\t0\t10\t\nv2\ttrue\t0\t10\t\na1\ttrue\t0\t10\t\n'
+            'v3\tfalse\t\t\t7\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'out')
+        for name, old in ((DEMO_MODEL, '3'), ('growth_v2.bngl', '5')):
+            source = (petab1 / name).read_text().splitlines()
+            copy = (out / name).read_text().splitlines()
+            diff = [(a, b) for a, b in zip(source, copy) if a != b]
+            assert diff == [(f'    v3 {old}',
+                             f'    v3 7  # PEtab parameters.tsv: estimate=false, nominalValue 7 '
+                             f'(model file: {old})')], name
+        text = (out / 'imported.conf').read_text()
+        assert f'#   v3 = 7 in {DEMO_MODEL} (the model file had 3)' in text
+        assert '#   v3 = 7 in growth_v2.bngl (the model file had 5)' in text
+
+    def test_a_fixed_row_without_a_nominal_value_is_refused(self, tmp_path):
+        yaml = _fixed_v3_problem(tmp_path, v3_row='v3\tv3\t\t\t\tfalse')
+        with pytest.raises(PybnfError, match="'v3' has estimate=false but no nominalValue"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_fixed_row_naming_a_bngl_observable_is_refused(self, tmp_path):
+        # `x` is the model's observable; PEtab's BNGL loader admits only parameters to the
+        # parameters table, so the row is malformed rather than silently ignored.
+        yaml = _fixed_v3_problem(tmp_path, v3_row='v3\tv3\t\t\t10\tfalse\nx\tx\t\t\t1\tfalse')
+        with pytest.raises(PybnfError, match="'x' is an observable, not a parameter"):
+            import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.parametrize('action', [
+        'setParameter("v3", 3)',
+        "parameter_scan({parameter=>'v3', par_min=>1, par_max=>2, n_scan_pts=>2})",
+    ])
+    def test_a_parameter_the_model_actions_set_is_refused(self, tmp_path, action):
+        # BNG2.pl runs the model file's actions after it loads the model, so an action that
+        # sets v3 would undo the value written into `begin parameters`.
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + f'\nbegin actions\n  {action}\nend actions\n')
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(NotImplementedError,
+                           match="'v3' has estimate=false with nominalValue 10, but an action "
+                                 "in the model fixedsigma_model.bngl"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
+        yaml = _fixed_v3_problem(tmp_path, v3='inf')
+        with pytest.raises(PybnfError, match="'v3' has estimate=false with nominalValue inf, "
+                                             "which is not a finite number"):
+            import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('data, expected', [
+        (_EXACT_AT_V3_10, 0.0),                  # the issue: main reported 18.375
+        (_EXACT_AT_V3_3, 3 * 7. ** 2 / (2 * 2. ** 2)),   # each point 7 above the data
+    ])
+    def test_a_check_evaluation_scores_the_table_value(self, tmp_path, monkeypatch, data,
+                                                       expected):
+        # What `job_type = check` prints: the model file's own v1/v2 with the table's v3.
+        out = import_job(_fixed_v3_problem(tmp_path, data=data), tmp_path / 'out')
+        assert expected == _hand_objective(0.5, 1., 10., data)
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            expected, abs=1e-9)
+
+    @pytest.mark.bionetgen
+    def test_the_objective_is_minimized_where_bounded_least_squares_puts_it(
+            self, tmp_path, monkeypatch):
+        # An independent solver: with v3 fixed at 10 the model is linear in (v1, v2), so
+        # scipy's bounded linear least squares gives the PEtab problem's best fit. PyBNF's
+        # imported job must score 0 there and the hand formula anywhere else.
+        from scipy.optimize import lsq_linear
+        data = np.asarray(_EXACT_AT_V3_10)
+        sol = lsq_linear(np.column_stack([_X ** 2, _X]), data - 10., bounds=(0, 10)).x
+        np.testing.assert_allclose(sol, [0.5, 1.0], atol=1e-8)
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        at_sol = _bng_objective(out, {'v1': sol[0], 'v2': sol[1]}, monkeypatch)
+        assert at_sol == pytest.approx(0., abs=1e-9)
+        # The point the pre-fix importer's fit found (v3 = 3 in the model) is ~18 away.
+        for v1, v2 in ((0.4, 0.8), (0.47479, 0.00064)):
+            assert _bng_objective(out, {'v1': v1, 'v2': v2}, monkeypatch) == pytest.approx(
+                _hand_objective(v1, v2, 10., data), rel=1e-9)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_the_model_a_fit_simulates_scores_the_table_value(self, tmp_path, monkeypatch):
+        # A fit does not simulate the config's BNGLModel through BNG2.pl: the algorithm turns
+        # it into bngsim's network model, generated by BNG2.pl from the model copy. That
+        # sibling path must see v3 = 10 as well.
+        from pybnf import algorithms
+        from pybnf.config import Configuration
+        from pybnf.pset import PSet
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        monkeypatch.chdir(out)
+        cfg = Configuration(ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        (out / cfg.config['output_dir']).mkdir(parents=True)
+        alg = algorithms.DifferentialEvolution(cfg)
+        monkeypatch.chdir(out)                # the constructor moves into output_dir
+        (model,) = alg.model_list
+        assert type(model).__name__ == 'BngsimModel'
+        ps = PSet([v.set_value({'v1': 0.4, 'v2': 0.8}[v.name]) for v in cfg.variables])
+        (out / 'net_sim').mkdir()
+        ds = model.copy_with_param_set(ps).execute(str(out / 'net_sim'), 'probe', 60)
+        assert alg.objective.evaluate_multiple({model.name: ds}, alg.exp_data, ps) == \
+            pytest.approx(_hand_objective(0.4, 0.8, 10., _EXACT_AT_V3_10), rel=1e-9)
+
+    def test_every_conf_of_an_all_job_types_import_lists_the_override(self, tmp_path):
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out', job_type='all')
+        confs = sorted(out.glob('imported_*.conf'))
+        assert len(confs) > 1
+        for conf in confs:
+            assert ('#   v3 = 10 in fixedsigma_model.bngl (the model file had 3)'
+                    in conf.read_text()), conf.name
+
+    @pytest.mark.bionetgen
+    def test_export_then_import_is_the_same_problem(self, tmp_path, monkeypatch):
+        # Re-exporting the imported job writes the edited model and NO estimate=false row
+        # (the exporter never writes one: a parameter absent from the table takes the model
+        # file's value, which is now the table's). Re-importing that is the same problem:
+        # nothing left to override, the model carried byte-for-byte, the same objective.
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        imp1 = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'imp1')
+        petab2 = export_job(imp1 / 'imported.conf', tmp_path / 'petab2')
+        assert [r['parameterId'] for r in _tsv_rows(petab2 / 'parameters.tsv')] == ['v1', 'v2']
+        assert self.MARKED in (petab2 / 'fixedsigma_model.bngl').read_text().splitlines()
+        assert not lint_problem(Problem.from_yaml(str(petab2 / 'problem.yaml'))).has_errors()
+        imp2 = import_job(petab2 / 'problem.yaml', tmp_path / 'imp2')
+        assert ((imp2 / 'fixedsigma_model.bngl').read_bytes()
+                == (petab2 / 'fixedsigma_model.bngl').read_bytes())
+        assert 'Fixed model parameters' not in (imp2 / 'imported.conf').read_text()
+        point = {'v1': 0.4, 'v2': 0.8}
+        first = _bng_objective(imp1, point, monkeypatch)
+        assert first == pytest.approx(_hand_objective(0.4, 0.8, 10., _EXACT_AT_V3_10), rel=1e-9)
+        assert _bng_objective(imp2, point, monkeypatch) == first
+
+
+class TestBnglSetParameterValues:
+    """The line editor behind #907 (``_bngl.set_parameter_values``): every parameter-line
+    shape the reader accepts, only the edited lines change, line endings kept."""
+
+    NOTE = staticmethod(lambda name, old: f'NOTE {name} was {old}')
+
+    def test_each_line_shape_is_rewritten_in_place(self):
+        from pybnf.petab._bngl import set_parameter_values
+        text = ('begin model\r\n'
+                'begin parameters\r\n'
+                '    L 1\r\n'
+                '\tM = 2 # ligand dose\n'
+                '  1 N\t3\n'
+                '  lab: P 2*L\n'
+                '    Q 4  \\\n'
+                '      + 1 # tail\n'
+                '    R 5.0\n'
+                '    S 6\n'
+                'end parameters\n'
+                'end model')
+        new, changed = set_parameter_values(
+            text, {'L': 10, 'M': 2.5, 'N': 30, 'P': 2, 'Q': 5, 'R': 5}, self.NOTE)
+        assert changed == {'L': '1', 'M': '2', 'N': '3', 'P': '2*L', 'Q': '4        + 1'}
+        assert new == ('begin model\r\n'
+                       'begin parameters\r\n'
+                       '    L 10  # NOTE L was 1\r\n'
+                       '\tM = 2.5  # NOTE M was 2  # ligand dose\n'
+                       '  1 N\t30  # NOTE N was 3\n'
+                       '  lab: P 2  # NOTE P was 2*L\n'
+                       '    Q 5  # NOTE Q was 4        + 1  # tail\n'
+                       '    R 5.0\n'           # equal as a number: untouched
+                       '    S 6\n'             # not named: untouched
+                       'end parameters\n'
+                       'end model')
+        values = parse_model(new).parameters
+        assert {k: float(values[k]) for k in 'LMNPQRS'} == {
+            'L': 10, 'M': 2.5, 'N': 30, 'P': 2, 'Q': 5, 'R': 5, 'S': 6}
+
+    def test_the_written_value_reads_back_as_the_same_float(self):
+        from pybnf.petab._bngl import set_parameter_values
+        v = 0.1 + 0.2
+        new, _ = set_parameter_values('begin parameters\n k 1\nend parameters\n', {'k': v},
+                                      self.NOTE)
+        assert float(parse_model(new).parameters['k']) == v
+
+    def test_nothing_to_change_returns_the_text_itself(self):
+        from pybnf.petab._bngl import set_parameter_values
+        text = 'begin parameters\n k 1e0\nend parameters\n'
+        assert set_parameter_values(text, {'k': 1.0, 'absent': 2.0}, self.NOTE) == (text, {})
 
 
 class TestMultiTokenRowVaryingNoiseImport:

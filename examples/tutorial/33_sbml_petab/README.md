@@ -59,8 +59,13 @@ import_job("problem.yaml", "out")
 `import_job` produces a runnable conf ([`out/imported.conf`](../12_petab_roundtrip))
 and one `.exp` per experiment, with two things worth noting:
 
-- **The `.xml` is carried byte-verbatim.** The dynamical model is never edited by
-  the importer (ADR-0036) — `out/cycle.xml` is identical to the input.
+- **The `.xml` is carried byte-verbatim.** The importer does not edit the dynamical
+  model (ADR-0036) — `out/cycle.xml` is identical to the input. The one exception is a
+  parameter the table fixes: a `parameters.tsv` row with `estimate = false` sets that
+  parameter to its `nominalValue`, which PEtab puts ahead of the model file, so when the
+  `.xml` has a different value the copy's `value` attribute is rewritten and marked with
+  an XML comment, and the import prints a line saying so (ADR-0149). This problem fixes
+  nothing.
 - **Bare-species observables become direct species measurements.** Because each
   `observableFormula` is a plain species id (`X1`, `X2`) and the bngsim SBML path
   reports *raw species* (Lessons [11](../11_interop)/[31](../31_bngl_sbml_fit)),

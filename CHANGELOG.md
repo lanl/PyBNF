@@ -259,6 +259,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 
+- **A PEtab import now applies the value of a parameter the table fixes (#907).** A
+  `parameters.tsv` row with `estimate = false` fixes a model parameter at its `nominalValue`,
+  but `import_job` ignored the row and the job simulated the model file's value. The value is
+  now written into PyBNF's copy of the model, marked with a comment, listed in the conf header
+  and printed. A fixed row PEtab forbids, or one PyBNF cannot apply exactly, is refused.
 - **Bayesian fits now report each parameter's credible intervals and histogram from that
   parameter's own samples (#856).** `samples.txt` lists parameters alphabetically, but the step
   that writes `credible*.txt` and `Histograms/` read its columns by position in declaration

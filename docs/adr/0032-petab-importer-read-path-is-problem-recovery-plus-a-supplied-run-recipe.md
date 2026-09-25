@@ -185,3 +185,14 @@ Two seams moved to make this honest:
   grows, with no importer edit per new method (the ADR-0012 payoff, now bidirectional).
 - See ADR-0019 (parameters), 0023 (observables), 0025 (exporter-first), 0026 (BNGL model),
   0027 (conditions/experiments), 0028 (new-era config), 0031 (objective surface).
+
+## Addendum (2026-09-25): the model passes through unchanged unless the parameters table fixes it (issue #907)
+
+"The model passes through `_bngl.parse_model` unchanged" now has one exception. A parameters-table
+row with `estimate = false` that names a model parameter fixes it at the row's `nominalValue`,
+which PEtab gives precedence over the model file. Where the model file disagrees, the importer
+writes that value into its copy of the model, marks the edit with a comment, lists it in the
+conf header and prints it (ADR-0149). A model that agrees with its table is still copied byte
+for byte. The exporter never writes an `estimate = false` row, so the round trip still holds:
+re-exporting an imported job writes the edited model and no fixed row, which is the same
+problem.

@@ -49,8 +49,11 @@ PEtab v2 specifics this encodes (current spec, *not* the v1 shape):
   support endpoint.
 
 Gaps are surfaced as ``NotImplementedError`` with clear messages so the boundary
-is documented in code, not silent: ``estimate = false`` fixed parameters (those
-become model constants, handled by a later importer chunk, not here).
+is documented in code, not silent: an ``estimate = false`` row is not a
+``FreeParameter`` and is refused here. The importer applies it instead
+(:func:`pybnf.petab.import_.import_job`): a fixed model parameter's ``nominalValue`` is
+written into the imported model copy (#907, ADR-0149), and any other fixed row is inlined
+as a constant where the tables reference it.
 """
 
 import csv
@@ -164,9 +167,9 @@ def free_parameter_from_row(row):
     if not row.estimate:
         raise NotImplementedError(
             f"Parameter '{row.parameter_id}' has estimate=false: a fixed parameter "
-            f"becomes a model constant, not a FreeParameter. Fixed-parameter "
-            f"wiring is a later #407 chunk (conditions / model overrides), not the "
-            f"parameters step.")
+            f"is a constant, not a FreeParameter. pybnf.petab.import_job applies it "
+            f"(a model parameter's nominalValue is written into the imported model copy, "
+            f"#907); this row-level mapper maps estimated rows only.")
 
     lb = -np.inf if row.lower_bound is None else float(row.lower_bound)
     ub = np.inf if row.upper_bound is None else float(row.upper_bound)
@@ -336,8 +339,10 @@ def _expect_n(params, n, dist, row):
 def free_parameters_from_table(rows):
     """Map the estimated rows of a parameters table to ``FreeParameter`` objects.
 
-    ``estimate=false`` rows are skipped (they are fixed model constants, not free
-    parameters), so this returns one ``FreeParameter`` per estimated row.
+    ``estimate=false`` rows are skipped (they are constants, not free parameters), so this
+    returns one ``FreeParameter`` per estimated row. A caller that builds a job from these must
+    apply the fixed rows' nominalValues itself, as :func:`pybnf.petab.import_.import_job` does
+    (#907): PEtab gives a fixed row's value precedence over the model file.
     """
     return [free_parameter_from_row(row) for row in rows if row.estimate]
 

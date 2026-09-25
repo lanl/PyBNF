@@ -33,8 +33,9 @@ Importing a PEtab problem
 ``pybnf.petab.import_job()`` converts a PEtab problem into a ready-to-run PyBNF
 job. It reads the problem's tables and model, reconstructs each experiment's data,
 and writes a new-era (**edition-2**) job into ``out_dir``: the ``.exp`` data files,
-a verbatim copy of the model (edition-2 binds free parameters by id, so the model
-needs no re-instrumentation), and one or more ``.conf`` files::
+a copy of the model that is verbatim except for the marked fixed-parameter overrides
+described below (edition-2 binds free parameters by id, so the model needs no
+re-instrumentation), and one or more ``.conf`` files::
 
   from pybnf.petab import import_job
 
@@ -50,6 +51,49 @@ caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 ``imported_<job_type>.conf`` per registered optimizer and sampler), ``method``
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``
 sets it per experiment, and ``settings`` overrides the required algorithm settings.
+
+.. _petab_fixed_parameters:
+
+Fixed parameters (``estimate = false``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A row of the ``parameters`` table with ``estimate = false`` fixes that parameter at the
+row's ``nominalValue``, and PEtab gives the table precedence over the model file: every
+PEtab tool (libpetab, AMICI, pyPESTO) simulates with the table's value, whatever the model
+file says. A common way to fix a parameter is to flip its ``estimate`` to ``false`` and set
+a ``nominalValue``, leaving the model file alone. PyBNF's importer applies that value in one
+of two ways:
+
+- **A model parameter** (a BNGL ``begin parameters`` entry, or an SBML global
+  ``<parameter>``) is written into PyBNF's *copy* of every model that declares it. If the
+  model file already has that number, the copy is byte-identical. If it has a different
+  number, a BNGL expression, or (SBML) no value, that one line or start tag is rewritten to
+  the table's value and marked with a comment such as
+  ``v3 10  # PEtab parameters.tsv: estimate=false, nominalValue 10 (model file: 3)``.
+  Each such override is also listed in the imported ``.conf``'s header and printed on the
+  console, one line per override. Your source files are never modified. Because the value
+  lives in the model copy, everything that reads the model's value sees it: the simulation,
+  every experiment whose condition leaves the parameter alone, and an ``observableFormula``
+  that names the parameter.
+- **Any other fixed parameter** (a noise level, a scale, a constant used only in the
+  tables) has no home in the model and is substituted where the tables use it: in an
+  ``observableFormula``, as a fixed noise level, or as a condition's ``targetValue``.
+
+The import refuses, naming the parameter, where it cannot apply the value faithfully: a
+fixed row with no ``nominalValue`` (PEtab v2 requires one); a fixed row that names a model
+entity other than a parameter, such as a species, a compartment, a BNGL observable or an SBML
+rule target (PEtab's own validator rejects these rows); an SBML parameter whose value an
+initial assignment, an event assignment or an algebraic rule also sets; and a BNGL parameter
+that the model file's own actions set (``setParameter``, or a parameter scan). In the last two
+cases writing the value into the model would not give the parameter the table's value for the
+whole simulation. An SBML
+parameter declared ``constant="false"`` that nothing assigns is accepted, since nothing can
+change it.
+
+The exporter never writes an ``estimate = false`` row. A parameter a PyBNF job does not fit
+stays in the exported model at the model file's value, which is exactly what PEtab uses for a
+parameter absent from the table. So re-exporting an imported job writes the edited model and
+no fixed row, which is the same PEtab problem, and importing it again changes nothing.
 
 Exporting a PyBNF job
 ---------------------
@@ -116,7 +160,10 @@ following all survive an import and an export:
   ``start_point`` line becomes that parameter's ``nominalValue``, and a parameter with no
   declared start writes an empty cell (the column is omitted entirely when the job
   declares no start at all). An out-of-box ``start_point``, which PEtab has no way to
-  state, is refused at export rather than written as a bound.
+  state, is refused at export rather than written as a bound. A fixed
+  (``estimate = false``) model parameter comes in as its value in the imported model copy
+  and goes back out in the model, not as a table row (see
+  :ref:`petab_fixed_parameters`).
 - **Observables and noise** — the ``observables`` table's noise half becomes a
   per-observable ``(noise model, noise-parameter source)``. Noise may be a fixed
   value, a data ``_SD`` column, or an estimated parameter, and it can vary by
