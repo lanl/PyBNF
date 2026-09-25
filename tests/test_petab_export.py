@@ -563,6 +563,338 @@ class TestExportObjectiveFamily:
 
 
 # ---------------------------------------------------------------------------
+# A column-mean sigma is per EXPERIMENT (#894). The fit scores one experiment at a time and
+# gives each point its own experiment's column mean (replicates pooled; a dose-response scan is
+# one experiment however many PEtab experiments its doses become). The export used to write one
+# mean pooled over every experiment, which reweights experiments of different magnitude and
+# moves the optimum. The fixture below measures one decay observable in three experiments of
+# very different size: a two-replicate wildtype time course, a conditioned time course 10x
+# larger, and a finite-time dose-response scan. The oracle is libpetab's own likelihood on the
+# exported tables against a numpy hand calculation and PyBNF's objective, at three k.
+# ---------------------------------------------------------------------------
+
+_DECAY_MODEL = """begin model
+begin parameters
+  k      0.5
+  A0     100
+  scale  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A()  A0*scale
+end seed species
+begin observables
+  Molecules  Obs_A  A()
+end observables
+begin reaction rules
+  A() -> 0  k
+end reaction rules
+end model
+"""
+
+_DECAY_TIMES = [0.5 * i for i in range(11)]
+_DECAY_DOSES = [2.0, 5.0, 20.0]
+_DECAY_SCAN_T = 1.0
+
+
+def _decay_series(amplitude, rate, times=_DECAY_TIMES):
+    return [amplitude * np.exp(-rate * t) for t in times]
+
+
+def _exp_text(header, xs, ys):
+    return f'# {header} Obs_A\n' + ''.join(f'{float(x)!r}\t{float(y)!r}\n' for x, y in zip(xs, ys))
+
+
+def _write_exp(path, header, xs, ys):
+    path.write_text(_exp_text(header, xs, ys))
+
+
+def _write_decay_job(src, noise_lines):
+    """The #894 fixture job: one observable in three experiments of very different size."""
+    (src / 'decay.bngl').write_text(_DECAY_MODEL)
+    _write_exp(src / 'lo.exp', 'time', _DECAY_TIMES, _decay_series(100, 0.5))
+    _write_exp(src / 'lo_rep.exp', 'time', _DECAY_TIMES, _decay_series(90, 0.45))
+    _write_exp(src / 'hi.exp', 'time', _DECAY_TIMES, _decay_series(1000, 0.7))
+    scan = [100 * d * np.exp(-0.6 * _DECAY_SCAN_T) * f
+            for d, f in zip(_DECAY_DOSES, (1.05, 0.97, 1.02))]
+    _write_exp(src / 'scan.exp', 'scale', _DECAY_DOSES, scan)
+    (src / 'job.conf').write_text(
+        'edition = 2\njob_type = de\nmodel: decay.bngl\n' + noise_lines +
+        'condition: high, perturbations: scale = 10\n'
+        'experiment: lo, data: lo.exp, lo_rep.exp\n'
+        'experiment: hi, condition: high, data: hi.exp\n'
+        f'experiment: scan, type: parameter_scan, t_end: {_DECAY_SCAN_T:g}, data: scan.exp\n'
+        'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+    return src / 'job.conf'
+
+
+def _decay_experiment_values(src):
+    """{experiment: (xs, ys)} straight from the .exp files (numpy, not pybnf); the two
+    replicate files of 'lo' are one experiment."""
+    def load(name):
+        arr = np.loadtxt(src / name)
+        return arr[:, 0], arr[:, 1]
+    t_lo, y_lo = load('lo.exp')
+    t_rep, y_rep = load('lo_rep.exp')
+    return {'lo': (np.r_[t_lo, t_rep], np.r_[y_lo, y_rep]),
+            'hi': load('hi.exp'),
+            'scan': load('scan.exp')}
+
+
+def _decay_prediction(k, name, x):
+    """The closed-form decay model: A(t) = 100 * scale * exp(-k t)."""
+    if name == 'scan':
+        return 100.0 * x * np.exp(-k * _DECAY_SCAN_T)
+    return 100.0 * (10.0 if name == 'hi' else 1.0) * np.exp(-k * x)
+
+
+def _hand_column_mean_objective(src, k, family):
+    """The fit's objective by hand: each experiment's residuals scaled by ITS OWN mean."""
+    total = 0.0
+    for name, (xs, ys) in _decay_experiment_values(src).items():
+        pred = _decay_prediction(k, name, xs)
+        sigma = ys.mean()
+        if family == 'gaussian':
+            total += 0.5 * (((pred - ys) / sigma) ** 2).sum()
+        elif family == 'laplace':
+            total += (np.abs(pred - ys) / sigma).sum()
+        else:   # lnnormal
+            total += 0.5 * (((np.log(pred) - np.log(ys)) / sigma) ** 2).sum()
+    return total
+
+
+def _petab_nll(out, k):
+    """The exported problem's negative log-likelihood, computed by libpetab from the tables."""
+    import pandas as pd
+    from petab.v2.calculate import calculate_llh
+
+    mdf = pd.read_csv(out / 'measurements.tsv', sep='\t', keep_default_na=False,
+                      dtype={'experimentId': str, 'noiseParameters': str})
+    odf = pd.read_csv(out / 'observables.tsv', sep='\t', keep_default_na=False,
+                      dtype=str).set_index('observableId')
+    # experimentId -> the scale its condition sets (1 when it sets none), read from the tables.
+    def rows(name):
+        return _tsv_rows(out / name) if (out / name).exists() else []
+    cond_of = {r['experimentId']: r['conditionId'] for r in rows('experiments.tsv')}
+    scale_of_cond = {r['conditionId']: float(r['targetValue'])
+                     for r in rows('conditions.tsv') if r['targetId'] == 'scale'}
+    scale = [scale_of_cond.get(cond_of.get(e), 1.0) for e in mdf['experimentId']]
+    sim = mdf.drop(columns=['measurement']).copy()
+    sim['simulation'] = [100.0 * s * np.exp(-k * t) for s, t in zip(scale, mdf['time'])]
+    pdf = pd.DataFrame({'parameterId': ['k'], 'nominalValue': [k]}).set_index('parameterId')
+    return -calculate_llh(mdf, sim, odf, pdf)
+
+
+def _pybnf_objective(conf_path, k, monkeypatch):
+    """PyBNF's own objective for the job at ``conf_path``, on closed-form simulations."""
+    import types
+    from pybnf import config as config_mod
+    from pybnf.parse import ploop
+
+    monkeypatch.chdir(conf_path.parent)
+    cfg = config_mod.Configuration(ploop(conf_path.read_text().splitlines(keepends=True)))
+    sims = {}
+    for name, (base, key) in cfg._experiment_data_keys.items():
+        exp = cfg.exp_data[base][key]
+        xs = np.array(sorted(set(exp[exp.indvar])))
+        # Every measured column observes the one species A (a fixture may measure it twice).
+        columns = [c for c in exp.cols if c != exp.indvar and not c.endswith('_SD')]
+        arr = np.column_stack([xs] + [_decay_prediction(k, name, xs)] * len(columns))
+        sims.setdefault(base, {})[key] = Data.from_columns(arr, [exp.indvar] + columns)
+    pset = [types.SimpleNamespace(name='k', value=k)]
+    return cfg.obj.evaluate_multiple(sims, cfg.exp_data, pset)
+
+
+def _write_ragged_job(src):
+    """A column-mean job with ragged replicates and sparse columns (added in review, #894).
+
+    'lo' is two replicate files on different time grids: the first measures Obs_A (NaN at
+    every third time) and Obs_B, the second only Obs_A. 'hi' (scale 10) measures only Obs_B,
+    at every other time. Both observables read the one species A."""
+    (src / 'decay.bngl').write_text(_DECAY_MODEL.replace(
+        '  Molecules  Obs_A  A()\n', '  Molecules  Obs_A  A()\n  Molecules  Obs_B  A()\n'))
+
+    def cell(v):
+        return 'nan' if np.isnan(v) else repr(float(v))
+
+    lo_a = [np.nan if i % 3 == 0 else 100 * np.exp(-0.5 * t) for i, t in enumerate(_DECAY_TIMES)]
+    lo_b = _decay_series(120, 0.5)
+    (src / 'lo.exp').write_text('# time Obs_A Obs_B\n' + ''.join(
+        f'{t!r}\t{cell(a)}\t{cell(b)}\n' for t, a, b in zip(_DECAY_TIMES, lo_a, lo_b)))
+    rep_times = [t + 0.25 for t in _DECAY_TIMES[:6]]
+    _write_exp(src / 'lo_rep.exp', 'time', rep_times, _decay_series(80, 0.5, rep_times))
+    hi_b = [900 * np.exp(-0.7 * t) if i % 2 == 0 else np.nan for i, t in enumerate(_DECAY_TIMES)]
+    (src / 'hi.exp').write_text('# time Obs_B\n' + ''.join(
+        f'{t!r}\t{cell(b)}\n' for t, b in zip(_DECAY_TIMES, hi_b)))
+    (src / 'job.conf').write_text(
+        'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+        'condition: high, perturbations: scale = 10\n'
+        'experiment: lo, data: lo.exp, lo_rep.exp\n'
+        'experiment: hi, condition: high, data: hi.exp\n'
+        'uniform_var = k 0.05 3.0\npopulation_size = 12\nmax_iterations = 5\n')
+    return src / 'job.conf'
+
+
+def _observed_mean_of_files(src, files, col):
+    """numpy's mean of the observed (non-NaN) ``col`` values over ``files``, read directly."""
+    values = []
+    for name in files:
+        header = (src / name).read_text().splitlines()[0].lstrip('#').split()
+        if col in header:
+            values.append(np.atleast_2d(np.loadtxt(src / name))[:, header.index(col)])
+    values = np.concatenate(values)
+    return values[~np.isnan(values)].mean()
+
+
+# Every spelling of a column-mean sigma: (conf noise lines, PyBNF family, PEtab distribution).
+_COLUMN_MEAN_SPELLINGS = {
+    'ave_norm_sos': ('objective = ave_norm_sos\n', 'gaussian', 'normal'),
+    'gaussian_override': ('objective = sos\nnoise_model Obs_A = gaussian, '
+                          'sigma = column_mean\n', 'gaussian', 'normal'),
+    'laplace_whole_fit': ('noise_model = laplace, scale = column_mean\n',
+                          'laplace', 'laplace'),
+    'lnnormal_whole_fit': ('noise_model = lnnormal, sigma = column_mean\n',
+                           'lnnormal', 'log-normal'),
+}
+
+
+class TestColumnMeanSigmaIsPerExperiment:
+    """#894: a column-mean sigma exports as each experiment's own mean, row by row."""
+
+    SPELLINGS = _COLUMN_MEAN_SPELLINGS
+
+    def _export(self, tmp_path, spelling):
+        noise_lines = self.SPELLINGS[spelling][0]
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_decay_job(src, noise_lines)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        return conf, out
+
+    @pytest.mark.parametrize('spelling', sorted(SPELLINGS))
+    def test_rows_carry_their_own_experiments_mean(self, tmp_path, spelling):
+        # Oracle: numpy means of the .exp files. The replicate files pool into ONE mean for
+        # 'lo' (the fit stacks them), and every dose of the scan carries the scan's one mean
+        # -- not a per-dose value, and never the mean pooled over all three experiments.
+        conf, out = self._export(tmp_path, spelling)
+        values = _decay_experiment_values(conf.parent)
+        expected = {'': values['lo'][1].mean(), 'hi': values['hi'][1].mean()}
+        expected.update({f'scan_{i}': values['scan'][1].mean() for i in range(3)})
+        (obs,) = _tsv_rows(out / 'observables.tsv')
+        assert obs['noiseDistribution'] == self.SPELLINGS[spelling][2]
+        assert obs['noiseFormula'] == 'noiseParameter1_obs_Obs_A'
+        assert obs['noisePlaceholders'] == 'noiseParameter1_obs_Obs_A'
+        rows = _tsv_rows(out / 'measurements.tsv')
+        assert len(rows) == 22 + 11 + 3
+        for r in rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                expected[r['experimentId']], rel=1e-15)
+        pooled = np.r_[values['lo'][1], values['hi'][1], values['scan'][1]].mean()
+        assert not any(float(r['noiseParameters']) == pytest.approx(pooled) for r in rows)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('spelling', sorted(SPELLINGS))
+    def test_exported_objective_is_the_fits_up_to_a_constant(
+            self, tmp_path, spelling, monkeypatch):
+        # Three independent evaluations of the same objective at three k: numpy by hand from
+        # the .exp files, PyBNF's own objective, and libpetab's likelihood of the exported
+        # tables. PEtab keeps the parameter-free normalizer PyBNF drops for a fixed sigma, so
+        # the libpetab NLL may differ from the fit by a constant -- but only a constant.
+        pytest.importorskip('petab.v2')
+        conf, out = self._export(tmp_path, spelling)
+        family = self.SPELLINGS[spelling][1]
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        hand = [_hand_column_mean_objective(conf.parent, k, family) for k in ks]
+        petab = [_petab_nll(out, k) for k in ks]
+        assert fit == pytest.approx(hand, rel=1e-10)
+        offsets = [p - f for p, f in zip(petab, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8 * max(fit))
+
+    def test_exported_optimum_is_the_fits(self, tmp_path):
+        # The issue's symptom, stated directly: the exported problem's optimum in k is the
+        # fit's. With the pooled mean the two optima were 0.6975 vs 0.6129 in the issue.
+        pytest.importorskip('petab.v2')
+        from scipy.optimize import minimize_scalar
+        conf, out = self._export(tmp_path, 'ave_norm_sos')
+        opts = dict(bounds=(0.05, 3.0), method='bounded', options={'xatol': 1e-10})
+        best_fit = minimize_scalar(
+            lambda k: _hand_column_mean_objective(conf.parent, k, 'gaussian'), **opts).x
+        best_petab = minimize_scalar(lambda k: _petab_nll(out, k), **opts).x
+        assert best_petab == pytest.approx(best_fit, abs=1e-6)
+
+    def test_equal_means_keep_the_constant_noise_formula(self, tmp_path):
+        # Two experiments whose means are identical (the same data under two names) need no
+        # placeholder: the constant is each experiment's own mean, as for a single experiment,
+        # and the tables stay as they were before #894. An experiment whose column has no
+        # observed value has no mean and does not force the per-row form either.
+        src = tmp_path / 'src'
+        src.mkdir()
+        _write_decay_job(src, 'objective = ave_norm_sos\n')
+        _write_exp(src / 'blank.exp', 'time', [0.0, 1.0], [float('nan'), float('nan')])
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nmodel: decay.bngl\nobjective = ave_norm_sos\n'
+            'experiment: lo, data: lo.exp\nexperiment: again, data: lo.exp\n'
+            'experiment: blank, data: blank.exp\n'
+            'uniform_var = k 0.05 3.0\n')
+        out = tmp_path / 'petab'
+        export_job(src / 'job.conf', out)
+        (obs,) = _tsv_rows(out / 'observables.tsv')
+        assert float(obs['noiseFormula']) == np.loadtxt(src / 'lo.exp')[:, 1].mean()
+        assert obs['noisePlaceholders'] == ''
+        assert all(r['noiseParameters'] == '' for r in _tsv_rows(out / 'measurements.tsv'))
+
+    def test_a_sidecar_noise_token_on_a_column_mean_column_is_refused(self):
+        # A per-row sidecar token would bind the same noise placeholder as the column mean
+        # and win (the writer prefers a token), so the pairing is refused, naming the column.
+        data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        times = [float(t) for t in data['time']]
+        sidecar = {'x': {'noiseParameter1_obs_x': {t: 'sd_x' for t in times}}}
+        with pytest.raises(NotImplementedError, match=r"column 'x'.*column mean"):
+            measurement_rows_from_data(data, {'x': 'obs_x'}, sd_suffix=None,
+                                       measurement_params=sidecar, noise_values={'x': 3.0})
+
+    def test_ragged_replicates_and_sparse_columns_use_observed_values_only(
+            self, tmp_path, monkeypatch):
+        # Added in independent review. The fixture above has full, same-grid replicates. Here
+        # the replicates are ragged: 'lo' has two files on different time grids, the second
+        # lacks Obs_B, and the first has NaN cells in Obs_A. 'hi' measures only Obs_B, sparsely.
+        # So Obs_A is measured in one experiment (the constant noiseFormula) and Obs_B in two
+        # with different means (the per-row form), in one table. Oracles: numpy means of each
+        # experiment's observed values read from the .exp files, and libpetab's likelihood of
+        # the exported tables against PyBNF's objective at three k (a constant offset only).
+        pytest.importorskip('petab.v2')
+        src = tmp_path / 'src'
+        src.mkdir()
+        conf = _write_ragged_job(src)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        obs = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        mean_a = _observed_mean_of_files(src, ['lo.exp', 'lo_rep.exp'], 'Obs_A')
+        assert float(obs['obs_Obs_A']['noiseFormula']) == pytest.approx(mean_a, rel=1e-15)
+        assert obs['obs_Obs_A']['noisePlaceholders'] == ''
+        assert obs['obs_Obs_B']['noiseFormula'] == 'noiseParameter1_obs_Obs_B'
+        mean_b = {'': _observed_mean_of_files(src, ['lo.exp', 'lo_rep.exp'], 'Obs_B'),
+                  'hi': _observed_mean_of_files(src, ['hi.exp'], 'Obs_B')}
+        rows = _tsv_rows(out / 'measurements.tsv')
+        b_rows = [r for r in rows if r['observableId'] == 'obs_Obs_B']
+        assert {r['experimentId'] for r in b_rows} == {'', 'hi'}
+        for r in b_rows:
+            assert float(r['noiseParameters']) == pytest.approx(
+                mean_b[r['experimentId']], rel=1e-15)
+        assert all(r['noiseParameters'] == '' for r in rows if r['observableId'] == 'obs_Obs_A')
+        # Only observed cells become rows: 7 + 6 Obs_A, 11 + 6 Obs_B.
+        assert len(rows) == 30
+        ks = (0.4, 0.6, 0.9)
+        fit = [_pybnf_objective(conf, k, monkeypatch) for k in ks]
+        offsets = [_petab_nll(out, k) - f for k, f in zip(ks, fit)]
+        assert offsets == pytest.approx([offsets[0]] * 3, rel=0, abs=1e-8 * max(fit))
+
+
+# ---------------------------------------------------------------------------
 # Per-observable + row-varying export round trip (ADR-0044/0045, #428 Milestone 2): the closing
 # half of the per-measurement placeholder frontier. The importer (test_petab_import.py) recovers
 # three crafted problems -- a per-observable FormulaSigma (scaling_v2), a row-varying noise id
@@ -1817,6 +2149,477 @@ class TestExportPreequilibratedDoseResponse:
 
 
 # ---------------------------------------------------------------------------
+# #896: a FIXED-duration equilibration (``equil_t_end: T``) exports as a leading PEtab v2 period
+# starting at time -T, not -inf (which PEtab reads as "equilibrate to steady state"). The oracle
+# is the closed form of a birth-death model and an independent scipy integration that follows
+# the exported periods; PyBNF's own simulation of the job (BNG2.pl) is held to the same numbers.
+# ---------------------------------------------------------------------------
+
+# dA/dt = kp - k*flag*A with A(0) = 10 and kp = 5. Equilibrating under flag = 2 for T gives
+# A = 2.5 + 7.5*exp(-2kT); the measured phase under flag = 1 then relaxes toward 5/k.
+_FIXED_EQUIL_MODEL = """begin model
+begin parameters
+  kp    5
+  k     1.0
+  flag  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  0 -> A() kp
+  A() -> 0 deg()
+end reaction rules
+end model
+"""
+
+_FIXED_EQUIL_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+    'condition: pre,  perturbations: flag = 2\n'
+    'condition: meas, perturbations: flag = 1\n'
+    'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 0.1, '
+    'data: relax.exp\n'
+    'uniform_var = k 0.1 10\n')
+
+
+def _fixed_equil_closed_form(times, k=1.0, equil=0.1):
+    """A_tot over the measured phase of the fixed-duration protocol, by hand: equilibrate from
+    the seed (10) under flag = 2 for ``equil``, then relax under flag = 1."""
+    import math
+    a0 = 5 / (2 * k) + (10 - 5 / (2 * k)) * math.exp(-2 * k * equil)
+    return [5 / k + (a0 - 5 / k) * math.exp(-k * t) for t in times]
+
+
+def _simulate_exported_protocol(petab_dir, experiment_id, k=1.0):
+    """An independent reading of an exported problem of ``_FIXED_EQUIL_MODEL``: follow the
+    experiment's periods in experiments.tsv the PEtab v2 way (a period runs from its start time
+    until the next one starts; a ``-inf`` start is a steady state), take ``flag`` from each
+    period's condition in conditions.tsv, and integrate dA/dt = 5 - k*flag*A with scipy from the
+    seed amount. Returns A at the experiment's measurement times (sorted)."""
+    import math
+    from scipy.integrate import solve_ivp
+    flag_of = {r['conditionId']: float(r['targetValue'])
+               for r in _tsv_rows(petab_dir / 'conditions.tsv') if r['targetId'] == 'flag'}
+    periods = sorted((float(r['time']), r['conditionId'])
+                     for r in _tsv_rows(petab_dir / 'experiments.tsv')
+                     if r['experimentId'] == experiment_id)
+    times = sorted(float(m['time']) for m in _tsv_rows(petab_dir / 'measurements.tsv')
+                   if m['experimentId'] == experiment_id)
+
+    def rhs(flag):
+        return lambda _t, a: [5.0 - k * flag * a[0]]
+
+    a = 10.0
+    for (start, cid), (end, _next_cid) in zip(periods, periods[1:]):
+        if math.isinf(start):
+            a = 5.0 / (k * flag_of[cid])             # the steady state under this condition
+        else:
+            a = solve_ivp(rhs(flag_of[cid]), (start, end), [a], rtol=1e-11, atol=1e-12).y[0, -1]
+    start, cid = periods[-1]
+    return list(solve_ivp(rhs(flag_of[cid]), (start, times[-1]), [a], t_eval=times,
+                          rtol=1e-11, atol=1e-12).y[0])
+
+
+class TestExportFixedDurationEquilibration:
+
+    def _src(self, tmp_path_factory, name, conf=_FIXED_EQUIL_CONF, model=_FIXED_EQUIL_MODEL):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'm.bngl').write_text(model)
+        (src / 'relax.exp').write_text('# time A_tot\n0\t8.64\n1\t6.34\n2\t5.49\n')
+        (src / 'job.conf').write_text(conf)
+        return src
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = self._src(tmp_path_factory, 'fixed_equil')
+        return export_job(src / 'job.conf', src / 'petab')
+
+    def test_leading_period_starts_at_minus_equil_t_end(self, exported):
+        # The regression: the export wrote `relax -inf cond_pre` (a steady state) and ignored
+        # equil_t_end entirely, so the file was byte-identical with and without it.
+        rows = _tsv_rows(exported / 'experiments.tsv')
+        assert [(r['experimentId'], r['time'], r['conditionId']) for r in rows] == [
+            ('relax', '-0.1', 'cond_pre'),
+            ('relax', '0', 'cond_meas')]
+
+    def test_exported_protocol_reproduces_the_fixed_duration_closed_form(self, exported):
+        # Oracle: integrating the exported periods independently gives the hand-derived fixed
+        # 0.1 equilibration (A(0) = 2.5 + 7.5*exp(-0.2) = 8.6405), not the steady state (2.5).
+        predicted = _simulate_exported_protocol(exported, 'relax')
+        np.testing.assert_allclose(predicted, _fixed_equil_closed_form([0, 1, 2]), rtol=1e-8)
+        assert predicted[0] == pytest.approx(8.640480648, rel=1e-8)
+
+    def test_full_petab_validation_is_clean(self, exported):
+        assert _petab_validation_errors(exported / 'problem.yaml') == []
+
+    def test_pybnf_simulation_matches_the_exported_protocol(self, tmp_path_factory, monkeypatch):
+        # The fit-preservation statement itself: PyBNF's own simulation of the job (BNG2.pl, the
+        # fitter's equilibrate-for-T-then-measure action block) equals the independent
+        # integration of the exported problem, and both equal the closed form, at two k values.
+        from .recovery_harness import require_bng2pl
+        from pybnf.parse import load_config
+        from pybnf.pset import PSet
+        require_bng2pl()
+        src = self._src(tmp_path_factory, 'fixed_equil_sim')
+        out = export_job(src / 'job.conf', src / 'petab')
+        (src / 'sim.conf').write_text(_FIXED_EQUIL_CONF
+                                      + 'population_size = 4\nmax_iterations = 1\n')
+        monkeypatch.chdir(src)
+        conf = load_config('sim.conf')
+        model = conf.models['m']
+        assert ('simulate({method=>"ode",t_start=>0,t_end=>0.1,n_steps=>1,'
+                'suffix=>"relax_preequil",print_functions=>1})') in model.actions
+        for k in (1.0, 0.4):
+            sim = model.copy_with_param_set(PSet([v.set_value(k) for v in conf.variables]))
+            (src / f'sim{k}').mkdir()
+            data = sim.execute(f'sim{k}', f'sim{k}', 60)['relax']
+            pybnf_a = list(data.data[:, data.cols['A_tot']])
+            np.testing.assert_allclose(pybnf_a, _fixed_equil_closed_form([0, 1, 2], k=k),
+                                       rtol=1e-5)
+            np.testing.assert_allclose(pybnf_a, _simulate_exported_protocol(out, 'relax', k=k),
+                                       rtol=1e-5)
+
+    def test_steady_state_default_is_unchanged(self, tmp_path_factory):
+        # Without equil_t_end the leading period is still -inf (ADR-0052).
+        src = self._src(tmp_path_factory, 'ss_equil',
+                        conf=_FIXED_EQUIL_CONF.replace(', equil_t_end: 0.1', ''))
+        out = export_job(src / 'job.conf', src / 'petab')
+        assert [r['time'] for r in _tsv_rows(out / 'experiments.tsv')] == ['-inf', '0']
+
+    def test_preequilibrated_scan_leads_every_dose_with_minus_equil_t_end(self, tmp_path_factory):
+        # The sibling builder (ADR-0062): each dose's two-period experiment starts its
+        # equilibration period at -equil_t_end too; the measured period and scan time are as before.
+        src = tmp_path_factory.mktemp('fixed_equil_pdr')
+        (src / 'm.bngl').write_text(_PDR_MODEL)
+        (src / 'dose.exp').write_text('# L resp\n1\t0.5\n2\t1\n5\t2.5\n')
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+            'condition: incubate, perturbations: "A()" = 100\n'
+            'condition: wash, perturbations: "A()" = 0\n'
+            'experiment: scan, preequilibrate: incubate, condition: wash, '
+            'type: parameter_scan, t_end: 20, equil_t_end: 7200, data: dose.exp\n'
+            'uniform_var = kd 0.1 10\n')
+        out = export_job(src / 'job.conf', src / 'petab')
+        rows = [(r['experimentId'], r['time'], r['conditionId'])
+                for r in _tsv_rows(out / 'experiments.tsv')]
+        assert [r for r in rows if r[2] == 'cond_incubate'] == [
+            ('scan_0', '-7200', 'cond_incubate'), ('scan_1', '-7200', 'cond_incubate'),
+            ('scan_2', '-7200', 'cond_incubate')]
+        assert not any(r[1] == '-inf' for r in rows)
+        assert {m['time'] for m in _tsv_rows(out / 'measurements.tsv')} == {'20'}
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('bad', ['0', '-5', 'inf'])
+    def test_non_positive_or_infinite_equil_t_end_is_refused(self, tmp_path_factory, bad):
+        # A zero duration would start both periods at 0 (PEtab would apply both conditions at
+        # once); a negative or infinite one is no duration. Refused, naming the experiment.
+        src = self._src(tmp_path_factory, 'bad_equil',
+                        conf=_FIXED_EQUIL_CONF.replace('equil_t_end: 0.1', f'equil_t_end: {bad}'))
+        with pytest.raises(PybnfError, match="Experiment 'relax'.*finite positive"):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_time_dependent_bngl_model_is_refused(self, tmp_path_factory):
+        # PyBNF runs the equilibration on [0, T] and restarts the clock; PEtab runs it on [-T, 0].
+        # A model reading time() sees different times, so the protocol has no exact PEtab form.
+        model = _FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*(1 + time())')
+        src = self._src(tmp_path_factory, 'time_equil', model=model)
+        with pytest.raises(NotImplementedError,
+                           match="Experiment 'relax'.*m.bngl.*reads the simulation time"):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_multi_model_refusal_follows_each_experiments_own_model(self, tmp_path_factory):
+        # Only the model the fixed-duration experiment simulates matters: a time-reading second
+        # model in the job does not block an experiment on the autonomous one, and an experiment
+        # on the time-reading one is refused naming that model.
+        src = self._src(tmp_path_factory, 'time_multi')
+        (src / 'clock.bngl').write_text(
+            _FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*(1 + time())'))
+        conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\nmodel: clock.bngl\n'
+                'condition: pre,  model: m.bngl, perturbations: flag = 2\n'
+                'condition: meas, model: m.bngl, perturbations: flag = 1\n'
+                'condition: cpre, model: clock.bngl, perturbations: flag = 2\n'
+                'experiment: relax, model: m.bngl, preequilibrate: pre, condition: meas, '
+                'equil_t_end: 0.1, data: relax.exp\n'
+                'uniform_var = k 0.1 10\n')
+        (src / 'job.conf').write_text(conf)
+        out = export_job(src / 'job.conf', src / 'petab')
+        assert [r['time'] for r in _tsv_rows(out / 'experiments.tsv')] == ['-0.1', '0']
+        (src / 'job.conf').write_text(
+            conf + 'experiment: tick, model: clock.bngl, preequilibrate: cpre, equil_t_end: 2, '
+            'data: relax.exp\n')
+        with pytest.raises(NotImplementedError, match="Experiment 'tick'.*clock.bngl"):
+            export_job(src / 'job.conf', src / 'out2')
+
+    def test_time_dependent_model_with_steady_state_equilibration_still_exports(
+            self, tmp_path_factory):
+        # The refusal is specific to a FIXED duration: the -inf mapping carries no clock offset.
+        model = _FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*(1 + time())')
+        src = self._src(tmp_path_factory, 'time_ss', model=model,
+                        conf=_FIXED_EQUIL_CONF.replace(', equil_t_end: 0.1', ''))
+        out = export_job(src / 'job.conf', src / 'petab')
+        assert [r['time'] for r in _tsv_rows(out / 'experiments.tsv')] == ['-inf', '0']
+
+
+# A two-species sibling of the #896 model, for the protocol shapes the birth-death oracle above
+# does not reach: a pre-equilibrated scan, a parameter the equilibration condition sets that the
+# measured condition does not (so it carries into the measured phase), and a species wash.
+# dA/dt = kp*g - k*flag*A - kab*A, dB/dt = kab*A - kb*B, A(0) = 10, B(0) = 1.
+_TWO_SPECIES_MODEL = """begin model
+begin parameters
+  kp    5
+  k     1.0
+  flag  1
+  g     1
+  kab   0.3
+  kb    0.2
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 10
+  B() 1
+end seed species
+begin observables
+  Molecules A_tot A()
+  Molecules B_tot B()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  0 -> A() kp*g
+  A() -> 0 deg()
+  A() -> B() kab
+  B() -> 0 kb
+end reaction rules
+end model
+"""
+_TWO_SPECIES_DEFAULTS = {'kp': 5.0, 'k': 1.0, 'flag': 1.0, 'g': 1.0, 'kab': 0.3, 'kb': 0.2}
+
+
+def _simulate_exported_two_species(petab_dir, experiment_id, fit):
+    """An independent reading of an exported problem of ``_TWO_SPECIES_MODEL`` the PEtab v2 way.
+
+    The experiment's periods run from their start time until the next one starts. At each
+    period's start its conditions set parameters (which then persist until another condition
+    changes them) and species amounts (through the mapping table). A model parameter that stays
+    in the parameter table takes its fit value, and a surrogate symbol (``k__REF``) in a
+    targetValue is read from ``fit``. Integrates with scipy and returns ``{time: (A, B)}`` at the
+    experiment's measurement times."""
+    import math
+    from scipy.integrate import solve_ivp
+    changes = {}
+    for r in _tsv_rows(petab_dir / 'conditions.tsv'):
+        changes.setdefault(r['conditionId'], []).append((r['targetId'], r['targetValue']))
+    species = {'A()': 0, 'B()': 1}
+    mapping = {}
+    if (petab_dir / 'mapping.tsv').exists():
+        mapping = {r['petabEntityId']: r['modelEntityId']
+                   for r in _tsv_rows(petab_dir / 'mapping.tsv')}
+    starts = {}
+    for r in _tsv_rows(petab_dir / 'experiments.tsv'):
+        if r['experimentId'] == experiment_id:
+            starts.setdefault(float(r['time']), []).append(r['conditionId'])
+    times = sorted({float(m['time']) for m in _tsv_rows(petab_dir / 'measurements.tsv')
+                    if m['experimentId'] == experiment_id})
+    p = dict(_TWO_SPECIES_DEFAULTS)
+    for r in _tsv_rows(petab_dir / 'parameters.tsv'):
+        if r['parameterId'] in p:
+            p[r['parameterId']] = fit[r['parameterId']]
+
+    def value(text):
+        try:
+            return float(text)
+        except ValueError:
+            return fit[text]                  # a bare surrogate symbol, e.g. k__REF
+
+    def rhs(_t, y):
+        return [p['kp'] * p['g'] - p['k'] * p['flag'] * y[0] - p['kab'] * y[0],
+                p['kab'] * y[0] - p['kb'] * y[1]]
+
+    y = [10.0, 1.0]
+    order = sorted(starts)
+    for i, start in enumerate(order):
+        for cid in starts[start]:
+            for target, text in changes.get(cid, []):
+                target = mapping.get(target, target)
+                if target in species:
+                    y[species[target]] = value(text)
+                else:
+                    p[target] = value(text)
+        assert math.isfinite(start)
+        if i + 1 < len(order):
+            y = list(solve_ivp(rhs, (start, order[i + 1]), y, rtol=1e-11, atol=1e-12).y[:, -1])
+    sol = solve_ivp(rhs, (order[-1], times[-1]), y, t_eval=times, rtol=1e-11, atol=1e-12)
+    return {t: tuple(sol.y[:, j]) for j, t in enumerate(times)}
+
+
+def _pybnf_simulation(src, conf_text, k):
+    """PyBNF's own simulation (BNG2.pl) of ``conf_text`` in ``src`` at the fit value ``k``: the
+    fitter's synthesized pre-equilibration action block, run once."""
+    import os
+    from pybnf.parse import load_config
+    from pybnf.pset import PSet
+    from .recovery_harness import require_bng2pl
+    require_bng2pl()
+    (src / 'sim.conf').write_text(conf_text + 'population_size = 4\nmax_iterations = 1\n')
+    cwd = os.getcwd()
+    os.chdir(src)
+    try:
+        conf = load_config('sim.conf')
+        model = conf.models['m']
+        folder = src / f'sim_{k}'
+        folder.mkdir()
+        return model.copy_with_param_set(PSet([v.set_value(k) for v in conf.variables])).execute(
+            str(folder), f'sim_{k}', 60)
+    finally:
+        os.chdir(cwd)
+
+
+class TestExportFixedDurationEquilibrationTwoSpecies:
+
+    def test_preequilibrated_scan_simulates_the_exported_protocol(self, tmp_path):
+        # Every dose of a pre-equilibrated scan with equil_t_end: 0.5 and t_end: 2.5: PyBNF's
+        # simulation (equilibrate for 0.5 under flag = 2, g = 3; wash B to 0; scan kab from the
+        # saved state) equals the independent integration of the exported periods (-0.5 under
+        # cond_pre, then the wash and the dose at 0, read at 2.5). g is set only in the
+        # equilibration condition, so both sides must carry it into the measured phase.
+        import shutil
+        conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                'condition: pre,  perturbations: flag = 2, g = 3\n'
+                'condition: wash, perturbations: "B()" = 0\n'
+                'experiment: scan, preequilibrate: pre, condition: wash, type: parameter_scan, '
+                't_end: 2.5, equil_t_end: 0.5, data: dose.exp\n'
+                'uniform_var = k 0.1 10\n')
+        (tmp_path / 'm.bngl').write_text(_TWO_SPECIES_MODEL)
+        (tmp_path / 'dose.exp').write_text('# kab B_tot\n0.1\t1\n0.3\t2\n1\t3\n')
+        (tmp_path / 'job.conf').write_text(conf)
+        out = export_job(tmp_path / 'job.conf', tmp_path / 'petab')
+        assert {(r['experimentId'], r['time']) for r in _tsv_rows(out / 'experiments.tsv')
+                if r['conditionId'] == 'cond_pre'} == {(f'scan_{i}', '-0.5') for i in range(3)}
+        # The same tables with a longer equilibration, to show the comparison can tell them apart.
+        longer = tmp_path / 'petab_longer'
+        shutil.copytree(out, longer)
+        (longer / 'experiments.tsv').write_text(
+            (out / 'experiments.tsv').read_text().replace('\t-0.5\t', '\t-5\t'))
+        for k in (1.0, 0.4):
+            scan = _pybnf_simulation(tmp_path, conf, k)['scan']
+            pybnf_b = scan.data[:, scan.cols['B_tot']]
+            exported_b = [_simulate_exported_two_species(out, f'scan_{i}', {'k': k})[2.5][1]
+                          for i in range(3)]
+            np.testing.assert_allclose(pybnf_b, exported_b, rtol=1e-5)
+            longer_b = [_simulate_exported_two_species(longer, f'scan_{i}', {'k': k})[2.5][1]
+                        for i in range(3)]
+            assert np.max(np.abs(np.array(longer_b) / pybnf_b - 1)) > 1e-2
+
+    @pytest.mark.xfail(strict=True, reason=(
+        'A FIT parameter set in the equilibration condition but not in the measured condition '
+        'keeps its equilibration value in the fitter (setParameter persists), but the export '
+        're-pins it to its surrogate base <p>__REF on the measured period (#443), so a PEtab '
+        'tool simulates the measured phase at the fit value instead. Pre-existing (the -inf '
+        'period does the same); found in review of #896.'))
+    def test_fit_parameter_set_only_in_the_equilibration_carries_into_the_measured_phase(
+            self, tmp_path):
+        conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+                'condition: pre,  perturbations: k = 2, g = 3\n'
+                'condition: meas, perturbations: flag = 1.5\n'
+                'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 0.7, '
+                'data: relax.exp\n'
+                'uniform_var = k 0.1 10\n')
+        (tmp_path / 'm.bngl').write_text(_TWO_SPECIES_MODEL)
+        (tmp_path / 'relax.exp').write_text('# time A_tot B_tot\n0\t8\t1\n1\t6\t2\n2\t5\t2\n')
+        (tmp_path / 'job.conf').write_text(conf)
+        out = export_job(tmp_path / 'job.conf', tmp_path / 'petab')
+        for k in (1.0, 0.4):
+            relax = _pybnf_simulation(tmp_path, conf, k)['relax']
+            exported = _simulate_exported_two_species(out, 'relax', {'k': k, 'k__REF': k})
+            np.testing.assert_allclose(relax.data[:, relax.cols['A_tot']],
+                                       [exported[t][0] for t in (0.0, 1.0, 2.0)], rtol=1e-5)
+
+
+# The model_time_reads detector (#896): what makes a model non-autonomous, per language.
+_SBML_TIME_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="m">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="c" initialConcentration="10" hasOnlySubstanceUnits="false"
+               boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="1" constant="true"/>
+      <parameter id="flag" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="death" reversible="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k</ci><ci>flag</ci><ci>A</ci>RATE_EXTRA</apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+_SBML_TIME_CSYMBOL = ('<csymbol encoding="text" '
+                      'definitionURL="http://www.sbml.org/sbml/symbols/time"> t </csymbol>')
+
+
+@pytest.mark.parametrize('text,language,time_dependent', [
+    (_FIXED_EQUIL_MODEL, 'bngl', False),
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag*time()'), 'bngl', True),
+    # an inline rate law reading time
+    (_FIXED_EQUIL_MODEL.replace('A() -> 0 deg()', 'A() -> 0 k*if(time()>5,1,2)'), 'bngl', True),
+    # a table function: time-indexed explicitly, by default (no index), or by a parameter
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', "deg() k*tfun('d.tfun', time)"), 'bngl', True),
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', "deg() k*tfun('d.tfun')"), 'bngl', True),
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*tfun([0,1],[1,2], method=>"step")'),
+     'bngl', True),
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', "deg() k*tfun('d.tfun', flag)"), 'bngl', False),
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*tfun([0,1],[1,2], flag)'), 'bngl', False),
+    # time mentioned only in a comment or an action is not a read of time by the model
+    (_FIXED_EQUIL_MODEL.replace('deg() k*flag', 'deg() k*flag  # not time()')
+     + 'simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"time"})\n', 'bngl', False),
+    (_SBML_TIME_TEMPLATE.replace('RATE_EXTRA', ''), 'sbml', False),
+    (_SBML_TIME_TEMPLATE.replace('RATE_EXTRA', _SBML_TIME_CSYMBOL), 'sbml', True),
+])
+def test_model_time_reads(text, language, time_dependent):
+    from pybnf.petab.conditions import model_time_reads
+    assert bool(model_time_reads(text, language)) is time_dependent
+
+
+def test_fixed_duration_equilibration_on_a_time_dependent_sbml_model_is_refused(tmp_path):
+    # The SBML sibling of the BNGL refusal: a <csymbol> for time in a kinetic law.
+    (tmp_path / 'm.xml').write_text(_SBML_TIME_TEMPLATE.replace('RATE_EXTRA', _SBML_TIME_CSYMBOL))
+    (tmp_path / 'relax.exp').write_text('# time A\n0\t8\n1\t6\n')
+    conf = ('edition = 2\njob_type = de\nobjective = sos\nmodel: m.xml\n'
+            'condition: pre,  perturbations: flag = 2\n'
+            'condition: meas, perturbations: flag = 1\n'
+            'experiment: relax, preequilibrate: pre, condition: meas, equil_t_end: 3, '
+            'data: relax.exp\n'
+            'uniform_var = k 0.1 10\n')
+    (tmp_path / 'job.conf').write_text(conf)
+    with pytest.raises(NotImplementedError, match="Experiment 'relax'.*m.xml.*<csymbol> for time"):
+        export_job(tmp_path / 'job.conf', tmp_path / 'out')
+    # The same job on the autonomous model exports the -T period (the SBML sibling path).
+    (tmp_path / 'm.xml').write_text(_SBML_TIME_TEMPLATE.replace('RATE_EXTRA', ''))
+    out = export_job(tmp_path / 'job.conf', tmp_path / 'petab')
+    assert [(r['time'], r['conditionId']) for r in _tsv_rows(out / 'experiments.tsv')] == [
+        ('-3', 'cond_pre'), ('0', 'cond_meas')]
+
+
+# ---------------------------------------------------------------------------
 # Multi-model export (ADR-0041, #430): a job with more than one model: each experiment names
 # the model it simulates; the model id is stamped on its measurement rows' modelId (the column
 # is omitted single-model), free parameters bind across the union of every model's ids, and
@@ -2029,13 +2832,178 @@ class TestExportMultiModel:
             export_job(src / 'job.conf', tmp_path / 'out')
 
 
+# ---------------------------------------------------------------------------
+# #897: in a multi-model job a relative condition on a FIXED parameter is folded to a number
+# against the nominal of the model the condition belongs to -- the base the fitter uses -- not
+# the first declared model that happens to define a parameter of that name.
+# ---------------------------------------------------------------------------
+
+# A(t) = k*L*t. a.bngl has L = 1, b.bngl the same model with L = 5 (the issue's reproduction).
+_ZERO_ORDER_BNGL = """begin model
+begin parameters
+  k  1.0
+  L  1.0
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A()  0
+end seed species
+begin observables
+  Molecules  A_tot  A()
+end observables
+begin reaction rules
+  0 -> A()  k*L
+end reaction rules
+end model
+"""
+
+_TWO_MODEL_RELATIVE_CONF = (
+    'edition = 2\nobjective = chi_sq\njob_type = de\n'
+    'MODELS'
+    'condition: dbl, model: b.bngl, perturbations: L * 2\n'
+    'experiment: ea, model: a.bngl, data: ea.exp\n'
+    'experiment: eb, model: b.bngl, condition: dbl, data: eb.exp\n'
+    'loguniform_var = k 0.01 100\n')
+
+
+def _write_two_model_relative_job(d, models=('a.bngl', 'b.bngl'), conf=_TWO_MODEL_RELATIVE_CONF):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.bngl').write_text(_ZERO_ORDER_BNGL)
+    (d / 'b.bngl').write_text(_ZERO_ORDER_BNGL.replace('  L  1.0', '  L  5.0'))
+    (d / 'ea.exp').write_text('# time A_tot A_tot_SD\n' + ''.join(f'{t} {t} 1\n' for t in range(6)))
+    (d / 'eb.exp').write_text('# time A_tot A_tot_SD\n'
+                              + ''.join(f'{t} {10 * t} 1\n' for t in range(6)))
+    (d / 'job.conf').write_text(conf.replace('MODELS', ''.join(f'model: {m}\n' for m in models)))
+    return d / 'job.conf'
+
+
+class TestExportMultiModelRelativeCondition:
+
+    def _cells(self, out):
+        return {(r['conditionId'], r['targetId']): r['targetValue']
+                for r in _tsv_rows(out / 'conditions.tsv')}
+
+    def test_relative_op_is_folded_against_the_conditions_own_model(self, tmp_path):
+        # The regression: `L * 2` on b.bngl was folded against a.bngl's L = 1 and exported as 2.
+        out = export_job(_write_two_model_relative_job(tmp_path / 'src'), tmp_path / 'out')
+        assert self._cells(out) == {('cond_dbl', 'L'): '10'}
+
+    def test_exported_problem_is_fit_exactly_at_the_native_optimum(self, tmp_path):
+        # Oracle, independent of PyBNF's parsers: read L from b.bngl's parameter block with a
+        # regex, and score the exported problem's eb experiment by hand. The data are exactly
+        # A = k*L*t at k = 1 with L = 2*L_b = 10, so the exported condition must make chi_sq(k=1)
+        # zero -- as the native fit does (best fit k = 1, objective ~0).
+        import re
+        src = tmp_path / 'src'
+        out = export_job(_write_two_model_relative_job(src), tmp_path / 'out')
+        l_b = float(re.search(r'^\s*L\s+(\S+)', (src / 'b.bngl').read_text(), re.M).group(1))
+        l_exported = float(self._cells(out)[('cond_dbl', 'L')])
+        assert l_exported == 2 * l_b
+        meas = [m for m in _tsv_rows(out / 'measurements.tsv') if m['experimentId'] == 'eb']
+        t = np.array([float(m['time']) for m in meas])
+        y = np.array([float(m['measurement']) for m in meas])
+        chi_sq = 0.5 * np.sum((1.0 * l_exported * t - y) ** 2)
+        assert chi_sq == 0.0
+
+    def test_model_declaration_order_does_not_matter(self, tmp_path):
+        out = export_job(_write_two_model_relative_job(tmp_path / 'src', ('b.bngl', 'a.bngl')),
+                         tmp_path / 'out')
+        assert self._cells(out) == {('cond_dbl', 'L'): '10'}
+        # ...and a condition on a.bngl folds against a.bngl's L = 1.
+        conf = _TWO_MODEL_RELATIVE_CONF.replace(
+            'condition: dbl, model: b.bngl', 'condition: dbl, model: a.bngl').replace(
+            'experiment: eb, model: b.bngl', 'experiment: eb, model: a.bngl')
+        out = export_job(_write_two_model_relative_job(tmp_path / 'src2', conf=conf),
+                         tmp_path / 'out2')
+        assert self._cells(out) == {('cond_dbl', 'L'): '2'}
+
+    def test_sbml_models_fold_against_their_own_nominal(self, tmp_path):
+        # The SBML sibling from the issue: kd = 1 in a.xml, kd = 5 in b.xml, `kd * 2` on b -> 10.
+        sbml = _SBML_TIME_TEMPLATE.replace('RATE_EXTRA', '').replace('flag', 'kd')
+        (tmp_path / 'a.xml').write_text(sbml)
+        (tmp_path / 'b.xml').write_text(sbml.replace('id="kd" value="1"', 'id="kd" value="5"'))
+        (tmp_path / 'e.exp').write_text('# time A\n0\t10\n1\t5\n')
+        (tmp_path / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: a.xml\nmodel: b.xml\n'
+            'condition: dbl, model: b.xml, perturbations: kd * 2\n'
+            'experiment: ea, model: a.xml, data: e.exp\n'
+            'experiment: eb, model: b.xml, condition: dbl, data: e.exp\n'
+            'uniform_var = k 0.1 10\n')
+        out = export_job(tmp_path / 'job.conf', tmp_path / 'out')
+        assert self._cells(out) == {('cond_dbl', 'kd'): '10'}
+
+    def test_multi_model_condition_without_a_model_is_refused(self, tmp_path):
+        # Mirrors the fitter (config.py::_load_conditions): the condition's model is ambiguous.
+        conf = _TWO_MODEL_RELATIVE_CONF.replace('condition: dbl, model: b.bngl,', 'condition: dbl,')
+        with pytest.raises(PybnfError, match="Condition 'dbl' does not name a model"):
+            export_job(_write_two_model_relative_job(tmp_path / 'src', conf=conf),
+                       tmp_path / 'out')
+
+    def test_experiment_applying_another_models_condition_is_refused(self, tmp_path):
+        # The fitter looks an experiment's condition up on the experiment's own model only.
+        conf = _TWO_MODEL_RELATIVE_CONF.replace(
+            'experiment: eb, model: b.bngl', 'experiment: eb, model: a.bngl')
+        with pytest.raises(PybnfError,
+                           match="Experiment 'eb'.*condition 'dbl', which belongs to model"):
+            export_job(_write_two_model_relative_job(tmp_path / 'src', conf=conf),
+                       tmp_path / 'out')
+
+    def test_condition_target_missing_from_its_own_model_is_refused(self, tmp_path):
+        # `k2` exists only in a.bngl; the condition belongs to b.bngl, so there is no base to
+        # fold against and nothing for the fitter to perturb -- refused, naming the model.
+        src = tmp_path / 'src'
+        _write_two_model_relative_job(src)
+        (src / 'a.bngl').write_text(_ZERO_ORDER_BNGL.replace('  L  1.0', '  L  1.0\n  k2 3'))
+        conf = (src / 'job.conf').read_text().replace('perturbations: L * 2', 'perturbations: k2 * 2')
+        (src / 'job.conf').write_text(conf)
+        with pytest.raises(PybnfError, match="perturbs 'k2'.*model 'b.bngl'"):
+            export_job(src / 'job.conf', tmp_path / 'out')
+
+
+class TestBuildersFoldEachConditionAgainstItsOwnNominal:
+    """Every builder that folds a fixed-target relative op to a number asks for the nominal of
+    THAT condition (#897): ``nominal_of(condition, var)``."""
+
+    _CONDS = {'on_a': [('L', '*', 2.0)], 'on_b': [('L', '*', 2.0)]}
+
+    @staticmethod
+    def _nominal(condition, var):
+        assert var == 'L'
+        return {'on_a': 1.0, 'on_b': 5.0}[condition]
+
+    @staticmethod
+    def _cells(rows):
+        return {(r.condition_id, r.target_id): r.target_value for r in rows}
+
+    def test_time_course_builder(self):
+        rows, _, _, _ = build_experiment_conditions(
+            [('ea', 'on_a'), ('eb', 'on_b')], self._CONDS, set(), self._nominal)
+        assert self._cells(rows) == {('cond_on_a', 'L'): '2', ('cond_on_b', 'L'): '10'}
+
+    def test_preequilibration_builder(self):
+        from pybnf.petab.conditions import build_preequilibration_conditions
+        rows, _, _ = build_preequilibration_conditions(
+            [('ea', 'on_a', None, None), ('eb', 'on_b', None, None)], self._CONDS, self._nominal)
+        assert self._cells(rows) == {('cond_on_a', 'L'): '2', ('cond_on_b', 'L'): '10'}
+
+    def test_preequilibrated_dose_response_builder(self):
+        from pybnf.petab.conditions import build_preequilibrated_dose_response_conditions
+        rows, _, _ = build_preequilibrated_dose_response_conditions(
+            [('sa', 'on_a', None, 'kd', [1.0], 5.0, None),
+             ('sb', 'on_b', None, 'kd', [1.0], 5.0, None)], self._CONDS, self._nominal)
+        cells = self._cells(rows)
+        assert (cells[('cond_on_a', 'L')], cells[('cond_on_b', 'L')]) == ('2', '10')
+
+
 class TestBuildExperimentConditions:
 
     def test_surrogate_set_and_wildtype_base(self):
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
         conds = {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '*', 5.0)]}
         cond, exp, surrogate, eids = build_experiment_conditions(
-            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda v: 2.0)
+            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda _c, _v: 2.0)
         assert surrogate == {'v1'}                 # only the fit-and-perturbed param
         cells = {(r.condition_id, r.target_id): r.target_value for r in cond}
         assert cells[('cond_doubled', 'v1')] == 'v1__REF * 2'   # surrogate op
@@ -2051,7 +3019,7 @@ class TestBuildExperimentConditions:
         exps = [('wt', None), ('scl', 'scaled')]
         conds = {'scaled': [('s', '*', 5.0)]}
         cond, exp, surrogate, eids = build_experiment_conditions(
-            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 2.0)
+            exps, conds, fit_params={'v1'}, nominal_of=lambda _c, _v: 2.0)
         assert surrogate == set()
         assert eids == {'wt': '', 'scl': 'scl'}
         assert {e.experiment_id for e in exp} == {'scl'}   # no wildtype experiment row
@@ -2062,7 +3030,7 @@ class TestBuildExperimentConditions:
         exps = [('ea', 'doubled'), ('eb', 'doubled')]
         conds = {'doubled': [('v1', '*', 2.0)]}
         cond, exp, surrogate, eids = build_experiment_conditions(
-            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 1.0)
+            exps, conds, fit_params={'v1'}, nominal_of=lambda _c, _v: 1.0)
         assert [(r.condition_id, r.target_id) for r in cond] == [('cond_doubled', 'v1')]
         assert {e.experiment_id for e in exp} == {'ea', 'eb'}
 
@@ -2071,7 +3039,7 @@ class TestBuildExperimentConditions:
         exps = [('e', 'used')]
         conds = {'used': [('s', '=', 0.0)], 'unused': [('v1', '*', 2.0)]}
         cond, exp, surrogate, eids = build_experiment_conditions(
-            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 1.0)
+            exps, conds, fit_params={'v1'}, nominal_of=lambda _c, _v: 1.0)
         assert surrogate == set()                       # v1 only in the unused condition
         assert {r.condition_id for r in cond} == {'cond_used'}
 
@@ -2081,7 +3049,7 @@ class TestBuildExperimentConditions:
         conds = {'wildtype': [('v1', '*', 2.0)]}
         with pytest.raises(PybnfError, match='wildtype'):
             build_experiment_conditions(exps, conds, fit_params={'v1'},
-                                        nominal_of=lambda v: 1.0)
+                                        nominal_of=lambda _c, _v: 1.0)
 
 
 # ---------------------------------------------------------------------------
