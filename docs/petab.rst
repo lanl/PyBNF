@@ -143,7 +143,11 @@ following all survive an import and an export:
   PyBNF conditions and multi-phase protocols. A **dose-response** problem (one
   swept parameter per condition, measured at a fixed time) round-trips as a
   parameter scan, with a measurement time of ``inf`` meaning steady state, and a
-  **pre-equilibration** phase round-trips as such.
+  **pre-equilibration** phase round-trips as such. An equilibration to steady state is a
+  leading period at time ``-inf``; a fixed-duration one (``equil_t_end: T``) is a leading
+  period at time ``-T``. The fixed-duration form is refused for a model that reads the
+  simulation time, because PEtab runs that period from ``-T`` to 0 while PyBNF runs it from 0
+  to ``T``.
 
 Tutorial lessons
 ----------------

@@ -91,10 +91,13 @@ from .conditions import (
     REF_MARKER,
     condition_name_from_id,
     conditions_from_rows,
+    equil_t_end_from_period_time,
     is_species_target,
+    model_time_reads,
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
+    refuse_measurements_inside_fixed_equilibration,
 )
 from .measurements import (
     data_from_measurement_rows,
@@ -393,6 +396,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Pre-equilibrated scans become preequilibrate:+condition: parameter_scan experiments (ADR-0062).
     experiments += _preequilibrated_dose_response_experiments(
         preequil_scans, out_dir, model_location_of)
+    _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -1128,16 +1132,20 @@ def _approx(a, b):
 # Experiments: measurement groups + experiment rows -> conf experiment entries
 # ---------------------------------------------------------------------------
 
-# One reconstructed conf experiment. A 7-wide record shared by :func:`_experiments`,
+# One reconstructed conf experiment. A record shared by :func:`_experiments`,
 # :func:`_dose_response_experiments`, and :func:`_write_conf` -- a namedtuple (not a bare
 # tuple) so the three sites bind by field name and a new field can't silently mis-align a
 # positional unpack. ``preequilibrate`` (ADR-0052) is the unmeasured steady-state condition a
 # pre-equilibration experiment equilibrates under before the ``condition:`` measurement period;
-# ``None`` for a plain time course or a dose-response scan.
+# ``None`` for a plain time course or a dose-response scan. ``equil_t_end`` is the fixed duration
+# of that equilibration when the PEtab problem gives its leading period a finite start time
+# ``-T`` rather than ``-inf`` (#896); ``None`` (the default) for a steady-state equilibration and
+# for every experiment without one.
 ImportedExperiment = namedtuple(
     'ImportedExperiment',
     ['name', 'condition', 'preequilibrate', 'data_files', 'model_location',
-     'measparams_file', 't_end'])
+     'measparams_file', 't_end', 'equil_t_end'],
+    defaults=(None,))
 
 
 def _condition_and_preequilibrate(periods, name):
@@ -1153,9 +1161,12 @@ def _condition_and_preequilibrate(periods, name):
     = a wash-out measured at the model default). Returns ``(condition, preequilibrate)``, each a
     condition name or ``None``.
 
-    Only steady-state (``time = -inf``) equilibration is in scope -- Phase 1 deferred fixed-time
-    equilibration -- so a finite leading period, an experiment of more than two periods, or a
-    non-leading ``-inf`` raises :class:`NotImplementedError` rather than silently flattening the
+    A two-period experiment whose leading period starts at a finite ``time = -T < 0`` and whose
+    measurement period starts at exactly ``time = 0`` is a **fixed-duration** pre-equilibration
+    (#896): the same ``(condition, preequilibrate)``, with the duration ``T`` read separately by
+    :func:`_fixed_equilibration_time` (the conf's ``equil_t_end: T``). Any other finite leading
+    period (one not followed by a period at exactly 0), an experiment of more than two periods, or
+    a non-leading ``-inf`` raises :class:`NotImplementedError` rather than silently flattening the
     experiment to its last period (the pre-#442 bug).
     """
     if len(periods) <= 1:
@@ -1165,13 +1176,41 @@ def _condition_and_preequilibrate(periods, name):
             and math.isfinite(periods[1].time)):
         return (condition_name_from_id(periods[1].condition_id),
                 condition_name_from_id(periods[0].condition_id))
+    if _fixed_equilibration_time(periods) is not None:
+        # A FIXED-duration equilibration (#896): a finite leading period at -T followed by the
+        # measured period at exactly 0 -- `preequilibrate:` + `equil_t_end: T` (read by
+        # _fixed_equilibration_time). The leading period must name its condition: a blank one
+        # (equilibrate at the model defaults) has no `preequilibrate:` to carry the duration.
+        pre = condition_name_from_id(periods[0].condition_id)
+        if pre is None:
+            raise NotImplementedError(
+                f"Experiment '{name}' has a fixed-duration equilibration period (time "
+                f"{periods[0].time}) with no condition. PyBNF carries an equilibration duration "
+                f"on a 'preequilibrate:' condition, so an equilibration at the model defaults "
+                f"has no PyBNF representation yet.")
+        return condition_name_from_id(periods[1].condition_id), pre
     raise NotImplementedError(
         f"Experiment '{name}' has a {len(periods)}-period PEtab experiments-table structure "
         f"(times {[r.time for r in periods]}) the importer does not recover. Only a "
         f"single-period time course or a two-period pre-equilibration (a leading time=-inf "
-        f"steady-state period + a finite measurement period, ADR-0052) is supported; a finite "
-        f"leading equilibration period (fixed-time equilibration) and experiments of more than "
-        f"two periods are deferred (Phase 1/2 cover steady-state -inf only).")
+        f"steady-state period + a finite measurement period, ADR-0052, or a leading finite "
+        f"time=-T fixed-duration period + a measurement period at exactly time=0, #896) is "
+        f"supported; experiments of more than two periods are deferred.")
+
+
+def _fixed_equilibration_time(periods):
+    """The fixed equilibration duration ``T`` of a two-period experiment whose leading period
+    starts at a finite time ``-T < 0`` and whose measured period starts at exactly 0 -- the
+    exporter's ``equil_t_end: T`` shape (#896, ``conditions.equilibration_period_time``) -- else
+    ``None``. ``periods`` are the experiment's rows, sorted by time.
+
+    PEtab v2 runs the leading period from ``-T`` until the next period starts, so only a next
+    period at 0 makes ``T`` the equilibration's duration and the data times relative to the
+    intervention, which is what PyBNF's measured phase assumes (its clock restarts at 0)."""
+    if (len(periods) == 2 and math.isfinite(periods[0].time) and periods[0].time < 0
+            and periods[1].time == 0):
+        return equil_t_end_from_period_time(periods[0].time)
+    return None
 
 
 def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None):
@@ -1221,6 +1260,11 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
         else:
             name = 'experiment1'
         condition, preequilibrate = _condition_and_preequilibrate(periods_of.get(eid, []), name)
+        equil_t_end = _fixed_equilibration_time(periods_of.get(eid, []))   # #896
+        if equil_t_end is not None:
+            # A measurement inside the -T period has no PyBNF home (the equilibration is unmeasured).
+            refuse_measurements_inside_fixed_equilibration(
+                name, equil_t_end, (t for data in group for t in data[data.indvar]))
         model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
         data_files = []
         for k, data in enumerate(group):
@@ -1233,7 +1277,8 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
             measparams_file = f'{name}_measparams.tsv'
             write_measurement_params(binding, out_dir / measparams_file)
         experiments.append(ImportedExperiment(
-            name, condition, preequilibrate, data_files, model_location, measparams_file, None))
+            name, condition, preequilibrate, data_files, model_location, measparams_file, None,
+            equil_t_end=equil_t_end))
     return experiments
 
 
@@ -1278,8 +1323,34 @@ def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of
         model_location = model_location_of.get(s['model_id'])
         t_end = None if math.isinf(s['scan_time']) else s['scan_time']
         experiments.append(ImportedExperiment(
-            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end))
+            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end,
+            equil_t_end=s['equil_t_end']))
     return experiments
+
+
+def _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts):
+    """Refuse a fixed-duration equilibration period (``equil_t_end``) on a model that reads time.
+
+    The import peer of ``export._refuse_fixed_equilibration_of_time_dependent_models`` (#896): the
+    PEtab leading period runs on ``[-T, 0]``, but PyBNF would run the ``equil_t_end: T`` phase on
+    ``[0, T]`` and restart the clock at 0, so for a model whose rates, functions, or events read
+    the time the imported job would simulate a different protocol. ``models`` are the problem's
+    ``model_files`` entries; ``model_texts`` maps each location to its text. A single-model job's
+    experiments carry no ``model_location`` (their model is the sole one)."""
+    language_of = {m['location']: (m['language'] or 'bngl').lower() for m in models}
+    for exp in experiments:
+        if exp.equil_t_end is None:
+            continue
+        location = exp.model_location or models[0]['location']
+        reads = model_time_reads(model_texts[location], language_of[location])
+        if reads:
+            raise NotImplementedError(
+                f"Experiment '{exp.name}' starts with a fixed-duration equilibration period "
+                f"(time -{num(exp.equil_t_end)}) on model '{location}', which reads the simulation "
+                f"time ({'; '.join(reads)}). PEtab runs that period from t = "
+                f"-{num(exp.equil_t_end)} to 0, but PyBNF would run it from t = 0 to "
+                f"{num(exp.equil_t_end)} and restart the clock at 0, so the imported job would "
+                f"simulate a different protocol (#896).")
 
 
 def _write_exp(path, data):
@@ -1372,6 +1443,9 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
         # A fixed-endpoint dose-response scan's endpoint time (ADR-0046); a steady-state scan
         # and a time course carry none (the scan runs to steady state / the data drives the grid).
         tend_field = f', t_end: {num(exp.t_end)}' if exp.t_end is not None else ''
+        # A fixed-duration equilibration (#896): the leading period's finite start time -T.
+        equil_field = (f', equil_t_end: {num(exp.equil_t_end)}'
+                       if exp.equil_t_end is not None else '')
         # The row-varying per-measurement binding sidecar (ADR-0045), when this experiment
         # carries one; config.py attaches it to the experiment's exp Data.
         mp_field = f', measurement_params: {exp.measparams_file}' if exp.measparams_file else ''
@@ -1379,7 +1453,7 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
                                for i, f in enumerate(exp.data_files))
         lines.append(
             f'experiment: {exp.name}{preequil_field}{cond_field}{model_field}, '
-            f'method: {sim_method}{tend_field}{mp_field}, {data_field}')
+            f'method: {sim_method}{tend_field}{equil_field}{mp_field}, {data_field}')
     lines.append('')
     lines.extend(free_param_lines)
     lines.append('')
