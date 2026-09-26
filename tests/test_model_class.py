@@ -528,3 +528,17 @@ class TestRequireNoProtocolActions:
         m, _ = _scan('simulate({t_end=>1})\n')
         with pytest.raises(PybnfError, match=r'\(#969\)\. Look here\.$'):
             m.require_no_protocol_actions(note='Look here.')
+
+    @pytest.mark.xfail(strict=True, raises=pytest.fail.Exception, reason=(
+        'Found in review of #969: the scan keeps any line that starts with setOption (or '
+        'setModelName, substanceUnits, version) as a directive, whatever follows it.'))
+    def test_a_directive_line_cannot_carry_a_second_statement(self):
+        # Review addition. BNG2.pl runs a setOption line outside a block by evaluating
+        # "$model->" + the line as Perl, so a second statement after a semicolon runs too. Run
+        # through the fit (the line loose after `end model`, the model's rate made to depend on
+        # a fixed kb), this one changed the objective on both BNG2.pl and bngsim. The plain
+        # form, "; setParameter(...)", is an error under BNG2.pl, so only this spelling slips
+        # through.
+        m, _ = _scan('setOption("NumberPerQuantityUnit",1); $model->setParameter("k",5)\n')
+        with pytest.raises(PybnfError, match='setParameter'):
+            m.require_no_protocol_actions()

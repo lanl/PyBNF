@@ -4843,6 +4843,30 @@ class TestEdition2ModelActionsRule:
         assert str(at_export.value) == at_load
         assert not out.exists() or not any(out.iterdir())
 
+    @pytest.mark.xfail(strict=True, raises=pytest.fail.Exception, reason=(
+        'Found in review of #969, older than it: _resolve_models reads only the model: '
+        'declarations, so _require_new_era_data never sees the data on a legacy '
+        'model = X : Y.exp line in the same job, and the export writes a problem without that '
+        'model or its data.'))
+    def test_a_legacy_bound_model_beside_experiments_is_not_dropped(self, tmp_path, monkeypatch):
+        # Review addition. #969 keeps a legacy-bound model's actions in an edition-2 job, since
+        # they are its protocol, and the fit scores its data beside the experiments. PEtab has no
+        # place for that protocol, and _require_new_era_data promises to refuse such a mix "so a
+        # legacy line is never silently dropped". Today the export succeeds without it.
+        conf = _decay_job(tmp_path / 'job')
+        job = conf.parent
+        (job / 'legacy.bngl').write_text(_DECAY_BNGL + '\n' + _block(
+            self.GEN, 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"lt"})'))
+        (job / 'lt.exp').write_text((job / 'decay.exp').read_text())
+        conf.write_text(conf.read_text().replace('experiment: tc,',
+                                                 'experiment: tc, model: decay.bngl,')
+                        + 'model = legacy.bngl : lt.exp\n')
+        from pybnf.parse import load_config
+        monkeypatch.chdir(job)
+        assert 'lt' in load_config(conf.name).exp_data['legacy']   # the fit scores it
+        with pytest.raises(NotImplementedError, match='legacy data linkage'):
+            export_job(conf, tmp_path / 'out')
+
 
 _CHAIN_BNGL = """\
 begin model

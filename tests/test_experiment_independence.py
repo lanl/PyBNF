@@ -951,3 +951,43 @@ def test_numbered_action_lines_fit_in_edition1(tmp_path, backend):
                                100 * np.exp(-_K_TRIAL * _DECAY_T), rtol=1e-5)
     # The legacy ``objfunc = sos`` is the plain sum of squares (no 1/2).
     assert obj == pytest.approx(2 * _decay_cf(_K_TRIAL), rel=1e-5)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_a_multi_model_job_is_checked_model_by_model(tmp_path, backend):
+    """Review addition (#969, #963): the rule is applied to each model an ``experiment:`` line
+    simulates, and the line index BNG2.pl strips may be followed by a tab (``s/^\\d+\\s+//``).
+    ``a.bngl`` carries a tab-numbered, capped ``generate_network`` and a tab-numbered
+    ``setOption``; ``b.bngl`` a tab-numbered ``setParameter`` as well. The job is refused naming
+    ``b.bngl`` and that line alone. Without it, the job fits on both backends to the closed forms
+    of both decays: A at k, and B at 2k."""
+    (tmp_path / 'a.bngl').write_text(_decay_model(
+        'begin actions\n1\tgenerate_network({overwrite=>1,max_iter=>50})\n'
+        '2\tsetOption("NumberPerQuantityUnit",6.0221e23)\nend actions\n'))
+    b_actions = ('begin actions\n1\tgenerate_network({overwrite=>1})\n'
+                 '2\tsetParameter("kb", 0.8)\nend actions\n')
+    (tmp_path / 'b.bngl').write_text(_decay_model(b_actions, rate='2*k'))
+    _write_decay_data(tmp_path, 'ta', 'tb')
+    number = (tmp_path / 'b.bngl').read_text().splitlines().index('2\tsetParameter("kb", 0.8)') + 1
+    lines = _EDITION2_HEAD + [
+        f'output_dir = {tmp_path / "out"}', f'bngl_backend = {backend}', 'model: a.bngl',
+        'model: b.bngl', 'experiment: ta, model: a.bngl, data: ta.exp',
+        'experiment: tb, model: b.bngl, data: tb.exp', 'uniform_var = k 0.1 3']
+    with pytest.raises(PybnfError) as refused:
+        _load(tmp_path, lines)
+    message = str(refused.value)
+    assert message.startswith(
+        "Model file 'b.bngl' carries BNGL actions that are not network-definition directives -- "
+        f'line {number}: setParameter("kb", 0.8). In an edition-2 job'), message
+    assert 'a.bngl' not in message
+
+    (tmp_path / 'b.bngl').write_text(_decay_model(
+        b_actions.replace('2\tsetParameter("kb", 0.8)\n', ''), rate='2*k'))
+    a = pset.BNGLModel(str(tmp_path / 'a.bngl'), suppress_free_param_error=True)
+    assert a.generate_network_line == 'generate_network({overwrite=>1,max_iter=>50})'
+    assert 'setOption("NumberPerQuantityUnit",6.0221e23)' in a.model_lines
+    obj, sims, _models = _run_job(tmp_path, lines, {'k': _K_TRIAL})
+    for name, exp, rate in (('a', 'ta', _K_TRIAL), ('b', 'tb', 2 * _K_TRIAL)):
+        np.testing.assert_allclose(sims[name][exp].data[:, sims[name][exp].cols['A_tot']],
+                                   100 * np.exp(-rate * _DECAY_T), rtol=1e-5, err_msg=name)
+    assert obj == pytest.approx(_decay_cf(_K_TRIAL) + _decay_cf(2 * _K_TRIAL), rel=1e-5)
