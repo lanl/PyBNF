@@ -58,7 +58,9 @@ for byte, so it could bring such actions into an imported job too.
      `end model` sets `kb`, and the job fitted silently wrong on both backends (the review
      measured an objective of 2854.55 against the closed form's 393.699). A directive line may
      hold only the call, an optional `;`, and a comment; its parentheses are matched outside
-     quoted strings.
+     quoted strings. The `;` must follow the closing parenthesis directly: BNG2.pl's reader
+     (`\);?\s*$`) does not read `setOption(...) ;` as a call, and skips it outside every block
+     with a warning, so the option silently did not apply (found by the second review).
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a

@@ -5314,6 +5314,40 @@ class TestFixedModelParameterImport:
                                  "in the model fixedsigma_model.bngl"):
             import_job(yaml, tmp_path / 'out')
 
+    @pytest.mark.bionetgen
+    @pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=(
+        'Found in review of the #969 merge: the #907 gate still reads a begin protocol block, '
+        'and says its setParameter "would override the value written into its begin parameters '
+        'line", but nothing in an imported job runs the block. BNG2.pl only stores it for '
+        'simulate({method=>"protocol"}), which #969 refuses in the model and PyBNF never '
+        'synthesizes, so the refusal blocks a problem that would import correctly. Either leave '
+        'the protocol block out of the gate, or refuse the block under #969 with a true reason '
+        '(and rewrite this test and the one above).'))
+    def test_a_protocol_block_that_nothing_runs_leaves_the_table_value(self, tmp_path,
+                                                                       monkeypatch):
+        # Review addition. The oracle is BNG2.pl: given the model with the table's v3 = 10 and
+        # the block, it simulates y = 0.5 x^2 + x + 10 and still has v3 = 10 after the run.
+        import subprocess
+        block = '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n'
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + block
+        bng = tmp_path / 'bng'
+        bng.mkdir()
+        (bng / 'm.bngl').write_text(
+            model.replace('    v3 3\n', '    v3 10\n')
+            + 'begin actions\ngenerate_network({overwrite=>1})\n'
+              'simulate({method=>"ode",t_end=>2,n_steps=>2,print_functions=>1})\n'
+              'writeModel({prefix=>"after"})\nend actions\n')
+        subprocess.run([shutil.which('BNG2.pl'), 'm.bngl'], cwd=bng, check=True,
+                       capture_output=True)
+        after = (bng / 'after.bngl').read_text()
+        assert float(re.search(r'^\s*v3\s+(\S+)', after, re.M).group(1)) == 10.0
+        ran = Data(file_name=str(bng / 'm.gdat'))
+        np.testing.assert_allclose(ran.data[:, ran.cols['y']], _EXACT_AT_V3_10, rtol=1e-9)
+        # So the import has nothing to refuse: it writes v3 = 10 and the job scores it exactly.
+        out = import_job(_fixed_v3_problem(tmp_path, model_text=model), tmp_path / 'out')
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            0., abs=1e-9)
+
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')
         with pytest.raises(PybnfError, match="'v3' has estimate=false with nominalValue inf, "

@@ -592,3 +592,41 @@ class TestRequireNoProtocolActions:
         assert (f"setModelName is refused too (line {number}): PyBNF names the model's output "
                 'files itself, and a renamed model writes them where PyBNF does not look. '
                 'Delete it.') in message
+
+    @pytest.mark.parametrize('line, code', [
+        ('setOption("NumberPerQuantityUnit",1) ;', 'setOption("NumberPerQuantityUnit",1) ;'),
+        ('generate_network({overwrite=>1})\t;', 'generate_network({overwrite=>1}) ;'),
+        ('2 version("2.9.3")  ;  # numbered, with a comment', 'version("2.9.3") ;'),
+    ])
+    def test_a_semicolon_set_apart_from_its_call_is_refused_by_line(self, line, code):
+        # Review of the #969 follow-up. BNG2.pl reads a line as a call only when it matches
+        # `^\s*(\w+)\s*\((.*)\);?\s*$`: a `;` separated from the closing parenthesis is not
+        # read, so BNG2.pl skips the line outside every block (where a setOption stays) and
+        # aborts on it inside one. Nothing runs after the call, so the message says that, and
+        # not that the rest of the line runs as code.
+        m, lines = _scan(f'begin actions\n{line}\nend actions\n')
+        number = lines[line.strip()]
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        message = str(refused.value)
+        assert f'-- line {number}: {code}. In an edition-2' in message
+        assert (f"BNG2.pl reads a directive as a call only when a ';' after it follows its "
+                f"closing parenthesis directly: it skips any other such line outside every "
+                f"block, where the setOption family stays, and aborts on it inside one (line "
+                f"{number}).") in message
+        assert 'runs the rest of the line as code' not in message
+
+    def test_each_kind_of_directive_line_is_given_its_own_reason(self):
+        # A second statement that happens to end in ") ;" is still a second statement.
+        m, lines = _scan('setOption("NumberPerQuantityUnit",1) ;\n'
+                         'setOption("x",1); $model->setParameter("k",5) ;\n'
+                         'substanceUnits("Number");\n')
+        spaced = lines['setOption("NumberPerQuantityUnit",1) ;']
+        compound = lines['setOption("x",1); $model->setParameter("k",5) ;']
+        plain = lines['substanceUnits("Number");']
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        message = str(refused.value)
+        assert f'runs the rest of the line as code (line {compound}).' in message
+        assert f'aborts on it inside one (line {spaced}).' in message
+        assert f'line {plain}:' not in message

@@ -89,10 +89,19 @@ def _is_single_directive_call(statement):
 
     BNG2.pl runs an action line by evaluating ``$model->`` + the line as Perl, so whatever
     follows the call's closing parenthesis runs too: ``setOption(...); $model->setParameter(...)``
-    sets a parameter (#969 review). The parentheses are matched outside quoted strings."""
+    sets a parameter (#969 review). The parentheses are matched outside quoted strings. The
+    ``;`` must follow the parenthesis directly, as BNG2.pl's reader (``\\);?\\s*$``) requires:
+    it skips ``setOption(...) ;`` outside every block, so the option would not apply."""
+    tail = _directive_call_tail(statement)
+    return tail is not None and re.fullmatch(r';?\s*', tail) is not None
+
+
+def _directive_call_tail(statement):
+    """What follows the closing parenthesis of the allowed directive call ``statement`` starts
+    with, or ``None`` if it does not start with one or never closes it."""
     match = _DIRECTIVE_CALL.match(statement)
     if not match:
-        return False
+        return None
     depth, quote, i = 1, None, match.end()
     while i < len(statement):
         ch = statement[i]
@@ -108,9 +117,9 @@ def _is_single_directive_call(statement):
         elif ch == ')':
             depth -= 1
             if depth == 0:
-                return re.fullmatch(r'\s*;?\s*', statement[i + 1:]) is not None
+                return statement[i + 1:]
         i += 1
-    return False
+    return None
 
 
 def _format_bngl_number(x):
@@ -918,11 +927,24 @@ class BNGLModel(Model):
         if len(offending) > len(shown):
             lines += f'; and {len(offending) - len(shown)} more'
         why = []
-        if self.compound_directive_lines:
-            numbers = ', '.join(str(number) for number, _ in self.compound_directive_lines)
+        # A directive whose only fault is a space before its ``;`` runs nothing after the call:
+        # BNG2.pl does not read the line as a call at all, so it gets that reason instead.
+        spaced = [number for number, code in self.compound_directive_lines
+                  if re.fullmatch(r'\s+;', _directive_call_tail(code) or '')]
+        compound = [number for number, _ in self.compound_directive_lines
+                    if number not in spaced]
+        if compound:
+            numbers = ', '.join(str(number) for number in compound)
             why.append(
                 f"A directive must be the only statement on its line, with nothing after its "
                 f"call but a comment: BNG2.pl runs the rest of the line as code (line "
+                f"{numbers}).")
+        if spaced:
+            numbers = ', '.join(str(number) for number in spaced)
+            why.append(
+                f"BNG2.pl reads a directive as a call only when a ';' after it follows its "
+                f"closing parenthesis directly: it skips any other such line outside every "
+                f"block, where the setOption family stays, and aborts on it inside one (line "
                 f"{numbers}).")
         if self.set_model_name_lines:
             numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)

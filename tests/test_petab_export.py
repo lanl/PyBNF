@@ -4932,6 +4932,30 @@ def _block(*lines):
     return 'begin actions\n' + ''.join(f'{ln}\n' for ln in lines) + 'end actions\n'
 
 
+# A dimer that decays at k, counted by a Molecules observable whose pattern is the whole dimer:
+# once per dimer under setOption("MoleculesObservables","CountUnique"), twice under BioNetGen's
+# default, CountAll (Observable.pm divides the match count by the pattern's automorphisms).
+_DIMER_BNGL = """\
+begin model
+begin parameters
+k 0.5
+end parameters
+begin molecule types
+A(b)
+end molecule types
+begin seed species
+A(b!1).A(b!1) 50
+end seed species
+begin observables
+Molecules D A(b!1).A(b!1)
+end observables
+begin reaction rules
+A(b!1).A(b!1) -> 0 k DeleteMolecules
+end reaction rules
+end model
+"""
+
+
 class TestEdition2ModelActionsRule:
     """#969, replacing #900's whitelist: an edition-2 model's actions may be only its network
     definition (``generate_network``, ``setOption``). Any other action is refused at config load
@@ -5259,6 +5283,52 @@ class TestEdition2ModelActionsRule:
         assert declaration in load_config(conf.name).models['decay'].model_lines
         export_job(conf, tmp_path / 'out')
         assert declaration in (tmp_path / 'out' / 'decay.bngl').read_text()
+
+    def test_a_semicolon_set_apart_from_its_call_is_refused(self, tmp_path, monkeypatch):
+        # Review of the #969 follow-up. BNG2.pl reads a line as a call only when it matches
+        # `^\s*(\w+)\s*\((.*)\);?\s*$`, so a `;` must follow the closing parenthesis directly.
+        # Outside every block, where the fitter keeps a setOption, it skips
+        # `setOption(...) ;` with the warning "Unidentified input" and carries on, so the
+        # option silently does not apply. The oracle is BNG2.pl on the model file: with
+        # CountUnique a dimer counts once in a Molecules observable (50 e^-kt, the data), but
+        # with the line skipped BioNetGen's default, CountAll, counts it twice (100 e^-kt).
+        # The rule refuses the line at load and at export, naming it and the reason.
+        _bng2_or_skip()
+        from pybnf.parse import load_config
+        joined = 'setOption("MoleculesObservables","CountUnique");'
+        spaced = 'setOption("MoleculesObservables","CountUnique") ;'
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'dimer.exp').write_text('# time\tD\n' + ''.join(
+            f'{t}\t{50 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+        conf = job / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                        'objective = sos\nmodel: dimer.bngl\nexperiment: tc, data: dimer.exp\n'
+                        'uniform_var = k 0.01 3.0\n')
+        simulate = 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})\n'
+        for name, line, count in (('joined', joined, 50), ('spaced', spaced, 100)):
+            text = _DIMER_BNGL + f'{line}\n{_block(self.GEN)}'
+            ran = Data(file_name=str(_run_bng2(text + simulate, tmp_path / 'bng', name)
+                                     / f'{name}_tc.gdat'))
+            t = ran.data[:, ran.cols['time']]
+            np.testing.assert_allclose(ran.data[:, ran.cols['D']], count * np.exp(-0.5 * t),
+                                       rtol=1e-5, err_msg=name)
+        # The joined spelling loads; the spaced one is refused, naming its line and the cause.
+        (job / 'dimer.bngl').write_text(_DIMER_BNGL + f'{joined}\n{_block(self.GEN)}')
+        monkeypatch.chdir(job)
+        assert joined in load_config(conf.name).models['dimer'].model_lines
+        (job / 'dimer.bngl').write_text(_DIMER_BNGL + f'{spaced}\n{_block(self.GEN)}')
+        number = (job / 'dimer.bngl').read_text().splitlines().index(spaced) + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert f'-- line {number}: {spaced}. In an edition-2' in at_load, at_load
+        assert ("BNG2.pl reads a directive as a call only when a ';' after it follows its "
+                f"closing parenthesis directly: it skips any other such line outside every "
+                f"block, where the setOption family stays, and aborts on it inside one (line "
+                f"{number})." in at_load), at_load
+        assert 'runs the rest of the line as code' not in at_load, at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
 
 
 _CHAIN_BNGL = """\
