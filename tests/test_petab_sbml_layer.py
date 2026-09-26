@@ -28,6 +28,7 @@ is gated ``-m recovery`` + ``@pytest.mark.bngsim``.
 """
 
 import csv
+import math
 import textwrap
 from pathlib import Path
 
@@ -164,6 +165,244 @@ class TestSbmlImport:
         yaml.write_text(yaml.read_text().replace('language: sbml', 'language: pysb'))
         with pytest.raises(NotImplementedError, match="'bngl' or 'sbml'"):
             import_job(yaml, tmp_path / 'out')
+
+
+# ---------------------------------------------------------------------------
+# 1b. Importer: a fixed (estimate=false) SBML parameter takes the table's nominalValue (#907)
+#
+# PEtab gives the parameters table precedence over the model file, so the importer writes a
+# fixed parameter's nominalValue into the `value` attribute of its copy of the .xml, marked
+# with an XML comment, wherever the file disagrees (ADR-0149). It refuses where a new `value`
+# would not be the parameter's value for the whole simulation.
+# ---------------------------------------------------------------------------
+
+_SCALE_LINE = '      <parameter id="scale" value="100" constant="true"/>\n'
+
+
+def _fixed_sbml_problem(prob, fixed_rows, model_text=DECAY_SBML):
+    """The crafted decay problem with k1 estimated, the estimate=false ``fixed_rows`` added to
+    its parameters table, and ``model_text`` as its model."""
+    yaml = _write_sbml_petab_problem(prob)
+    (prob / 'model.xml').write_text(model_text)
+    (prob / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+        'k1\ttrue\t0.01\t10\t\n' + fixed_rows)
+    return yaml
+
+
+def _libsbml_value(text, pid):
+    """A parameter's value as libsbml reads it -- an independent reader of the edited copy."""
+    libsbml = pytest.importorskip('libsbml')
+    doc = libsbml.readSBMLFromString(text)
+    assert doc.getNumErrors(libsbml.LIBSBML_SEV_ERROR) == 0
+    return doc.getModel().getParameter(pid).getValue()
+
+
+def _before_model_end(snippet, model_text=DECAY_SBML):
+    """``model_text`` with an SBML ``snippet`` (a listOf* block) added at the end of the
+    model."""
+    return model_text.replace('  </model>\n', snippet + '  </model>\n')
+
+
+_MATH_ONE = '<math xmlns="http://www.w3.org/1998/Math/MathML"><cn>1</cn></math>'
+_NON_CONSTANT_SCALE = DECAY_SBML.replace(
+    _SCALE_LINE, '      <parameter id="scale" value="100" constant="false"/>\n')
+
+
+class TestSbmlFixedModelParameterImport:
+
+    EDITED = ('      <!-- PEtab parameters.tsv: estimate=false, nominalValue 50 '
+              '(model file: 100) -->\n'
+              '      <parameter id="scale" value="50" constant="true"/>\n')
+
+    def test_the_table_value_is_written_into_the_xml_copy_and_marked(self, tmp_path, capsys):
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+
+        from pybnf.petab import import_job
+        yaml = _fixed_sbml_problem(tmp_path / 'prob', 'scale\tfalse\t\t\t50\n')
+        out = import_job(yaml, tmp_path / 'out')
+        copy = (out / 'model.xml').read_text()
+        # Only the one start tag changed, with its comment on the line above.
+        assert copy == DECAY_SBML.replace(_SCALE_LINE, self.EDITED)
+        assert (tmp_path / 'prob' / 'model.xml').read_text() == DECAY_SBML
+        # The external oracle: libpetab's fixed nominal values, for the ids its SBML loader
+        # counts as model parameters, are the values libsbml reads from the imported copy.
+        problem = Problem.from_yaml(str(yaml))
+        fixed = problem.get_x_nominal_dict(free=False)
+        assert fixed == {'scale': 50.0}
+        assert 'scale' in set(problem.model.get_valid_parameters_for_parameter_table())
+        assert _libsbml_value(copy, 'scale') == fixed['scale']
+        assert ('#   scale = 50 in model.xml (the model file had 100)'
+                in (out / 'imported.conf').read_text())
+        assert ('PEtab import: parameters.tsv fixes scale = 50 (estimate=false); model.xml '
+                'has 100, so the imported copy uses 50.') in capsys.readouterr().out
+
+    def test_the_measurement_layer_resolves_the_table_value(self, tmp_path, monkeypatch):
+        # The observableFormula `scale * A / (A + B)` names the fixed model parameter; the
+        # layer resolves it as a model constant read from the imported copy, so it now scores
+        # with the table's 50 (before #907 it kept the model file's 100).
+        pytest.importorskip('petab')
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        from pybnf.petab import import_job
+        out = import_job(_fixed_sbml_problem(tmp_path / 'prob', 'scale\tfalse\t\t\t50\n'),
+                         tmp_path / 'out')
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        (mm,) = cfg.obj.measurement.models
+        assert mm.constants == {'scale': 50.0, 'cell': 1.0}
+
+    def test_an_agreeing_model_is_carried_byte_for_byte(self, tmp_path, capsys):
+        pytest.importorskip('petab')
+        from pybnf.petab import import_job
+        out = import_job(_fixed_sbml_problem(tmp_path / 'prob', 'scale\tfalse\t\t\t1e2\n'),
+                         tmp_path / 'out')
+        assert (out / 'model.xml').read_bytes() == DECAY_SBML.encode()
+        assert 'Fixed model parameters' not in (out / 'imported.conf').read_text()
+        assert 'PEtab import' not in capsys.readouterr().out
+
+    def test_a_parameter_the_model_leaves_without_a_value_gets_one(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.petab import import_job
+        model = DECAY_SBML.replace(_SCALE_LINE,
+                                   '      <parameter id="scale" constant="true"/>\n')
+        out = import_job(_fixed_sbml_problem(tmp_path / 'prob', 'scale\tfalse\t\t\t50\n',
+                                             model), tmp_path / 'out')
+        copy = (out / 'model.xml').read_text()
+        assert copy == model.replace(
+            '      <parameter id="scale" constant="true"/>\n',
+            '      <!-- PEtab parameters.tsv: estimate=false, nominalValue 50 '
+            '(model file: no value) -->\n'
+            '      <parameter id="scale" constant="true" value="50"/>\n')
+        assert _libsbml_value(copy, 'scale') == 50.0
+
+    def test_a_non_constant_parameter_that_nothing_assigns_is_edited(self, tmp_path):
+        # constant="false" only permits a rule or an event to change the value; with none,
+        # the value attribute holds for the whole simulation (Alkan_SciSignal2018 has six
+        # such fixed parameters that disagree with its table).
+        pytest.importorskip('petab')
+        from pybnf.petab import import_job
+        out = import_job(_fixed_sbml_problem(tmp_path / 'prob', 'scale\tfalse\t\t\t50\n',
+                                             _NON_CONSTANT_SCALE), tmp_path / 'out')
+        assert _libsbml_value((out / 'model.xml').read_text(), 'scale') == 50.0
+
+    @pytest.mark.parametrize('model, row, error, match', [
+        pytest.param(DECAY_SBML, 'A\tfalse\t\t\t5\n', 'PybnfError',
+                     "'A' is a species, not a parameter", id='species'),
+        pytest.param(DECAY_SBML, 'cell\tfalse\t\t\t2\n', 'PybnfError',
+                     "'cell' is a compartment, not a parameter", id='compartment'),
+        pytest.param(_before_model_end(
+            '    <listOfRules><assignmentRule variable="scale">' + _MATH_ONE
+            + '</assignmentRule></listOfRules>\n', _NON_CONSTANT_SCALE),
+            'scale\tfalse\t\t\t50\n', 'PybnfError',
+            "'scale' .* target of an assignment rule.*PEtab does not allow a rule target",
+            id='assignment-rule'),
+        pytest.param(_before_model_end(
+            '    <listOfRules><rateRule variable="scale">' + _MATH_ONE
+            + '</rateRule></listOfRules>\n', _NON_CONSTANT_SCALE),
+            'scale\tfalse\t\t\t50\n', 'PybnfError',
+            "'scale' .* target of a rate rule", id='rate-rule'),
+        pytest.param(_before_model_end(
+            '    <listOfInitialAssignments><initialAssignment symbol="scale">' + _MATH_ONE
+            + '</initialAssignment></listOfInitialAssignments>\n'),
+            'scale\tfalse\t\t\t50\n', 'NotImplementedError',
+            "'scale' .* also set by an initial assignment", id='initial-assignment'),
+        pytest.param(_before_model_end(
+            '    <listOfEvents><event id="e" useValuesFromTriggerTime="true"><trigger '
+            'initialValue="false" persistent="true"><math xmlns="http://www.w3.org/1998/Math/'
+            'MathML"><apply><gt/><csymbol encoding="text" definitionURL="http://www.sbml.org/'
+            'sbml/symbols/time">t</csymbol><cn>1</cn></apply></math></trigger>'
+            '<listOfEventAssignments><eventAssignment variable="scale">' + _MATH_ONE
+            + '</eventAssignment></listOfEventAssignments></event></listOfEvents>\n',
+            _NON_CONSTANT_SCALE),
+            'scale\tfalse\t\t\t50\n', 'NotImplementedError',
+            "'scale' .* also set by an event assignment", id='event-assignment'),
+        pytest.param(_before_model_end(
+            '    <listOfRules><algebraicRule><math xmlns="http://www.w3.org/1998/Math/MathML">'
+            '<apply><minus/><ci>scale</ci><cn>1</cn></apply></math></algebraicRule>'
+            '</listOfRules>\n', _NON_CONSTANT_SCALE),
+            'scale\tfalse\t\t\t50\n', 'NotImplementedError',
+            "'scale' .* also set by an algebraic rule", id='algebraic-rule'),
+    ])
+    def test_a_fixed_id_the_value_attribute_cannot_settle_is_refused(self, tmp_path, model,
+                                                                     row, error, match):
+        pytest.importorskip('petab')
+        from pybnf.petab import import_job
+        from pybnf.printing import PybnfError
+        exc = {'PybnfError': PybnfError, 'NotImplementedError': NotImplementedError}[error]
+        yaml = _fixed_sbml_problem(tmp_path / 'prob', row, model)
+        with pytest.raises(exc, match=match):
+            import_job(yaml, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'model.xml').exists()   # nothing written
+
+    def test_a_multi_model_problem_is_edited_in_every_model_that_declares_it(self, tmp_path):
+        # The parameters table is global: scale fixed at 50 applies to both SBML models
+        # (one says 100, the other 20), and to neither's other bytes.
+        pytest.importorskip('petab')
+        from pybnf.petab import export_job, import_job
+        second = DECAY_SBML.replace('<model id="decay">', '<model id="decay2">').replace(
+            _SCALE_LINE, '      <parameter id="scale" value="20" constant="true"/>\n')
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'decay.xml').write_text(DECAY_SBML)
+        (job / 'decay2.xml').write_text(second)
+        (job / 'a.exp').write_text('# time\tA\n0\t10\n1\t6\n')
+        (job / 'b.exp').write_text('# time\tA\n0\t10\n2\t4\n')
+        (job / 'job.conf').write_text(textwrap.dedent("""\
+            edition = 2
+            job_type = de
+            objective = sos
+            model: decay.xml
+            model: decay2.xml
+            experiment: a, model: decay.xml, data: a.exp
+            experiment: b, model: decay2.xml, data: b.exp
+            uniform_var = k1 0.01 10
+            """))
+        petab1 = export_job(job / 'job.conf', tmp_path / 'petab1')
+        (petab1 / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'k1\ttrue\t0.01\t10\t\nscale\tfalse\t\t\t50\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'out')
+        assert (out / 'decay.xml').read_text() == DECAY_SBML.replace(_SCALE_LINE, self.EDITED)
+        assert (out / 'decay2.xml').read_text() == second.replace(
+            '      <parameter id="scale" value="20" constant="true"/>\n',
+            self.EDITED.replace('(model file: 100)', '(model file: 20)'))
+        text = (out / 'imported.conf').read_text()
+        assert '#   scale = 50 in decay.xml (the model file had 100)' in text
+        assert '#   scale = 50 in decay2.xml (the model file had 20)' in text
+
+    @pytest.mark.parametrize('backend', [
+        pytest.param('roadrunner', marks=pytest.mark.roadrunner),
+        pytest.param('bngsim', marks=pytest.mark.bngsim_sbml)])
+    def test_the_simulation_runs_at_the_table_value(self, tmp_path, monkeypatch, backend):
+        # k1 fixed at 0.25 by the table, 0.5 in the model file; data exact for k1 = 0.25.
+        # The analytic oracle A(t) = 10 exp(-k1 t) tells the two apart on either backend.
+        pytest.importorskip('petab')
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        from pybnf.petab import import_job
+        from pybnf.pset import PSet
+        prob = tmp_path / 'prob'
+        _write_sbml_petab_problem(prob)
+        (prob / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'scale\ttrue\t1\t1000\t\nk1\tfalse\t\t\t0.25\n')
+        (prob / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\n'
+            + ''.join(f'obs_ratio\texp1\t{t}\t{SCALE * math.exp(-0.25 * t)!r}\n'
+                      for t in (0., 1., 2.)))
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        conf = (out / 'imported.conf').read_text() + f'sbml_backend = {backend}\n'
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(ploop(conf.splitlines(keepends=True)))
+        (name, model), = cfg.models.items()
+        ps = PSet([v.set_value(SCALE) for v in cfg.variables])
+        ds = model.copy_with_param_set(ps).execute(str(out), 'probe', 60)
+        (sim,) = ds.values()
+        np.testing.assert_allclose(sim['A'], 10 * np.exp(-0.25 * sim['time']), rtol=1e-4)
+        assert cfg.obj.evaluate_multiple({name: ds}, cfg.exp_data, ps) < 1e-6
 
 
 # ---------------------------------------------------------------------------

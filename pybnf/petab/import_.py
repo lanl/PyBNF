@@ -3,10 +3,11 @@
 
 The inverse of :func:`pybnf.petab.export.export_job`. Given a ``problem.yaml`` + its TSV
 tables + a BNGL model, :func:`import_job` writes a runnable new-era (edition 2) ``.conf``
-plus the ``.exp`` data files and a verbatim copy of the model (new-era binds free
-parameters by id, ADR-0034, so the model needs no re-instrumentation) -- the form the
-exporter reads. It closes the "two-adapter proof" at the read level for BNGL-native
-problems: the reverse asset mappers (parameters/observables/measurements/conditions) run
+plus the ``.exp`` data files and a copy of the model that is verbatim except for marked
+``estimate = false`` overrides (new-era binds free parameters by id, ADR-0034, so the model
+needs no re-instrumentation; see *Fixed parameters* below) -- the form the exporter reads.
+It closes the "two-adapter proof" at the read level for BNGL-native problems: the reverse
+asset mappers (parameters/observables/measurements/conditions) run
 backwards onto the shared neutral rows, and this module is the *disposable orchestrator*
 that ties them together (problem.yaml reader + ``.conf``/``.exp`` writers).
 
@@ -50,18 +51,20 @@ and one-line flow lists, every file a key lists, and a refusal for any shape it 
 bare-name path, and the optional ``pybnf[petab]`` extra for an expression ``observableFormula``.
 
 **Scope (read path: BNGL and SBML, one or many models).** Both model languages import
-(ADR-0036): the model file is carried **verbatim** for each, and an expression
+(ADR-0036): the model file is carried **verbatim** for each (except for marked
+``estimate = false`` overrides, below), and an expression
 ``observableFormula`` becomes a first-class *measurement model* -- a PEtab math expression
 evaluated as a post-simulation transform over the output trajectory (the observation layer),
 emitted as an ``observable: <id>, formula: <expr>`` conf line -- **never** by editing the model
 file (the ``begin functions`` synthesis of ADR-0035 is superseded). The bare-name common case
 still needs no translator and stays dependency-free. SBML observables are 100% expressions, so
 SBML import pulls in the ``pybnf[petab]`` extra. A **multi-model** problem imports too (ADR-0041):
-each ``model_files`` entry is carried verbatim and declared with its own ``model:`` line, an
-expression observableFormula validates against the union of every model's namespace, and each
-experiment's model is recovered from the ``modelId`` on its measurement rows (emitted as a
-per-experiment ``model:`` field; a BNGL + SBML mix is fine). A **constant-per-observable**
-``observableParameters`` scale/offset and an expression ``noiseFormula`` import too (ADR-0044):
+each ``model_files`` entry is carried verbatim (save the marked overrides below) and declared
+with its own ``model:`` line, an expression observableFormula validates against the union of
+every model's namespace, and each experiment's model is recovered from the ``modelId`` on its
+measurement rows (emitted as a per-experiment ``model:`` field; a BNGL + SBML mix is fine). A
+**constant-per-observable** ``observableParameters`` scale/offset and an expression
+``noiseFormula`` import too (ADR-0044):
 the placeholder is substituted into the observable/noise formula (an id resolves from the PSet,
 a number inlines), an expression ``noiseFormula`` becoming a ``FormulaSigma`` (``noise_model
 <obs> = <family>, <param> = formula <expr>``). A **dose-response** (parameter_scan) problem
@@ -75,6 +78,25 @@ column as a steady-state experiment -- a relaxation to equilibrium (ADR-0086, #5
 mirroring an export-side boundary: a condition-table sympy layer; the five PEtab prior families
 PyBNF lacks; a dose-response that also carries a named condition or row-varying per-measurement
 placeholders. (One-sided truncation now maps to a half-bounded box -- ADR-0047, #432.)
+
+**Fixed parameters (#907, ADR-0149).** A parameters-table row with ``estimate = false`` fixes
+its parameter at the row's ``nominalValue``, and PEtab gives that value precedence over the
+model file; libpetab, AMICI and pyPESTO all simulate with it. When the row names a model
+parameter (a BNGL ``begin parameters`` entry, or an SBML global ``<parameter>``), the importer
+therefore writes the nominalValue into its copy of every model that declares the parameter --
+only where the file disagrees: a numeric value already equal to it is left byte-identical,
+while a different number, a BNGL expression, or a missing SBML value is replaced. Each edit is
+marked with a comment in the copy, listed in the conf header, and printed; the source files are
+never touched, and nothing about it is a warning, because it is what the problem says. A fixed
+row that names no model entity keeps the inlining path (a formula constant, a fixed sigma, a
+condition targetValue). Refused: a fixed row with no nominalValue, a fixed row naming a model
+entity other than a parameter or an SBML rule target (libpetab's lint rejects both), an SBML
+parameter an initial assignment, event assignment or algebraic rule also sets, and a BNGL
+parameter the model's own actions set (either way the written value would not be its value for
+the whole simulation). The exporter never writes an ``estimate =
+false`` row: a parameter it does not fit stays in the exported model at the model file's value,
+which is what PEtab uses for a parameter absent from the table, so a re-export of an imported
+job carries the edited model and no fixed row -- the same problem.
 """
 
 import math
@@ -85,20 +107,24 @@ from pathlib import Path
 import numpy as np
 
 from ..data import Data, observed_mean
-from ..printing import PybnfError
+from ..printing import PybnfError, print0
 from ..priors import PRIOR_KEYWORD_MAP
 from ..pset import BNGLModel, ModelError
 from .conditions import (
     REF_MARKER,
     condition_name_from_id,
+    condition_names_and_ids,
     conditions_from_rows,
     drop_synthesized_wildtype,
     equil_t_end_from_period_time,
+    free_condition_name,
     is_species_target,
     model_time_reads,
+    name_unperturbed_equilibrations,
     read_condition_table,
     read_experiment_table,
     read_mapping_table,
+    refuse_inexact_unperturbed_periods,
     refuse_measurements_inside_fixed_equilibration,
 )
 from .measurements import (
@@ -117,8 +143,11 @@ from .measurements import (
 from ._measurement_params import write_measurement_params
 from .observables import read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
+from ._bngl import parameters_set_by_actions
 from ._bngl import parse_model as parse_bngl_model
+from ._bngl import set_parameter_values as set_bngl_parameter_values
 from ._sbml import parse_model as parse_sbml_model
+from ._sbml import set_parameter_values as set_sbml_parameter_values
 from ._tsv import num
 
 # A bare model-entity name (an observableFormula in the common case). Anything with
@@ -202,13 +231,21 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     """Import the BNGL-native PEtab v2 problem at ``problem_yaml_path`` into ``out_dir``.
 
     Reads the problem's tables + model, reconstructs the experiments' data, and writes a
-    new-era PyBNF job: the ``.exp`` data files, a verbatim copy of the BNGL model (new-era
-    binds free parameters by id, so the model needs no re-instrumentation -- ADR-0034), and
-    one or more ``.conf`` files. The *problem* (parameters/priors, observables/noise,
-    measurements, conditions/experiments) is recovered exactly, from every file each
-    ``problem.yaml`` key lists (#902); the *run-recipe*
-    (``job_type``, ``method``, ``settings``) is supplied by the caller (see the module
-    docstring). Returns the ``out_dir`` path.
+    new-era PyBNF job: the ``.exp`` data files, a copy of each model (new-era binds free
+    parameters by id, so the model needs no re-instrumentation -- ADR-0034), and one or more
+    ``.conf`` files. The *problem* (parameters/priors, observables/noise, measurements,
+    conditions/experiments) is recovered exactly, from every file each ``problem.yaml`` key
+    lists (#902); the *run-recipe* (``job_type``, ``method``, ``settings``) is supplied by the
+    caller (see the module docstring). Returns the ``out_dir`` path.
+
+    Each model copy is verbatim except for marked ``estimate = false`` overrides (#907,
+    ADR-0149). A parameters-table row with ``estimate = false`` that names a model parameter
+    fixes it at the row's ``nominalValue``, which PEtab gives precedence over the model file.
+    Where the model file has a different value (or, in BNGL, an expression; in SBML, no
+    value), the copy is edited to the table's value and the edit is marked with a comment in
+    the copy, listed in the conf header, and printed, one line per override. A model that
+    already agrees is copied byte for byte, and the source files are never touched: an edited
+    copy whose destination is its own source file raises ``PybnfError``.
 
     ``job_type`` is the SEARCH method token, or ``'all'`` to emit one
     ``imported_<jt>.conf`` per registered optimizer + sampler. ``method`` (default
@@ -216,10 +253,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``{experiment_name: method}`` map) sets per-experiment values. ``settings`` overrides
     the required algorithm/run settings.
 
-    Both **BNGL and SBML** models import (ADR-0036): the model file is carried verbatim, and
-    an **expression** ``observableFormula`` (e.g. a quotient of sums) becomes a conf
-    measurement model (``observable: <id>, formula: <expr>``) evaluated post-simulation -- the
-    optional ``pybnf[petab]`` extra. A **constant-per-observable** ``observableParameters``
+    Both **BNGL and SBML** models import (ADR-0036): the model file is carried verbatim
+    (except for the overrides above), and an **expression** ``observableFormula`` (e.g. a
+    quotient of sums) becomes a conf measurement model
+    (``observable: <id>, formula: <expr>``) evaluated post-simulation -- the optional
+    ``pybnf[petab]`` extra. A **constant-per-observable** ``observableParameters``
     scale/offset and an expression ``noiseFormula`` are substituted/reduced and import too
     (ADR-0044). A **dose-response** (parameter_scan) problem -- N conditions each setting one
     swept parameter at a constant measurement time (``inf`` => steady state, ADR-0046) -- is
@@ -235,12 +273,14 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``bngl``/``sbml``; the five unsupported prior families; a log-normal/log-laplace noise
     distribution; a **multi-symbol** condition expression -- a single parameter-valued
     ``targetValue`` is a per-condition estimated initial condition and imports, ADR-0076; a
-    **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder) and
-    ``PybnfError``
+    **row-varying** per-measurement ``observableParameters``/``noiseParameters`` placeholder;
+    a fixed SBML parameter an initial assignment, event assignment or algebraic rule also
+    sets, or a fixed BNGL parameter the model's actions set) and ``PybnfError``
     for a malformed problem (an ``observableFormula`` symbol that is not a model entity, an
     ambiguous dose-response group, an id defined twice across a table's files, a
-    ``problem.yaml`` shape the reader cannot read -- #902 -- or a BNGL model whose actions are
-    more than its network definition, ``generate_network`` and ``setOption`` -- #969).
+    ``problem.yaml`` shape the reader cannot read -- #902, a fixed row with no nominalValue or
+    naming a model entity PEtab does not allow in the parameters table, or a BNGL model whose
+    actions are more than its network definition -- #969).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -262,6 +302,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
+    # A period read as the model as is (a blank -inf period, a pins-only condition -- #906,
+    # ADR-0150) must be the model as is in PEtab too; refuse the ones that are not, on the tables
+    # as written, before the base condition below is dropped.
+    refuse_inexact_unperturbed_periods(
+        condition_rows, experiment_rows, surrogate_params,
+        {row.experiment_id for row in measurement_rows})
     # The exporter's synthesized base condition cond_wildtype re-pins M at base (p = p__REF),
     # read as the identity once p__REF is renamed back to p: drop it, and blank its periods, so
     # every reconstruction below reads "no condition" there. A cond_wildtype carrying any real
@@ -296,7 +342,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # ParamList, or SBML species u parameters -- ADR-0026/0036). A multi-model job (ADR-0041)
     # validates a (model-agnostic) observableFormula against the **union** of every model's
     # namespace. Each model file is carried **byte-verbatim** -- the measurement model is a
-    # post-sim observation layer, never a model-file edit (ADR-0036).
+    # post-sim observation layer, never a model-file edit (ADR-0036) -- save the marked
+    # estimate=false overrides applied just below (#907).
     model_texts = {}            # location -> verbatim text
     namespaces, entity_name_sets = [], []
     derived = {}                # SBML entity defined by others -> DerivedSymbol (inlined below, #493/#795)
@@ -313,12 +360,26 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     namespace = set().union(*namespaces)
     entity_names = set().union(*entity_name_sets)
 
+    # A fixed (estimate=false) row naming a model parameter sets that parameter to its
+    # nominalValue: PEtab gives the table precedence over the model file. The value is written
+    # into the imported copy of every model that declares the parameter (only where the file
+    # disagrees), each edit marked in the copy, listed in the conf header and printed (#907,
+    # ADR-0149). The entity sets read above are unchanged by the edit.
+    model_texts, fixed_overrides = _apply_fixed_model_parameters(
+        parameter_rows, models, model_texts)
+    _refuse_overwriting_an_edited_source(fixed_overrides, base, out_dir)
+
     # Observables -> the observableId -> model-column map (the data pivot's column order)
     # plus the measurement models (id, formula) synthesized from expression
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
         row_varying_obs_params, derived)
+
+    # A time=-inf period that applies no condition equilibrates the model as is, which is a
+    # pre-equilibration, not the absence of one (#906, ADR-0150): point each such period at one
+    # synthesized condition, declared below as `perturbations: none`, before any reader sees it.
+    experiment_rows, unperturbed = name_unperturbed_equilibrations(condition_rows, experiment_rows)
 
     # Pre-equilibrated dose-response reconstruction (ADR-0062): pull out the two-period scan groups
     # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
@@ -440,12 +501,18 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Pre-equilibrated scans become preequilibrate:+condition: parameter_scan experiments (ADR-0062).
     experiments += _preequilibrated_dose_response_experiments(
         preequil_scans, out_dir, model_location_of, files=files)
+    # The `perturbations: none` conditions the experiments apply (#906, ADR-0150).
+    experiments = _declare_unperturbed_conditions(
+        conditions, experiments, tc_condition_rows, experiment_rows, unperturbed, measured_ids)
     _refuse_fixed_equilibration_of_time_dependent_models(experiments, models, model_texts)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
-    # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
+    # (ADR-0036) -- except for the marked estimate=false overrides applied above (#907,
+    # ADR-0149). Expression observables live in the conf's measurement-model layer below.
     for loc, text in model_texts.items():
         (out_dir / loc).write_text(text)
+    for override in fixed_overrides:
+        _report_fixed_override(override)
 
     merged_settings = {**_DEFAULT_SETTINGS, **(settings or {})}
     model_filenames = [m['location'] for m in models]
@@ -458,7 +525,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
             conditions=conditions, experiments=experiments,
             measurement_models=measurement_models, method=method,
             method_overrides=method_overrides or {}, settings=merged_settings,
-            multi=len(job_types) > 1)
+            multi=len(job_types) > 1, fixed_overrides=fixed_overrides)
     return out_dir
 
 
@@ -557,7 +624,10 @@ def _free_parameters(parameter_rows):
     surrogate_params = set()
     for row in parameter_rows:
         if not row.estimate:
-            continue  # a fixed model constant, not a free parameter (stays in the model)
+            # Not a free parameter. A fixed model parameter's nominalValue is written into the
+            # model copy (_apply_fixed_model_parameters, #907); any other fixed row is a
+            # constant inlined where the tables reference it.
+            continue
         model_param, is_surrogate = _model_param(row.parameter_id)
         if is_surrogate:
             surrogate_params.add(model_param)
@@ -634,6 +704,209 @@ def _require_no_protocol_actions(text, location):
     except ModelError as exc:
         raise PybnfError(f"Model '{location}' could not be read as BNGL: {exc}.") from exc
     model.require_no_protocol_actions(location, where='petab')
+
+
+# ---------------------------------------------------------------------------
+# Fixed model parameters: estimate=false rows -> the model copies (#907)
+# ---------------------------------------------------------------------------
+
+#: One value written into an imported model copy (#907): the parameterId, the model file, the
+#: value that file had (a BNGL right-hand side, an SBML ``value`` attribute, or ``None`` for an
+#: SBML parameter that declared none), and the parameters table's nominalValue.
+_FixedOverride = namedtuple('_FixedOverride',
+                            'parameter_id location model_value nominal_value')
+
+#: The SBML constructs that make a parameter something other than a constant, split by
+#: whether PEtab itself allows such a parameter in the parameters table. libpetab's lint
+#: (``get_valid_parameters_for_parameter_table``) excludes every rule target, so a row naming
+#: one is a malformed problem; it accepts the others, which PyBNF declines to rewrite.
+_PETAB_FORBIDDEN_CONSTRUCTS = ('assignment rule', 'rate rule')
+
+
+def _apply_fixed_model_parameters(parameter_rows, models, model_texts):
+    """Write each fixed model parameter's nominalValue into the imported model copies (#907).
+
+    PEtab's parameters table has precedence over the model file: a row with ``estimate =
+    false`` fixes its parameter at the row's nominalValue, and every PEtab tool (libpetab's
+    parameter mapping, AMICI, pyPESTO) simulates with that value. The importer does the same
+    by editing its copy of each model that declares the parameter -- the parameters table is
+    global, so a multi-model problem is edited in every model -- and only where the file
+    disagrees: a BNGL numeric right-hand side or an SBML ``value`` that already equals the
+    nominalValue is left byte-identical, while a different number, a BNGL expression, or a
+    missing SBML value is replaced (:func:`pybnf.petab._bngl.set_parameter_values`,
+    :func:`pybnf.petab._sbml.set_parameter_values`). Each edit carries a comment in the copy,
+    and :func:`import_job` lists it in the conf header and prints it once the copies are
+    written. The source files are never touched.
+
+    A fixed row that names no model entity is not handled here; it keeps the inlining path
+    (a formula constant, a fixed sigma, a condition targetValue -- ADR-0037/0075/0076).
+
+    Returns ``(model_texts, overrides)``: the ``{location: text}`` map with the edits applied,
+    and one ``_FixedOverride`` per edited (parameter, model), in table order.
+
+    Raises ``PybnfError`` for a fixed row with no nominalValue (PEtab v2 requires one), for a
+    fixed row naming a model entity that is not a parameter or an SBML rule target (both
+    rejected by PEtab's own lint), and for a non-finite nominalValue on a model parameter.
+    Raises ``NotImplementedError`` for an SBML parameter whose value an initial assignment, an
+    event assignment or an algebraic rule also sets, and for a BNGL parameter the model's own
+    actions set (``setParameter``, a scan): PEtab allows these, but the written value would not
+    be the parameter's value for the whole simulation (ADR-0149).
+    """
+    fixed = {}
+    for row in parameter_rows:
+        if row.estimate:
+            continue
+        if row.nominal_value is None:
+            raise PybnfError(
+                f"PEtab parameter '{row.parameter_id}' has estimate=false but no "
+                f"nominalValue. PEtab v2 requires a nominalValue on every fixed parameter: it "
+                f"is the value the parameter takes. Give the row a nominalValue, or set "
+                f"estimate=true to fit it.")
+        fixed[row.parameter_id] = float(row.nominal_value)
+    texts = dict(model_texts)
+    overrides = []
+    if not fixed:
+        return texts, overrides
+    for m in models:
+        loc, lang = m['location'], (m['language'] or 'bngl').lower()
+        if lang == 'sbml':
+            targets = _fixed_sbml_targets(parse_sbml_model(texts[loc]), fixed, loc)
+            setter = set_sbml_parameter_values
+        else:
+            targets = _fixed_bngl_targets(parse_bngl_model(texts[loc]), fixed, loc)
+            setter = set_bngl_parameter_values
+        for pid in targets:
+            if not math.isfinite(fixed[pid]):
+                raise PybnfError(
+                    f"PEtab parameter '{pid}' has estimate=false with nominalValue "
+                    f"{fixed[pid]!r}, which is not a finite number, and it names a parameter "
+                    f"of the model {loc}. A model parameter cannot be fixed at it.")
+
+        def note(pid, old):
+            return (f'PEtab parameters.tsv: estimate=false, nominalValue {num(fixed[pid])} '
+                    f'(model file: {_model_value_text(old)})')
+
+        texts[loc], changed = setter(texts[loc], {p: fixed[p] for p in targets}, note)
+        overrides += [_FixedOverride(pid, loc, changed[pid], fixed[pid])
+                      for pid in targets if pid in changed]
+    return texts, overrides
+
+
+def _refuse_overwriting_an_edited_source(overrides, base, out_dir):
+    """Refuse an import whose edited model copy would be written over its source (#907).
+
+    A copy is written at its PEtab ``location`` under ``out_dir``, and a location may leave
+    the problem directory (``../models/m.bngl``). With ``out_dir`` beside the problem
+    directory, or equal to it, that path is the source file itself, and writing the edited
+    copy would change the user's model: a later problem that leaves the parameter to the model
+    file would then silently simulate this table's value. A model that needs no edit is still
+    written back as it was read, as before #907. Called before anything is written."""
+    for loc in dict.fromkeys(o.location for o in overrides):
+        dest = (out_dir / loc).resolve()
+        if dest == (base / loc).resolve():
+            names = ', '.join(o.parameter_id for o in overrides if o.location == loc)
+            raise PybnfError(
+                f"PEtab import: parameters.tsv fixes {names} (estimate=false) at a value the "
+                f"model {loc} does not have, so the imported copy of that model is edited, but "
+                f"the copy would be written to {dest}, which is the source model file. The "
+                f"import never changes a source model. Import into a directory where {loc} "
+                f"does not lead back to the source file.")
+
+
+def _report_fixed_override(o):
+    """Print one applied override (#907) -- on the console whatever the verbosity, since it
+    changes the model the job simulates. Called once the copies are written, so a later
+    refusal never leaves a message about a copy that does not exist."""
+    print0(f"PEtab import: parameters.tsv fixes {o.parameter_id} = {num(o.nominal_value)} "
+           f"(estimate=false); {o.location} has {_model_value_text(o.model_value)}, so the "
+           f"imported copy uses {num(o.nominal_value)}.")
+
+
+def _model_value_text(old):
+    """How a model file's value for a fixed parameter is shown to the user (#907): the BNGL
+    right-hand side or SBML attribute as written (a continued BNGL line's whitespace
+    collapsed), or ``no value`` for an SBML parameter that declared none."""
+    return 'no value' if old is None else ' '.join(old.split())
+
+
+def _not_a_parameter(pid, kind, loc):
+    return PybnfError(
+        f"PEtab parameter '{pid}' has estimate=false, but in the model {loc} '{pid}' is "
+        f"{kind}, not a parameter. PEtab allows only model parameters (and parameters the "
+        f"tables introduce) in the parameters table, and libpetab's lint rejects this row. "
+        f"Remove it, or rename the entity it collides with.")
+
+
+def _fixed_bngl_targets(ent, fixed, loc):
+    """The fixed ids the BNGL model declares in ``begin parameters``, in table order. A fixed
+    id naming another kind of BNGL entity is refused (PEtab's BNGL loader admits only
+    parameters to the parameters table), and so is a parameter the model's own actions set
+    (a job runs them ahead of each experiment's simulation, so they would undo the edit)."""
+    others = (('an observable', ent.observable_names),
+              ('a global function', ent.function_names),
+              ('a compartment', ent.compartment_names),
+              ('a molecule type', ent.molecule_type_names))
+    set_by_actions = parameters_set_by_actions(ent.text)
+    targets = []
+    for pid in fixed:
+        if pid in ent.parameters:
+            if pid in set_by_actions:
+                raise NotImplementedError(
+                    f"PEtab parameter '{pid}' has estimate=false with nominalValue "
+                    f"{num(fixed[pid])}, but an action in the model {loc} (a setParameter or "
+                    f"a parameter scan) also sets it, which would override the value written "
+                    f"into its begin parameters line. PyBNF does not rewrite a model's actions "
+                    f"(#907, ADR-0149). Remove the action, or remove the row if the action's "
+                    f"value is the one you want.")
+            targets.append(pid)
+            continue
+        for kind, names in others:
+            if pid in names:
+                raise _not_a_parameter(pid, kind, loc)
+    return targets
+
+
+def _fixed_sbml_targets(ent, fixed, loc):
+    """The fixed ids the SBML model declares as global parameters whose ``value`` attribute
+    alone settles them, in table order. Refuses a fixed id naming a species or a compartment,
+    or a parameter some other SBML construct assigns (see
+    :func:`_apply_fixed_model_parameters`). A ``constant="false"`` parameter that no construct
+    assigns is accepted: nothing can change it, so its ``value`` holds throughout."""
+    targets = []
+    for pid in fixed:
+        if pid in ent.species_names:
+            raise _not_a_parameter(pid, 'a species', loc)
+        if pid in ent.compartment_names:
+            raise _not_a_parameter(pid, 'a compartment', loc)
+        if pid not in ent.parameter_names:
+            continue
+        constructs = (ent.assigned_by or {}).get(pid, ())
+        forbidden = [c for c in constructs if c in _PETAB_FORBIDDEN_CONSTRUCTS]
+        if forbidden:
+            raise PybnfError(
+                f"PEtab parameter '{pid}' has estimate=false, but in the model {loc} it is "
+                f"the target of {_a_list(forbidden)}, which sets its value throughout the "
+                f"simulation. PEtab does not allow a rule target in the parameters table "
+                f"(libpetab's lint rejects this row). Remove the row, or remove the rule if "
+                f"'{pid}' should be a constant.")
+        if constructs:
+            raise NotImplementedError(
+                f"PEtab parameter '{pid}' has estimate=false with nominalValue "
+                f"{num(fixed[pid])}, but in the model {loc} its value is also set by "
+                f"{_a_list(constructs)}. PyBNF applies a fixed nominalValue by writing it into "
+                f"the parameter's value attribute, which would not make it the parameter's "
+                f"value for the whole simulation, and it does not rewrite {_a_list(constructs)} "
+                f"(#907, ADR-0149). Edit the model so '{pid}' is a plain constant, or remove "
+                f"the row if the model's own definition is the one you want.")
+        targets.append(pid)
+    return targets
+
+
+def _a_list(constructs):
+    """``['initial assignment', 'event assignment']`` -> ``'an initial assignment and an
+    event assignment'``."""
+    named = [('an ' if c[0] in 'aeiou' else 'a ') + c for c in constructs]
+    return named[0] if len(named) == 1 else ', '.join(named[:-1]) + ' and ' + named[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -1649,9 +1922,57 @@ def _write_exp(path, data):
 # The .conf writer (the disposable output half)
 # ---------------------------------------------------------------------------
 
+def _declare_unperturbed_conditions(conditions, experiments, condition_rows, experiment_rows,
+                                    synthesized, measured_ids):
+    """Add to ``conditions`` (as empty perturbation lists, written ``perturbations: none``) the
+    conditions the imported ``experiments`` apply that change nothing (#906, ADR-0150), and
+    return the experiments.
+
+    Two kinds:
+
+    * ``synthesized`` -- the name :func:`~pybnf.petab.conditions.name_unperturbed_equilibrations`
+      gave every ``time = -inf`` period that applied no condition. A PyBNF condition belongs to
+      one model, so when experiments on more than one model apply it, each model after the first
+      gets its own copy under the next free name, and its experiments are renamed to match.
+    * a named PEtab condition whose every row is a base pin ``p = p__REF``, the identity once
+      ``p__REF`` is renamed back to ``p``, so :func:`conditions_from_rows` recovered nothing from
+      it. It is the model as is wherever it is applied: as ``preequilibrate:`` an equilibration
+      with nothing changed, as ``condition:`` the same as none.
+
+    Only an id a measured experiment (``measured_ids``) applies counts, and only if it has rows.
+    A name whose applied id has no rows at all is left undeclared, even when another id of the
+    same name has rows but is applied by no measured experiment: the experiments table then
+    applies a condition the problem never defines, and loading the conf says so. The periods
+    whose reading as the model as is PEtab does not share were refused before this
+    (:func:`~pybnf.petab.conditions.refuse_inexact_unperturbed_periods`).
+    """
+    applied_ids = {r.condition_id for r in experiment_rows if r.experiment_id in measured_ids}
+    defined = {condition_name_from_id(r.condition_id) for r in condition_rows
+               if r.condition_id in applied_ids} - {None}
+    for exp in experiments:
+        for name in (exp.condition, exp.preequilibrate):
+            if name and name != synthesized and name not in conditions and name in defined:
+                conditions[name] = []
+    if synthesized is None:
+        return experiments
+    models = []
+    for exp in experiments:
+        if exp.preequilibrate == synthesized and exp.model_location not in models:
+            models.append(exp.model_location)
+    taken = condition_names_and_ids(condition_rows, experiment_rows) | set(conditions)
+    name_of_model = {}
+    for location in models:
+        name = synthesized if not name_of_model else free_condition_name(taken)
+        taken.add(name)
+        name_of_model[location] = name
+        conditions[name] = []
+    return [exp._replace(preequilibrate=name_of_model[exp.model_location])
+            if exp.preequilibrate == synthesized else exp for exp in experiments]
+
+
 def _write_conf(path, *, model_filenames, job_type, objective_directives, free_param_lines,
                 conditions, experiments, measurement_models, method, method_overrides,
-                settings, multi):
+                settings, multi, fixed_overrides=()):
     """Write one new-era (edition 2) ``.conf``: the recovered problem + the supplied
     run-recipe (``job_type``, per-experiment ``method:``, required settings).
 
@@ -1661,7 +1982,9 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     ``objective = <token>`` / whole-fit ``noise_model = ...`` line, or a base objective plus
     per-observable ``noise_model <obs> = ...`` overrides (:func:`_objective_directives`).
     ``measurement_models`` is the list of ``(observableId, formula)`` expression observables,
-    emitted as ``observable: <id>, formula: <expr>`` measurement-model lines (ADR-0036)."""
+    emitted as ``observable: <id>, formula: <expr>`` measurement-model lines (ADR-0036).
+    ``fixed_overrides`` lists the estimate=false values written into the model copies
+    (``_FixedOverride``, #907); each is named in the header, which is otherwise unchanged."""
     stem = f'imported_{job_type}' if multi else 'imported'
     lines = [
         '# Imported from a PEtab v2 problem by pybnf.petab.import_job (#407).',
@@ -1670,6 +1993,19 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
         '# run-recipe below (job_type + algorithm settings, the per-experiment method:,',
         '# and output/verbosity) is SUPPLIED, not recovered: PEtab is a problem spec with',
         '# no home for the method, so it is not part of the round-trip identity.',
+    ]
+    if fixed_overrides:
+        lines += [
+            '#',
+            '# Fixed model parameters (#907): parameters.tsv fixes each parameter below',
+            '# (estimate = false) at its nominalValue, which PEtab gives precedence over the',
+            '# model file. The model file disagreed, so the imported copy of the model was',
+            "# edited to the table's value; each edited line is marked with a comment there.",
+            *[f'#   {o.parameter_id} = {num(o.nominal_value)} in {o.location} '
+              f'(the model file had {_model_value_text(o.model_value)})'
+              for o in fixed_overrides],
+        ]
+    lines += [
         '',
         f'output_dir=output/{stem}',
         'edition = 2',
@@ -1679,7 +2015,8 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
         *objective_directives,
     ]
     # Expression observables: a measurement-model formula evaluated post-simulation (the
-    # observation layer, ADR-0036), not a model-file edit. The model is carried verbatim.
+    # observation layer, ADR-0036), not a model-file edit. The model is carried verbatim, save
+    # the marked estimate=false overrides the header lists (#907).
     for obs_id, formula in measurement_models:
         lines.append(f'observable: {obs_id}, formula: {formula}')
     lines.append('')
@@ -1699,7 +2036,8 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
             if cname:
                 cond_models.setdefault(cname, set()).add(exp.model_location)
     for name, perts in conditions.items():
-        pert_str = ', '.join(_render_perturbation(var, op, val) for var, op, val in perts)
+        # An empty list is a condition that changes nothing (#906, ADR-0150).
+        pert_str = ', '.join(_render_perturbation(var, op, val) for var, op, val in perts) or 'none'
         model_field = ''
         if multi_model:
             locs = {loc for loc in cond_models.get(name, set()) if loc}
@@ -2050,7 +2388,8 @@ def _require_supported_model(problem, path):
     it; the importer holds the policy. **BNGL and SBML both import** (one or many models,
     ADR-0041): each model file is carried verbatim and an expression ``observableFormula``
     becomes a post-simulation measurement model (the observation layer), so neither a
-    ``.bngl`` nor an ``.xml`` is ever edited (ADR-0036). Any other model language (e.g.
+    ``.bngl`` nor an ``.xml`` is edited for an observable (ADR-0036); the one edit is a marked
+    ``estimate = false`` override (#907, ADR-0149). Any other model language (e.g.
     ``pysb``) raises ``NotImplementedError`` early, before any table is read. A ``None``
     language (the field was absent) is permitted -- the exporter omits it only for a BNGL
     model.

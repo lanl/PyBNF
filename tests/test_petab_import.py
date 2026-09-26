@@ -22,6 +22,7 @@ itself: a PyBNF job exported to a PEtab v2 problem and imported back must reprod
    observableFormula becomes a measurement model evaluated post-simulation.)
 """
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -48,6 +49,7 @@ from pybnf.petab.conditions import (
     build_experiment_conditions,
     conditions_from_rows,
     drop_synthesized_wildtype,
+    name_unperturbed_equilibrations,
     read_condition_table,
     read_experiment_table,
 )
@@ -1362,6 +1364,392 @@ class TestPreequilibrationPeriodGrouping:
         with pytest.raises(NotImplementedError, match='more than'):
             _condition_and_preequilibrate(periods, 'relax')
 
+    def test_a_blank_equilibration_period_gets_a_synthesized_condition(self):
+        # #906: a blank conditionId on the -inf period is "equilibrate the model as is" -- a
+        # pre-equilibration -- so it is pointed at a synthesized (`none`) condition before the
+        # period resolver can read it as "no pre-equilibration".
+        rows = [self._row(float('-inf'), ''), self._row(0.0, 'cond_meas')]
+        conds = [PetabConditionRow('cond_meas', 'flag', '2')]
+        renamed, name = name_unperturbed_equilibrations(conds, rows)
+        assert name == 'unperturbed'
+        assert [(r.time, r.condition_id) for r in renamed] == [
+            (float('-inf'), 'cond_unperturbed'), (0.0, 'cond_meas')]
+        assert _condition_and_preequilibrate(renamed, 'relax') == ('meas', 'unperturbed')
+
+    def test_a_blank_measured_period_is_left_alone(self):
+        rows = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, '')]
+        assert name_unperturbed_equilibrations([], rows) == (rows, None)
+
+    def test_the_synthesized_name_collides_with_nothing_in_the_problem(self):
+        # 'unperturbed' is a condition id and 'cond_unperturbed_2' a condition's id, so both of
+        # those names are taken: the next free one is used.
+        rows = [self._row(float('-inf'), ''), self._row(0.0, 'unperturbed'),
+                PetabExperimentRow('other', 0.0, 'cond_unperturbed_2')]
+        conds = [PetabConditionRow('unperturbed', 'flag', '2'),
+                 PetabConditionRow('cond_unperturbed_2', 'flag', '3')]
+        renamed, name = name_unperturbed_equilibrations(conds, rows)
+        assert name == 'unperturbed_3'
+        assert renamed[0].condition_id == 'cond_unperturbed_3'
+
+
+# ---------------------------------------------------------------------------
+# #906 / ADR-0150: a time=-inf period with no condition equilibrates the model as is, which
+# imports as `preequilibrate:` a synthesized `perturbations: none` condition -- not as no
+# pre-equilibration, which started the experiment from the seed species. The problem is the
+# issue's: A' = p - k*flag*A, seed A = 10, p = k = flag = 1; equilibrate unperturbed, then
+# measure with flag = 2, so A(t) = 0.5 + 0.5*exp(-2t) at k = 1.
+# ---------------------------------------------------------------------------
+
+_RELAX_BNGL = """\
+begin model
+begin parameters
+  p    1
+  k    1
+  flag 1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  0 -> A() p
+  A() -> 0 k*flag
+end reaction rules
+end model
+"""
+
+_RELAX_TIMES = [0.0, 0.5, 1.0, 2.0]
+
+
+def _relax_closed_form(k):
+    """A_tot after equilibrating at flag = 1 and switching to flag = 2 (p = 1)."""
+    return [1 / (2 * k) + (1 / k - 1 / (2 * k)) * np.exp(-2 * k * t) for t in _RELAX_TIMES]
+
+
+def _write_relax_problem(root, experiments, conditions='cond_meas\tflag\t2\n',
+                         parameters='k\ttrue\t0.1\t10\n', measured='relax'):
+    """The issue's PEtab v2 problem, with the experiments/conditions/parameters rows given."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / 'relax.bngl').write_text(_RELAX_BNGL)
+    (root / 'problem.yaml').write_text(
+        'format_version: 2.0.0\nparameter_files:\n  - parameters.tsv\nobservable_files:\n'
+        '  - observables.tsv\nmeasurement_files:\n  - measurements.tsv\ncondition_files:\n'
+        '  - conditions.tsv\nexperiment_files:\n  - experiments.tsv\nmodel_files:\n  relax:\n'
+        '    location: relax.bngl\n    language: bngl\n')
+    (root / 'experiments.tsv').write_text('experimentId\ttime\tconditionId\n' + experiments)
+    (root / 'conditions.tsv').write_text('conditionId\ttargetId\ttargetValue\n' + conditions)
+    (root / 'observables.tsv').write_text(
+        'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+        'obs_A_tot\tA_tot\t1\tnormal\n')
+    (root / 'parameters.tsv').write_text(
+        'parameterId\testimate\tlowerBound\tupperBound\n' + parameters)
+    (root / 'measurements.tsv').write_text(
+        'observableId\texperimentId\ttime\tmeasurement\n' + ''.join(
+            f'obs_A_tot\t{measured}\t{t}\t{v:.7f}\n'
+            for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0))))
+    return root / 'problem.yaml'
+
+
+def _load_imported(out, monkeypatch):
+    from pybnf import config as config_mod
+    monkeypatch.chdir(out)
+    return config_mod.Configuration(
+        ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+
+
+def _objective_at(conf_path, values, monkeypatch):
+    """Build ``conf_path``'s job (BNG2.pl network generation, its default bngsim backend), simulate
+    every model at the free-parameter ``values``, and return the objective there."""
+    from pybnf import algorithms, config as config_mod
+    from pybnf.pset import PSet
+    monkeypatch.chdir(conf_path.parent)
+    conf = config_mod.Configuration(ploop(conf_path.read_text().splitlines(keepends=True)))
+    os.makedirs(conf.config['output_dir'], exist_ok=True)
+    alg = algorithms.DifferentialEvolution(conf)
+    monkeypatch.chdir(conf_path.parent)
+    pset = PSet([v.set_value(values[v.name]) for v in alg.variables])
+    sims = {}
+    for model in alg.model_list:
+        folder = conf_path.parent / f'objective_{model.name}'
+        folder.mkdir(exist_ok=True)
+        sims[model.name] = model.copy_with_param_set(pset).execute(str(folder), 'x', 120)
+        monkeypatch.chdir(conf_path.parent)
+    return conf.obj.evaluate_multiple(sims, conf.exp_data, pset), sims
+
+
+class TestImportUnperturbedEquilibration:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        root = tmp_path_factory.mktemp('relax906')
+        yaml = _write_relax_problem(
+            root / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\n')
+        return import_job(yaml, root / 'imported')
+
+    def test_the_problem_is_valid_petab_with_an_empty_equilibration_period(self, imported):
+        # The oracle for the input: libpetab reads the -inf period as an empty condition list.
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        problem = Problem.from_yaml(str(imported.parent / 'problem' / 'problem.yaml'))
+        assert not lint_problem(problem)
+        assert [(p.time, list(p.condition_ids)) for p in problem.experiments[0].periods] == [
+            (float('-inf'), []), (0.0, ['cond_meas'])]
+
+    def test_blank_equilibration_imports_as_a_none_preequilibration(self, imported):
+        lines = (imported / 'imported.conf').read_text().splitlines()
+        assert 'condition: unperturbed, perturbations: none' in lines
+        assert ('experiment: relax, preequilibrate: unperturbed, condition: meas, method: ode, '
+                'data: relax.exp') in lines
+
+    def test_imported_conf_equilibrates_before_measuring(self, imported, monkeypatch):
+        acts = _load_imported(imported, monkeypatch).models['relax'].actions
+        i_equil = next(i for i, a in enumerate(acts) if 'relax_preequil' in a)
+        assert 'steady_state=>1' in acts[i_equil]
+        assert not any(a.startswith('setParameter') for a in acts[:i_equil])
+        assert acts[i_equil + 1] == 'setParameter("flag",2)'
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_imported_conf_reproduces_the_closed_form(self, imported, monkeypatch):
+        # The issue's numbers: [1.0, 0.6839, 0.5677, 0.5092] at k = 1 and an objective of zero
+        # against the exact data; the pre-#906 import simulated [10, 3.99, 1.79, 0.67].
+        objective, sims = _objective_at(imported / 'imported.conf', {'k': 1.0}, monkeypatch)
+        data = sims['relax']['relax']
+        np.testing.assert_allclose(data.data[:, data.cols['A_tot']], _relax_closed_form(1.0),
+                                   atol=1e-6)
+        assert objective < 1e-10
+        _objective, sims = _objective_at(imported / 'imported.conf', {'k': 0.37}, monkeypatch)
+        data = sims['relax']['relax']
+        np.testing.assert_allclose(data.data[:, data.cols['A_tot']], _relax_closed_form(0.37),
+                                   rtol=1e-6)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    @pytest.mark.parametrize('equilibration, conditions, preequilibrate, declared, a_start', [
+        # a blank -inf period: with k in M, PEtab runs it at the model file's k, not the fitted
+        # one, which a `none` condition cannot say (#948), so it is refused, naming k
+        ('', 'cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n', None, None, None),
+        # the exporter's base condition made only of pins: #905 drops it and blanks the period,
+        # but it pins k at the fitted value, so it is the model as is and imports as `none`
+        ('cond_wildtype', 'cond_wildtype\tk\tk__REF\ncond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
+         'unperturbed', 'condition: unperturbed, perturbations: none', 1.0),
+        # a cond_wildtype with a real target is a condition in its own right (#905): equilibrate
+        # at flag = 0.5, so A starts at p/(0.5 k) = 2/k
+        ('cond_wildtype',
+         'cond_wildtype\tflag\t0.5\ncond_wildtype\tk\tk__REF\n'
+         'cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
+         'cond_wildtype', 'condition: cond_wildtype, perturbations: flag = 0.5', 2.0),
+    ], ids=['blank', 'pins_only_cond_wildtype', 'cond_wildtype_with_a_real_target'])
+    def test_the_equilibration_period_imports_by_the_cond_wildtype_rules(
+            self, tmp_path, monkeypatch, equilibration, conditions, preequilibrate, declared,
+            a_start):
+        # k is fit and perturbed (k__REF, the set M), so every period re-pins it. A pins-only
+        # cond_wildtype on the -inf period is the model as is and becomes the synthesized `none`
+        # condition; one with a real target keeps it; a blank one, which PEtab runs at the model
+        # file's k, is refused. The oracle is the closed form of the PEtab problem as written:
+        # equilibrate at flag = f0 and the trial k, then measure at flag = 2:
+        # A(t) = 1/(2k) + (a_start/k - 1/(2k)) exp(-2kt).
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', f'relax\t-inf\t{equilibration}\nrelax\t0\tcond_meas\n',
+            conditions=conditions, parameters='k__REF\ttrue\t0.1\t10\n')
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        assert not lint_problem(Problem.from_yaml(str(yaml)))
+        if declared is None:
+            with pytest.raises(NotImplementedError,
+                               match=r"(?s)Experiment 'relax' starts with a period that applies "
+                                     r"no condition.*k is estimated through k__REF"):
+                import_job(yaml, tmp_path / 'imported')
+            return
+        out = import_job(yaml, tmp_path / 'imported')
+        lines = (out / 'imported.conf').read_text().splitlines()
+        assert declared in lines
+        assert (f'experiment: relax, preequilibrate: {preequilibrate}, condition: meas, '
+                'method: ode, data: relax.exp') in lines
+        for k in (1.0, 0.37):
+            _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
+            data = sims['relax']['relax']
+            want = [1 / (2 * k) + (a_start / k - 1 / (2 * k)) * np.exp(-2 * k * t)
+                    for t in _RELAX_TIMES]
+            np.testing.assert_allclose(data.data[:, data.cols['A_tot']], want, rtol=1e-6)
+
+    def test_a_blank_equilibration_with_a_fit_and_perturbed_parameter_is_refused(self, tmp_path):
+        # Independent review of the merge of #947. k is a condition target here (cond_meas sets
+        # k = k__REF), and PEtab v2 does not allow a condition target in the parameters table, so
+        # a period that sets no k runs at the model file's k = 1: the blank -inf period
+        # equilibrates at k = 1, A = p/(k flag) = 1, whatever k__REF is. The exporter reads a
+        # blank period the same way (for a `none` equilibration with M non-empty it writes
+        # cond_wildtype, not a blank). The synthesized `unperturbed` condition would equilibrate
+        # at the fitted k instead (A(0) = 1/k, 2.70 at k = 0.37), so the import refuses, naming
+        # the experiment and k. Main imported it without any equilibration at all.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\n',
+            conditions='cond_meas\tflag\t2\ncond_meas\tk\tk__REF\n',
+            parameters='k__REF\ttrue\t0.1\t10\n')
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Experiment 'relax' starts with a period that applies no "
+                                 r"condition \(a blank conditionId\).*k at the fitted value.*"
+                                 r"k is estimated through k__REF.*model file's value.*Add "
+                                 r"k = k__REF"):
+            import_job(yaml, tmp_path / 'imported')
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_an_experiment_after_a_blank_equilibration_is_simulated_as_declared(
+            self, tmp_path, monkeypatch):
+        # A lint-clean problem: relax equilibrates the model as is and then measures at flag = 2;
+        # plain, listed after it, is a single period with no condition, so it starts from the seed
+        # at flag = 1: A = 1/k + (10 - 1/k) exp(-k t). relax's measured condition sets flag = 2
+        # inline, and every experiment now starts from the model's own parameters (ADR-0151,
+        # #830), so plain must not inherit it. (Before #830 was fixed, it ran at flag = 2.)
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', 'relax\t-inf\t\nrelax\t0\tcond_meas\nplain\t0\t\n')
+        with open(tmp_path / 'problem' / 'measurements.tsv', 'a') as fh:
+            fh.write(''.join(f'obs_A_tot\tplain\t{t}\t{1 + 9 * np.exp(-t):.7f}\n'
+                             for t in _RELAX_TIMES))
+        out = import_job(yaml, tmp_path / 'imported')
+        k = 0.37
+        _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
+        relax, plain = sims['relax']['relax'], sims['relax']['plain']
+        np.testing.assert_allclose(relax.data[:, relax.cols['A_tot']], _relax_closed_form(k),
+                                   rtol=1e-6)
+        np.testing.assert_allclose(plain.data[:, plain.cols['A_tot']],
+                                   [1 / k + (10 - 1 / k) * np.exp(-k * t) for t in _RELAX_TIMES],
+                                   rtol=1e-6)
+
+    def test_a_condition_of_only_base_pins_is_a_none_condition(self, tmp_path, monkeypatch):
+        # k is fit AND perturbed (k__REF), so every condition re-pins it; cond_basal does nothing
+        # else. Once k__REF is renamed back to k its rows are the identity: a `none` condition,
+        # on the equilibration period and on a measured one alike.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem',
+            'relax\t-inf\tcond_basal\nrelax\t0\tcond_meas\nplain\t0\tcond_basal\n',
+            conditions=('cond_basal\tk\tk__REF\ncond_meas\tflag\t2\ncond_meas\tk\tk__REF\n'),
+            parameters='k__REF\ttrue\t0.1\t10\n')
+        with open(tmp_path / 'problem' / 'measurements.tsv', 'a') as fh:
+            fh.write('obs_A_tot\tplain\t0\t10\nobs_A_tot\tplain\t1\t4.3\n'
+                     'obs_A_tot\tplain\t2\t2.2\n')
+        out = import_job(yaml, tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: basal, perturbations: none' in text
+        assert 'experiment: relax, preequilibrate: basal, condition: meas' in text
+        cfg = _load_imported(out, monkeypatch)
+        # the measured use reads as an omitted condition: bare data key, no mutant
+        assert set(cfg.exp_data['relax']) == {'relax', 'plain'}
+        assert cfg.models['relax'].mutants == []
+
+    def test_an_equilibration_condition_the_problem_never_defines_still_fails(
+            self, tmp_path, monkeypatch):
+        # Only a condition whose rows are all base pins becomes `none`; an id with no rows at all
+        # is a malformed problem, and the imported conf refuses to load rather than guess.
+        yaml = _write_relax_problem(
+            tmp_path / 'problem', 'relax\t-inf\tcond_ghost\nrelax\t0\tcond_meas\n')
+        out = import_job(yaml, tmp_path / 'imported')
+        assert 'preequilibrate: ghost' in (out / 'imported.conf').read_text()
+        with pytest.raises(PybnfError, match="condition 'ghost'"):
+            _load_imported(out, monkeypatch)
+
+    def test_blank_equilibration_of_a_pre_equilibrated_scan(self, tmp_path, monkeypatch):
+        # The exporter's per-dose shape (cond_<eid>) with a blank -inf period: one scan
+        # experiment, pre-equilibrated under the synthesized `none` condition.
+        root = tmp_path / 'problem'
+        _write_relax_problem(
+            root, ''.join(f'dose_{i}\t-inf\t\ndose_{i}\t0\tcond_dose_{i}\n' for i in range(3)),
+            conditions=''.join(f'cond_dose_{i}\tflag\t{f}\n' for i, f in enumerate((1, 2, 4))))
+        (root / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\n' + ''.join(
+                f'obs_A_tot\tdose_{i}\t1\t{v}\n' for i, v in enumerate((1.0, 0.568, 0.264))))
+        out = import_job(root / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: unperturbed, perturbations: none' in text
+        assert 'experiment: dose, preequilibrate: unperturbed, method: ode, t_end: 1' in text
+        acts = _load_imported(out, monkeypatch).models['relax'].actions
+        assert any('dose_preequil' in a and 'steady_state=>1' in a for a in acts)
+
+    def test_each_model_gets_its_own_none_condition(self, tmp_path, monkeypatch):
+        # A PyBNF condition belongs to one model, so blank equilibrations on two models import as
+        # two `none` conditions -- a single shared one would be refused as spanning models.
+        src = tmp_path / 'src'
+        src.mkdir()
+        (src / 'relax.bngl').write_text(_RELAX_BNGL)
+        (src / 'other.bngl').write_text(_RELAX_BNGL.replace('A() 10', 'A() 5'))
+        exp = '# time\tA_tot\n' + ''.join(
+            f'{t}\t{v}\n' for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0)))
+        (src / 'relax.exp').write_text(exp)
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\nmodel: relax.bngl\nmodel: other.bngl\n'
+            'condition: basal, model: relax.bngl, perturbations: none\n'
+            'condition: basal2, model: other.bngl, perturbations: none\n'
+            'condition: stim, model: relax.bngl, perturbations: flag = 2\n'
+            'condition: stim2, model: other.bngl, perturbations: flag = 2\n'
+            'experiment: ra, model: relax.bngl, preequilibrate: basal, condition: stim, '
+            'data: relax.exp\n'
+            'experiment: rb, model: other.bngl, preequilibrate: basal2, condition: stim2, '
+            'data: relax.exp\n'
+            'uniform_var = k 0.1 10\n')
+        export_job(src / 'job.conf', tmp_path / 'petab1')
+        out = import_job(tmp_path / 'petab1' / 'problem.yaml', tmp_path / 'imported')
+        text = (out / 'imported.conf').read_text()
+        assert 'condition: unperturbed, model: relax.bngl, perturbations: none' in text
+        assert 'condition: unperturbed_2, model: other.bngl, perturbations: none' in text
+        assert 'experiment: ra, preequilibrate: unperturbed, condition: stim' in text
+        assert 'experiment: rb, preequilibrate: unperturbed_2, condition: stim2' in text
+        cfg = _load_imported(out, monkeypatch)
+        assert set(cfg.exp_data) == {'relax', 'other'}
+        export_job(out / 'imported.conf', tmp_path / 'petab2')
+        _assert_problem_round_trips(tmp_path / 'petab1', tmp_path / 'petab2')
+
+
+class TestUnperturbedPreequilibrationRoundTrip:
+    """A `perturbations: none` pre-equilibration survives export -> import -> re-export byte for
+    byte, and the imported job scores the same objective at a fixed parameter vector."""
+
+    _CONF = ('edition = 2\njob_type = de\nobjective = sos\nmodel: relax.bngl\n'
+             'population_size = 4\nmax_iterations = 1\n'
+             'condition: basal, perturbations: none\n'
+             'condition: stim, perturbations: flag = 2\n'
+             'experiment: relax, preequilibrate: basal, condition: stim, data: relax.exp\n'
+             'uniform_var = k 0.1 10\n')
+    # M = {k}: another experiment perturbs the fit parameter, so the -inf period is cond_wildtype.
+    _CONF_FIT = _CONF + ('condition: fast, perturbations: k * 2\n'
+                         'experiment: other, condition: fast, data: relax.exp\n')
+
+    def _extra(self):
+        return {'relax.bngl': _RELAX_BNGL,
+                'relax.exp': '# time\tA_tot\n' + ''.join(
+                    f'{t}\t{v}\n' for t, v in zip(_RELAX_TIMES, _relax_closed_form(1.0)))}
+
+    @pytest.mark.parametrize('conf', [_CONF, _CONF_FIT], ids=['empty_M', 'fit_perturbed_M'])
+    def test_round_trips_byte_for_byte(self, tmp_path, conf):
+        petab1, _imported, petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files=self._extra(), model_name='relax.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert 'perturbations: none' in imported_conf.read_text()
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    @pytest.mark.parametrize('conf', [_CONF, _CONF_FIT], ids=['empty_M', 'fit_perturbed_M'])
+    def test_imported_job_scores_the_original_objective(self, tmp_path, monkeypatch, conf):
+        _petab1, _imported, _petab2, imported_conf = _roundtrip(
+            tmp_path, conf, extra_files=self._extra(), model_name='relax.bngl')
+        original, _ = _objective_at(tmp_path / 'src' / 'job.conf', {'k': 0.6}, monkeypatch)
+        again, _ = _objective_at(imported_conf, {'k': 0.6}, monkeypatch)
+        assert again == pytest.approx(original, rel=1e-9)
+        # and it is the closed form's objective, not a seed-started one: half the sum of squares
+        # (`sos`) of the k = 0.6 trajectory against the k = 1 data. (With M the second
+        # experiment adds a term of its own, so only the first job is checked in closed form.)
+        if conf == self._CONF:
+            want = 0.5 * sum((a - b) ** 2 for a, b in zip(_relax_closed_form(0.6),
+                                                         _relax_closed_form(1.0)))
+            assert original == pytest.approx(want, rel=1e-6)
+
 
 def _fit_imported(out, monkeypatch, seed=1, **settings):
     """Fit the job imported into ``out`` through the real bngsim backend, with the dask layer
@@ -2187,14 +2575,165 @@ class TestRealTargetWildtypeCondition:
 
     def test_a_pins_only_id_does_not_take_an_unused_ids_targets(self, tmp_path, monkeypatch):
         # Only cond_a is applied, so it is the id kept under the name 'a' and the unused a (L = 3)
-        # is left out. cond_a has no target left once its pin is dropped, so e1 names a condition
-        # the conf does not define, and the conf refuses to load. That is loud; the follow-up
-        # gave e1 the unused condition's L = 3 instead and fitted it (4.53 at k = 0.7 against
-        # 0.056 for the PEtab problem).
+        # is left out; the follow-up gave e1 the unused condition's L = 3 instead and fitted it
+        # (4.53 at k = 0.7 against 0.056 for the PEtab problem). cond_a has no target left once
+        # its pin is dropped: it is the model as is, which imports as a `perturbations: none`
+        # condition (#906), where before this branch e1 named an undefined condition and the conf
+        # refused to load.
         yaml = self._pins_only_pair_problem(tmp_path / 'problem', ('cond_a',))
         out = import_job(yaml, tmp_path / 'out')
-        assert 'L = 3' not in (out / 'imported.conf').read_text()
-        with pytest.raises(PybnfError, match=r"Experiment 'e1' references condition 'a'"):
+        text = (out / 'imported.conf').read_text()
+        assert 'L = 3' not in text
+        assert 'condition: a, perturbations: none' in text.splitlines()
+        cfg = _load_conf(out, monkeypatch)
+        # a measured `none` condition is read as omitted: the base run, the bare data key
+        assert set(cfg.exp_data['model']) == {'e1'}
+        assert cfg.models['model'].mutants == []
+
+    def test_an_applied_id_with_no_rows_is_not_read_as_a_none_condition(self, tmp_path,
+                                                                        monkeypatch):
+        # e1 applies cond_ghost, which the conditions table never defines; an unapplied id ghost,
+        # of the same name, holds only a pin. Only an applied id with rows can make a `none`
+        # condition, so 'ghost' stays undefined and the conf refuses to load, naming it.
+        yaml = _write_periods_problem(
+            tmp_path / 'problem', [('ghost', 'k', 'k__REF')], [('e1', '0', 'cond_ghost')],
+            [('obs_A', 'e1', t, 1.0 + t) for t in (0.5, 1, 2)])
+        (tmp_path / 'problem' / 'parameters.tsv').write_text(
+            'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n'
+            'k__REF\t0.1\t10\t1\ttrue\n')
+        out = import_job(yaml, tmp_path / 'out')
+        assert 'perturbations: none' not in (out / 'imported.conf').read_text()
+        with pytest.raises(PybnfError, match=r"Experiment 'e1' references condition 'ghost'"):
+            _load_conf(out, monkeypatch)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_a_pins_only_applied_id_simulates_the_model_as_is(self, tmp_path, monkeypatch):
+        # The closed form of the PEtab problem as written: e1's only condition re-pins k at its
+        # estimate, so A' = L + flag - k A from A = 0 at L = flag = 1: A = (2/k)(1 - exp(-k t)).
+        yaml = self._pins_only_pair_problem(tmp_path / 'problem', ('cond_a',))
+        out = import_job(yaml, tmp_path / 'out')
+        k = 0.7
+        _objective, sims = _objective_at(out / 'imported.conf', {'k': k}, monkeypatch)
+        data = sims['model']['e1']
+        np.testing.assert_allclose(
+            data.data[:, data.cols['A_tot']],
+            [2 / k * (1 - np.exp(-k * t)) for t in data.data[:, data.cols['time']]], rtol=1e-6)
+
+    @staticmethod
+    def _surrogate_parameters(root, row='k__REF\t0.1\t10\t1\ttrue\n'):
+        (root / 'parameters.tsv').write_text(
+            'parameterId\tlowerBound\tupperBound\tnominalValue\testimate\n' + row)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_a_fixed_surrogate_pin_on_the_equilibration_period_keeps_its_value(
+            self, tmp_path, monkeypatch):
+        # Independent review of the merge of #947. k__REF is fixed (estimate = false, 1.5), so
+        # cond_wildtype's k = k__REF is not a base pin but a real target, k = 1.5 (#905), and the
+        # -inf period that applies it is a real pre-equilibration. Before the merge the -inf
+        # rewrite took any cond_wildtype for the model as is, so e1 equilibrated at the model's
+        # k = 1, silently. Oracle, PEtab v2 periods: equilibrate at k = 1.5 and flag = 1, so
+        # A(0) = (L + 1)/1.5; the measured period sets flag = 3 and keeps k = 1.5.
+        root = tmp_path / 'problem'
+        yaml = _write_periods_problem(
+            root, [('cond_wildtype', 'k', 'k__REF'), ('m', 'flag', 3)],
+            [('e1', '-inf', 'cond_wildtype'), ('e1', '0', 'm')],
+            [('obs_A', 'e1', t, 1.0 + t) for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root, 'k__REF\t0.1\t10\t1.5\tfalse\nL\t0.1\t10\t1\ttrue\n')
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        assert not lint_problem(Problem.from_yaml(str(yaml)))
+        out = import_job(yaml, tmp_path / 'out')
+        lines = (out / 'imported.conf').read_text().splitlines()
+        assert 'condition: cond_wildtype, perturbations: k = 1.5' in lines
+        assert ('experiment: e1, preequilibrate: cond_wildtype, condition: m, method: ode, '
+                'data: e1.exp') in lines
+        L = 0.7
+        _objective, sims = _objective_at(out / 'imported.conf', {'L': L}, monkeypatch)
+        data = sims['model']['e1']
+        a0, a_end = (L + 1) / 1.5, (L + 3) / 1.5
+        np.testing.assert_allclose(
+            data.data[:, data.cols['A_tot']],
+            [a_end + (a0 - a_end) * np.exp(-1.5 * t) for t in data.data[:, data.cols['time']]],
+            rtol=1e-6)
+
+    _PINS_AFTER_CHANGE_MATCH = (r"(?s)Experiment 'e1' applies condition '{cid}' at time 0, whose "
+                                r"only rows re-pin fit parameters, after an earlier period set k "
+                                r"\(condition 'pre'\).*k = k__REF restores k to its estimate.*#948")
+
+    @pytest.mark.parametrize('conditions, experiments, cid', [
+        # the direct route: 'a' only re-pins k, applied after pre set k = 2
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('a', 'k', 'k__REF')],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'a')], 'a'),
+        # the unapplied-namesake route: cond_a (pins only) is applied and imports as 'a'; the
+        # unapplied a sets L = 3
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('cond_a', 'k', 'k__REF'), ('a', 'L', 3),
+          ('a', 'k', 'k__REF')],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'cond_a')], 'cond_a'),
+        # one condition, two roles: 'a' is e2's pre-equilibration (exact there, it pins all of M)
+        # and e1's measured condition after pre set k = 2 (not exact)
+        ([('pre', 'k', 2), ('pre', 'L', 5), ('a', 'k', 'k__REF'), ('m', 'flag', 3)],
+         [('e1', '-inf', 'pre'), ('e1', '0', 'a'), ('e2', '-inf', 'a'), ('e2', '0', 'm')], 'a'),
+    ], ids=['direct', 'unapplied_namesake', 'two_roles'])
+    def test_a_pins_only_condition_after_an_equilibration_that_changed_k_is_refused(
+            self, tmp_path, conditions, experiments, cid):
+        # Independent review of the merge of #947. A pins-only condition (only k = k__REF) is the
+        # identity only when nothing earlier in the experiment changed k. Here the -inf period
+        # sets k = 2 and L = 5, so under PEtab v2 the measured period restores k to its estimate
+        # and keeps L = 5: A = 6/k + (3 - 6/k) exp(-k t) (20.99 at k = 0.7). Imported as `none`,
+        # the measured phase would keep k = 2, so A stays 3 and k drops out of the objective
+        # (1.625). Main refused this conf at load (the condition came out undefined); the import
+        # now refuses it, naming the experiment and k, until #948 decides how to import the pin.
+        root = tmp_path / 'problem'
+        measured = sorted({eid for eid, _t, _c in experiments})
+        yaml = _write_periods_problem(root, conditions, experiments,
+                                      [('obs_A', eid, t, 1.0 + t) for eid in measured
+                                       for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root)
+        with pytest.raises(NotImplementedError,
+                           match=self._PINS_AFTER_CHANGE_MATCH.format(cid=cid)):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_first_pins_only_condition_that_leaves_a_fit_parameter_unset_is_refused(
+            self, tmp_path):
+        # k and L are both fit and perturbed (k__REF, L__REF). cond_a pins only k, so PEtab runs
+        # e1 at the model file's L = 1, where a `none` condition would run the fitted L. Refused,
+        # naming L; pinning both is exact and imports.
+        root = tmp_path / 'problem'
+        yaml = _write_periods_problem(
+            root, [('a', 'k', 'k__REF'), ('b', 'k', 'k__REF'), ('b', 'L', 'L__REF'),
+                   ('c', 'L', 2)],
+            [('e1', '0', 'a'), ('e2', '0', 'c')],
+            [('obs_A', eid, t, 1.0 + t) for eid in ('e1', 'e2') for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root, 'k__REF\t0.1\t10\t1\ttrue\nL__REF\t0.1\t10\t1\ttrue\n')
+        with pytest.raises(NotImplementedError,
+                           match=r"(?s)Experiment 'e1' starts with a period that applies "
+                                 r"condition 'a', whose rows only re-pin fit parameters.*L is "
+                                 r"estimated through L__REF.*Add L = L__REF"):
+            import_job(yaml, tmp_path / 'out')
+        (root / 'experiments.tsv').write_text(
+            'experimentId\ttime\tconditionId\ne1\t0\tb\ne2\t0\tc\n')
+        text = (import_job(yaml, tmp_path / 'out_b') / 'imported.conf').read_text()
+        assert 'condition: b, perturbations: none' in text.splitlines()
+
+    def test_an_undefined_applied_id_fails_even_when_an_unmeasured_experiment_applies_its_namesake(
+            self, tmp_path, monkeypatch):
+        # Independent review of the merge of #947: the case beside
+        # test_an_applied_id_with_no_rows_is_not_read_as_a_none_condition in which the namesake
+        # IS applied, by eX, which has no measurements. e1 applies cond_a, which the conditions
+        # table never defines (libpetab: "requires conditions that are not present in the
+        # condition table"), so the import must not read it as a `none` condition: only ids a
+        # measured experiment applies count, and the conf refuses to load, as on main.
+        root = tmp_path / 'problem'
+        yaml = _write_periods_problem(
+            root, [('a', 'k', 'k__REF')], [('e1', '0', 'cond_a'), ('eX', '0', 'a')],
+            [('obs_A', 'e1', t, 1.0 + t) for t in (0.5, 1, 2)])
+        self._surrogate_parameters(root)
+        with pytest.raises((NotImplementedError, PybnfError),
+                           match=r"cond_a|Experiment 'e1' references condition 'a'"):
+            out = import_job(yaml, tmp_path / 'out')
             _load_conf(out, monkeypatch)
 
 
@@ -4096,6 +4635,17 @@ class TestRealWorldBoehmV2:
         for sd in ('sd_pSTAT5A_rel', 'sd_pSTAT5B_rel', 'sd_rSTAT5A_rel'):
             assert f'uniform_var = {sd} 1e-05 100000' in text
 
+    def test_fixed_parameters_that_agree_leave_the_sbml_untouched(self, tmp_path, capsys):
+        # #907: Boehm fixes two parameters. `ratio` is a model parameter whose table value
+        # (0.693) is the SBML's own, and `specC17` is not a model entity at all (it is inlined
+        # into a formula). Neither edits the model, so no override is printed or listed.
+        pytest.importorskip('petab')
+        out = import_job(self.YAML, tmp_path / 'out')
+        assert ((out / 'model_Boehm_JProteomeRes2014.xml').read_bytes()
+                == (BOEHM_DIR / 'model_Boehm_JProteomeRes2014.xml').read_bytes())
+        assert 'Fixed model parameters' not in (out / 'imported.conf').read_text()
+        assert 'PEtab import' not in capsys.readouterr().out
+
     def test_imported_boehm_conf_loads_as_a_configuration(self, tmp_path, monkeypatch):
         # The imported conf is a valid end-to-end PyBNF job: the objective carries a
         # per-observable noise override for each observable, the 3 sigma parameters are
@@ -4551,6 +5101,472 @@ class TestFixedNoiseParamImport:
         # A fixed-scale Gaussian drops the normalizer: sum of res^2/(2*sigma^2), sigma = 2.
         expected = float(np.sum(np.array([1., 2., 2.]) ** 2 / (2 * 2. ** 2)))
         assert score == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# A fixed (estimate=false) MODEL parameter takes the table's nominalValue (#907, ADR-0149)
+#
+# The issue's reproduction is fixedsigma_v2 with v3 fixed at 10 in parameters.tsv while the
+# model file says `v3 3`, and measurements exact for (v1, v2, v3) = (0.5, 1, 10). PEtab gives
+# the table precedence, so the imported copy of the model must carry v3 = 10. Before the fix
+# the importer skipped the row and the job simulated v3 = 3: a check job reported 18.375
+# instead of 0, and a fit bent v1/v2 to make up the constant.
+# ---------------------------------------------------------------------------
+
+_FIXED_V3_PARAMETERS = (
+    'parameterId\tparameterName\tlowerBound\tupperBound\tnominalValue\testimate\n'
+    'v1\tv1\t0\t10\t0.5\ttrue\n'
+    'v2\tv2\t0\t10\t1\ttrue\n'
+    '{v3_row}\n'
+    'sd_c\tfixed noise\t\t\t2\tfalse\n')
+_X = np.array([-10., -9., -8.])            # the counter x at t = 0, 1, 2
+_EXACT_AT_V3_10 = (50., 41.5, 34.)         # y = 0.5 x^2 + x + 10
+_EXACT_AT_V3_3 = (43., 34.5, 27.)          # the fixture's own data: y = 0.5 x^2 + x + 3
+
+
+def _fixed_v3_problem(tmp_path, v3='10', model_text=None, data=_EXACT_AT_V3_10,
+                      v3_row=None):
+    """fixedsigma_v2 with v3 fixed at ``v3`` in the table (the model file says 3 unless
+    ``model_text`` replaces it) and measurements ``data``; returns the problem.yaml path."""
+    prob = tmp_path / 'prob'
+    shutil.copytree(FIXEDSIGMA_DIR, prob)
+    row = v3_row if v3_row is not None else f'v3\tv3\t\t\t{v3}\tfalse'
+    (prob / 'parameters.tsv').write_text(_FIXED_V3_PARAMETERS.format(v3_row=row))
+    (prob / 'measurements.tsv').write_text(
+        'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
+        + ''.join(f'obs_y\tepo\t{t}\t{y}\t\tsd_c\n' for t, y in enumerate(data)))
+    if model_text is not None:
+        (prob / 'fixedsigma_model.bngl').write_text(model_text)
+    return prob / 'problem.yaml'
+
+
+def _hand_objective(v1, v2, v3, data, sigma=2.):
+    """The fixed-sigma Gaussian objective PyBNF reports, computed by hand (no PyBNF):
+    sum(res^2) / (2 sigma^2) over y = v1 x^2 + v2 x + v3."""
+    y = v1 * _X ** 2 + v2 * _X + v3
+    return float(np.sum((np.asarray(data) - y) ** 2) / (2 * sigma ** 2))
+
+
+def _bng_objective(job_dir, values, monkeypatch, conf='imported.conf'):
+    """Simulate the job's single BNGL model at the free-parameter ``values`` with BNG2.pl and
+    score it with the job's own objective: what a ``job_type = check`` run prints, at any
+    parameter vector."""
+    from pybnf.config import Configuration
+    from pybnf.pset import PSet
+    monkeypatch.chdir(job_dir)
+    cfg = Configuration(ploop((job_dir / conf).read_text().splitlines(keepends=True)))
+    (name, model), = cfg.models.items()
+    ps = PSet([v.set_value(values[v.name]) for v in cfg.variables])
+    sim_dir = job_dir / 'sim'
+    sim_dir.mkdir(exist_ok=True)
+    ds = model.copy_with_param_set(ps).execute(str(sim_dir), 'probe', 60)
+    return cfg.obj.evaluate_multiple({name: ds}, cfg.exp_data, ps)
+
+
+class TestFixedModelParameterImport:
+    """#907: an estimate=false row naming a BNGL model parameter is written into the imported
+    model copy, marked, listed in the conf header and printed; a model that already agrees is
+    carried byte-for-byte."""
+
+    MARKED = '    v3 10  # PEtab parameters.tsv: estimate=false, nominalValue 10 (model file: 3)'
+
+    def test_the_table_value_is_written_into_the_model_copy_and_marked(self, tmp_path, capsys):
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        source = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text().splitlines()
+        copy = (out / 'fixedsigma_model.bngl').read_text().splitlines()
+        # Exactly one line differs: the v3 line, rewritten to the table's value and annotated.
+        assert len(copy) == len(source)
+        assert [(a, b) for a, b in zip(source, copy) if a != b] == [('    v3 3', self.MARKED)]
+        assert parse_model('\n'.join(copy)).parameters['v3'] == '10'
+        # The source problem is never touched.
+        assert (tmp_path / 'prob' / 'fixedsigma_model.bngl').read_text() == '\n'.join(source) + '\n'
+        # The conf names the override in its header and declares no v3 line of its own.
+        text = (out / 'imported.conf').read_text()
+        assert '#   v3 = 10 in fixedsigma_model.bngl (the model file had 3)' in text
+        assert not any(ln.split('#')[0].strip().endswith(('v3 10', 'v3'))
+                       for ln in text.splitlines() if not ln.startswith('#'))
+        # And the import says so on the console, one line per override.
+        printed = [ln for ln in capsys.readouterr().out.splitlines() if 'PEtab import' in ln]
+        assert printed == ['PEtab import: parameters.tsv fixes v3 = 10 (estimate=false); '
+                           'fixedsigma_model.bngl has 3, so the imported copy uses 10.']
+
+    def test_libpetab_fixed_values_are_the_values_in_the_model_copy(self, tmp_path):
+        # The external oracle: libpetab reads the problem and reports each fixed parameter's
+        # nominal value and which ids are model parameters; the imported copy, read back both
+        # with PyBNF's reader and with a plain regex, must carry exactly those values.
+        pytest.importorskip('petab.v2')
+        import re
+
+        from petab.v2 import Problem
+        yaml = _fixed_v3_problem(tmp_path)
+        problem = Problem.from_yaml(str(yaml))
+        fixed = problem.get_x_nominal_dict(free=False)
+        assert fixed == {'v3': 10.0, 'sd_c': 2.0}
+        model_params = set(problem.model.get_valid_parameters_for_parameter_table())
+        out = import_job(yaml, tmp_path / 'out')
+        text = (out / 'fixedsigma_model.bngl').read_text()
+        ours = parse_model(text).parameters
+        for pid in fixed.keys() & model_params:
+            assert float(ours[pid]) == fixed[pid]
+            m = re.search(rf'^\s*{pid}\s+([^\s#]+)', text, re.M)
+            assert float(m.group(1)) == fixed[pid]
+        assert fixed.keys() & model_params == {'v3'}
+
+    def test_an_agreeing_model_is_carried_byte_for_byte(self, tmp_path, capsys):
+        # 3.0 in the table, 3 in the model: equal as numbers, so no edit, no header, no print.
+        out = import_job(_fixed_v3_problem(tmp_path, v3='3.0', data=_EXACT_AT_V3_3),
+                         tmp_path / 'out')
+        assert ((out / 'fixedsigma_model.bngl').read_bytes()
+                == (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_bytes())
+        assert 'Fixed model parameters' not in (out / 'imported.conf').read_text()
+        assert 'PEtab import' not in capsys.readouterr().out
+
+    def test_an_expression_right_hand_side_is_replaced_by_the_constant(self, tmp_path):
+        # PEtab fixes the parameter at a constant, so an expression is replaced even when it
+        # evaluates to the table's value: it would follow v1 if v1 moved.
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text().replace(
+            '    v3 3\n', '    v3 = 6*v1\n')
+        out = import_job(_fixed_v3_problem(tmp_path, v3='3', model_text=model,
+                                           data=_EXACT_AT_V3_3), tmp_path / 'out')
+        copy = (out / 'fixedsigma_model.bngl').read_text()
+        assert ('    v3 = 3  # PEtab parameters.tsv: estimate=false, nominalValue 3 '
+                '(model file: 6*v1)\n') in copy
+        assert copy.replace(
+            '    v3 = 3  # PEtab parameters.tsv: estimate=false, nominalValue 3 '
+            '(model file: 6*v1)\n', '    v3 = 6*v1\n') == model
+
+    def test_a_multi_model_problem_is_edited_in_every_model_that_declares_the_parameter(
+            self, tmp_path):
+        # The parameters table is global: v3 fixed at 7 applies to both models that declare
+        # v3 (parabola says 3, the second model says 5), each copy edited and marked.
+        second = _GROWTH_BNGL.replace('    a2 2\n', '    a2 2\n    v3 5\n')
+        conf = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
+                f'model: {DEMO_MODEL}\nmodel: growth_v2.bngl\n'
+                f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+                'experiment: gr, model: growth_v2.bngl, data: gr.exp\n'
+                'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = a1 0 10\n')
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        (src / 'growth_v2.bngl').write_text(second)
+        (src / 'pa.exp').write_text((DEMO_DIR / 'par1.exp').read_text())
+        (src / 'gr.exp').write_text(TestImportMultiModelRoundTrip.EXTRA['gr.exp'])
+        (src / 'job.conf').write_text(conf)
+        petab1 = export_job(src / 'job.conf', tmp_path / 'petab1')
+        assert [r['parameterId'] for r in _tsv_rows(petab1 / 'parameters.tsv')] == [
+            'v1', 'v2', 'a1']
+        (petab1 / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'v1\ttrue\t0\t10\t\nv2\ttrue\t0\t10\t\na1\ttrue\t0\t10\t\n'
+            'v3\tfalse\t\t\t7\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'out')
+        for name, old in ((DEMO_MODEL, '3'), ('growth_v2.bngl', '5')):
+            source = (petab1 / name).read_text().splitlines()
+            copy = (out / name).read_text().splitlines()
+            diff = [(a, b) for a, b in zip(source, copy) if a != b]
+            assert diff == [(f'    v3 {old}',
+                             f'    v3 7  # PEtab parameters.tsv: estimate=false, nominalValue 7 '
+                             f'(model file: {old})')], name
+        text = (out / 'imported.conf').read_text()
+        assert f'#   v3 = 7 in {DEMO_MODEL} (the model file had 3)' in text
+        assert '#   v3 = 7 in growth_v2.bngl (the model file had 5)' in text
+
+    def test_a_fixed_row_without_a_nominal_value_is_refused(self, tmp_path):
+        yaml = _fixed_v3_problem(tmp_path, v3_row='v3\tv3\t\t\t\tfalse')
+        with pytest.raises(PybnfError, match="'v3' has estimate=false but no nominalValue"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_fixed_row_naming_a_bngl_observable_is_refused(self, tmp_path):
+        # `x` is the model's observable; PEtab's BNGL loader admits only parameters to the
+        # parameters table, so the row is malformed rather than silently ignored.
+        yaml = _fixed_v3_problem(tmp_path, v3_row='v3\tv3\t\t\t10\tfalse\nx\tx\t\t\t1\tfalse')
+        with pytest.raises(PybnfError, match="'x' is an observable, not a parameter"):
+            import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.parametrize('action', [
+        'setParameter("v3", 3)',
+        "parameter_scan({parameter=>'v3', par_min=>1, par_max=>2, n_scan_pts=>2})",
+    ])
+    def test_a_parameter_the_model_actions_set_is_refused(self, tmp_path, action):
+        # BNG2.pl runs the model file's actions after it loads the model, so an action that
+        # sets v3 would undo the value written into `begin parameters`. Since #969 the import
+        # refuses any such action before the #907 gate is reached, with the fitter's own
+        # check, naming the line (the gate still covers a `begin protocol` block, below).
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + f'\nbegin actions\n  {action}\nend actions\n')
+        number = model.splitlines().index(f'  {action}') + 1
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(PybnfError,
+                           match=rf"Model file 'fixedsigma_model\.bngl' carries BNGL actions .* "
+                                 rf"line {number}: {re.escape(' '.join(action.split()))}\. In a "
+                                 rf"PEtab problem the tables define the protocol"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_parameter_a_protocol_block_sets_still_meets_the_907_gate(self, tmp_path):
+        # A `begin protocol` block is not an action to the #969 rule (nothing in an edition-2
+        # job runs it), so a setParameter there passes that check and reaches the #907 gate,
+        # which reads every logical line of the model and refuses it.
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(NotImplementedError,
+                           match="'v3' has estimate=false with nominalValue 10, but an action "
+                                 "in the model fixedsigma_model.bngl"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
+        yaml = _fixed_v3_problem(tmp_path, v3='inf')
+        with pytest.raises(PybnfError, match="'v3' has estimate=false with nominalValue inf, "
+                                             "which is not a finite number"):
+            import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('data, expected', [
+        (_EXACT_AT_V3_10, 0.0),                  # the issue: main reported 18.375
+        (_EXACT_AT_V3_3, 3 * 7. ** 2 / (2 * 2. ** 2)),   # each point 7 above the data
+    ])
+    def test_a_check_evaluation_scores_the_table_value(self, tmp_path, monkeypatch, data,
+                                                       expected):
+        # What `job_type = check` prints: the model file's own v1/v2 with the table's v3.
+        out = import_job(_fixed_v3_problem(tmp_path, data=data), tmp_path / 'out')
+        assert expected == _hand_objective(0.5, 1., 10., data)
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            expected, abs=1e-9)
+
+    @pytest.mark.bionetgen
+    def test_the_objective_is_minimized_where_bounded_least_squares_puts_it(
+            self, tmp_path, monkeypatch):
+        # An independent solver: with v3 fixed at 10 the model is linear in (v1, v2), so
+        # scipy's bounded linear least squares gives the PEtab problem's best fit. PyBNF's
+        # imported job must score 0 there and the hand formula anywhere else.
+        from scipy.optimize import lsq_linear
+        data = np.asarray(_EXACT_AT_V3_10)
+        sol = lsq_linear(np.column_stack([_X ** 2, _X]), data - 10., bounds=(0, 10)).x
+        np.testing.assert_allclose(sol, [0.5, 1.0], atol=1e-8)
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        at_sol = _bng_objective(out, {'v1': sol[0], 'v2': sol[1]}, monkeypatch)
+        assert at_sol == pytest.approx(0., abs=1e-9)
+        # The point the pre-fix importer's fit found (v3 = 3 in the model) is ~18 away.
+        for v1, v2 in ((0.4, 0.8), (0.47479, 0.00064)):
+            assert _bng_objective(out, {'v1': v1, 'v2': v2}, monkeypatch) == pytest.approx(
+                _hand_objective(v1, v2, 10., data), rel=1e-9)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.bngsim
+    def test_the_model_a_fit_simulates_scores_the_table_value(self, tmp_path, monkeypatch):
+        # A fit does not simulate the config's BNGLModel through BNG2.pl: the algorithm turns
+        # it into bngsim's network model, generated by BNG2.pl from the model copy. That
+        # sibling path must see v3 = 10 as well.
+        from pybnf import algorithms
+        from pybnf.config import Configuration
+        from pybnf.pset import PSet
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out')
+        monkeypatch.chdir(out)
+        cfg = Configuration(ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        (out / cfg.config['output_dir']).mkdir(parents=True)
+        alg = algorithms.DifferentialEvolution(cfg)
+        monkeypatch.chdir(out)                # the constructor moves into output_dir
+        (model,) = alg.model_list
+        assert type(model).__name__ == 'BngsimModel'
+        ps = PSet([v.set_value({'v1': 0.4, 'v2': 0.8}[v.name]) for v in cfg.variables])
+        (out / 'net_sim').mkdir()
+        ds = model.copy_with_param_set(ps).execute(str(out / 'net_sim'), 'probe', 60)
+        assert alg.objective.evaluate_multiple({model.name: ds}, alg.exp_data, ps) == \
+            pytest.approx(_hand_objective(0.4, 0.8, 10., _EXACT_AT_V3_10), rel=1e-9)
+
+    def test_every_conf_of_an_all_job_types_import_lists_the_override(self, tmp_path):
+        out = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'out', job_type='all')
+        confs = sorted(out.glob('imported_*.conf'))
+        assert len(confs) > 1
+        for conf in confs:
+            assert ('#   v3 = 10 in fixedsigma_model.bngl (the model file had 3)'
+                    in conf.read_text()), conf.name
+
+    @pytest.mark.bionetgen
+    def test_export_then_import_is_the_same_problem(self, tmp_path, monkeypatch):
+        # Re-exporting the imported job writes the edited model and NO estimate=false row
+        # (the exporter never writes one: a parameter absent from the table takes the model
+        # file's value, which is now the table's). Re-importing that is the same problem:
+        # nothing left to override, the model carried byte-for-byte, the same objective.
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import lint_problem
+        imp1 = import_job(_fixed_v3_problem(tmp_path), tmp_path / 'imp1')
+        petab2 = export_job(imp1 / 'imported.conf', tmp_path / 'petab2')
+        assert [r['parameterId'] for r in _tsv_rows(petab2 / 'parameters.tsv')] == ['v1', 'v2']
+        assert self.MARKED in (petab2 / 'fixedsigma_model.bngl').read_text().splitlines()
+        assert not lint_problem(Problem.from_yaml(str(petab2 / 'problem.yaml'))).has_errors()
+        imp2 = import_job(petab2 / 'problem.yaml', tmp_path / 'imp2')
+        assert ((imp2 / 'fixedsigma_model.bngl').read_bytes()
+                == (petab2 / 'fixedsigma_model.bngl').read_bytes())
+        assert 'Fixed model parameters' not in (imp2 / 'imported.conf').read_text()
+        point = {'v1': 0.4, 'v2': 0.8}
+        first = _bng_objective(imp1, point, monkeypatch)
+        assert first == pytest.approx(_hand_objective(0.4, 0.8, 10., _EXACT_AT_V3_10), rel=1e-9)
+        assert _bng_objective(imp2, point, monkeypatch) == first
+
+
+# Spellings of an action that sets v3 which BNG2.pl 2.9.3 executes (its actions reader is
+# `^\s*(\w+)\s*\((.*)\);?\s*$`, and it evaluates the options as a Perl hash, where a key may
+# be quoted), and which the first version of the #907 gate did not recognise.
+_V3_ACTION_SPELLINGS = [
+    'setParameter ("v3", 7)',
+    'setParameter\t("v3", 7)',
+    'parameter_scan({"parameter"=>"v3", par_min=>6, par_max=>7, n_scan_pts=>2, '
+    'method=>"ode", t_end=>1, n_steps=>1})',
+]
+
+
+class TestFixedModelParameterImportEdges:
+    """#907, found in review: the ways the override could still fail to take effect, or
+    reach a file it must not touch."""
+
+    @pytest.mark.parametrize('action', _V3_ACTION_SPELLINGS)
+    def test_every_spelling_of_an_action_that_sets_it_is_refused(self, tmp_path, action):
+        # Let through, the action runs after the model is read and undoes the edit: the job
+        # then reports that the copy uses v3 = 10 while it simulates 7 (with `setParameter
+        # ("v3", 3)` a check job scored 18.375 instead of 0).
+        # Since #969 the import refuses the action itself, before the #907 gate, naming it.
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + f'\nbegin actions\n  {action}\nend actions\n')
+        number = model.splitlines().index(f'  {action}') + 1
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(PybnfError,
+                           match=rf"Model file 'fixedsigma_model\.bngl' carries BNGL actions .* "
+                                 rf"line {number}: {re.escape(' '.join(action.split()))}\. In a "
+                                 rf"PEtab problem"):
+            import_job(yaml, tmp_path / 'out')
+        assert not (tmp_path / 'out' / 'fixedsigma_model.bngl').exists()
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('action', _V3_ACTION_SPELLINGS)
+    def test_bng2_runs_each_of_those_spellings(self, tmp_path, action):
+        # The oracle for the refusal above: BNG2.pl itself executes each spelling, and
+        # writeModel afterwards records v3 = 7, not the model file's 3.
+        import re
+        import subprocess
+        bng2 = shutil.which('BNG2.pl')
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin actions\n  generate_network({overwrite=>1})\n'
+                 + f'  {action}\n  writeModel({{prefix=>"after"}})\nend actions\n')
+        (tmp_path / 'm.bngl').write_text(model)
+        subprocess.run([bng2, 'm.bngl'], cwd=tmp_path, check=True, capture_output=True)
+        written = (tmp_path / 'after.bngl').read_text()
+        assert float(re.search(r'^\s*v3\s+(\S+)', written, re.M).group(1)) == 7.0
+
+    @pytest.mark.parametrize('layout', ['in-place', 'sibling-models-dir'])
+    def test_a_copy_that_would_overwrite_the_source_model_is_refused(self, tmp_path, layout):
+        # A problem may name its model by a relative path that leaves the problem directory,
+        # and the copy is written at the same relative path under out_dir. When that lands on
+        # the source file itself, writing the edited copy would change the user's model
+        # (PEtab says a parameter absent from some other parameters table takes the model
+        # file's value, so a later import of a sibling problem would silently use 10).
+        yaml = _fixed_v3_problem(tmp_path)
+        prob = yaml.parent
+        if layout == 'in-place':
+            source, out = prob / 'fixedsigma_model.bngl', prob
+        else:
+            (tmp_path / 'models').mkdir()
+            source = tmp_path / 'models' / 'fixedsigma_model.bngl'
+            shutil.move(prob / 'fixedsigma_model.bngl', source)
+            yaml.write_text(yaml.read_text().replace(
+                'location: fixedsigma_model.bngl',
+                'location: ../models/fixedsigma_model.bngl'))
+            out = tmp_path / 'out'
+        before = source.read_bytes()
+        with pytest.raises(PybnfError, match='fixedsigma_model.bngl.*is the source model file'):
+            import_job(yaml, out)
+        assert source.read_bytes() == before
+
+    def test_an_in_place_import_that_edits_nothing_is_still_accepted(self, tmp_path):
+        # The refusal above is only for a copy that differs from its source: a model that
+        # already agrees with the table imports in place as it did before #907.
+        yaml = _fixed_v3_problem(tmp_path, v3='3', data=_EXACT_AT_V3_3)
+        source = yaml.parent / 'fixedsigma_model.bngl'
+        before = source.read_bytes()
+        import_job(yaml, yaml.parent)
+        assert source.read_bytes() == before
+        assert (yaml.parent / 'imported.conf').exists()
+
+    @pytest.mark.bionetgen
+    def test_a_fixed_surrogate_base_value_is_simulated(self, tmp_path, monkeypatch):
+        # A PyBNF job that fits v3 and sets it to 20 in one condition exports v3 as the
+        # surrogate v3__REF, pinned in every other experiment by cond_wildtype (v3 = v3__REF).
+        # Fixing v3__REF at 10 in parameters.tsv is the PEtab edit #907 is about; libpetab
+        # simulates experiment `a` at v3 = 10. Data exact for (0.5, 1, 10) and (0.5, 1, 20).
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        for name, v3 in (('a', 10.), ('b', 20.)):
+            y = 0.5 * _X ** 2 + _X + v3
+            (src / f'{name}.exp').write_text(
+                '# time\ty\ty_SD\n' + ''.join(f'{t}\t{float(v)!r}\t1\n' for t, v in enumerate(y)))
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            f'model: {DEMO_MODEL}\ncondition: hi, perturbations: v3 = 20\n'
+            'experiment: a, data: a.exp\nexperiment: b, condition: hi, data: b.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 100\n')
+        petab1 = export_job(src / 'job.conf', tmp_path / 'petab1')
+        assert [r['parameterId'] for r in _tsv_rows(petab1 / 'parameters.tsv')] == [
+            'v1', 'v2', 'v3__REF']
+        (petab1 / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tnominalValue\n'
+            'v1\ttrue\t0\t10\t\nv2\ttrue\t0\t10\t\nv3__REF\tfalse\t\t\t10\n')
+        out = import_job(petab1 / 'problem.yaml', tmp_path / 'out')
+        # chi_sq at the exact point is 0; with v3 = 3 in experiment a it is 3 * 7^2 / 2.
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            0., abs=1e-9)
+
+
+class TestBnglSetParameterValues:
+    """The line editor behind #907 (``_bngl.set_parameter_values``): every parameter-line
+    shape the reader accepts, only the edited lines change, line endings kept."""
+
+    NOTE = staticmethod(lambda name, old: f'NOTE {name} was {old}')
+
+    def test_each_line_shape_is_rewritten_in_place(self):
+        from pybnf.petab._bngl import set_parameter_values
+        text = ('begin model\r\n'
+                'begin parameters\r\n'
+                '    L 1\r\n'
+                '\tM = 2 # ligand dose\n'
+                '  1 N\t3\n'
+                '  lab: P 2*L\n'
+                '    Q 4  \\\n'
+                '      + 1 # tail\n'
+                '    R 5.0\n'
+                '    S 6\n'
+                'end parameters\n'
+                'end model')
+        new, changed = set_parameter_values(
+            text, {'L': 10, 'M': 2.5, 'N': 30, 'P': 2, 'Q': 5, 'R': 5}, self.NOTE)
+        assert changed == {'L': '1', 'M': '2', 'N': '3', 'P': '2*L', 'Q': '4        + 1'}
+        assert new == ('begin model\r\n'
+                       'begin parameters\r\n'
+                       '    L 10  # NOTE L was 1\r\n'
+                       '\tM = 2.5  # NOTE M was 2  # ligand dose\n'
+                       '  1 N\t30  # NOTE N was 3\n'
+                       '  lab: P 2  # NOTE P was 2*L\n'
+                       '    Q 5  # NOTE Q was 4        + 1  # tail\n'
+                       '    R 5.0\n'           # equal as a number: untouched
+                       '    S 6\n'             # not named: untouched
+                       'end parameters\n'
+                       'end model')
+        values = parse_model(new).parameters
+        assert {k: float(values[k]) for k in 'LMNPQRS'} == {
+            'L': 10, 'M': 2.5, 'N': 30, 'P': 2, 'Q': 5, 'R': 5, 'S': 6}
+
+    def test_the_written_value_reads_back_as_the_same_float(self):
+        from pybnf.petab._bngl import set_parameter_values
+        v = 0.1 + 0.2
+        new, _ = set_parameter_values('begin parameters\n k 1\nend parameters\n', {'k': v},
+                                      self.NOTE)
+        assert float(parse_model(new).parameters['k']) == v
+
+    def test_nothing_to_change_returns_the_text_itself(self):
+        from pybnf.petab._bngl import set_parameter_values
+        text = 'begin parameters\n k 1e0\nend parameters\n'
+        assert set_parameter_values(text, {'k': 1.0, 'absent': 2.0}, self.NOTE) == (text, {})
 
 
 class TestMultiTokenRowVaryingNoiseImport:
