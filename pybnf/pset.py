@@ -888,14 +888,16 @@ class BNGLModel(Model):
     _PROTOCOL_ACTION_REASONS = {
         'conf': (
             "In an edition-2 job the model file defines the model and the conf defines the "
-            "protocol, so a BNGL model's actions may be only the network-definition directives "
-            "generate_network and setOption. PyBNF would run any other action ahead of every "
+            "protocol, so a BNGL model's actions may be only the model declarations "
+            "generate_network, setOption, substanceUnits and version. PyBNF would run any other "
+            "action ahead of every "
             "experiment, where what it does depends on the action, the experiment's method and "
             "the backend."),
         'petab': (
             "In a PEtab problem the tables define the protocol and the model file only the "
-            "model, so an imported BNGL model's actions may be only the network-definition "
-            "directives generate_network and setOption. The imported job would run any other "
+            "model, so an imported BNGL model's actions may be only the model declarations "
+            "generate_network, setOption, substanceUnits and version. The imported job would run "
+            "any other "
             "action ahead of every experiment."),
     }
     _PROTOCOL_ACTION_REMEDIES = {
