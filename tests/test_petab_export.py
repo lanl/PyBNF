@@ -4843,16 +4843,12 @@ class TestEdition2ModelActionsRule:
         assert str(at_export.value) == at_load
         assert not out.exists() or not any(out.iterdir())
 
-    @pytest.mark.xfail(strict=True, raises=pytest.fail.Exception, reason=(
-        'Found in review of #969, older than it: _resolve_models reads only the model: '
-        'declarations, so _require_new_era_data never sees the data on a legacy '
-        'model = X : Y.exp line in the same job, and the export writes a problem without that '
-        'model or its data.'))
     def test_a_legacy_bound_model_beside_experiments_is_not_dropped(self, tmp_path, monkeypatch):
         # Review addition. #969 keeps a legacy-bound model's actions in an edition-2 job, since
         # they are its protocol, and the fit scores its data beside the experiments. PEtab has no
         # place for that protocol, and _require_new_era_data promises to refuse such a mix "so a
-        # legacy line is never silently dropped". Today the export succeeds without it.
+        # legacy line is never silently dropped". It read the data only on the model:
+        # declarations, so the export used to succeed without the legacy model or its data.
         conf = _decay_job(tmp_path / 'job')
         job = conf.parent
         (job / 'legacy.bngl').write_text(_DECAY_BNGL + '\n' + _block(
@@ -4864,8 +4860,59 @@ class TestEdition2ModelActionsRule:
         from pybnf.parse import load_config
         monkeypatch.chdir(job)
         assert 'lt' in load_config(conf.name).exp_data['legacy']   # the fit scores it
-        with pytest.raises(NotImplementedError, match='legacy data linkage'):
+        out = tmp_path / 'out'
+        with pytest.raises(NotImplementedError,
+                           match=r"legacy data linkage \(data on the legacy model = X : Y\.exp "
+                                 r"line \(legacy\.bngl : lt\.exp\)\)"):
+            export_job(conf, out)
+        assert not out.exists() or not any(out.iterdir())
+
+    def test_a_directive_line_with_a_second_statement_is_refused_at_load_and_export(
+            self, tmp_path, monkeypatch):
+        # #969 review. BNG2.pl evaluates a loose setOption line as Perl, so the second statement
+        # runs: the oracle is BNG2.pl running the model file as written (plus a network and a
+        # simulation), which decays at the L = 5 closed form. The rule refuses the line, naming
+        # it, at load and at export alike.
+        _bng2_or_skip()
+        compound = 'setOption("NumberPerQuantityUnit",1); $model->setParameter("L",5)'
+        conf = _decay_job(tmp_path / 'job', f'{compound}\n{_block(self.GEN)}')
+        text = (conf.parent / 'decay.bngl').read_text()
+        as_written = _run_bng2(text + 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})\n',
+                               tmp_path / 'bng', 'as_written')
+        run = Data(file_name=str(as_written / 'as_written_tc.gdat'))
+        t = run.data[:, run.cols['time']]
+        np.testing.assert_allclose(run.data[:, run.cols['A_tot']],
+                                   100 * np.exp(-0.5 * 5.0 * t), rtol=1e-5)
+        number = self._line_of(conf, compound)
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: {compound}. In an edition-2' in at_load
+                and 'A directive must be the only statement on its line' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
             export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
+    def test_setmodelname_is_refused_at_load_and_export(self, tmp_path, monkeypatch):
+        # #969 review. setModelName renames the files BioNetGen writes, so PyBNF does not find
+        # them and every simulation of the model fails, on BNG2.pl with a missing-file error.
+        conf = _decay_job(tmp_path / 'job', f'setModelName("renamed")\n{_block(self.GEN)}')
+        number = self._line_of(conf, 'setModelName("renamed")')
+        at_load = self._load_error(conf, monkeypatch)
+        assert re.search(rf'-- line {number}: setModelName\("renamed"\)\. In an edition-2 .*'
+                         rf'setModelName is refused too \(line {number}\): PyBNF names the '
+                         rf"model's output files itself", at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
+    @pytest.mark.parametrize('declaration', ['substanceUnits("Number")', 'version("2.9.3")'])
+    def test_substanceunits_and_version_still_load_and_export(self, tmp_path, monkeypatch,
+                                                              declaration):
+        from pybnf.parse import load_config
+        conf = _decay_job(tmp_path / 'job', f'{declaration}\n{_block(self.GEN)}')
+        monkeypatch.chdir(conf.parent)
+        assert declaration in load_config(conf.name).models['decay'].model_lines
+        export_job(conf, tmp_path / 'out')
+        assert declaration in (tmp_path / 'out' / 'decay.bngl').read_text()
 
 
 _CHAIN_BNGL = """\

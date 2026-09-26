@@ -529,9 +529,6 @@ class TestRequireNoProtocolActions:
         with pytest.raises(PybnfError, match=r'\(#969\)\. Look here\.$'):
             m.require_no_protocol_actions(note='Look here.')
 
-    @pytest.mark.xfail(strict=True, raises=pytest.fail.Exception, reason=(
-        'Found in review of #969: the scan keeps any line that starts with setOption (or '
-        'setModelName, substanceUnits, version) as a directive, whatever follows it.'))
     def test_a_directive_line_cannot_carry_a_second_statement(self):
         # Review addition. BNG2.pl runs a setOption line outside a block by evaluating
         # "$model->" + the line as Perl, so a second statement after a semicolon runs too. Run
@@ -542,3 +539,56 @@ class TestRequireNoProtocolActions:
         m, _ = _scan('setOption("NumberPerQuantityUnit",1); $model->setParameter("k",5)\n')
         with pytest.raises(PybnfError, match='setParameter'):
             m.require_no_protocol_actions()
+
+    @pytest.mark.parametrize('line', [
+        'generate_network({overwrite=>1}); $model->setParameter("k",5)',
+        '1 generate_network({overwrite=>1}) setParameter("k",5)',
+        'setOption("NumberPerQuantityUnit",1) $model->setParameter("k",5)',
+        'substanceUnits("Number"); $model->setParameter("k",5)',
+        'version("2.9.3");;',
+        'setOption("NumberPerQuantityUnit",1',          # unclosed: never a single call
+    ])
+    def test_any_directive_holding_more_than_its_call_is_refused_by_line(self, line):
+        m, lines = _scan(f'begin actions\n{line}\nend actions\n')
+        code = ' '.join(line.split()).removeprefix('1 ')
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        message = str(refused.value)
+        assert f'-- line {lines[line]}: {code}. In an edition-2' in message
+        assert (f'A directive must be the only statement on its line, with nothing after its '
+                f'call but a comment: BNG2.pl runs the rest of the line as code (line '
+                f'{lines[line]}).') in message
+
+    @pytest.mark.parametrize('line', [
+        'generate_network({overwrite=>1,max_stoich=>{A=>2}});',
+        'setOption("SpeciesLabel","HNauty")  # a comment after the call',
+        '2\tsetOption("NumberPerQuantityUnit", 6.0221e23 )',
+        'substanceUnits("Number")',
+        "version('2.9.3')",
+        'setOption("x",")(;")',                        # parentheses inside a quoted string
+        'generate_network({overwrite=>1,\\\n  max_iter=>3})  # continued',
+    ])
+    def test_a_single_directive_call_passes(self, line):
+        m, _ = _scan(f'begin actions\n{line}\nend actions\n')
+        m.require_no_protocol_actions()
+
+    def test_a_directive_name_inside_a_model_block_is_not_a_directive(self):
+        # The scan keeps a setOption-family *prefix* anywhere, so a parameter called
+        # ``version_x`` passes through that branch; only a line where an action can stand is
+        # held to the one-call rule.
+        text = _ACTIONS_MODEL.replace('  k 0.5\n', '  k 0.5\n  version_x 3\n')
+        m = pset.BNGLModel('m.bngl', suppress_free_param_error=True, text=text)
+        assert 'version_x 3' in m.model_lines and 'version_x' in m.model_param_names
+        m.require_no_protocol_actions()
+
+    def test_setmodelname_is_refused_with_its_reason(self):
+        m, lines = _scan('setModelName("renamed")\nbegin actions\n'
+                         'generate_network({overwrite=>1})\nend actions\n')
+        number = lines['setModelName("renamed")']
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl', where='petab')
+        message = str(refused.value)
+        assert f'-- line {number}: setModelName("renamed"). In a PEtab problem' in message
+        assert (f"setModelName is refused too (line {number}): PyBNF names the model's output "
+                'files itself, and a renamed model writes them where PyBNF does not look. '
+                'Delete it.') in message

@@ -316,8 +316,16 @@ def _require_new_era_data(conf, models):
     Mixing the two (a ``mutant``/``param_scan`` line, or data on any ``model =`` line,
     alongside ``experiment:``) is refused too, so a legacy line is never silently dropped.
     The gate is on the *exporter* only; the fitter still runs legacy confs unchanged.
+
+    The data is read on **every** model the job names (``conf['models']``), not only the
+    ``models`` the export writes: those are the ``model:`` declarations, and a model bound only
+    by ``model = b.bngl : b.exp`` beside them is not among them. The fit scores that model's
+    data, with the model's own actions as its protocol (#969 keeps them), so an export that
+    read only the declarations wrote a problem without that model or its data (#969 review).
     """
-    legacy_data = any(conf.get(mf) for mf in models)  # model = X : Y.exp data list
+    named = dict.fromkeys([*models, *sorted(conf.get('models', ()))])
+    legacy_bound = {mf: list(conf.get(mf)) for mf in named if conf.get(mf)}  # model = X : Y.exp
+    legacy_data = bool(legacy_bound)
     legacy_features = [k for k in ('mutant', 'param_scan') if k in conf]
     if not _has_new_era_data(conf):
         raise NotImplementedError(
@@ -328,8 +336,9 @@ def _require_new_era_data(conf, models):
             "'data:' file per replicate), and write perturbations as 'condition:' lines. "
             "The fitter still runs the legacy form; only export requires the new surface.")
     if legacy_data or legacy_features:
-        legacy = (['data on the legacy model = X : Y.exp line'] if legacy_data else []) \
-            + [f"a '{k}' line" for k in legacy_features]
+        bindings = '; '.join(f"{mf} : {' '.join(exps)}" for mf, exps in legacy_bound.items())
+        legacy = ([f'data on the legacy model = X : Y.exp line ({bindings})'] if legacy_data
+                  else []) + [f"a '{k}' line" for k in legacy_features]
         raise NotImplementedError(
             f"This job mixes the new-era 'experiment:' surface with legacy data linkage "
             f"({', '.join(legacy)}). Use the new-era surface exclusively -- move all data "

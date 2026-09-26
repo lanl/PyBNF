@@ -65,15 +65,52 @@ EXPERIMENT_START_LABEL = 'pybnf_experiment_start'
 # ``BNGLModel`` removes it the same way before it reads an action, so a numbered line is
 # recognised as the action it is: a numbered ``generate_network`` as the network definition
 # rather than an action run against the ``.net`` file already generated, a numbered
-# ``simulate`` for its suffix and by the bngsim classifier (#963). BNG2.pl strips it only
-# inside a block; ``BNGLModel`` writes every action it reads into its own ``begin actions``
-# block, so it strips a loose one too.
+# ``simulate`` for its suffix and by the bngsim classifier (#963). BNG2.pl is narrower: it
+# strips the index only inside a block, and only from a line that starts with it (an indented
+# numbered line aborts the run), and it skips a numbered line outside every block
+# ("Unidentified input"). ``BNGLModel`` strips the index after removing the line's
+# indentation, and from a loose line as well, because it writes every action it reads into
+# its own ``begin actions`` block, where BNG2.pl would strip it anyway (ADR-0152).
 _ACTION_LINE_INDEX = re.compile(r'^\d+\s+')
 
 
 def _strip_action_line_index(text):
     """``text`` without a leading BNGL action line index (see ``_ACTION_LINE_INDEX``)."""
     return _ACTION_LINE_INDEX.sub('', text, count=1)
+
+
+# The directives an edition-2 model may carry, as the one call a line holds (#969).
+_DIRECTIVE_CALL = re.compile(r'(generate_network|setOption|substanceUnits|version)\s*\(')
+
+
+def _is_single_directive_call(statement):
+    """Whether ``statement`` (comment removed, continuations joined) is one allowed directive
+    call and nothing else but an optional ``;``.
+
+    BNG2.pl runs an action line by evaluating ``$model->`` + the line as Perl, so whatever
+    follows the call's closing parenthesis runs too: ``setOption(...); $model->setParameter(...)``
+    sets a parameter (#969 review). The parentheses are matched outside quoted strings."""
+    match = _DIRECTIVE_CALL.match(statement)
+    if not match:
+        return False
+    depth, quote, i = 1, None, match.end()
+    while i < len(statement):
+        ch = statement[i]
+        if quote:
+            if ch == '\\':
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in '"\'':
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return re.fullmatch(r'\s*;?\s*', statement[i + 1:]) is not None
+        i += 1
+    return False
 
 
 def _format_bngl_number(x):
@@ -597,6 +634,12 @@ class BNGLModel(Model):
         # (require_no_protocol_actions, #969) and by the PEtab exporter.
         self.hand_written_actions = []
         self.generate_network_lines = []
+        # Two kinds of directive line the edition-2 rule refuses although the scan keeps them as
+        # directives, in the same ``(line number, code)`` form: a directive line that holds more
+        # than its one call (BNG2.pl runs the rest as code), and ``setModelName``, which renames
+        # the files BioNetGen writes, so PyBNF cannot find them.
+        self.compound_directive_lines = []
+        self.set_model_name_lines = []
         # The indices of the ``setOption``-family lines that carry a line index, which the model
         # text keeps with the index removed: outside a block BNG2.pl does not strip it, and
         # would skip the line (#963).
@@ -662,6 +705,12 @@ class BNGLModel(Model):
             if re.match(r'(setOption|setModelName|substanceUnits|version)', statement):
                 if statement != line.strip():
                     self.indexed_directive_line_indices.add(min(indices))
+                if in_action_block or in_no_block:
+                    read_as = (min(indices) + 1, ' '.join(statement.split()))
+                    if re.match(r'setModelName\b', statement):
+                        self.set_model_name_lines.append(read_as)
+                    elif not _is_single_directive_call(statement):
+                        self.compound_directive_lines.append(read_as)
                 continue
 
             # Check if this is the 'begin parameters' line
@@ -727,6 +776,8 @@ class BNGLModel(Model):
                     self.generates_network = True
                     self.generate_network_line = statement
                     self.generate_network_lines.append(read_as)
+                    if not _is_single_directive_call(statement):
+                        self.compound_directive_lines.append(read_as)
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
                         '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla)|(protocol))("|\')', line):
@@ -849,23 +900,41 @@ class BNGLModel(Model):
         The edition-2 rule, shared by the fit (``config._load_experiments``, for a model that
         ``experiment:`` lines simulate), the PEtab export (``clean_model_for_petab``) and the
         PEtab import (``import_job``): of the actions this scan read from the file -- in
-        ``begin actions`` or loose outside every block -- only ``generate_network`` and the
-        ``setOption`` family may remain. Anything else raises a :class:`PybnfError` naming the
-        file and each offending line. ``where`` is ``'conf'`` (a job's conf defines the
-        protocol) or ``'petab'`` (a PEtab problem's tables do); ``model_file`` defaults to
-        ``file_path``; ``note``, if given, ends the message.
+        ``begin actions`` or loose outside every block -- only ``generate_network``,
+        ``setOption``, ``substanceUnits`` and ``version`` may remain, each as the one call on
+        its line. Anything else raises a :class:`PybnfError` naming the file and each offending
+        line: a protocol action, a directive line that carries more than its call (BNG2.pl runs
+        the rest as code), and ``setModelName`` (it renames the files BioNetGen writes).
+        ``where`` is ``'conf'`` (a job's conf defines the protocol) or ``'petab'`` (a PEtab
+        problem's tables do); ``model_file`` defaults to ``file_path``; ``note``, if given, ends
+        the message.
         """
-        if not self.hand_written_actions:
+        offending = sorted(self.hand_written_actions + self.compound_directive_lines
+                           + self.set_model_name_lines)
+        if not offending:
             return
-        shown = self.hand_written_actions[:10]
+        shown = offending[:10]
         lines = '; '.join(f'line {number}: {code}' for number, code in shown)
-        more = len(self.hand_written_actions) - len(shown)
-        if more:
-            lines += f'; and {more} more'
+        if len(offending) > len(shown):
+            lines += f'; and {len(offending) - len(shown)} more'
+        why = []
+        if self.compound_directive_lines:
+            numbers = ', '.join(str(number) for number, _ in self.compound_directive_lines)
+            why.append(
+                f"A directive must be the only statement on its line, with nothing after its "
+                f"call but a comment: BNG2.pl runs the rest of the line as code (line "
+                f"{numbers}).")
+        if self.set_model_name_lines:
+            numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)
+            why.append(
+                f"setModelName is refused too (line {numbers}): PyBNF names the model's output "
+                f"files itself, and a renamed model writes them where PyBNF does not look. "
+                f"Delete it.")
         raise PybnfError(
             f"Model file '{model_file or self.file_path}' carries BNGL actions that are not "
             f"network-definition directives -- {lines}. {self._PROTOCOL_ACTION_REASONS[where]} "
-            f"{self._PROTOCOL_ACTION_REMEDIES[where]} (or into the model's parameters or seed "
+            + ''.join(f'{sentence} ' for sentence in why)
+            + f"{self._PROTOCOL_ACTION_REMEDIES[where]} (or into the model's parameters or seed "
             f"species), and delete leftover simulate, parameter_scan, write* and other actions "
             f"(#969)." + (f' {note}' if note else ''))
 
