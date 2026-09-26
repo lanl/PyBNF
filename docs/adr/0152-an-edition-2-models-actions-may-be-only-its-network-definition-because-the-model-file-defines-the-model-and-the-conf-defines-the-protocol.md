@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted and implemented (2026-09-25). Implements #969 and fixes #963 item 3. The decision is
+Accepted and implemented (2026-09-25), with the independent review's findings folded in:
+the one-call rule for a directive line, the refusal of `setModelName`, the export of a
+legacy-bound model, and the exact account of numbered lines in decision 4. Implements #969
+and fixes #963 item 3. The decision is
 the maintainer's (#969): in edition 2, the model file defines the model, and the conf (or the
 PEtab tables) defines the protocol. It changes the BNGL scanner (`BNGLModel` in
 `pybnf/pset.py`), config load (`config._load_experiments`), the PEtab exporter
@@ -37,15 +40,29 @@ for byte, so it could bring such actions into an imported job too.
 ## The decision
 
 1. **An edition-2 model's actions may be only its network definition.** The directives that
-   define the model rather than a protocol are allowed: `generate_network`, and `setOption`
-   with the siblings the scanner has always kept in the model text (`setModelName`,
-   `substanceUnits`, `version`). Comments and blank lines are fine. Anything else is a
-   protocol action and is refused: `simulate*`, `parameter_scan`, `bifurcate`,
-   `setParameter`, `setConcentration`, `addConcentration`, the save and reset actions,
-   `write*`, `visualize`, `readFile`, and any action PyBNF does not know. What "an action" is
-   comes from the fitter's own scanner, so the rule sees exactly the lines the fit would run,
-   in the shapes BNG2.pl accepts: indented, commented, continued with a backslash, loose after
-   `end model`, or numbered.
+   define the model rather than a protocol are allowed: `generate_network`, `setOption`, and
+   two declarations the scanner has always kept in the model text with `setOption`,
+   `substanceUnits` and `version`. Comments and blank lines are fine. Anything else is
+   refused:
+   - a protocol action: `simulate*`, `parameter_scan`, `bifurcate`, `setParameter`,
+     `setConcentration`, `addConcentration`, the save and reset actions, `write*`,
+     `visualize`, `readFile`, and any action PyBNF does not know;
+   - `setModelName`, the third declaration the scanner keeps with `setOption`. It renames the
+     files BioNetGen writes, so PyBNF, which names a model's output files itself, does not
+     find them: every simulation of such a model fails, on BNG2.pl with a missing `.net` file
+     and on bngsim in the bridge, on main as well. The maintainer allowed the three
+     declarations before this was known; it is refused with that reason;
+   - an allowed directive line that holds more than its one call. BNG2.pl runs an action line
+     by evaluating `$model->` and the line as Perl, so a second statement after the call runs
+     too: `setOption("NumberPerQuantityUnit",1); $model->setParameter("kb",5)` after
+     `end model` sets `kb`, and the job fitted silently wrong on both backends (the review
+     measured an objective of 2854.55 against the closed form's 393.699). A directive line may
+     hold only the call, an optional `;`, and a comment; its parentheses are matched outside
+     quoted strings.
+
+   What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
+   the fit would run, in every shape the scanner reads: indented, commented, continued with a
+   backslash, loose after `end model`, or numbered (decision 4).
 2. **One check, three places.** `BNGLModel.require_no_protocol_actions` raises a `PybnfError`
    naming the model file and each offending line (its first physical line and the statement),
    says why, and tells the user to move a `setParameter` or `setConcentration` into a
@@ -63,13 +80,32 @@ for byte, so it could bring such actions into an imported job too.
    both ways is refused, and the message says its simulations belong to the legacy binding,
    so the user moves that data to `experiment:` lines rather than deleting a line the binding
    needs.
-4. **A numbered action line is read as BNG2.pl reads it** (#963 item 3). BNG2.pl removes a
-   leading line index from an action (`BNGModel.pm`, `s/^\d+\s+//`). The scanner now does
-   too, for every use it makes of the line: recognising `generate_network` and `setOption`,
-   reading a simulation's suffix, the action list the bngsim classifier and both bridges read,
-   and the protocol block. A numbered `setOption`, which stays in the model text outside any
-   block, is written without its index, because BNG2.pl strips the index only inside a block
-   and would otherwise skip the line.
+4. **A numbered action line is read without its index** (#963 item 3). What BNG2.pl 2.9.3
+   does, measured by running it on each shape:
+   - inside an actions or protocol block, it removes an index at the start of the line
+     followed by a space or a tab (`BNGModel.pm`, `s/^\d+\s+//`) and runs the action;
+   - it aborts on an index with no space after it (`1generate_network(...)`, read as the
+     method `1generate_network`) and on an indented numbered line inside a block (the
+     substitution is anchored at the line's first character, so the index is left and the
+     line is not a command);
+   - it skips a numbered line outside every block with the warning "Unidentified input! Will
+     not attempt to execute as Perl.", and runs nothing.
+
+   PyBNF is more lenient. The scanner removes an index followed by whitespace from any line
+   where an action can stand, after removing the line's indentation, and uses the result for
+   everything it does with the line: recognising `generate_network` and `setOption`, reading a
+   simulation's suffix, the action list the bngsim classifier and both bridges read, and the
+   protocol block. So an indented numbered line and a loose numbered line run as their
+   unnumbered twins, where BNG2.pl, given the file itself, would abort or skip them. That is
+   deliberate: PyBNF never hands BNG2.pl the model file as written. It writes every action it
+   reads into a `begin actions` block of its own, unindented, where BNG2.pl strips the index
+   anyway. So before #963 a numbered action, loose or indented, already ran in a BNG2.pl fit,
+   the index still on it; what went wrong was a numbered `generate_network`, which ran a second
+   time against the generated network, and the bngsim bridges, whose classifier did not
+   recognise a numbered line. An index with no space is not stripped, so that line stays a protocol action:
+   refused under edition 2, and an abort under BNG2.pl in edition 1, as before. A numbered
+   `setOption` stays in the model text outside every block, where BNG2.pl would skip it, so it
+   is written without its index, in the fit's model text and in the exported model.
 
 ## Why a rule and not a defined splice
 
@@ -97,6 +133,12 @@ the PEtab export already assumed.
 - **SBML and Antimony models** have no BNGL actions and are not affected.
 - **Multi-model jobs**: each BNGL model is checked on its own; a legacy-bound model in the
   same job keeps its actions (decision 3).
+- **PEtab export of a legacy-bound model beside experiments.** The export always meant to
+  refuse data bound the legacy way (`_require_new_era_data`), but it read the data only on the
+  `model:` declarations, so a model bound by `model = b.bngl : b.exp` beside them, whose data
+  the fit scores with the model's own actions as its protocol, was left out of the exported
+  problem without a word. It now reads the data on every model the job names and refuses the
+  job, naming the model and its data files. Found by the independent review; older than #969.
 - **Multiple shooting, gradient fits, `check`**: all load through the same Configuration, so
   the rule applies to them unchanged.
 - **The `generate_network` conf key** (#473, #901): unchanged. A model's own
@@ -109,7 +151,10 @@ the PEtab export already assumed.
 ## Consequences
 
 - A job that ran before can now stop at load, when its edition-2 model carries a protocol
-  action. The message names every such line, up to ten.
+  action, a `setModelName`, or a directive line with a second statement. The message names
+  every such line, up to ten, and says why for the last two.
+- An edition-2 job that binds a model the legacy way beside its experiments no longer
+  exports: the export refuses it, naming the model and its data.
 - #941 (a hand-written `parameter_scan` restores its parameter on bngsim but not on BNG2.pl)
   can no longer reach an edition-2 job; it remains an edition-1 difference.
 - The exporter's `_require_droppable_actions` and its action lists are deleted. The export

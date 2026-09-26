@@ -150,8 +150,10 @@ Required Keys
       ``simulate`` action from the data, so the scoring grid always lines up with the
       measurements. The model file defines the model and the conf the protocol, so a BNGL
       model that ``experiment:`` lines simulate may carry, in its actions, only its network
-      definition (``generate_network``, ``setOption``); any other action is refused at load,
-      naming the model file and the line. (ADR-0152)
+      definition (``generate_network``, ``setOption``, and the declarations
+      ``substanceUnits`` and ``version``), each as the only statement on its line; any other
+      action, and ``setModelName``, is refused at load, naming the model file and the line.
+      (ADR-0152)
     * **Each experiment starts from the model as written:** the model's parameters with the
       trial values of the free ones, and its seed species, whatever the experiments declared
       before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
