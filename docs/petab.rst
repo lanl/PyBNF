@@ -59,6 +59,15 @@ caller: ``job_type`` selects the search method (or ``'all'`` to emit one
 (default ``'ode'``) sets the per-experiment simulation method, ``method_overrides``
 sets it per experiment, and ``settings`` overrides the required algorithm settings.
 
+In a PEtab problem the tables define the protocol, and the model file only the model. A
+BNGL model is therefore held to the rule an edition-2 job holds it to: its actions may be
+only its network definition, ``generate_network`` and ``setOption`` (and the declarations
+``substanceUnits`` and ``version``), each as the only statement on its line. A model that
+carries anything else, such as a leftover ``simulate`` from running BioNetGen directly, a
+``setParameter``, or a ``setModelName``, is refused before any file is written, with an
+error naming the model file and the line (#969). Delete leftover simulations, and move
+a parameter or species change into the condition table or into the model itself.
+
 .. _petab_fixed_parameters:
 
 Fixed parameters (``estimate = false``)
@@ -93,7 +102,8 @@ rule target (PEtab's own validator rejects these rows); an SBML parameter whose 
 initial assignment, an event assignment or an algebraic rule also sets; and a BNGL parameter
 that the model file's own actions set (``setParameter``, or a parameter scan). In the last two
 cases writing the value into the model would not give the parameter the table's value for the
-whole simulation. An SBML
+whole simulation. (A BNGL model whose actions do more than define its network is refused
+before this, by the rule above; this check still reads a ``begin protocol`` block.) An SBML
 parameter declared ``constant="false"`` that nothing assigns is accepted, since nothing can
 change it. The import also refuses to edit a copy that would be written over its source: the
 copy goes to the model's ``location`` under ``out_dir``, which is the source file itself when
@@ -135,13 +145,18 @@ Job-wide settings and the model's own actions are checked too. ``noise_location 
 on an ``lnnormal`` fit is refused like a ``location = mean`` field (on a linear Gaussian or
 Laplace the mean is the median, so either spelling exports), and a ``postprocess`` script is
 refused because PEtab cannot run a Python transform of the prediction. A BNGL model is
-exported as the model the fit ran: its leftover ``simulate`` / ``resetConcentrations`` /
-``write*`` / ``visualize`` actions are dropped, its network definition is kept (the model's own
-``generate_network`` line, or the one the job's ``generate_network`` key synthesizes), and an
-action that would change what the experiments start from (``setParameter``,
-``setConcentration``, ``saveConcentrations``, a ``parameter_scan``, and any action not listed
-here) is refused with the model file and the action named. Move such a change into the model
-itself or into a ``condition:``, or delete the line.
+exported as the model the fit ran. In an edition-2 job the model file defines the model and
+the conf defines the protocol, so a model's actions may be only its network definition,
+``generate_network`` and ``setOption`` (and the declarations ``substanceUnits`` and
+``version``), each as the only statement on its line. The export keeps ``setOption`` where it
+stands and writes the network definition back: the model's own ``generate_network`` line, or
+the one the job's ``generate_network`` key synthesizes. A model carrying any other action,
+whether a leftover ``simulate``, a ``setParameter`` or a ``setModelName``, is refused by the
+same check the fit runs when the job loads, with the same message naming the model file and
+the line (#969). Delete leftover simulations and file writes, and move a parameter or species
+change into a ``condition:`` or into the model itself. A job that also binds data the legacy
+way (``model = b.bngl : b.exp``) is refused too, naming the model and its data: the fit scores
+that data with the model's own actions as its protocol, which PEtab cannot carry.
 
 .. _petab_bngl_loader:
 

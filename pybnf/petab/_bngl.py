@@ -201,9 +201,11 @@ def parameters_set_by_actions(text):
     """The names of the parameters the model file's own actions assign (``setParameter``, or
     a scan's ``parameter=>``), read over comment-stripped logical lines.
 
-    The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907):
-    an edition-2 job runs the model file's own actions ahead of each experiment's
-    simulation, so such an action would set the parameter again.
+    The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907).
+    Since #969 an edition-2 job refuses a model whose actions set a parameter, so this gate
+    now matters only for a ``setParameter`` inside a ``begin protocol`` block, which nothing
+    in an edition-2 job runs (see the strict xfail
+    ``test_a_protocol_block_that_nothing_runs_leaves_the_table_value``).
     """
     return {m.group(1) for line in _logical_lines(text)
             for m in _ACTION_PARAMETER.finditer(line)}

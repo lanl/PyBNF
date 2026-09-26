@@ -23,6 +23,7 @@ itself: a PyBNF job exported to a PEtab v2 problem and imported back must reprod
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -110,7 +111,8 @@ PREDSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'predsigma_
 BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
 
 # A two-parameter-kind model for the conditioned fixture: v1/v2/v3 fit, s fixed (so a
-# condition on v1 exercises the surrogate-base rename and one on s the precomputed path).
+# condition on v1 exercises the surrogate-base rename and one on s the precomputed path). Its
+# actions are only the network definition, as an edition-2 model's must be (#969).
 _PARABOLA2_BNGL = """\
 begin model
   begin parameters
@@ -138,7 +140,6 @@ end model
 
 begin actions
   generate_network({overwrite=>1})
-  simulate({method=>"ode",t_start=>0,t_end=>2,n_steps=>2,suffix=>"par1",print_functions=>1})
 end actions
 """
 
@@ -4376,6 +4377,54 @@ class TestBoundaries:
                 demo_petab, tmp_path,
                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx*observableParameter1_obs_x\t')})
 
+    @pytest.mark.parametrize('leftover, code', [
+        ('simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"x"})',
+         'simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"x"})'),
+        ('setParameter("v1", 2)', 'setParameter("v1", 2)'),
+        ('writeSBML()', 'writeSBML()'),
+        # BNG2.pl reads a leading line index and ignores it (#963), and so does the check.
+        ('1 simulate({method=>"ode",t_end=>10,n_steps=>10})',
+         'simulate({method=>"ode",t_end=>10,n_steps=>10})'),
+    ], ids=['simulate', 'setParameter', 'writeSBML', 'numbered'])
+    def test_a_bngl_model_with_a_protocol_of_its_own_is_refused(self, demo_petab, tmp_path,
+                                                                leftover, code):
+        # #969: a third-party BNGL model carrying a leftover action. The importer copies the
+        # model into an edition-2 job whose experiments stand for the PEtab tables, and the
+        # fitter would refuse that job at load; the importer refuses it first, with the fitter's
+        # own check, naming the file and the line and saying the tables define the protocol.
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        model = prob / 'parabola_v2.bngl'
+        assert 'begin actions' not in model.read_text()        # the export wrote none
+        model.write_text(model.read_text() + f'begin actions\n{leftover}\nend actions\n')
+        number = model.read_text().splitlines().index(leftover) + 1
+        out = tmp_path / 'out'
+        with pytest.raises(PybnfError, match=(
+                rf"^Model file 'parabola_v2\.bngl' carries BNGL actions that are not "
+                rf"network-definition directives -- line {number}: {re.escape(code)}\. In a "
+                rf"PEtab problem the tables define the protocol.*PEtab condition table")):
+            import_job(prob / 'problem.yaml', out)
+        assert not out.exists() or not any(out.iterdir())      # nothing written
+
+    def test_a_bngl_model_with_only_a_network_definition_imports_verbatim(
+            self, demo_petab, tmp_path, monkeypatch):
+        # The directives an edition-2 model may carry: setOption and a (here numbered, #963)
+        # generate_network. The model is copied byte for byte, and the imported job loads with
+        # the fitter reading the numbered line as the network definition.
+        from pybnf.parse import load_config
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        model = prob / 'parabola_v2.bngl'
+        model.write_text(model.read_text() + 'begin actions\n'
+                         'setOption("NumberPerQuantityUnit",6.0221e23)\n'
+                         '1 generate_network({overwrite=>1,max_iter=>20})\nend actions\n')
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        assert (out / 'parabola_v2.bngl').read_bytes() == model.read_bytes()
+        monkeypatch.chdir(out)
+        fitted = load_config('imported.conf').models['parabola_v2']
+        assert fitted.generate_network_line == 'generate_network({overwrite=>1,max_iter=>20})'
+        assert fitted.hand_written_actions == []
+
     def test_unknown_prior_distribution_is_refused(self, demo_petab, tmp_path):
         # An unrecognized priorDistribution spelling is a malformed problem, not a gap.
         prob = tmp_path / 'prob'
@@ -5240,14 +5289,64 @@ class TestFixedModelParameterImport:
     ])
     def test_a_parameter_the_model_actions_set_is_refused(self, tmp_path, action):
         # BNG2.pl runs the model file's actions after it loads the model, so an action that
-        # sets v3 would undo the value written into `begin parameters`.
+        # sets v3 would undo the value written into `begin parameters`. Since #969 the import
+        # refuses any such action before the #907 gate is reached, with the fitter's own
+        # check, naming the line (the gate still covers a `begin protocol` block, below).
         model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
                  + f'\nbegin actions\n  {action}\nend actions\n')
+        number = model.splitlines().index(f'  {action}') + 1
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        with pytest.raises(PybnfError,
+                           match=rf"Model file 'fixedsigma_model\.bngl' carries BNGL actions .* "
+                                 rf"line {number}: {re.escape(' '.join(action.split()))}\. In a "
+                                 rf"PEtab problem the tables define the protocol"):
+            import_job(yaml, tmp_path / 'out')
+
+    def test_a_parameter_a_protocol_block_sets_still_meets_the_907_gate(self, tmp_path):
+        # A `begin protocol` block is not an action to the #969 rule (nothing in an edition-2
+        # job runs it), so a setParameter there passes that check and reaches the #907 gate,
+        # which reads every logical line of the model and refuses it.
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')
         yaml = _fixed_v3_problem(tmp_path, model_text=model)
         with pytest.raises(NotImplementedError,
                            match="'v3' has estimate=false with nominalValue 10, but an action "
                                  "in the model fixedsigma_model.bngl"):
             import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.bionetgen
+    @pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=(
+        'Found in review of the #969 merge: the #907 gate still reads a begin protocol block, '
+        'and says its setParameter "would override the value written into its begin parameters '
+        'line", but nothing in an imported job runs the block. BNG2.pl only stores it for '
+        'simulate({method=>"protocol"}), which #969 refuses in the model and PyBNF never '
+        'synthesizes, so the refusal blocks a problem that would import correctly. Either leave '
+        'the protocol block out of the gate, or refuse the block under #969 with a true reason '
+        '(and rewrite this test and the one above).'))
+    def test_a_protocol_block_that_nothing_runs_leaves_the_table_value(self, tmp_path,
+                                                                       monkeypatch):
+        # Review addition. The oracle is BNG2.pl: given the model with the table's v3 = 10 and
+        # the block, it simulates y = 0.5 x^2 + x + 10 and still has v3 = 10 after the run.
+        import subprocess
+        block = '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n'
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + block
+        bng = tmp_path / 'bng'
+        bng.mkdir()
+        (bng / 'm.bngl').write_text(
+            model.replace('    v3 3\n', '    v3 10\n')
+            + 'begin actions\ngenerate_network({overwrite=>1})\n'
+              'simulate({method=>"ode",t_end=>2,n_steps=>2,print_functions=>1})\n'
+              'writeModel({prefix=>"after"})\nend actions\n')
+        subprocess.run([shutil.which('BNG2.pl'), 'm.bngl'], cwd=bng, check=True,
+                       capture_output=True)
+        after = (bng / 'after.bngl').read_text()
+        assert float(re.search(r'^\s*v3\s+(\S+)', after, re.M).group(1)) == 10.0
+        ran = Data(file_name=str(bng / 'm.gdat'))
+        np.testing.assert_allclose(ran.data[:, ran.cols['y']], _EXACT_AT_V3_10, rtol=1e-9)
+        # So the import has nothing to refuse: it writes v3 = 10 and the job scores it exactly.
+        out = import_job(_fixed_v3_problem(tmp_path, model_text=model), tmp_path / 'out')
+        assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+            0., abs=1e-9)
 
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')
@@ -5361,12 +5460,15 @@ class TestFixedModelParameterImportEdges:
         # Let through, the action runs after the model is read and undoes the edit: the job
         # then reports that the copy uses v3 = 10 while it simulates 7 (with `setParameter
         # ("v3", 3)` a check job scored 18.375 instead of 0).
+        # Since #969 the import refuses the action itself, before the #907 gate, naming it.
         model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
                  + f'\nbegin actions\n  {action}\nend actions\n')
+        number = model.splitlines().index(f'  {action}') + 1
         yaml = _fixed_v3_problem(tmp_path, model_text=model)
-        with pytest.raises(NotImplementedError,
-                           match="'v3' has estimate=false with nominalValue 10, but an action "
-                                 "in the model fixedsigma_model.bngl"):
+        with pytest.raises(PybnfError,
+                           match=rf"Model file 'fixedsigma_model\.bngl' carries BNGL actions .* "
+                                 rf"line {number}: {re.escape(' '.join(action.split()))}\. In a "
+                                 rf"PEtab problem"):
             import_job(yaml, tmp_path / 'out')
         assert not (tmp_path / 'out' / 'fixedsigma_model.bngl').exists()
 
