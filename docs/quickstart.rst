@@ -80,10 +80,18 @@ free parameters, and PyBNF binds each one to the model parameter of the same id.
 configs rename these to ``var1__FREE`` and so on; that marker is legacy and is not used on
 the modern surface.)
 
-Your model file also needs **no** ``begin actions`` block. PyBNF builds the simulation from
-the experiment you declare in the config: the data's time points become the simulation's
-output points. If your file does have an actions block left over from running BioNetGen
-directly, delete it.
+Your model file also needs **no** ``begin actions`` block. The model file defines the model,
+and the config defines the protocol: PyBNF builds the simulation from the experiment you
+declare in the config, and the data's time points become the simulation's output points.
+The only actions an edition-2 model may carry are the directives that define its network,
+``generate_network`` (for example, to cap a network with ``max_stoich``) and ``setOption``,
+and the declarations ``substanceUnits`` and ``version``, each as the only statement on its
+line. Any other action, in a ``begin actions`` block or loose after ``end model``, stops the
+job when it loads, with an error naming the model file and the line. So does
+``setModelName``, because PyBNF names the model's output files itself. If your file has an actions
+block left over from running BioNetGen directly, delete its ``simulate``, ``write*`` and
+similar lines, and move a ``setParameter`` or ``setConcentration`` into a ``condition:`` line
+of the config, or into the model's parameters or seed species.
 
 Make your data file
 ^^^^^^^^^^^^^^^^^^^

@@ -60,6 +60,67 @@ STOCHASTIC_METHODS = frozenset({
 # from any ``saveParameters()`` / ``resetParameters()`` in the model's own actions block.
 EXPERIMENT_START_LABEL = 'pybnf_experiment_start'
 
+# A line index in front of an action (``1 generate_network({overwrite=>1})``), which BNG2.pl
+# removes and ignores (``BNGModel.pm``'s actions and protocol readers: ``s/^\d+\s+//``).
+# ``BNGLModel`` removes it the same way before it reads an action, so a numbered line is
+# recognised as the action it is: a numbered ``generate_network`` as the network definition
+# rather than an action run against the ``.net`` file already generated, a numbered
+# ``simulate`` for its suffix and by the bngsim classifier (#963). BNG2.pl is narrower: it
+# strips the index only inside a block, and only from a line that starts with it (an indented
+# numbered line aborts the run), and it skips a numbered line outside every block
+# ("Unidentified input"). ``BNGLModel`` strips the index after removing the line's
+# indentation, and from a loose line as well, because it writes every action it reads into
+# its own ``begin actions`` block, where BNG2.pl would strip it anyway (ADR-0152).
+_ACTION_LINE_INDEX = re.compile(r'^\d+\s+')
+
+
+def _strip_action_line_index(text):
+    """``text`` without a leading BNGL action line index (see ``_ACTION_LINE_INDEX``)."""
+    return _ACTION_LINE_INDEX.sub('', text, count=1)
+
+
+# The directives an edition-2 model may carry, as the one call a line holds (#969).
+_DIRECTIVE_CALL = re.compile(r'(generate_network|setOption|substanceUnits|version)\s*\(')
+
+
+def _is_single_directive_call(statement):
+    """Whether ``statement`` (comment removed, continuations joined) is one allowed directive
+    call and nothing else but an optional ``;``.
+
+    BNG2.pl runs an action line by evaluating ``$model->`` + the line as Perl, so whatever
+    follows the call's closing parenthesis runs too: ``setOption(...); $model->setParameter(...)``
+    sets a parameter (#969 review). The parentheses are matched outside quoted strings. The
+    ``;`` must follow the parenthesis directly, as BNG2.pl's reader (``\\);?\\s*$``) requires:
+    it skips ``setOption(...) ;`` outside every block, so the option would not apply."""
+    tail = _directive_call_tail(statement)
+    return tail is not None and re.fullmatch(r';?\s*', tail) is not None
+
+
+def _directive_call_tail(statement):
+    """What follows the closing parenthesis of the allowed directive call ``statement`` starts
+    with, or ``None`` if it does not start with one or never closes it."""
+    match = _DIRECTIVE_CALL.match(statement)
+    if not match:
+        return None
+    depth, quote, i = 1, None, match.end()
+    while i < len(statement):
+        ch = statement[i]
+        if quote:
+            if ch == '\\':
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in '"\'':
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return statement[i + 1:]
+        i += 1
+    return None
+
 
 def _format_bngl_number(x):
     """Format a float for a BNGL ``sample_times`` / ``par_scan_vals`` list (ADR-0028).
@@ -574,6 +635,24 @@ class BNGLModel(Model):
         self.mutants = []
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
         self.has_observables = False
+        # Every action this scan reads from the model file, as ``(line number, code)``: the
+        # 1-based number of its first physical line, and the statement with its comment,
+        # continuations and line index removed and its whitespace collapsed. ``hand_written_actions``
+        # holds what ``self.actions`` holds (every action but the directives below);
+        # ``generate_network_lines`` the ``generate_network`` lines. Read by the edition-2 rule
+        # (require_no_protocol_actions, #969) and by the PEtab exporter.
+        self.hand_written_actions = []
+        self.generate_network_lines = []
+        # Two kinds of directive line the edition-2 rule refuses although the scan keeps them as
+        # directives, in the same ``(line number, code)`` form: a directive line that holds more
+        # than its one call (BNG2.pl runs the rest as code), and ``setModelName``, which renames
+        # the files BioNetGen writes, so PyBNF cannot find them.
+        self.compound_directive_lines = []
+        self.set_model_name_lines = []
+        # The indices of the ``setOption``-family lines that carry a line index, which the model
+        # text keeps with the index removed: outside a block BNG2.pl does not strip it, and
+        # would skip the line (#963).
+        self.indexed_directive_line_indices = set()
         param_names_set = set()
         self.split_line_index = None  # for insertion of free parameters
         all_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
@@ -623,8 +702,24 @@ class BNGLModel(Model):
             for p in params:
                 param_names_set.add(p)
 
+            # The line as a statement: where an action can stand (an actions or protocol block,
+            # or outside every block), with its line index removed, as BNG2.pl removes it (#963).
+            # Inside any other block a leading number belongs to that block (a numbered
+            # reaction rule or species), so it is left alone there.
+            statement = line.strip()
+            if in_action_block or in_no_block or in_protocol_block:
+                statement = _strip_action_line_index(statement)
+
             # Make sure setOption (if present) doesn't get passed to the actions block
-            if re.match(r'\s*(setOption|setModelName|substanceUnits|version)', line):
+            if re.match(r'(setOption|setModelName|substanceUnits|version)', statement):
+                if statement != line.strip():
+                    self.indexed_directive_line_indices.add(min(indices))
+                if in_action_block or in_no_block:
+                    read_as = (min(indices) + 1, ' '.join(statement.split()))
+                    if re.match(r'setModelName\b', statement):
+                        self.set_model_name_lines.append(read_as)
+                    elif not _is_single_directive_call(statement):
+                        self.compound_directive_lines.append(read_as)
                 continue
 
             # Check if this is the 'begin parameters' line
@@ -663,7 +758,7 @@ class BNGLModel(Model):
             if in_protocol_block:
                 skip_lines.update(indices)
                 protocol_lines.update(indices)
-                self.protocol.append(rawline)
+                self.protocol.append(_strip_action_line_index(rawline))
                 continue
 
             # To keep track of whether we're in no block, which counts as an action block, check for
@@ -680,13 +775,18 @@ class BNGLModel(Model):
 
             if in_action_block or in_no_block:
                 skip_lines.update(indices)
-                action_suffix = self._get_action_suffix(line)
+                action_suffix = self._get_action_suffix(statement)
                 if action_suffix is not None:
                     self.suffixes.append(action_suffix)
+                # The statement as a message shows it: first line number, whitespace collapsed.
+                read_as = (min(indices) + 1, ' '.join(statement.split()))
 
-                if re.match('generate_network', line.strip()):
+                if re.match('generate_network', statement):
                     self.generates_network = True
-                    self.generate_network_line = line
+                    self.generate_network_line = statement
+                    self.generate_network_lines.append(read_as)
+                    if not _is_single_directive_call(statement):
+                        self.compound_directive_lines.append(read_as)
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
                         '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla)|(protocol))("|\')', line):
@@ -697,20 +797,25 @@ class BNGLModel(Model):
                     self.stochastic = True
                 if re.search(r'seed=>\d+', line):
                     self.seeded = True
-                self.actions.append(rawline)
+                self.actions.append(_strip_action_line_index(rawline))
+                self.hand_written_actions.append(read_as)
 
             if re.match(r'end\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = True
 
         if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
-        self.model_lines = [all_lines[i] for i in range(len(all_lines)) if i not in skip_lines]
+        self.model_lines = [
+            _strip_action_line_index(all_lines[i]) if i in self.indexed_directive_line_indices
+            else all_lines[i]
+            for i in range(len(all_lines)) if i not in skip_lines]
         # The indices (into ``bngl_file_text.splitlines()``) of every line this scan read as
         # an action or as an actions-block delimiter -- the ``begin actions`` block and the
         # loose lines outside any block alike, ``generate_network`` included, ``setOption``
         # and its siblings excluded (those stay in ``model_lines``). The PEtab exporter
         # removes exactly these lines, so it drops what the fitter reads as actions and
-        # nothing else (#900). Protocol lines are not actions and are left out.
+        # nothing else (#900); under edition 2 that is at most the network definition, which it
+        # writes back (#969). Protocol lines are not actions and are left out.
         self.action_line_indices = frozenset(skip_lines - protocol_lines)
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = self._synthesized_generate_network_line()
@@ -778,6 +883,84 @@ class BNGLModel(Model):
             if space_match:
                 names.append(space_match.group(1))
         return tuple(names)
+
+    # Why a model may carry no protocol, by where the model is being read (#969, ADR-0152).
+    _PROTOCOL_ACTION_REASONS = {
+        'conf': (
+            "In an edition-2 job the model file defines the model and the conf defines the "
+            "protocol, so a BNGL model's actions may be only the model declarations "
+            "generate_network, setOption, substanceUnits and version. PyBNF would run any other "
+            "action ahead of every "
+            "experiment, where what it does depends on the action, the experiment's method and "
+            "the backend."),
+        'petab': (
+            "In a PEtab problem the tables define the protocol and the model file only the "
+            "model, so an imported BNGL model's actions may be only the model declarations "
+            "generate_network, setOption, substanceUnits and version. The imported job would run "
+            "any other "
+            "action ahead of every experiment."),
+    }
+    _PROTOCOL_ACTION_REMEDIES = {
+        'conf': "Move a setParameter or setConcentration into a 'condition:' line",
+        'petab': "Move a setParameter or setConcentration into the PEtab condition table",
+    }
+
+    def require_no_protocol_actions(self, model_file=None, where='conf', note=None):
+        """Refuse a model file whose actions are more than a network definition (#969).
+
+        The edition-2 rule, shared by the fit (``config._load_experiments``, for a model that
+        ``experiment:`` lines simulate), the PEtab export (``clean_model_for_petab``) and the
+        PEtab import (``import_job``): of the actions this scan read from the file -- in
+        ``begin actions`` or loose outside every block -- only ``generate_network``,
+        ``setOption``, ``substanceUnits`` and ``version`` may remain, each as the one call on
+        its line. Anything else raises a :class:`PybnfError` naming the file and each offending
+        line: a protocol action, a directive line that carries more than its call (BNG2.pl runs
+        the rest as code), and ``setModelName`` (it renames the files BioNetGen writes).
+        ``where`` is ``'conf'`` (a job's conf defines the protocol) or ``'petab'`` (a PEtab
+        problem's tables do); ``model_file`` defaults to ``file_path``; ``note``, if given, ends
+        the message.
+        """
+        offending = sorted(self.hand_written_actions + self.compound_directive_lines
+                           + self.set_model_name_lines)
+        if not offending:
+            return
+        shown = offending[:10]
+        lines = '; '.join(f'line {number}: {code}' for number, code in shown)
+        if len(offending) > len(shown):
+            lines += f'; and {len(offending) - len(shown)} more'
+        why = []
+        # A directive whose only fault is a space before its ``;`` runs nothing after the call:
+        # BNG2.pl does not read the line as a call at all, so it gets that reason instead.
+        spaced = [number for number, code in self.compound_directive_lines
+                  if re.fullmatch(r'\s+;', _directive_call_tail(code) or '')]
+        compound = [number for number, _ in self.compound_directive_lines
+                    if number not in spaced]
+        if compound:
+            numbers = ', '.join(str(number) for number in compound)
+            why.append(
+                f"A directive must be the only statement on its line, with nothing after its "
+                f"call but a comment: BNG2.pl runs the rest of the line as code (line "
+                f"{numbers}).")
+        if spaced:
+            numbers = ', '.join(str(number) for number in spaced)
+            why.append(
+                f"BNG2.pl reads a directive as a call only when a ';' after it follows its "
+                f"closing parenthesis directly: it skips any other such line outside every "
+                f"block, where the setOption family stays, and aborts on it inside one (line "
+                f"{numbers}).")
+        if self.set_model_name_lines:
+            numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)
+            why.append(
+                f"setModelName is refused too (line {numbers}): PyBNF names the model's output "
+                f"files itself, and a renamed model writes them where PyBNF does not look. "
+                f"Delete it.")
+        raise PybnfError(
+            f"Model file '{model_file or self.file_path}' carries BNGL actions that are not "
+            f"network-definition directives -- {lines}. {self._PROTOCOL_ACTION_REASONS[where]} "
+            + ''.join(f'{sentence} ' for sentence in why)
+            + f"{self._PROTOCOL_ACTION_REMEDIES[where]} (or into the model's parameters or seed "
+            f"species), and delete leftover simulate, parameter_scan, write* and other actions "
+            f"(#969)." + (f' {note}' if note else ''))
 
     @staticmethod
     def _get_action_suffix(line):

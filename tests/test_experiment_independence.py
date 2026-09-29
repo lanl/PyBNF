@@ -18,6 +18,7 @@ list through BNG2.pl and through bngsim and hold both to the same closed forms.
 
 import itertools
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -771,3 +772,222 @@ def test_a_commented_reset_line_in_an_actions_block_is_still_read(tmp_path, back
     for name in ('a', 'b'):
         np.testing.assert_allclose(ds[name].data[:, ds[name].cols['A_tot']], decay, rtol=1e-5,
                                    atol=1e-8, err_msg=name)
+
+
+# --------------------------------------------------------------------------- #
+# #969 (ADR-0152): in edition 2 the model file defines the model and the conf the protocol, so
+# a BNGL model that experiment: lines simulate may carry only its network definition
+# (generate_network, setOption) -- the step after ADR-0151, which made each experiment start
+# from the model as written but still ran the model's own actions ahead of all of them. And
+# #963 item 3: an action line with a leading index is read as BNG2.pl reads it. The oracle is
+# the closed form of a first-order decay, A = 100 exp(-k t), through the real Configuration and
+# backend routing on BNG2.pl and on bngsim.
+# --------------------------------------------------------------------------- #
+
+_DECAY_MODEL = """\
+begin model
+begin parameters
+  k K_VALUE
+  kb 0.5
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 100
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin reaction rules
+  A() -> 0 RATE
+end reaction rules
+end model
+"""
+_DECAY_T = np.arange(5.0)
+_DECAY_DATA = 100 * np.exp(-0.5 * _DECAY_T)   # made at k = 0.5
+_K_TRIAL = 0.8                                 # the evaluation point, away from the data
+
+
+def _decay_model(actions='', rate='k', k='0.5'):
+    return _DECAY_MODEL.replace('K_VALUE', k).replace('RATE', rate) + actions
+
+
+def _decay_cf(k):
+    return _sos(100 * np.exp(-k * _DECAY_T), _DECAY_DATA)
+
+
+def _run_job(tmp_path, lines, values):
+    """Build the conf ``lines`` exactly as a fit does (network generation through BNG2.pl,
+    backend routing), simulate every model once at ``values`` and score the job's objective."""
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        conf = config_mod.Configuration(ploop([line + '\n' for line in lines]))
+        os.makedirs(conf.config['output_dir'], exist_ok=True)
+        alg = algorithms.DifferentialEvolution(conf)
+        os.chdir(tmp_path)
+        point = PSet([v.set_value(values[v.name]) for v in alg.variables])
+        sims = {}
+        for m in alg.model_list:
+            folder = tmp_path / f'sim_{m.name}'
+            folder.mkdir(exist_ok=True)
+            sims[m.name] = m.copy_with_param_set(point).execute(str(folder), 'x', 120)
+            os.chdir(tmp_path)
+        return conf.obj.evaluate_multiple(sims, conf.exp_data, point), sims, alg.model_list
+    finally:
+        os.chdir(home)
+
+
+def _load(tmp_path, lines):
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return config_mod.Configuration(ploop([line + '\n' for line in lines]))
+    finally:
+        os.chdir(home)
+
+
+def _write_decay_data(tmp_path, *names):
+    for name in names:
+        (tmp_path / f'{name}.exp').write_text(_table('time A_tot', zip(_DECAY_T, _DECAY_DATA)))
+
+
+_EDITION2_HEAD = ['edition = 2', 'job_type = de', 'objective = sos', 'population_size = 4',
+                  'max_iterations = 1']
+
+
+@pytest.mark.parametrize('action', ['setParameter("k", 2)',
+                                    'simulate({method=>"ode",t_end=>4,n_steps=>4})'])
+def test_a_model_that_experiments_simulate_is_refused_at_load(tmp_path, action):
+    (tmp_path / 'm.bngl').write_text(_decay_model(
+        f'begin actions\ngenerate_network({{overwrite=>1}})\n{action}\nend actions\n'))
+    _write_decay_data(tmp_path, 'tc')
+    number = (tmp_path / 'm.bngl').read_text().splitlines().index(action) + 1
+    lines = _EDITION2_HEAD + ['model: m.bngl', 'experiment: tc, data: tc.exp',
+                              'uniform_var = k 0.1 3']
+    with pytest.raises(PybnfError, match=rf"^Model file 'm\.bngl' carries BNGL actions that "
+                       rf"are not network-definition directives -- line {number}: "
+                       rf"{re.escape(action)}\. In an edition-2 job"):
+        _load(tmp_path, lines)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_a_legacy_bound_model_in_an_edition2_job_keeps_its_actions(tmp_path, backend):
+    """The rule reaches only a model that experiment: lines simulate. An edition-2 job can still
+    bind a model the legacy way (``model = b.bngl : bt.exp``), and then the model's own actions
+    are its protocol: here they set ``kb = 0.8`` and simulate, while ``a.bngl`` is simulated by
+    its experiment at the trial ``k``. Both score their closed forms."""
+    (tmp_path / 'a.bngl').write_text(_decay_model())
+    (tmp_path / 'b.bngl').write_text(_decay_model(
+        'begin actions\ngenerate_network({overwrite=>1})\nsetParameter("kb",0.8)\n'
+        'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"bt"})\nend actions\n',
+        rate='kb'))
+    _write_decay_data(tmp_path, 'tc', 'bt')
+    lines = _EDITION2_HEAD + [
+        f'output_dir = {tmp_path / "out"}', f'bngl_backend = {backend}', 'model: a.bngl',
+        'experiment: tc, model: a.bngl, data: tc.exp', 'model = b.bngl : bt.exp',
+        'uniform_var = k 0.1 3']
+    obj, sims, _models = _run_job(tmp_path, lines, {'k': _K_TRIAL})
+    np.testing.assert_allclose(sims['b']['bt'].data[:, sims['b']['bt'].cols['A_tot']],
+                               100 * np.exp(-0.8 * _DECAY_T), rtol=1e-5)
+    assert obj == pytest.approx(_decay_cf(_K_TRIAL) + _decay_cf(0.8), rel=1e-5)
+
+
+def test_a_model_bound_both_ways_is_refused_and_told_why(tmp_path):
+    # The same legacy-bound model, now also simulated by an experiment: line. Its simulate is
+    # the legacy binding's protocol, not a leftover, so the message says so.
+    (tmp_path / 'b.bngl').write_text(_decay_model(
+        'begin actions\ngenerate_network({overwrite=>1})\n'
+        'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"bt"})\nend actions\n',
+        rate='kb'))
+    _write_decay_data(tmp_path, 'tc', 'bt')
+    (number,) = [i + 1 for i, line in enumerate((tmp_path / 'b.bngl').read_text().splitlines())
+                 if line.startswith('simulate(')]
+    lines = _EDITION2_HEAD + ['model = b.bngl : bt.exp', 'experiment: e2, data: tc.exp',
+                              'uniform_var = kb 0.1 3']
+    with pytest.raises(PybnfError, match=rf"(?s)Model file 'b\.bngl' carries .*line {number}: "
+                                         r"simulate.*\(#969\)\. This model also binds data the "
+                                         r"legacy way \(.*bt\.exp on its 'model =' line\)"):
+        _load(tmp_path, lines)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_a_numbered_network_definition_fits_in_edition2(tmp_path, backend):
+    """#963 item 3: ``1 generate_network(...)`` was read as an ordinary action and run against
+    the ``.net`` file PyBNF had already generated, so BNG2.pl aborted every simulation and the
+    bngsim classifier refused the model. Now it is the model's network definition."""
+    (tmp_path / 'm.bngl').write_text(_decay_model(
+        'begin actions\n1 generate_network({overwrite=>1,max_iter=>50})\nend actions\n'))
+    _write_decay_data(tmp_path, 'tc')
+    lines = _EDITION2_HEAD + [f'output_dir = {tmp_path / "out"}', f'bngl_backend = {backend}',
+                              'model: m.bngl', 'experiment: tc, data: tc.exp',
+                              'uniform_var = k 0.1 3']
+    obj, sims, models = _run_job(tmp_path, lines, {'k': _K_TRIAL})
+    expected = {'bionetgen': pset.NetModel, 'bngsim': BngsimModel}[backend]
+    assert type(models[0]) is expected
+    assert not any('generate_network' in a for a in models[0].actions)
+    np.testing.assert_allclose(sims['m']['tc'].data[:, sims['m']['tc'].cols['A_tot']],
+                               100 * np.exp(-_K_TRIAL * _DECAY_T), rtol=1e-5)
+    assert obj == pytest.approx(_decay_cf(_K_TRIAL), rel=1e-5)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_numbered_action_lines_fit_in_edition1(tmp_path, backend):
+    """#963 item 3 in edition 1, where the actions block is the protocol: a numbered
+    ``generate_network`` and a numbered ``simulate`` whose suffix binds the data."""
+    (tmp_path / 'm.bngl').write_text(_decay_model(
+        'begin actions\n1 generate_network({overwrite=>1})\n'
+        '2 simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})\nend actions\n',
+        k='k__FREE'))
+    _write_decay_data(tmp_path, 'tc')
+    lines = [f'output_dir = {tmp_path / "out"}', f'bngl_backend = {backend}',
+             'model = m.bngl : tc.exp', 'fit_type = de', 'objfunc = sos', 'population_size = 4',
+             'max_iterations = 1', 'uniform_var = k__FREE 0.1 3']
+    obj, sims, models = _run_job(tmp_path, lines, {'k__FREE': _K_TRIAL})
+    expected = {'bionetgen': pset.NetModel, 'bngsim': BngsimModel}[backend]
+    assert type(models[0]) is expected
+    np.testing.assert_allclose(sims['m']['tc'].data[:, sims['m']['tc'].cols['A_tot']],
+                               100 * np.exp(-_K_TRIAL * _DECAY_T), rtol=1e-5)
+    # The legacy ``objfunc = sos`` is the plain sum of squares (no 1/2).
+    assert obj == pytest.approx(2 * _decay_cf(_K_TRIAL), rel=1e-5)
+
+
+@pytest.mark.parametrize('backend', ['bionetgen', 'bngsim'])
+def test_a_multi_model_job_is_checked_model_by_model(tmp_path, backend):
+    """Review addition (#969, #963): the rule is applied to each model an ``experiment:`` line
+    simulates, and the line index BNG2.pl strips may be followed by a tab (``s/^\\d+\\s+//``).
+    ``a.bngl`` carries a tab-numbered, capped ``generate_network`` and a tab-numbered
+    ``setOption``; ``b.bngl`` a tab-numbered ``setParameter`` as well. The job is refused naming
+    ``b.bngl`` and that line alone. Without it, the job fits on both backends to the closed forms
+    of both decays: A at k, and B at 2k."""
+    (tmp_path / 'a.bngl').write_text(_decay_model(
+        'begin actions\n1\tgenerate_network({overwrite=>1,max_iter=>50})\n'
+        '2\tsetOption("NumberPerQuantityUnit",6.0221e23)\nend actions\n'))
+    b_actions = ('begin actions\n1\tgenerate_network({overwrite=>1})\n'
+                 '2\tsetParameter("kb", 0.8)\nend actions\n')
+    (tmp_path / 'b.bngl').write_text(_decay_model(b_actions, rate='2*k'))
+    _write_decay_data(tmp_path, 'ta', 'tb')
+    number = (tmp_path / 'b.bngl').read_text().splitlines().index('2\tsetParameter("kb", 0.8)') + 1
+    lines = _EDITION2_HEAD + [
+        f'output_dir = {tmp_path / "out"}', f'bngl_backend = {backend}', 'model: a.bngl',
+        'model: b.bngl', 'experiment: ta, model: a.bngl, data: ta.exp',
+        'experiment: tb, model: b.bngl, data: tb.exp', 'uniform_var = k 0.1 3']
+    with pytest.raises(PybnfError) as refused:
+        _load(tmp_path, lines)
+    message = str(refused.value)
+    assert message.startswith(
+        "Model file 'b.bngl' carries BNGL actions that are not network-definition directives -- "
+        f'line {number}: setParameter("kb", 0.8). In an edition-2 job'), message
+    assert 'a.bngl' not in message
+
+    (tmp_path / 'b.bngl').write_text(_decay_model(
+        b_actions.replace('2\tsetParameter("kb", 0.8)\n', ''), rate='2*k'))
+    a = pset.BNGLModel(str(tmp_path / 'a.bngl'), suppress_free_param_error=True)
+    assert a.generate_network_line == 'generate_network({overwrite=>1,max_iter=>50})'
+    assert 'setOption("NumberPerQuantityUnit",6.0221e23)' in a.model_lines
+    obj, sims, _models = _run_job(tmp_path, lines, {'k': _K_TRIAL})
+    for name, exp, rate in (('a', 'ta', _K_TRIAL), ('b', 'tb', 2 * _K_TRIAL)):
+        np.testing.assert_allclose(sims[name][exp].data[:, sims[name][exp].cols['A_tot']],
+                                   100 * np.exp(-rate * _DECAY_T), rtol=1e-5, err_msg=name)
+    assert obj == pytest.approx(_decay_cf(_K_TRIAL) + _decay_cf(2 * _K_TRIAL), rel=1e-5)
