@@ -5302,27 +5302,27 @@ class TestFixedModelParameterImport:
                                  rf"PEtab problem the tables define the protocol"):
             import_job(yaml, tmp_path / 'out')
 
-    def test_a_parameter_a_protocol_block_sets_still_meets_the_907_gate(self, tmp_path):
-        # A `begin protocol` block is not an action to the #969 rule (nothing in an edition-2
-        # job runs it), so a setParameter there passes that check and reaches the #907 gate,
-        # which reads every logical line of the model and refuses it.
-        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
-                 + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')
-        yaml = _fixed_v3_problem(tmp_path, model_text=model)
-        with pytest.raises(NotImplementedError,
-                           match="'v3' has estimate=false with nominalValue 10, but an action "
-                                 "in the model fixedsigma_model.bngl"):
-            import_job(yaml, tmp_path / 'out')
+    @pytest.mark.parametrize('model_tail, expected', [
+        # A setParameter inside a begin protocol block never runs in an imported job, so it
+        # is not an action that sets the parameter; the block's spelling does not matter.
+        ('begin protocol\n  setParameter("v3", 3)\nend protocol\n', set()),
+        ('Begin Protocol\n  setParameter("v3", 3)\nEnd Protocol\n', set()),
+        # Outside the block the gate still sees it: loose after the block, and in an actions
+        # block after it (the #969 check refuses both first; this is the gate's own reading).
+        ('begin protocol\n  setParameter("v3", 3)\nend protocol\nsetParameter("v1", 2)\n',
+         {'v1'}),
+        ('begin protocol\nend protocol\nbegin actions\n'
+         '  parameter_scan({parameter=>"v2",par_min=>1,par_max=>2,n_scan_pts=>2})\n'
+         'end actions\n', {'v2'}),
+        # A comment that mentions a protocol block does not open one.
+        ('# begin protocol\nsetParameter("v3", 3)\n', {'v3'}),
+    ])
+    def test_the_907_gate_skips_what_a_protocol_block_sets(self, model_tail, expected):
+        from pybnf.petab._bngl import parameters_set_by_actions
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + '\n' + model_tail
+        assert parameters_set_by_actions(text) == expected
 
     @pytest.mark.bionetgen
-    @pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=(
-        'Found in review of the #969 merge: the #907 gate still reads a begin protocol block, '
-        'and says its setParameter "would override the value written into its begin parameters '
-        'line", but nothing in an imported job runs the block. BNG2.pl only stores it for '
-        'simulate({method=>"protocol"}), which #969 refuses in the model and PyBNF never '
-        'synthesizes, so the refusal blocks a problem that would import correctly. Either leave '
-        'the protocol block out of the gate, or refuse the block under #969 with a true reason '
-        '(and rewrite this test and the one above).'))
     def test_a_protocol_block_that_nothing_runs_leaves_the_table_value(self, tmp_path,
                                                                        monkeypatch):
         # Review addition. The oracle is BNG2.pl: given the model with the table's v3 = 10 and

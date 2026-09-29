@@ -103,7 +103,8 @@ initial assignment, an event assignment or an algebraic rule also sets; and a BN
 that the model file's own actions set (``setParameter``, or a parameter scan). In the last two
 cases writing the value into the model would not give the parameter the table's value for the
 whole simulation. (A BNGL model whose actions do more than define its network is refused
-before this, by the rule above; this check still reads a ``begin protocol`` block.) An SBML
+before this, by the rule above. A ``setParameter`` inside a ``begin protocol`` block does not
+count: nothing in an imported job runs the block.) An SBML
 parameter declared ``constant="false"`` that nothing assigns is accepted, since nothing can
 change it. The import also refuses to edit a copy that would be written over its source: the
 copy goes to the model's ``location`` under ``out_dir``, which is the source file itself when
