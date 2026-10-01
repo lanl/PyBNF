@@ -119,3 +119,9 @@ from .net_model import (
 # The network-free model class lives in nf_model.py. Re-exported so
 # pybnf.algorithms.base and the tests keep resolving pybnf.bngsim_model.<name>.
 from .nf_model import BngsimNfModel as BngsimNfModel
+# The segment integrator for sequential methods lives in segment.py.
+from .segment import (
+    Segment as Segment,
+    SegmentFailed as SegmentFailed,
+    SegmentIntegrator as SegmentIntegrator,
+)
