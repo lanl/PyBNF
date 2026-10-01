@@ -59,6 +59,7 @@ from .expressions import (
     _parse_bngl_param_block as _parse_bngl_param_block,
     _evaluate_bngl_params as _evaluate_bngl_params,
     _parse_net_species_initializers as _parse_net_species_initializers,
+    initial_state_only_ids as initial_state_only_ids,
 )
 # Scan-point/sample-time resolution + steady-state constants live in scan.py;
 # on-disk action-output writing in output.py (both numpy-only, bngsim-free).

@@ -4,8 +4,9 @@ Oracles, none of which goes through the integrator's own arithmetic: closed form
 conversion, the same with its rate changed between segments, a clamped ligand's seed); one full
 simulation, the integrator's own and ``BngsimModel.execute``'s, at two tolerances four decades
 apart, so a disagreement that is not solver error fails the tighter one; the first segment
-against ``execute()``, byte for byte; and the ordinary path's own piecewise-constant run
-(``setParameter`` and ``continue=>1``).
+against ``execute()``, byte for byte; the ordinary path's own piecewise-constant run
+(``setParameter`` and ``continue=>1``); and the engine itself for which ids act only through the
+initial state.
 """
 
 import copy
@@ -17,9 +18,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pybnf.bngsim_model import BngsimModel, BngsimNfModel, SegmentFailed, SegmentIntegrator
+from pybnf.bngsim_model import (BngsimModel, BngsimNfModel, SegmentFailed, SegmentIntegrator,
+                                expressions)
 from pybnf.printing import PybnfError
 from pybnf.pset import BNGLModel, FreeParameter, MutationSet, PSet
+
+from .test_bngsim_expressions import START_ONLY_NET
 
 bngsim_only = pytest.mark.bngsim
 
@@ -214,7 +218,8 @@ def nets(tmp_path_factory):
     paths = {'reversible': str(FIXTURES / 'two_species_reversible.net')}
     for name, text in (('conversion', CONVERSION), ('piecewise', PIECEWISE),
                        ('seasonal_sir', SEASONAL_SIR), ('seeded', SEEDED), ('blowup', BLOWUP),
-                       ('sync_unset', SYNC_UNSET), ('clamped', CLAMPED_BNG2)):
+                       ('sync_unset', SYNC_UNSET), ('clamped', CLAMPED_BNG2),
+                       ('start_only', START_ONLY_NET)):
         path = folder / ('%s.net' % name)
         path.write_text(text)
         paths[name] = str(path)
@@ -485,6 +490,25 @@ def test_an_integrator_starts_from_the_net_file_and_never_writes_to_its_model(ne
     np.testing.assert_array_equal(_rows(a.integrate(a.initial_state(values), values, 0, 4).data),
                                   _rows(b.integrate(b.initial_state(values), values, 0, 4).data))
     assert _engine_snapshot(used) == before
+
+
+@bngsim_only
+def test_a_reported_id_changes_no_segment_from_a_carried_state_and_the_others_do(nets):
+    """``initial_state_only_ids`` against the engine: from a carried state, one segment under
+    two values of each id is byte-identical exactly for the ids it reports."""
+    names = ('beta', 'gamma', 'N', 'i0', 'scale', 'k_seed')
+    model = _model(nets['start_only'], _action())
+    integrator = SegmentIntegrator(model, names)
+    base = np.array([0.5, 0.2, 1000.0, 0.01, 0.8, 3.0])
+    carried = integrator.integrate(integrator.initial_state(base), base, 0.0, 2.0).state
+    reported = expressions.initial_state_only_ids(model.netfile_lines, names)
+    assert reported == ('i0', 'k_seed')
+    reference = _rows(integrator.integrate(carried, base, 2.0, 4.0).data)
+    for index, name in enumerate(names):
+        moved = base.copy()
+        moved[index] *= 1.5
+        same = np.array_equal(_rows(integrator.integrate(carried, moved, 2.0, 4.0).data), reference)
+        assert same == (name in reported), name
 
 
 @bngsim_only

@@ -123,12 +123,7 @@ _BNG_RESERVED_EVAL_NAMES = frozenset({
 
 
 def _build_safe_eval_namespace(seed=None):
-    """Build a safe expression-evaluation namespace for .net math.
-
-    ``seed`` (model parameter values) takes precedence over a math name a model may define, such
-    as ``e`` or ``pi``, and not over one BNG2.pl reserves, such as ``exp`` or ``sqrt``
-    (``_BNG_RESERVED_EVAL_NAMES``).
-    """
+    """Build a safe expression-evaluation namespace for .net math."""
     ns = {
         'exp': math.exp,
         'log': math.log,
@@ -361,6 +356,52 @@ def _parse_net_rhs_symbols(net_lines):
     return frozenset(names)
 
 
+# A number or a name in a .net expression; the number first, so the e of 1e-9 is no name.
+_NET_NUMBER_OR_NAME = re.compile(r'(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|([A-Za-z_]\w*)')
+_NET_SPECIES_ROW = re.compile(r'\d+\s+\S+\s+(.+)$')
+
+
+def _net_names(text):
+    """The names a .net expression or line reads, numbers left out."""
+    return {m.group(1) for m in _NET_NUMBER_OR_NAME.finditer(text) if m.group(1)}
+
+
+def initial_state_only_ids(net_lines, ids):
+    """The ids among ``ids``, in order, that act on a .net model only through its initial state:
+    the id, or a parameter derived from it, appears in a ``species`` initializer, and neither
+    appears on any line outside the ``parameters`` and ``species`` blocks (an unfamiliar block
+    counts as acting later). A method that carries each particle's state gains nothing by
+    changing such an id later.
+    """
+    blocks = _net_blocks(net_lines)
+    reads = {name: _net_names(expr) for name, expr in _net_param_definitions(net_lines).items()}
+    seeds = set()
+    for line in blocks.get('species', ()):
+        row = _NET_SPECIES_ROW.match(line)
+        seeds |= _net_names(row.group(1) if row else line)
+    acts_later = set()
+    for block, lines in blocks.items():
+        if block not in ('parameters', 'species'):
+            for line in lines:
+                acts_later |= _net_names(line)
+    found = []
+    for name in ids:
+        reach = _derived_closure(name, reads)
+        if reach & seeds and not reach & acts_later:
+            found.append(name)
+    return tuple(found)
+
+
+def _derived_closure(name, reads):
+    """``name`` and every parameter whose definition reads it, directly or through another."""
+    reach, grew = {name}, True
+    while grew:
+        new = {p for p, deps in reads.items() if p not in reach and deps & reach}
+        reach |= new
+        grew = bool(new)
+    return reach
+
+
 def _parse_bngl_param_block(model_lines):
     """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
     params = []
@@ -425,8 +466,6 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                     f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
-        # A parameter shadows a math name BNG2.pl lets a model define (e, pi, ...), as it does
-        # in BNG2.pl and bngsim, and never one BNG2.pl reserves.
         if name not in _BNG_RESERVED_EVAL_NAMES:
             ns[name] = value
         result[name] = value
