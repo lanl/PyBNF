@@ -46,7 +46,8 @@ In addition to the population-based and Metropolis samplers in the table above,
 PyBNF provides gradient-based optimizers (``trf``, ``lbfgs``, ``gntr``) and
 profile-likelihood analysis — see :ref:`Gradient-based optimization
 <alg-gradient>` — the :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` and
-:ref:`Preconditioned DREAM <alg-p_dream>` samplers, and :ref:`model checking
+:ref:`Preconditioned DREAM <alg-p_dream>` samplers, the :ref:`Liu–West filter <alg-lwf>`
+for forecasting count data that arrive one interval at a time, and :ref:`model checking
 <alg-check>`. Information criteria and posterior export are covered under
 :ref:`Model selection and posterior analysis <model_selection>`.
 
@@ -721,6 +722,161 @@ HMC needs the optional gradient stack (JAX + blackjax)::
 The gradient-free samplers need no extra. Requires Python with JAX support.
 
 
+.. _alg-lwf:
+
+
+Liu–West filter
+---------------
+
+Algorithm
+^^^^^^^^^
+The Liu–West filter (``job_type = lwf``) forecasts count data that arrive one interval at a time
+from a mechanistic model. Instead of refitting at each new row, it carries a weighted population of
+particles, each with a value of every free parameter and its own model state: a bootstrap filter
+[Gordon1993]_ whose free parameters move by the kernel of Liu and West [LiuWest2001]_. It starts
+from a prior draw (a Latin hypercube over the bounded parameters under the default
+``initialization = lh``), each particle at its initial state at :math:`t = 0`, and assimilates row
+:math:`k`, at :math:`t_k`, in four steps.
+
+1. **Move** each free parameter :math:`j` that the kernel moves, in every particle :math:`i`:
+
+   .. math::
+
+      x'_{ij} = a_j x_{ij} + (1 - a_j)\, m_j + h_j (L z_i)_j, \qquad a_j = \sqrt{1 - h_j^2}
+
+   with :math:`m` and :math:`L L^\top` the weighted mean and covariance, :math:`z_i` standard
+   normal, and :math:`h_j` ``lwf_jitter`` (default 0.15) or the parameter's
+   ``lwf_parameter_jitter``. :math:`x` is the logit of the position in the box for a parameter with
+   reflecting bounds on both sides under ``lwf_bounds = logit`` (the default), else the sampling
+   space value, folded back into the box. Each variance is floored at :math:`10^{-12}` times its
+   variance over the initial population, and a covariance that cannot be factored gives
+   independent noise, with a warning. A parameter that acts only through the initial state is
+   never moved; the run summary names it.
+2. **Integrate** each particle's carried state over :math:`[t_{k-1}, t_k]`, with :math:`t_0 = 0`.
+   The segments integrate at bngsim's default tolerances, as an ordinary edition-2 fit of the same
+   configuration does; a ``model:`` line's ``atol:`` or ``rtol:`` is refused.
+3. **Weigh** each particle by the term an ordinary fit of the same configuration scores for the
+   row, the negative binomial with the increase of the cumulative column as its mean and the
+   particle's dispersion :math:`r_i`:
+   :math:`w_i \leftarrow w_i \, p\left(y_k \mid C_i(t_k) - C_i(t_{k-1}),\ r_i\right)`. A particle
+   that fails to integrate, or predicts no increase against a positive count, gets weight 0; a
+   ``nan`` row is integrated over but not scored. The row's log evidence,
+   :math:`\log \sum_i w_i\, p_i` with the weights before the row, is recorded.
+4. **Resample** systematically [Kitagawa1996]_ [Carpenter1999]_ when the **weight ESS**,
+   :math:`1 / \sum_i w_i^2` [Kong1994]_, falls below ``lwf_resample_threshold`` (default 0.5)
+   times ``lwf_particles`` (default 4000).
+
+After the last row, each particle of an equal-weight resample is integrated
+``lwf_forecast_intervals`` (default 4) steps on, its parameters held, and a count is drawn for each
+step from the same negative binomial. If no particle can explain a row, the run writes its outputs
+through the last row it assimilated, with no forecast, and stops with an error naming the row.
+
+.. _alg-lwf-sample:
+
+A forecasting sample, not a posterior
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Because :math:`a_j^2 + h_j^2 = 1`, the move keeps each moved parameter's weighted mean and variance
+in its working space (barring the floor, the independent-noise fallback and the fold), so the kernel
+adds no spread of its own. The move is nonetheless a transition: a particle keeps the state its
+earlier parameter values produced, so the weights are those of a model whose free parameters drift
+by the kernel at every row. That drift is an assumption of the model the filter samples, not a
+mechanism that makes the population follow a change in the process. The output is therefore a
+**forecasting sample** of that model, not the posterior of fixed parameters that :ref:`am <alg-am>`
+samples: its spread does not shrink toward that posterior as particles are added, and its log
+evidence cannot be compared with a fixed-parameter model's. Every output file and the run summary
+say so. :math:`h` is a **modelling choice**, how fast the free parameters may drift, not a numerical
+setting whose effect fades with more particles; :math:`h = 0` is refused.
+
+Outputs
+^^^^^^^
+Under ``Results/LWF/``, each file saying at its top that it is a forecasting sample:
+
+* ``parameters.txt``: an equal-weight resample after the last row assimilated, in own units;
+* ``parameters_by_row.txt``: weighted means and 2.5, 50 and 97.5 percent quantiles after each row;
+* ``predicted_counts.txt``: the expected count at each row along each written particle's lineage;
+* ``weight_ess.txt``: per row, the weight ESS, whether it resampled, particle counts, log evidence;
+* ``forecasts.txt``: a forecast count per written particle and forecast interval;
+* ``summary.txt``: the run summary, which is also printed.
+
+Parallelization
+^^^^^^^^^^^^^^^
+One run integrates in the PyBNF process, since an update needs every weight before it resamples, so
+PyBNF starts no cluster. ``lwf_independent_runs = N`` filters :math:`N` **independent runs**, each
+from its own prior draw on its own random streams (run 0 is the single run), as tasks on a local
+cluster of one worker per run, at most the CPUs the job holds (``parallel_count`` lowers it),
+writing byte for byte what the same runs write in sequence, under ``Results/LWF/run_<r>/``. The combined files stack each run's
+equal-weight resample in run order, whatever its log evidence, when every run reached the same row.
+``-t``, ``-s`` and the cluster keys are refused.
+
+.. _alg-lwf-continue:
+
+Random streams, the state file and continuation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Every draw comes from ``random_seed`` through a stream keyed on the independent run, the purpose
+and the row's time, never on its position, so the same seed writes the same files and appending
+rows leaves earlier updates unchanged. After its prior draw and every row, each run writes a
+**state file** (``lwf_state_file``, by default ``lwf_state.npz`` in ``output_dir``, ``_<r>`` before
+the extension for run :math:`r` of several) holding the particles, their states and weights, the
+history, the rows assimilated and a fingerprint of everything that shapes the arithmetic. Each
+write is renamed over the old file, so an interrupted write leaves the previous state whole.
+
+When a new row arrives, append it to the data and run again with ``lwf_continue = 1`` and ``-o``:
+each run assimilates only the rows after those its state file holds, and writes byte for byte what
+an uninterrupted run writes. This is also the remedy after a wall-time stop, and after a degenerate
+update once the row is corrected, unless another run already assimilated that row. With no
+``random_seed`` line it continues with the seed the state file holds. Before any run starts, a
+continuation is refused, naming the cause, when a state file is missing, unreadable, damaged or of
+another run, when its fingerprint differs (the PyBNF version, the bngsim version and its build
+commit where the install publishes one, model, priors, noise model, jitter, particles, seed and
+more, but not ``lwf_forecast_intervals``), or when a row it
+assimilated has changed or is gone. ``-r`` is refused.
+
+.. _alg-lwf-budget:
+
+Wall-time budget
+^^^^^^^^^^^^^^^^
+``wall_time_fit`` is checked before each row. A row in progress is finished first, and the stopped
+run still draws its forecast, so the budget may be overrun by one row, ``lwf_particles`` segment
+integrations, plus the forecast, ``lwf_forecast_intervals`` times ``lwf_particles`` segments per
+independent run; each segment is bounded by ``wall_time_sim`` (one hour unless the key is written;
+``wall_time_sim = 0`` removes the bound). When the budget is
+spent, the run writes what an uninterrupted run writes, through its last assimilated row, with the
+forecast starting at that row rather than at the end of the data; ``Results/stop_reason.txt`` says
+why it stopped (ADR-0093), and ``main()`` records the phase as ``wall_time_expired`` in
+``Results/method_chain.json``. ``lwf_continue = 1`` then finishes the job.
+
+What it refuses
+^^^^^^^^^^^^^^^
+Everything a configuration declares that the filter does not honour is refused by name at load:
+
+* edition 1, and anything but one ``.bngl`` model on the bngsim ``.net`` path;
+* a model file whose actions are not only its network definition, refused at load by the edition-2
+  rule before the filter runs (ADR-0152);
+* anything but one ODE time-course ``experiment:`` line with one data file of one data column;
+* conditions, mutants, pre-equilibration, constraints, measurement models, ``normalization``,
+  ``time_error`` and ``postprocess``;
+* any observation model but ``neg_bin`` at ``location = mean`` on the cumulative column, with the
+  dispersion fitted or fixed (the :ref:`key reference <lwf_keys>`), since the forecast draws counts
+  from the negative binomial parameterized by its mean;
+* a prior with finite support but no reflecting bounds; start points, ``initial_value`` and
+  ``initialization_distribution = bounds``, since the initial population must be a prior draw for
+  the weights to be likelihood times prior;
+* ``population_size`` other than 1, and ``parallel_count`` with one run or below 1;
+* ``refine`` or ``bootstrap`` set to anything but 0, which ``main()`` would act on, and the cluster
+  keys, since Independent Runs use the local cluster;
+* rows not one step apart, the first one step after :math:`t = 0` (a missing one is a ``nan`` row),
+  and a count below 0 or not finite.
+
+A global key the filter does not read, ``save_best_data`` or ``max_iterations`` say, is reported as
+unused and ignored, as under any job type (ADR-0014).
+
+Applications
+^^^^^^^^^^^^
+Forecasting a growing count series from a mechanistic model; lesson
+`50_liu_west_filter <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/50_liu_west_filter>`__
+is a worked example. To estimate parameters or their uncertainty, use an optimizer or MCMC.
+
+
 .. _alg-sim:
 
 Simplex
@@ -1050,17 +1206,22 @@ information criterion (``az.waic``) can be computed directly.
 
 
 .. [AugerHansen2005] Auger, A.; Hansen, N. A Restart CMA Evolution Strategy with Increasing Population Size. 2005 IEEE Congress on Evolutionary Computation (CEC) 2005, 2, 1769–1776.
+.. [Carpenter1999] Carpenter, J.; Clifford, P.; Fearnhead, P. Improved Particle Filter for Nonlinear Problems. IEE Proc. Radar Sonar Navig. 1999, 146 (1), 2–7. https://doi.org/10.1049/ip-rsn:19990255
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
+.. [Gordon1993] Gordon, N. J.; Salmond, D. J.; Smith, A. F. M. Novel Approach to Nonlinear/Non-Gaussian Bayesian State Estimation. IEE Proc. F 1993, 140 (2), 107–113. https://doi.org/10.1049/ip-f-2.1993.0015
 .. [Hoffman2014] Hoffman, M. D.; Gelman, A. The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo. J. Mach. Learn. Res. 2014, 15 (1), 1593–1623.
 .. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
 .. [Hansen2009] Hansen, N. Benchmarking a BI-Population CMA-ES on the BBOB-2009 Function Testbed. Proceedings of the 11th Annual Conference Companion on Genetic and Evolutionary Computation (GECCO) 2009, 2389–2396.
 .. [HansenNiederberger2009] Hansen, N.; Niederberger, A. S. P.; Guzzella, L.; Koumoutsakos, P. A Method for Handling Uncertainty in Evolutionary Optimization With an Application to Feedback Control of Combustion. IEEE Trans. Evol. Comput. 2009, 13 (1), 180–197. https://doi.org/10.1109/TEVC.2008.924423
 .. [Haario2001] Haario, H.; Saksman, E.; Tamminen, J. An Adaptive Metropolis Algorithm. Bernoulli 2001, 7 (2), 223–242.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
+.. [Kitagawa1996] Kitagawa, G. Monte Carlo Filter and Smoother for Non-Gaussian Nonlinear State Space Models. J. Comput. Graph. Stat. 1996, 5 (1), 1–25. https://doi.org/10.1080/10618600.1996.10474692
+.. [Kong1994] Kong, A.; Liu, J. S.; Wong, W. H. Sequential Imputations and Bayesian Missing Data Problems. J. Am. Stat. Assoc. 1994, 89 (425), 278–288. https://doi.org/10.1080/01621459.1994.10476469
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
 .. [Laloy2012] Laloy, E.; Vrugt, J. A. High-Dimensional Posterior Exploration of Hydrologic Models Using Multiple-Try DREAM(ZS) and High-Performance Computing. Water Resour. Res. 2012, 48 (1), W01526.
 .. [Lee2007] Lee, D.; Wiswall, M. A Parallel Implementation of the Simplex Function Minimization Routine. Comput. Econ. 2007, 30 (2), 171–187.
+.. [LiuWest2001] Liu, J.; West, M. Combined Parameter and State Estimation in Simulation-Based Filtering. In Sequential Monte Carlo Methods in Practice; Doucet, A., de Freitas, N., Gordon, N., Eds.; Springer: New York, 2001; pp 197–223. https://doi.org/10.1007/978-1-4757-3437-9_10
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
 .. [Penas2015] Penas, D. R.; González, P.; Egea, J. A.; Banga, J. R.; Doallo, R. Parallel Metaheuristics in Computational Biology: An Asynchronous Cooperative Enhanced Scatter Search Method. Procedia Comput. Sci. 2015, 51 (1), 630–639.
 .. [Penas2017] Penas, D. R.; González, P.; Egea, J. A.; Doallo, R.; Banga, J. R. Parameter Estimation in Large-Scale Systems Biology Models: A Parallel and Self-Adaptive Cooperative Strategy. BMC Bioinformatics 2017, 18 (1), 52.

@@ -286,6 +286,7 @@ Required Keys
     * ``dream`` - :ref:`DREAM <alg-dream>`
     * ``p_dream`` - :ref:`DREAM <alg-dream>` with preconditioning (P-DREAM)
     * ``hmc`` - :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` (analytical / ``expression`` objectives only; requires ``edition >= 2`` and the ``pybnf[jax]`` extra)
+    * ``lwf`` - the :ref:`Liu–West filter <alg-lwf>`, a forecasting filter for count data that arrive one interval at a time (requires ``edition >= 2``)
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -306,8 +307,8 @@ Required Keys
   gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), the
   :ref:`profile-likelihood <gradient_fitting>` identifiability analysis
   (``profile_likelihood``), the :ref:`experimental design <experimental_design>` that
-  says what to measure next (``design``), and the model *checker*
-  (``check``), not just fitting. The value names the specific
+  says what to measure next (``design``), the :ref:`Liu–West filter <alg-lwf>`
+  (``lwf``), and the model *checker* (``check``), not just fitting. The value names the specific
   procedure; the key names the kind of job. Requires :ref:`edition <edition>` ``>= 2``,
   and like the modern objective surface there is **no implicit default** -- the run
   must be named. Under a modern edition the legacy ``fit_type`` key is rejected.
@@ -1860,6 +1861,10 @@ Algorithm Options
 
   Not available for ``job_type = hmc`` (which samples in process, with no simulation loop
   for the budget to stop) -- naming it there is an error rather than a silent no-op.
+  ``job_type = lwf`` checks the budget before each data row instead, so it may overrun by one row
+  of ``lwf_particles`` segments plus the forecast it still draws, ``lwf_forecast_intervals`` times
+  ``lwf_particles`` segments per independent run, each bounded by ``wall_time_sim``; a run it
+  stops writes its outputs, forecast included, through its last row (see :ref:`alg-lwf-budget`).
 
   Default: 0 (no limit)
 
@@ -3039,3 +3044,115 @@ three keys. Requires :ref:`edition <edition>` ``>= 2`` and the ``pybnf[jax]`` ex
   Example:
 
     * ``target_accept = 0.95``
+
+
+.. _lwf_keys:
+
+:ref:`Liu–West filter <alg-lwf>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``job_type = lwf`` filters one time course of counts row by row and forecasts the next intervals;
+its output is a forecasting sample of a model whose free parameters drift, not a posterior (see
+:ref:`alg-lwf`). It requires :ref:`edition <edition>` ``>= 2``, one ``.bngl`` model on the bngsim
+``.net`` path and one ``experiment:`` line with one data file, and the count is declared by the
+whole-fit objective edition 2 requires and the column's own line, with one dispersion::
+
+    noise_model = neg_bin, dispersion = fit r, location = mean
+    noise_model cases = neg_bin, dispersion = fit r, location = mean, cumulative
+
+Edition 2 centres a noise model on its median unless ``location = mean`` is written (ADR-0031); the
+filter draws its forecast counts from the negative binomial with the predicted increment as its
+mean, so it accepts only ``location = mean`` and refuses, rather than warns on, the implicit median.
+``objective = neg_bin_dynamic`` with ``noise_location = mean`` is that whole-fit line with the
+dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
+the kernel then moves the model's free parameters only. A key the filter does not read is reported
+as unused, as under any job type; ``refine`` and ``bootstrap`` other than 0, the cluster keys, and
+``normalization`` and ``postprocess``, which the loader would act on before any row is weighed, are
+refused.
+
+**lwf_particles**
+  The number of particles.
+
+  Default: 4000
+
+  Example:
+
+    * ``lwf_particles = 10000``
+
+**lwf_jitter**
+  The kernel's *h*, strictly between 0 and 1, for each moved parameter without an
+  ``lwf_parameter_jitter`` line: a modelling choice of how fast the free parameters may drift
+  (see :ref:`alg-lwf-sample`). Refused when every moved parameter has its own line.
+
+  Default: 0.15
+
+  Example:
+
+    * ``lwf_jitter = 0.1``
+
+**lwf_parameter_jitter**
+  One free parameter's own *h*. Repeatable, one line per parameter.
+
+  Example:
+
+    * ``lwf_parameter_jitter = beta 0.3``
+
+**lwf_resample_threshold**
+  Resample when the weight ESS falls below this fraction of the particles. In (0, 1].
+
+  Default: 0.5
+
+  Example:
+
+    * ``lwf_resample_threshold = 0.3``
+
+**lwf_forecast_intervals**
+  The number of steps forecast past the last row; 0 writes no forecast.
+
+  Default: 4
+
+  Example:
+
+    * ``lwf_forecast_intervals = 2``
+
+**lwf_bounds**
+  How a parameter with reflecting bounds on both sides moves: ``logit`` moves the logit of its
+  position in the box, ``reflect`` its sampling-space value, folded back into the box.
+
+  Default: logit
+
+  Example:
+
+    * ``lwf_bounds = reflect``
+
+**lwf_independent_runs**
+  The number of independent runs, each from its own prior draw, combined with equal weight (see
+  :ref:`alg-lwf`). Several run on a local cluster of one worker per run, at most the CPUs the job
+  holds; ``parallel_count`` lowers it.
+
+  Default: 1
+
+  Example:
+
+    * ``lwf_independent_runs = 4``
+
+**lwf_state_file**
+  Each run's state file (``_<r>`` before the extension for run *r* of several), relative to the
+  folder PyBNF runs in. A path ``main()`` deletes before a new run (inside ``output_dir``'s
+  ``Results`` or ``Simulations``, say) is refused, as is replacing a file that is not a state file.
+
+  Default: ``lwf_state.npz`` in ``output_dir``
+
+  Example:
+
+    * ``lwf_state_file = state/season.npz``
+
+**lwf_continue**
+  1 continues each run from its state file, assimilating only the rows after those it holds (see
+  :ref:`alg-lwf-continue`); run with ``-o``.
+
+  Default: 0
+
+  Example:
+
+    * ``lwf_continue = 1``
