@@ -26,8 +26,9 @@ class FitTypeEntry:
 
     ``cls`` is constructed as ``cls(config, **kwargs)``; ``kwargs`` carries
     variant flags (e.g. ``sa`` -> ``{'sa': True}``). ``family`` is one of
-    ``optimizer`` | ``sampler`` | ``checker`` (the benchmark harness filters on
-    it). ``deprecated`` drives a user-facing warning at dispatch -- the method
+    ``optimizer`` | ``sampler`` | ``checker`` | ``analysis`` | ``filter`` (the
+    benchmark harness and a PEtab ``job_type = all`` import filter on it).
+    ``deprecated`` drives a user-facing warning at dispatch -- the method
     still runs. ``schema`` is the method's co-located Pydantic config model
     (``PyBNFConfigModel`` subclass) that ``config._build_config`` validates this
     fit_type's keys against (M2.1 Stage b, ADR-0006); ``None`` until that method

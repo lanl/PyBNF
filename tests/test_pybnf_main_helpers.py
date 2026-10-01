@@ -63,6 +63,7 @@ _DISPATCH = [
     ('hmc', 'HMCSampler'),
     ('check', 'ModelCheck'),
     ('design', 'ExperimentalDesignAlgorithm'),
+    ('lwf', 'LiuWestFilter'),
 ]
 
 
@@ -103,6 +104,8 @@ def test_families_partition_the_codes():
     # own family also keeps it out of what a PEtab job_type = all import emits, which is the one
     # thing the family field is read for.
     assert {c for c, f in fam.items() if f == 'analysis'} == {'design'}
+    # The Liu–West filter's free parameters drift, so it is no fixed-parameter posterior sampler.
+    assert {c for c, f in fam.items() if f == 'filter'} == {'lwf'}
 
 
 def test_refiners_are_the_start_point_optimizers():

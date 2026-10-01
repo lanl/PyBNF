@@ -57,8 +57,9 @@ _NO_WALL_TIME_FIT = frozenset({'hmc'})
 # design (#574), which evaluates one supplied best fit and then does arithmetic on the
 # information matrix it produced. The model check reads neither key; the design run passes through
 # the shared Algorithm setup, which does, so it fills in the values that are true of it (one
-# point, evaluated once) itself.
-_NO_SEARCH_RUNS = frozenset({'check', 'design'})
+# point, evaluated once) itself. So does the Liu–West filter (lwf), which assimilates each
+# row once.
+_NO_SEARCH_RUNS = frozenset({'check', 'design', 'lwf'})
 
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
@@ -255,6 +256,8 @@ class Configuration:
         # there (the edition int is already parse-coerced; full validation is later in
         # _check_edition).
         self._user_objfunc = 'objfunc' in d
+        # Raw presence: main() later writes a drawn seed into config['random_seed'].
+        self.random_seed_given = 'random_seed' in d
         _ed = d.get('edition')
         _modern_hint = isinstance(_ed, int) and not isinstance(_ed, bool) and _ed >= 2
         if not self._user_objfunc and not _modern_hint:

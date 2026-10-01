@@ -84,10 +84,15 @@ class FakeClient:
 
     cluster = 'local'
 
-    def scatter(self, objs, broadcast=False):
-        return [FakeFuture(o) for o in objs]
+    def scatter(self, data, broadcast=False):
+        """As a real client: one future per element of a list, one future for anything else."""
+        if isinstance(data, (list, tuple, set)):
+            return [FakeFuture(o) for o in data]
+        return FakeFuture(data)
 
     def submit(self, fn, *args, **kwargs):
+        # as a real client: a future among the arguments reaches the function as its result
+        args = [a.result() if isinstance(a, FakeFuture) else a for a in args]
         return FakeFuture(fn(*args))
 
     def cancel(self, futures):
