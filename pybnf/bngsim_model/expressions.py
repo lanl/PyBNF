@@ -111,12 +111,25 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
     return PSet(mut_param_list)
 
 
+# The names in the namespace below that BNG2.pl refuses as a parameter name ("Cannot use
+# built-in function name 'exp' as a parameter name", BioNetGen 2.9.2). No model BNG2.pl accepts
+# defines one, so each always means the built-in. The namespace's other names -- e, pi, log,
+# atan2, ceil, floor, pow -- are ordinary parameter names to BNG2.pl (its constants are _e and
+# _pi), and where a model defines one, BNG2.pl and bngsim read the parameter, so it wins here too.
+_BNG_RESERVED_EVAL_NAMES = frozenset({
+    'exp', 'log10', 'log2', 'sqrt', 'abs', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+    'min', 'max', 'if', 'rint',
+})
+
+
 def _build_safe_eval_namespace(seed=None):
-    """Build a safe expression-evaluation namespace for .net math."""
-    # Start from seed so that builtin math names always take precedence.
-    # BNG2.pl reserves these names; no valid model should shadow them.
-    ns = dict(seed) if seed else {}
-    ns.update({
+    """Build a safe expression-evaluation namespace for .net math.
+
+    ``seed`` (model parameter values) takes precedence over a math name a model may define, such
+    as ``e`` or ``pi``, and not over one BNG2.pl reserves, such as ``exp`` or ``sqrt``
+    (``_BNG_RESERVED_EVAL_NAMES``).
+    """
+    ns = {
         'exp': math.exp,
         'log': math.log,
         'log10': math.log10,
@@ -143,8 +156,11 @@ def _build_safe_eval_namespace(seed=None):
         # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
         # so match BNG to keep PyBNF's expression evaluation faithful.
         'rint': lambda x: math.floor(x + 0.5),
-        '__builtins__': {},
-    })
+    }
+    if seed:
+        ns.update((name, value) for name, value in seed.items()
+                  if name not in _BNG_RESERVED_EVAL_NAMES)
+    ns['__builtins__'] = {}
     return ns
 
 
@@ -378,13 +394,6 @@ def _parse_bngl_param_block(model_lines):
     return params
 
 
-_BUILTIN_EVAL_NAMES = frozenset({
-    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
-})
-
-
 def _evaluate_bngl_params(param_exprs, input_overrides=None):
     """Evaluate ordered BNGL parameter expressions top-to-bottom."""
     if input_overrides is None:
@@ -416,8 +425,9 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                     f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
-        # Don't let parameter values shadow builtin math functions
-        if name not in _BUILTIN_EVAL_NAMES:
+        # A parameter shadows a math name BNG2.pl lets a model define (e, pi, ...), as it does
+        # in BNG2.pl and bngsim, and never one BNG2.pl reserves.
+        if name not in _BNG_RESERVED_EVAL_NAMES:
             ns[name] = value
         result[name] = value
 

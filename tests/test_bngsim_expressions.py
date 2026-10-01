@@ -72,6 +72,22 @@ def test_safe_namespace_seed_does_not_shadow_math_names():
     assert ns['k'] == 2.0
 
 
+@pytest.mark.parametrize('name', ['e', 'pi', 'log', 'atan2', 'ceil', 'floor', 'pow'])
+def test_safe_namespace_model_parameter_wins_over_a_math_name_bng2_lets_a_model_define(name):
+    """BNG2.pl 2.9.2 accepts these as parameter names and reads the parameter (its constants
+    are _e and _pi); so must the #450 sync and a setConcentration expression."""
+    ns = expressions._build_safe_eval_namespace({name: 7.0, 'k': 2.0})
+    assert eval('2*%s' % name, ns) == 14.0  # noqa: S307
+    assert ns['__builtins__'] == {}
+
+
+def test_evaluate_bngl_params_reads_a_parameter_named_e_or_pi_as_the_parameter():
+    """BNG2.pl gives 2*e = 8 at e = 4, not 2 math.e."""
+    values = expressions._evaluate_bngl_params(
+        [('e', '4'), ('k', '2*e'), ('pi', '3'), ('r', 'pi+1'), ('s', 'sqrt(k)')])
+    assert values == {'e': 4.0, 'k': 8.0, 'pi': 3.0, 'r': 4.0, 's': math.sqrt(8.0)}
+
+
 # ------------------------------------------------------------- _evaluate_bngl_params
 def test_evaluate_bngl_params_ordered_dependency():
     # b references a defined earlier -> top-to-bottom evaluation.
@@ -107,11 +123,12 @@ def test_evaluate_bngl_params_binds_bare_param_id_no_free_marker():
 
 
 def test_evaluate_bngl_params_param_named_like_builtin_does_not_shadow():
-    # 'e' is a reserved math name: its computed value is recorded, but the
-    # namespace keeps math.e so a later expression referencing e gets math.e.
-    out = expressions._evaluate_bngl_params([('e', '5'), ('x', 'e')])
-    assert out['e'] == 5.0
-    assert out['x'] == pytest.approx(math.e)
+    # A name BNG2.pl reserves: its computed value is recorded, but the namespace keeps the
+    # built-in, so a later expression calling sqrt gets the function. 'e' was treated this way
+    # too until BNG2.pl was checked: it accepts `e` as a parameter name and a later expression
+    # reading e gets the parameter (its own constant is _e); see the e/pi test above.
+    out = expressions._evaluate_bngl_params([('sqrt', '5'), ('x', 'sqrt(4)')])
+    assert out == {'sqrt': 5.0, 'x': 2.0}
 
 
 def test_evaluate_bngl_params_raises_on_unresolved_name():
