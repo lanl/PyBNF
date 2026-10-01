@@ -167,6 +167,12 @@ class Algorithm(ABC):
     # flag pattern as _is_simplex, so run() never references a leaf subclass.
     requires_master_scoring = False
 
+    # Overridable: False when the method submits nothing to workers, so main() starts no cluster.
+    needs_cluster = True
+
+    # Overridable: ``(message, hint)`` with which main() refuses ``-r`` for this method, or None.
+    resume_refusal = None
+
     # Overridable flag, set True by the generational optimizers (de, cmaes, ss).
     # These propose a whole generation of parameter sets, wait for every simulation
     # in it to finish, then propose the next generation. Toward the end of each

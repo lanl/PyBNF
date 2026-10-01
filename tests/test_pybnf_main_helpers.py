@@ -25,6 +25,7 @@ import pytest
 import pybnf.algorithms as algs
 import pybnf.pybnf as pybnf_mod
 from pybnf.pybnf import (
+    _apply_cluster_flags,
     _create_algorithm,
     _build_arg_parser,
     _prepare_run_directories,
@@ -219,6 +220,18 @@ def test_build_arg_parser_parses_options():
     assert args.log_level == 'debug'    # type=str.lower normalizes the choice
 
 
+def test_apply_cluster_flags_writes_each_given_flag_over_its_key_and_nothing_else():
+    """-t and -s go into the configuration before main() builds the algorithm, so a method can
+    refuse them before a cluster starts; an absent flag leaves the configured value alone."""
+    config = types.SimpleNamespace(config={'cluster_type': None, 'scheduler_file': 'conf.json'})
+    _apply_cluster_flags(config, _build_arg_parser().parse_args(['-t', 'slurm']))
+    assert config.config == {'cluster_type': 'slurm', 'scheduler_file': 'conf.json'}
+    _apply_cluster_flags(config, _build_arg_parser().parse_args(['-s', 'cli.json']))
+    assert config.config == {'cluster_type': 'slurm', 'scheduler_file': 'cli.json'}
+    _apply_cluster_flags(config, _build_arg_parser().parse_args([]))
+    assert config.config == {'cluster_type': 'slurm', 'scheduler_file': 'cli.json'}
+
+
 def test_build_arg_parser_resume_flag_without_value():
     # -r with no number means "resume, add zero iterations" (const=0).
     args = _build_arg_parser().parse_args(['-r'])
@@ -286,6 +299,36 @@ def test_prepare_run_directories_overwrite_clears_old_run(tmp_path):
     assert not leftover.exists()                 # old Results contents gone
     assert not (out / 'alg_backup.bp').exists()  # old subfile gone
     assert (out / 'Results').is_dir()            # tree recreated
+
+
+def test_prepare_run_directories_deletes_what_run_directories_names_and_nothing_else(tmp_path):
+    """Each name is spelled out here too, so one dropped from the shared lists is caught."""
+    from pybnf.run_directories import RUN_FILES, RUN_FOLDERS, SIMULATION_FOLDER
+    assert set(RUN_FOLDERS) == {'Simulations', 'Results', 'Initialize', 'FailedSimLogs'}
+    assert set(RUN_FILES) == {'alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp'}
+    assert SIMULATION_FOLDER == 'Simulations'
+    out, sim = tmp_path / 'out', tmp_path / 'sim'
+    conf = tmp_path / 'fit.conf'
+    conf.write_text('# dummy\n')
+    for name in RUN_FOLDERS:
+        (out / name).mkdir(parents=True)
+        (out / name / 'stale.txt').write_text('stale')
+    for name in RUN_FILES:
+        (out / name).write_text('stale')
+    (sim / SIMULATION_FOLDER).mkdir(parents=True)
+    (sim / SIMULATION_FOLDER / 'stale.txt').write_text('stale')
+    kept = {'lwf_state.npz', 'Results_old', 'alg_backup.bp.txt'}
+    for name in kept:
+        (out / name).write_text('kept')
+    (sim / 'kept.txt').write_text('kept')
+
+    _prepare_run_directories(_dir_config(out, simulation_dir=str(sim)),
+                             _dir_args(overwrite=True, conf_file=str(conf)))
+
+    assert set(os.listdir(out)) == kept | {'Results'}
+    assert os.listdir(out / 'Results') == ['fit.conf']
+    assert set(os.listdir(sim)) == {'kept.txt', SIMULATION_FOLDER}
+    assert os.listdir(sim / SIMULATION_FOLDER) == []
 
 
 def test_resolve_continue_file_returns_backup_when_resuming(tmp_path):
