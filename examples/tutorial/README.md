@@ -73,6 +73,7 @@ Results land in `output/` inside the lesson folder.
 | 47 | [`47_condition_perturbations`](47_condition_perturbations) | **one model, many conditions** — fit a wildtype AND a knockout with one model file | `condition: … perturbations:` + per-experiment `condition:` *(recovery tier)* |
 | 48 | [`48_state_dependent_noise`](48_state_dependent_noise) | a **noise scale that depends on the prediction** — a combined additive+proportional error model | `noise_model = gaussian, sigma = prediction_formula sd_abs + sd_rel*<obs>` *(recovery tier)* |
 | 49 | [`49_measurement_time_uncertainty`](49_measurement_time_uncertainty) | when the **measurement times** are uncertain — integrate the latent sampling time out of the likelihood (fixed or estimated timing spread; gradient-fittable) | `time_error = truncated_normal\|uniform`, `sigma_t = fix_at\|fit …` *(recovery + slow tiers)* |
+| 50 | [`50_liu_west_filter`](50_liu_west_filter) | **forecast counts as they arrive** — assimilate one row at a time, forecast the next week, and continue when a new row comes in (a forecasting sample, not a posterior) | `job_type = lwf` (Liu–West filter), `lwf_continue` |
 
 ## The edition-2 config surface, in one place
 

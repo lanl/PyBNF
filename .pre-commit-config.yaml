@@ -85,6 +85,7 @@ repos:
           tests/test_lwf_config.py
           tests/test_lwf_runs.py
           tests/test_lwf_state.py
+          tests/test_tutorial_liu_west.py
           tests/test_gradient_routing.py
           tests/test_gradient_assembly.py
           tests/test_network_free_bngsim_supported.py
