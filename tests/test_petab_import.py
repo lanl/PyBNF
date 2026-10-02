@@ -5437,14 +5437,6 @@ class TestFixedModelParameterImport:
                 0., abs=1e-9)
 
     @pytest.mark.bionetgen
-    @pytest.mark.xfail(strict=True, raises=pytest.fail.Exception, reason=(
-        'Found in review of the #907 protocol-block change: BNG2.pl evaluates a directive\'s '
-        'options as Perl, so generate_network({overwrite=>1, ($model->simulate_protocol({})) '
-        'x 0}) runs the protocol block. The #969 check accepts the line as one generate_network '
-        'call and the gate now skips the block, so the import writes v3 = 10 while the job '
-        'simulates v3 = 3 (a check scores 18.375, not 0). The same hole predates the change for '
-        '($model->setParameter("v"."3", 3)) x 0, which neither check sees. Refuse Perl code '
-        'in a directive\'s arguments in the #969 check.'))
     def test_a_directive_that_runs_the_protocol_block_is_refused(self, tmp_path):
         model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
                  + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')

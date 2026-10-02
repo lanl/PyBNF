@@ -61,6 +61,16 @@ for byte, so it could bring such actions into an imported job too.
      quoted strings. The `;` must follow the closing parenthesis directly: BNG2.pl's reader
      (`\);?\s*$`) does not read `setOption(...) ;` as a call, and skips it outside every block
      with a warning, so the option silently did not apply (found by the second review).
+   - an allowed directive whose arguments are not plain values. BNG2.pl evaluates the
+     arguments as Perl too, so `setOption("NumberPerQuantityUnit", $model->simulate_protocol())`
+     runs a `begin protocol` block, and a double-quoted string interpolates `$` and `@`. A
+     directive's arguments may hold only numbers, quoted strings (a double-quoted one without
+     `$` or `@`), names used as hash keys or as values, `=>`, commas, and `{...}` or `[...]`
+     of these. The review of #907's protocol-block fix found the hole: it was open on main,
+     and once the #907 import gate stopped counting what a protocol block sets, a directive
+     that ran the block would have turned a refused import into a silently wrong one.
+     Sweeping every BNGL file under the maintainer's model trees (5,953 files) found no
+     directive this refuses that main accepted.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a
@@ -153,8 +163,9 @@ the PEtab export already assumed.
 ## Consequences
 
 - A job that ran before can now stop at load, when its edition-2 model carries a protocol
-  action, a `setModelName`, or a directive line with a second statement. The message names
-  every such line, up to ten, and says why for the last two.
+  action, a `setModelName`, a directive line with a second statement, or a directive whose
+  arguments are not plain values. The message names every such line, up to ten, and says why
+  for all but the first.
 - An edition-2 job that binds a model the legacy way beside its experiments no longer
   exports: the export refuses it, naming the model and its data.
 - #941 (a hand-written `parameter_scan` restores its parameter on bngsim but not on BNG2.pl)

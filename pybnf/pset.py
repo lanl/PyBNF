@@ -85,20 +85,34 @@ _DIRECTIVE_CALL = re.compile(r'(generate_network|setOption|substanceUnits|versio
 
 def _is_single_directive_call(statement):
     """Whether ``statement`` (comment removed, continuations joined) is one allowed directive
-    call and nothing else but an optional ``;``.
+    call with plain-value arguments, and nothing else but an optional ``;``.
 
     BNG2.pl runs an action line by evaluating ``$model->`` + the line as Perl, so whatever
     follows the call's closing parenthesis runs too: ``setOption(...); $model->setParameter(...)``
     sets a parameter (#969 review). The parentheses are matched outside quoted strings. The
     ``;`` must follow the parenthesis directly, as BNG2.pl's reader (``\\);?\\s*$``) requires:
-    it skips ``setOption(...) ;`` outside every block, so the option would not apply."""
-    tail = _directive_call_tail(statement)
-    return tail is not None and re.fullmatch(r';?\s*', tail) is not None
+    it skips ``setOption(...) ;`` outside every block, so the option would not apply. The
+    arguments are Perl too, so they must be plain values (:func:`_directive_arguments_are_plain`):
+    ``generate_network({overwrite=>1, ($model->setParameter("k",5)) x 0})`` sets ``k``."""
+    split = _split_directive_call(statement)
+    if split is None:
+        return False
+    arguments, tail = split
+    return (re.fullmatch(r';?\s*', tail) is not None
+            and _directive_arguments_are_plain(arguments))
 
 
 def _directive_call_tail(statement):
     """What follows the closing parenthesis of the allowed directive call ``statement`` starts
     with, or ``None`` if it does not start with one or never closes it."""
+    split = _split_directive_call(statement)
+    return None if split is None else split[1]
+
+
+def _split_directive_call(statement):
+    """``(arguments, tail)`` of the allowed directive call ``statement`` starts with -- the
+    text between its parentheses and what follows the closing one -- or ``None`` if it does
+    not start with one or never closes it."""
     match = _DIRECTIVE_CALL.match(statement)
     if not match:
         return None
@@ -117,9 +131,44 @@ def _directive_call_tail(statement):
         elif ch == ')':
             depth -= 1
             if depth == 0:
-                return statement[i + 1:]
+                return statement[match.end():i], statement[i + 1:]
         i += 1
     return None
+
+
+# One token of a plain-value directive argument list: whitespace, ``=>``, a brace, bracket or
+# comma, a bare name (a hash key, or a bare value such as ``HNauty``), a number, a
+# single-quoted string, or a double-quoted string with no ``$`` or ``@`` (Perl interpolates
+# both, and ``"@{[ ... ]}"`` runs code). Nothing else -- a parenthesis, ``$``, ``->``, an
+# operator -- can appear in a plain value, and every one of them can run code under Perl.
+_PLAIN_ARGUMENT_TOKEN = re.compile(
+    r'\s+|=>|[{}\[\],]|[A-Za-z_]\w*'                      # space, =>, punctuation, a name
+    r'|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'          # a number
+    r"|'(?:[^'\\]|\\.)*'"                                 # a single-quoted string
+    r'|"(?:[^"\\$@]|\\.)*"')                             # a double-quoted one, no $ or @
+
+
+def _directive_arguments_are_plain(arguments):
+    """Whether a directive's ``arguments`` are plain values only: numbers, quoted text, bare
+    names, and ``{...}`` / ``[...]`` of them, joined by ``,`` and ``=>``. BNG2.pl evaluates the
+    arguments as Perl, so anything else could run code (#969 review). A bare name must be a
+    hash key (followed by ``=>``) or a bare value that ends where it stands (followed by ``,``,
+    ``}``, ``]`` or nothing), as in ``max_stoich=>{A=>unlimited}``: followed by anything else
+    it is a Perl call with arguments (``system "ls"``)."""
+    tokens = []
+    i = 0
+    while i < len(arguments):
+        match = _PLAIN_ARGUMENT_TOKEN.match(arguments, i)
+        if not match or match.end() == i:
+            return False
+        if not match.group().isspace():
+            tokens.append(match.group())
+        i = match.end()
+    for k, token in enumerate(tokens):
+        if (re.fullmatch(r'[A-Za-z_]\w*', token)
+                and tokens[k + 1:k + 2] not in (['=>'], [','], ['}'], [']'], [])):
+            return False
+    return True
 
 
 def _format_bngl_number(x):
@@ -933,13 +982,25 @@ class BNGLModel(Model):
         # BNG2.pl does not read the line as a call at all, so it gets that reason instead.
         spaced = [number for number, code in self.compound_directive_lines
                   if re.fullmatch(r'\s+;', _directive_call_tail(code) or '')]
+        # A directive that is one call, correctly ended, but whose arguments are not plain
+        # values: BNG2.pl evaluates them as Perl, so they can run code.
+        coded = [number for number, code in self.compound_directive_lines
+                 if number not in spaced
+                 and _directive_call_tail(code) is not None
+                 and re.fullmatch(r';?\s*', _directive_call_tail(code))]
         compound = [number for number, _ in self.compound_directive_lines
-                    if number not in spaced]
+                    if number not in spaced and number not in coded]
         if compound:
             numbers = ', '.join(str(number) for number in compound)
             why.append(
                 f"A directive must be the only statement on its line, with nothing after its "
                 f"call but a comment: BNG2.pl runs the rest of the line as code (line "
+                f"{numbers}).")
+        if coded:
+            numbers = ', '.join(str(number) for number in coded)
+            why.append(
+                f"A directive's arguments must be plain values -- numbers, quoted text, names, "
+                f"and {{...}} or [...] of them: BNG2.pl evaluates them as Perl code (line "
                 f"{numbers}).")
         if spaced:
             numbers = ', '.join(str(number) for number in spaced)

@@ -541,6 +541,39 @@ class TestRequireNoProtocolActions:
             m.require_no_protocol_actions()
 
     @pytest.mark.parametrize('line', [
+        # BNG2.pl evaluates a directive's arguments as Perl, so code there runs (#969 review).
+        'generate_network({overwrite=>1, ($model->simulate_protocol({})) x 0})',
+        'generate_network({overwrite=>1, ($model->setParameter("v"."3", 3)) x 0})',
+        'setOption("NumberPerQuantityUnit", ($model->setParameter("k",5)) || 1)',
+        'setOption("SpeciesLabel","@{[ $model->setParameter(1,5) ]}")',   # interpolated
+        'generate_network({overwrite=>1, x=>system "ls"})',               # a bare-word call
+        'setOption("NumberPerQuantityUnit",6.0221e23*1e-6)',              # an expression
+    ])
+    def test_a_directive_whose_arguments_are_not_plain_values_is_refused(self, line):
+        m, lines = _scan(f'begin actions\n{line}\nend actions\n')
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        assert (f"A directive's arguments must be plain values -- numbers, quoted text, names, "
+                f"and {{...}} or [...] of them: BNG2.pl evaluates them as Perl code (line "
+                f"{lines[line]}).") in str(refused.value)
+
+    @pytest.mark.parametrize('line', [
+        'generate_network({overwrite=>1,check_iso=>1,max_iter=>25,'
+        'max_stoich=>{Protein=>unlimited,Ligand=>unlimited}});',          # BioNetGen's MWC.bngl
+        'generate_network({overwrite=>1, max_stoich=>{EGF=>4,EGFR=>4}, TextReaction=>1})',
+        'generate_network({prefix=>"a_b", max_agg=>8, max_iter=>3})',
+        'setOption("SpeciesLabel","HNauty")',
+        "setOption('NumberPerQuantityUnit',6.0221e23)",
+        'setOption("X","a\\"b")',
+        'version("2.9.3")',
+        'substanceUnits("Number")',
+        'generate_network()',
+    ])
+    def test_a_directive_with_plain_arguments_is_accepted(self, line):
+        m, _ = _scan(f'begin actions\n{line}\nend actions\n')
+        m.require_no_protocol_actions('m.bngl')
+
+    @pytest.mark.parametrize('line', [
         'generate_network({overwrite=>1}); $model->setParameter("k",5)',
         '1 generate_network({overwrite=>1}) setParameter("k",5)',
         'setOption("NumberPerQuantityUnit",1) $model->setParameter("k",5)',
