@@ -95,6 +95,11 @@ for byte, so it could bring such actions into an imported job too.
      and counted under CountUnique, while the export keeps the lines as written, and BNG2.pl
      counted that model under CountAll (found by the third review). The seven continued
      directives in the swept trees continue between arguments, and still load.
+   - a statement still continued with `\` when the file ends. The scan never reads it, so the
+     rule could not see it: `setParameter("k",5)\` as the file's last line loaded, the export
+     wrote it as it stands, and BNG2.pl removes the `\` and runs it (the XML it writes has
+     k = 5), while the fit, whose own actions block follows the line, ran nothing of it. It is
+     refused with its own reason, whatever the statement is. No swept file ends this way.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a

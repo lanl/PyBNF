@@ -790,6 +790,11 @@ class BNGLModel(Model):
         # the files BioNetGen writes, so PyBNF cannot find them.
         self.compound_directive_lines = []
         self.set_model_name_lines = []
+        # A statement still continued with a ``\`` when the file ends, as ``(line number, code)``:
+        # the scan never reads it, while BNG2.pl's reader removes the ``\`` and runs the
+        # statement. The edition-2 rule refuses it, since it could not otherwise check it (#969
+        # review).
+        self.unterminated_continuation_lines = []
         # The indices of the ``setOption``-family lines that carry a line index, which the model
         # text keeps with the index removed: outside a block BNG2.pl does not strip it, and
         # would skip the line (#963).
@@ -945,6 +950,9 @@ class BNGLModel(Model):
             if re.match(r'end\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = True
 
+        if continuation_indices:
+            self.unterminated_continuation_lines.append(
+                (min(continuation_indices) + 1, ' '.join(continuation.split())))
         if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
         self.model_lines = [
@@ -1057,13 +1065,15 @@ class BNGLModel(Model):
         ``setOption``, ``substanceUnits`` and ``version`` may remain, each as the one call on
         its line. Anything else raises a :class:`PybnfError` naming the file and each offending
         line: a protocol action, a directive line that carries more than its call (BNG2.pl runs
-        the rest as code), and ``setModelName`` (it renames the files BioNetGen writes).
+        the rest as code), ``setModelName`` (it renames the files BioNetGen writes), and a
+        statement still continued with ``\\`` when the file ends (BNG2.pl runs it; the scan
+        never reads it).
         ``where`` is ``'conf'`` (a job's conf defines the protocol) or ``'petab'`` (a PEtab
         problem's tables do); ``model_file`` defaults to ``file_path``; ``note``, if given, ends
         the message.
         """
         offending = sorted(self.hand_written_actions + self.compound_directive_lines
-                           + self.set_model_name_lines)
+                           + self.set_model_name_lines + self.unterminated_continuation_lines)
         if not offending:
             return
         shown = offending[:10]
@@ -1114,6 +1124,13 @@ class BNGLModel(Model):
                 f"indentation included, and ends the directive at a blank or comment line, so "
                 f"it does not read this directive as the call shown: continue a directive only "
                 f"between its arguments, with no blank or comment line inside it (line "
+                f"{numbers}).")
+        if self.unterminated_continuation_lines:
+            numbers = ', '.join(str(number) for number, _ in self.unterminated_continuation_lines)
+            why.append(
+                f"The file ends while a line continued with '\\' is still continued: BNG2.pl "
+                f"removes the '\\' and runs the statement, but PyBNF does not read it, so this "
+                f"check cannot see it and the fit would not run it. Delete the '\\' (line "
                 f"{numbers}).")
         if self.set_model_name_lines:
             numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)

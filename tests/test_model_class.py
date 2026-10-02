@@ -678,6 +678,42 @@ class TestRequireNoProtocolActions:
         m, _ = _scan(actions)
         m.require_no_protocol_actions('m.bngl')
 
+    @pytest.mark.parametrize('tail, first', [
+        # Second review: the scan never reads a statement still continued when the file ends,
+        # so the rule could not see it, while BNG2.pl removes the '\' and runs it. A protocol
+        # action passed the rule this way, and the export kept it.
+        ('setParameter("k",5)\\\n', 'setParameter("k",5)\\'),
+        ('setOption("SpeciesLabel",\\\n"HNauty")\\  \n\n# the end\n', 'setOption("SpeciesLabel",\\'),
+        ('begin actions\ngenerate_network({overwrite=>1})\nend actions\n'
+         'simulate({method=>"ode",t_end=>1,n_steps=>1})\\', 'simulate({method=>"ode",t_end=>1,n_steps=>1})\\'),
+    ])
+    def test_a_statement_continued_into_the_end_of_the_file_is_refused(self, tail, first):
+        m, lines = _scan(tail)
+        number = lines[first]
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        message = str(refused.value)
+        code = first.removesuffix('\\').removesuffix(',\\')
+        assert f'-- line {number}: {code}' in message, message
+        assert ("The file ends while a line continued with '\\' is still continued: BNG2.pl "
+                "removes the '\\' and runs the statement, but PyBNF does not read it, so this "
+                f"check cannot see it and the fit would not run it. Delete the '\\' (line "
+                f"{number}).") in message, message
+
+    @pytest.mark.bionetgen
+    def test_bng2_runs_a_statement_continued_into_the_end_of_the_file(self, tmp_path):
+        # The oracle for the refusal above: BNG2.pl sets k to 5, which the XML it writes after
+        # reading the file shows. The scan reads no action at all.
+        import shutil
+        import subprocess
+        (tmp_path / 'eof.bngl').write_text(_ACTIONS_MODEL + 'setParameter("k",5)\\\n')
+        run = subprocess.run([shutil.which('BNG2.pl'), '--xml', 'eof.bngl'], cwd=tmp_path,
+                             capture_output=True, text=True)
+        assert run.returncode == 0, run.stdout
+        assert 'id="k" type="Constant" value="5"' in (tmp_path / 'eof.xml').read_text()
+        m, _ = _scan('setParameter("k",5)\\\n')
+        assert m.hand_written_actions == [] and m.actions == []
+
     @pytest.mark.bionetgen
     def test_bng2_reads_a_bare_value_or_a_quote_inside_a_string_as_code(self, tmp_path):
         # Review addition, the oracle for refusing these two shapes: BNG2.pl does not read

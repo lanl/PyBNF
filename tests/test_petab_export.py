@@ -5433,6 +5433,30 @@ class TestEdition2ModelActionsRule:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load
 
+    def test_a_setparameter_continued_into_the_end_of_the_file_is_refused(self, tmp_path,
+                                                                           monkeypatch):
+        # Second review (#969). The scan never read a statement the file ends under while it is
+        # still continued, so this setParameter passed the rule: the job loaded, and the export
+        # wrote the line as it stands. BNG2.pl removes the '\' and runs it -- the oracle is the
+        # XML it writes after reading the file, with k = 5 -- while the fit, whose own actions
+        # block follows the line, ran nothing of it.
+        _bng2_or_skip()
+        text = _DIMER_BNGL + _block(self.GEN) + 'setParameter("k",5)\\\n'
+        ran = _run_bng2(text, tmp_path / 'bng', 'eof')
+        import subprocess
+        subprocess.run([str(_bng2_or_skip()), '--xml', 'eof.bngl'], cwd=ran, check=True,
+                       capture_output=True, text=True)
+        assert 'id="k" type="Constant" value="5"' in (ran / 'eof.xml').read_text()
+        conf = self._dimer_job(tmp_path, text)
+        number = text.splitlines().index('setParameter("k",5)\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert f'-- line {number}: setParameter("k",5). In an edition-2' in at_load, at_load
+        assert ("The file ends while a line continued with '\\' is still continued" in at_load
+                and f"Delete the '\\' (line {number})." in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
 
 _CHAIN_BNGL = """\
 begin model

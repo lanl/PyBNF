@@ -5490,10 +5490,13 @@ class TestFixedModelParameterImport:
 
     @pytest.mark.parametrize('extra, first, reason', [
         # Second review: a continuation indented inside a quoted option name (BNG2.pl reads
-        # "SpeciesLab  el", the scanner "SpeciesLabel"). It passed the import's check before;
-        # it is now refused with its reason.
+        # "SpeciesLab  el", the scanner "SpeciesLabel"), and a protocol action still continued
+        # when the file ends, which the scan never read and BNG2.pl runs. Each passed the
+        # import's check before; it now refuses each with its reason.
         ('setOption("SpeciesLab\\\n  el","HNauty")\n', 'setOption("SpeciesLab\\',
          "so it does not read this directive as the call shown"),
+        ('setParameter("v3",2)\\\n', 'setParameter("v3",2)\\',
+         "The file ends while a line continued with '\\' is still continued"),
     ])
     def test_a_continuation_bng2_reads_otherwise_is_refused_at_import(self, tmp_path, extra,
                                                                         first, reason):
