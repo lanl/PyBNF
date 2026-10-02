@@ -102,6 +102,34 @@ def _is_single_directive_call(statement):
             and _directive_arguments_are_plain(arguments))
 
 
+def _bng2_statement(raw_lines, indices):
+    """The statement BNG2.pl's reader (``BNGModel.pm``'s ``get_line``) makes of the physical
+    lines ``indices`` of ``raw_lines`` that the scanner joined into one, with its line index
+    removed as the scanner removes it, or ``None`` if BNG2.pl does not read them as one
+    statement. BNG2.pl removes each line's comment and the ``\\`` that continues it, and
+    appends the next line as it stands, indentation included, where the scanner strips each
+    line first: ``max_\\`` then ``    agg=>2`` is ``max_    agg=>2`` to Perl. And it ends the
+    statement at a blank or comment-only line, where the scanner continues past it, so a
+    ``setOption`` continued across a comment is two lines BNG2.pl skips outside every block
+    as unidentified input (#969 review)."""
+    indices = sorted(indices)
+    if indices != list(range(indices[0], indices[-1] + 1)):
+        return None
+    text = ''
+    for i in indices:
+        text = re.sub(r'\\\s*$', '', text) + raw_lines[i].split('#', 1)[0]
+    return _strip_action_line_index(text.strip())
+
+
+def _is_single_directive_call_as_read(statement, raw_lines, indices):
+    """Whether ``statement``, which the scanner joined from the physical lines ``indices`` of
+    ``raw_lines``, is one allowed directive call (:func:`_is_single_directive_call`) both as
+    the scanner reads it and as BNG2.pl reads it (:func:`_bng2_statement`)."""
+    as_bng2 = _bng2_statement(raw_lines, indices)
+    return (_is_single_directive_call(statement) and as_bng2 is not None
+            and _is_single_directive_call(as_bng2))
+
+
 def _directive_call_tail(statement):
     """What follows the closing parenthesis of the allowed directive call ``statement`` starts
     with, or ``None`` if it does not start with one or never closes it."""
@@ -740,7 +768,8 @@ class BNGLModel(Model):
         self.indexed_directive_line_indices = set()
         param_names_set = set()
         self.split_line_index = None  # for insertion of free parameters
-        all_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
+        raw_lines = self.bngl_file_text.splitlines()   # as BNG2.pl reads them
+        all_lines = [x.strip() for x in raw_lines]
         skip_lines = set()  # Indices of lines that should not go into self.model_lines
         protocol_lines = set()  # The subset of skip_lines that belongs to a protocol block
 
@@ -803,7 +832,7 @@ class BNGLModel(Model):
                     read_as = (min(indices) + 1, ' '.join(statement.split()))
                     if re.match(r'setModelName\b', statement):
                         self.set_model_name_lines.append(read_as)
-                    elif not _is_single_directive_call(statement):
+                    elif not _is_single_directive_call_as_read(statement, raw_lines, indices):
                         self.compound_directive_lines.append(read_as)
                 continue
 
@@ -870,7 +899,7 @@ class BNGLModel(Model):
                     self.generates_network = True
                     self.generate_network_line = statement
                     self.generate_network_lines.append(read_as)
-                    if not _is_single_directive_call(statement):
+                    if not _is_single_directive_call_as_read(statement, raw_lines, indices):
                         self.compound_directive_lines.append(read_as)
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
@@ -1014,6 +1043,10 @@ class BNGLModel(Model):
         if len(offending) > len(shown):
             lines += f'; and {len(offending) - len(shown)} more'
         why = []
+        # A continued directive that is one plain call as the scanner joins it, but not as
+        # BNG2.pl's reader joins it (``_bng2_statement``): it gets that reason alone.
+        rejoined = [number for number, code in self.compound_directive_lines
+                    if _is_single_directive_call(code)]
         # A directive whose only fault is a space before its ``;`` runs nothing after the call:
         # BNG2.pl does not read the line as a call at all, so it gets that reason instead.
         spaced = [number for number, code in self.compound_directive_lines
@@ -1021,11 +1054,11 @@ class BNGLModel(Model):
         # A directive that is one call, correctly ended, but whose arguments are not plain
         # values: BNG2.pl evaluates them as Perl, so they can run code.
         coded = [number for number, code in self.compound_directive_lines
-                 if number not in spaced
+                 if number not in spaced and number not in rejoined
                  and _directive_call_tail(code) is not None
                  and re.fullmatch(r';?\s*', _directive_call_tail(code))]
         compound = [number for number, _ in self.compound_directive_lines
-                    if number not in spaced and number not in coded]
+                    if number not in spaced and number not in coded and number not in rejoined]
         if compound:
             numbers = ', '.join(str(number) for number in compound)
             why.append(
@@ -1045,6 +1078,14 @@ class BNGLModel(Model):
                 f"BNG2.pl reads a directive as a call only when a ';' after it follows its "
                 f"closing parenthesis directly: it skips any other such line outside every "
                 f"block, where the setOption family stays, and aborts on it inside one (line "
+                f"{numbers}).")
+        if rejoined:
+            numbers = ', '.join(str(number) for number in rejoined)
+            why.append(
+                f"BNG2.pl joins a line continued with '\\' to the next line as it stands, "
+                f"indentation included, and ends the directive at a blank or comment line, so "
+                f"it does not read this directive as the call shown: continue a directive only "
+                f"between its arguments, with no blank or comment line inside it (line "
                 f"{numbers}).")
         if self.set_model_name_lines:
             numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)

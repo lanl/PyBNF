@@ -80,6 +80,15 @@ for byte, so it could bring such actions into an imported job too.
      a call. Sweeping every BNGL file under the maintainer's model trees (5,953 files, 4,604
      directive lines) found one directive this refuses that main accepted: the bare value in
      a BNGParser test copy of `MWC.bngl`, which BNG2.pl 2.9.3 aborts on.
+   - an allowed directive that the scanner joins across a `\` continuation differently from
+     BNG2.pl. BNG2.pl's reader appends a continued line as it stands, indentation included,
+     and ends the statement at a blank or comment-only line; the scanner strips each line and
+     continues past both. So `setOption("MoleculesObservables",\`, a comment line, then
+     `"CountUnique")` was one setOption to the scanner and loaded, while BNG2.pl skipped both
+     halves as unidentified input and counted under CountAll: a job fitting the dimer count
+     scored 1964 at the true rate constant instead of 0. The rule now checks a directive both
+     as the scanner joins it and as BNG2.pl does. The seven continued directives in the swept
+     trees continue between arguments, and still load.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a

@@ -5350,6 +5350,43 @@ class TestEdition2ModelActionsRule:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load
 
+    def test_a_setoption_continued_across_a_comment_is_refused(self, tmp_path, monkeypatch):
+        # Review addition (#969). BNG2.pl's reader ends a continued statement at a comment or
+        # blank line; the scanner continues past it and read this as one setOption, so the
+        # job loaded. Outside every block BNG2.pl skips both halves as "Unidentified input"
+        # and runs under CountAll: the oracle is BNG2.pl on the model file, which counts each
+        # dimer twice (100 e^-kt, not the data's 50 e^-kt). Before the fix the job loaded and
+        # scored 1964 at the true k, against 1e-12 with the option on one line.
+        _bng2_or_skip()
+        continued = ('setOption("MoleculesObservables",\\\n# count each dimer once\n'
+                     '"CountUnique")')
+        simulate = 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})\n'
+        text = _DIMER_BNGL + f'{continued}\n{_block(self.GEN)}'
+        ran = Data(file_name=str(_run_bng2(text + simulate, tmp_path / 'bng', 'continued')
+                                 / 'continued_tc.gdat'))
+        t = ran.data[:, ran.cols['time']]
+        np.testing.assert_allclose(ran.data[:, ran.cols['D']], 100 * np.exp(-0.5 * t),
+                                   rtol=1e-5)
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'dimer.bngl').write_text(text)
+        (job / 'dimer.exp').write_text('# time\tD\n' + ''.join(
+            f'{t}\t{50 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+        conf = job / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                        'objective = sos\nmodel: dimer.bngl\nexperiment: tc, data: dimer.exp\n'
+                        'uniform_var = k 0.01 3.0\n')
+        number = text.splitlines().index('setOption("MoleculesObservables",\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: setOption("MoleculesObservables","CountUnique"). '
+                f'In an edition-2' in at_load), at_load
+        assert ("and ends the directive at a blank or comment line, so it does not read this "
+                "directive as the call shown" in at_load
+                and f'inside it (line {number}).' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
 
 _CHAIN_BNGL = """\
 begin model

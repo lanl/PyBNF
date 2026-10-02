@@ -5469,6 +5469,25 @@ class TestFixedModelParameterImport:
                 and f"as Perl code (line {number})" in str(refused.value))
         assert not (tmp_path / 'out').exists() or not any((tmp_path / 'out').iterdir())
 
+    @pytest.mark.parametrize('extra, first', [
+        # Review addition: a directive the scanner joins across a comment line or an indented
+        # split name, which BNG2.pl reads otherwise (it skips the first loose, and parses
+        # `max_    agg` in the second). The import refuses each, naming the reason.
+        ('setOption("SpeciesLabel",\\\n# canonical labels\n"HNauty")\n',
+         'setOption("SpeciesLabel",\\'),
+        ('begin actions\ngenerate_network({overwrite=>1,max_\\\n    agg=>2})\nend actions\n',
+         'generate_network({overwrite=>1,max_\\'),
+    ])
+    def test_a_directive_bng2_joins_differently_is_refused_at_import(self, tmp_path, extra,
+                                                                      first):
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + extra
+        number = text.splitlines().index(first) + 1
+        with pytest.raises(PybnfError) as refused:
+            import_job(_fixed_v3_problem(tmp_path, model_text=text), tmp_path / 'out')
+        assert ("BNG2.pl joins a line continued with '\\' to the next line as it stands"
+                in str(refused.value)
+                and f'inside it (line {number}).' in str(refused.value)), str(refused.value)
+
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')
         with pytest.raises(PybnfError, match="'v3' has estimate=false with nominalValue inf, "

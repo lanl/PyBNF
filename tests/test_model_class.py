@@ -614,6 +614,39 @@ class TestRequireNoProtocolActions:
         m, _ = _scan(f'begin actions\n{line}\nend actions\n')
         m.require_no_protocol_actions('m.bngl')
 
+    @pytest.mark.parametrize('actions, first', [
+        # Review addition: BNG2.pl appends a continued line as it stands, and ends the
+        # statement at a blank or comment line, where the scanner strips each line and
+        # continues past both. Each of these is one plain call to the scanner, not to BNG2.pl.
+        ('begin actions\ngenerate_network({overwrite=>1,max_\\\n    agg=>2})\nend actions\n',
+         'generate_network({overwrite=>1,max_\\'),                    # Perl: max_    agg
+        ('setOption("SpeciesLabel",\\\n# the canonical labels\n"HNauty")\n',
+         'setOption("SpeciesLabel",\\'),                              # skipped as unidentified
+        ('setOption("SpeciesLabel",\\\n\n"HNauty")\n', 'setOption("SpeciesLabel",\\'),
+    ])
+    def test_a_directive_bng2_joins_differently_is_refused(self, actions, first):
+        m, lines = _scan(actions)
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        assert (f"BNG2.pl joins a line continued with '\\' to the next line as it stands, "
+                f"indentation included, and ends the directive at a blank or comment line, so "
+                f"it does not read this directive as the call shown: continue a directive only "
+                f"between its arguments, with no blank or comment line inside it (line "
+                f"{lines[first]}).") in str(refused.value)
+        assert "must be plain values" not in str(refused.value)
+
+    @pytest.mark.parametrize('actions', [
+        # The shape of the seven continued directives in the maintainer's model trees, and a
+        # name split with nothing in front of its second half, which BNG2.pl joins the same.
+        'begin actions\n  generate_network({overwrite=>1,\\\n    max_stoich=>{PrP=>120}})  \n'
+        'end actions\n',
+        'begin actions\ngenerate_network({overwrite=>1,max_\\\nagg=>2})\nend actions\n',
+        'setOption("SpeciesLabel", \\\n   "HNauty")  # continued\n',
+    ])
+    def test_a_directive_continued_between_arguments_is_accepted(self, actions):
+        m, _ = _scan(actions)
+        m.require_no_protocol_actions('m.bngl')
+
     @pytest.mark.bionetgen
     def test_bng2_reads_a_bare_value_or_a_quote_inside_a_string_as_code(self, tmp_path):
         # Review addition, the oracle for refusing these two shapes: BNG2.pl does not read
