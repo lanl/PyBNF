@@ -411,6 +411,15 @@ end model
 """
 
 
+def _plain_values_reason(numbers):
+    """The reason ``require_no_protocol_actions`` gives for directive lines ``numbers`` whose
+    arguments are not plain values."""
+    return (f"A directive's arguments must be plain values -- numbers and quoted text with no "
+            f"quote or backslash inside, separated by ',' or '=>' and grouped in {{...}} or "
+            f"[...], with a name only as a key before '=>': BNG2.pl evaluates them as Perl "
+            f"code (line {numbers}).")
+
+
 def _scan(actions):
     """The scanner's reading of ``_ACTIONS_MODEL`` followed by ``actions``, and the file's own
     1-based line numbers (counted here, not by the scanner) keyed by the stripped line."""
@@ -553,18 +562,15 @@ class TestRequireNoProtocolActions:
         m, lines = _scan(f'begin actions\n{line}\nend actions\n')
         with pytest.raises(PybnfError) as refused:
             m.require_no_protocol_actions('m.bngl')
-        assert (f"A directive's arguments must be plain values -- numbers, quoted text, names, "
-                f"and {{...}} or [...] of them: BNG2.pl evaluates them as Perl code (line "
-                f"{lines[line]}).") in str(refused.value)
+        assert _plain_values_reason(lines[line]) in str(refused.value)
 
     @pytest.mark.parametrize('line', [
         'generate_network({overwrite=>1,check_iso=>1,max_iter=>25,'
-        'max_stoich=>{Protein=>unlimited,Ligand=>unlimited}});',          # BioNetGen's MWC.bngl
+        'max_stoich=>{Protein=>"unlimited",Ligand=>"unlimited"}});',      # MWC.bngl, quoted
         'generate_network({overwrite=>1, max_stoich=>{EGF=>4,EGFR=>4}, TextReaction=>1})',
         'generate_network({prefix=>"a_b", max_agg=>8, max_iter=>3})',
         'setOption("SpeciesLabel","HNauty")',
         "setOption('NumberPerQuantityUnit',6.0221e23)",
-        'setOption("X","a\\"b")',
         'version("2.9.3")',
         'substanceUnits("Number")',
         'generate_network()',
@@ -572,6 +578,65 @@ class TestRequireNoProtocolActions:
     def test_a_directive_with_plain_arguments_is_accepted(self, line):
         m, _ = _scan(f'begin actions\n{line}\nend actions\n')
         m.require_no_protocol_actions('m.bngl')
+
+    @pytest.mark.parametrize('line', [
+        # Review addition: arguments the token check accepted, which Perl does not read as the
+        # values they look like.
+        'generate_network({overwrite=>1,max_stoich=>{A=>unlimited}})',  # a bareword: strict
+        'setOption("SpeciesLabel",HNauty)',                              # aborts, or a call
+        'generate_network({overwrite=>1,max_agg=>4 -2})',               # Perl subtracts: 2
+        'generate_network({overwrite=>1,max_agg=>010})',                # octal: 8
+        'setOption("SpeciesLabel","H\'Nauty")',     # BNG2.pl's " -> ' swap ends the string
+        'setOption("X","a\\"b")',                    # an escape reads differently per place
+        "setOption('X','a\"b')",
+        'generate_network({overwrite=>})',
+        'generate_network({overwrite=>1,,max_agg=>2})',
+        'generate_network({overwrite=>1}{max_agg=>2})',
+    ])
+    def test_arguments_perl_reads_differently_are_refused(self, line):
+        m, lines = _scan(f'begin actions\n{line}\nend actions\n')
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        assert _plain_values_reason(lines[line]) in str(refused.value)
+
+    @pytest.mark.parametrize('line', [
+        # Review addition: shapes from the 4,604 directive lines of the maintainer's model trees,
+        # and number forms Perl reads as written.
+        'generate_network({overwrite=>1,check_iso=>1,max_iter=>150,max_stoich=>{PrP=>120}})',
+        'generate_network({overwrite=>1, max_stoich=>{"A"=>1}, max_agg=>8,})',
+        'generate_network({overwrite=>1,max_iter=>-1})',
+        'setOption("NumberPerQuantityUnit",6.0221e23)',
+        "setOption('NumberPerQuantityUnit',.5e3)",
+        'setOption("NumberPerQuantityUnit",1.e5)',
+        'generate_network({overwrite=>1,q=>1})',      # Perl's => quotes any name on its left
+    ])
+    def test_real_argument_shapes_are_accepted(self, line):
+        m, _ = _scan(f'begin actions\n{line}\nend actions\n')
+        m.require_no_protocol_actions('m.bngl')
+
+    @pytest.mark.bionetgen
+    def test_bng2_reads_a_bare_value_or_a_quote_inside_a_string_as_code(self, tmp_path):
+        # Review addition, the oracle for refusing these two shapes: BNG2.pl does not read
+        # either as the data it looks like. A bare value aborts under `use strict` (so a bare
+        # value it does accept is a call), and the " -> ' swap of an action-block line makes
+        # Perl parse a string's text. The quoted value is the one it reads.
+        import shutil
+        import subprocess
+        bng2 = shutil.which('BNG2.pl')
+        runs = {}
+        for name, line in [
+                ('bare', 'generate_network({overwrite=>1,max_stoich=>{A=>unlimited}})'),
+                ('quote', 'setOption("SpeciesLabel","H\'Nauty")\ngenerate_network({overwrite=>1})'),
+                ('quoted', 'generate_network({overwrite=>1,max_stoich=>{A=>"unlimited"}})')]:
+            (tmp_path / f'{name}.bngl').write_text(
+                _ACTIONS_MODEL + f'begin actions\n{line}\nend actions\n')
+            runs[name] = subprocess.run([bng2, f'{name}.bngl'], cwd=tmp_path,
+                                        capture_output=True, text=True)
+        assert runs['bare'].returncode != 0
+        assert 'Bareword "unlimited" not allowed' in runs['bare'].stdout + runs['bare'].stderr
+        assert runs['quote'].returncode != 0
+        assert "Nauty'" in runs['quote'].stdout + runs['quote'].stderr
+        assert runs['quoted'].returncode == 0 and (tmp_path / 'quoted.net').exists()
 
     @pytest.mark.parametrize('line', [
         'generate_network({overwrite=>1}); $model->setParameter("k",5)',

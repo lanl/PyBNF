@@ -136,39 +136,75 @@ def _split_directive_call(statement):
     return None
 
 
-# One token of a plain-value directive argument list: whitespace, ``=>``, a brace, bracket or
-# comma, a bare name (a hash key, or a bare value such as ``HNauty``), a number, a
-# single-quoted string, or a double-quoted string with no ``$`` or ``@`` (Perl interpolates
-# both, and ``"@{[ ... ]}"`` runs code). Nothing else -- a parenthesis, ``$``, ``->``, an
-# operator -- can appear in a plain value, and every one of them can run code under Perl.
+# One token of a plain-value directive argument list, by kind. A name is kept only as a hash
+# key (``_directive_arguments_are_plain``). A number has no leading zero: Perl reads ``010`` as
+# octal 8. A quoted string holds no backslash and no quote character of either kind, and a
+# double-quoted one no ``$`` or ``@`` (Perl interpolates both, and ``"@{[ ... ]}"`` runs
+# code): BNG2.pl turns every ``"`` of an action-block line into ``'`` before it evaluates the
+# line, so a string holding a quote or an escape is not the string Perl reads (``"a'b"``
+# becomes ``'a'b'``), while one holding neither reads the same either way. Nothing else -- a
+# parenthesis, ``$``, ``->``, an operator -- can appear in a plain value.
 _PLAIN_ARGUMENT_TOKEN = re.compile(
-    r'\s+|=>|[{}\[\],]|[A-Za-z_]\w*'                      # space, =>, punctuation, a name
-    r'|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'          # a number
-    r"|'(?:[^'\\]|\\.)*'"                                 # a single-quoted string
-    r'|"(?:[^"\\$@]|\\.)*"')                             # a double-quoted one, no $ or @
+    r'(?P<space>\s+)|(?P<punct>=>|[{}\[\],])|(?P<name>[A-Za-z_]\w*)'
+    r'|(?P<value>[+-]?(?:(?:0|[1-9]\d*)(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'   # a number
+    r"""|'[^'"\\]*'|"[^'"\\$@]*")""")                                   # a string
+
+_CLOSER = {'{': '}', '[': ']'}
 
 
 def _directive_arguments_are_plain(arguments):
-    """Whether a directive's ``arguments`` are plain values only: numbers, quoted text, bare
-    names, and ``{...}`` / ``[...]`` of them, joined by ``,`` and ``=>``. BNG2.pl evaluates the
-    arguments as Perl, so anything else could run code (#969 review). A bare name must be a
-    hash key (followed by ``=>``) or a bare value that ends where it stands (followed by ``,``,
-    ``}``, ``]`` or nothing), as in ``max_stoich=>{A=>unlimited}``: followed by anything else
-    it is a Perl call with arguments (``system "ls"``)."""
+    """Whether a directive's ``arguments`` are plain values only: a list of numbers, quoted
+    text, ``{...}`` and ``[...]`` of them, each element separated from the next by ``,`` or
+    ``=>``, with a name allowed only as a hash key, directly before ``=>``. BNG2.pl evaluates
+    the arguments as Perl, so anything else could run code (#969 review). The list is parsed,
+    not only tokenized: two values with nothing between them are Perl operator syntax
+    (``max_agg=>4 -2`` is 2). A name in any other place is a bareword, which BNG2.pl's
+    ``use strict`` refuses unless Perl reads it as a call, so no bare value is data
+    (``max_stoich=>{A=>unlimited}`` aborts BNG2.pl; ``"unlimited"`` is the value it reads);
+    Perl's ``=>`` quotes any name on its left, ``q``, ``s`` and ``sub`` included."""
     tokens = []
     i = 0
     while i < len(arguments):
         match = _PLAIN_ARGUMENT_TOKEN.match(arguments, i)
-        if not match or match.end() == i:
+        if not match:
             return False
-        if not match.group().isspace():
-            tokens.append(match.group())
+        if match.lastgroup != 'space':
+            tokens.append((match.lastgroup, match.group()))
         i = match.end()
-    for k, token in enumerate(tokens):
-        if (re.fullmatch(r'[A-Za-z_]\w*', token)
-                and tokens[k + 1:k + 2] not in (['=>'], [','], ['}'], [']'], [])):
-            return False
-    return True
+    return _plain_list_end(tokens, 0, None) == len(tokens)
+
+
+def _plain_list_end(tokens, k, closer):
+    """The index of ``closer`` (or of the end, for ``None``) that ends the plain list starting at
+    ``tokens[k]``, or ``None`` if the list is not plain (:func:`_directive_arguments_are_plain`).
+    An element is a value, a name directly before ``=>``, or a nested ``{...}`` / ``[...]``; a
+    ``,`` or ``=>`` must separate it from the next, and only a ``,`` may end the list."""
+    expect_element = True
+    while k < len(tokens):
+        kind, text = tokens[k]
+        if text == closer and (expect_element is False or tokens[k - 1][1] != '=>'):
+            return k
+        if expect_element:
+            if kind == 'value':
+                k += 1
+            elif kind == 'name' and tokens[k + 1:k + 2] == [('punct', '=>')]:
+                k += 1
+            elif text in _CLOSER:
+                end = _plain_list_end(tokens, k + 1, _CLOSER[text])
+                if end is None:
+                    return None
+                k = end + 1
+            else:
+                return None
+            expect_element = False
+        elif text in (',', '=>'):
+            k += 1
+            expect_element = True
+        else:
+            return None
+    if closer is not None or (k and tokens[k - 1][1] == '=>'):
+        return None
+    return k
 
 
 def _format_bngl_number(x):
@@ -999,9 +1035,10 @@ class BNGLModel(Model):
         if coded:
             numbers = ', '.join(str(number) for number in coded)
             why.append(
-                f"A directive's arguments must be plain values -- numbers, quoted text, names, "
-                f"and {{...}} or [...] of them: BNG2.pl evaluates them as Perl code (line "
-                f"{numbers}).")
+                f"A directive's arguments must be plain values -- numbers and quoted text with no "
+                f"quote or backslash inside, separated by ',' or '=>' and grouped in {{...}} or "
+                f"[...], with a name only as a key before '=>': BNG2.pl evaluates them as Perl "
+                f"code (line {numbers}).")
         if spaced:
             numbers = ', '.join(str(number) for number in spaced)
             why.append(

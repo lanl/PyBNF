@@ -5446,8 +5446,28 @@ class TestFixedModelParameterImport:
             + f'begin actions\n{call}\nwriteModel({{prefix=>"after"}})\nend actions\n') == 3.0
         yaml = _fixed_v3_problem(tmp_path,
                                  model_text=model + f'begin actions\n  {call}\nend actions\n')
-        with pytest.raises((PybnfError, NotImplementedError)):
+        with pytest.raises(PybnfError, match="A directive's arguments must be plain values"):
             import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.parametrize('call', [
+        # Review addition: arguments Perl does not read as the values they look like (a bare
+        # value is a strict-mode abort or a call, `4 -2` is an expression, and BNG2.pl's
+        # " -> ' swap ends "H'Nauty" early). The import refuses each, naming the line and why.
+        'generate_network({overwrite=>1,max_stoich=>{A=>unlimited}})',
+        'generate_network({overwrite=>1,max_agg=>4 -2})',
+        'setOption("SpeciesLabel","H\'Nauty")',
+    ])
+    def test_a_directive_perl_reads_differently_is_refused_at_import(self, tmp_path, call):
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+        text = model + f'begin actions\n{call}\nend actions\n'
+        number = text.splitlines().index(call) + 1
+        yaml = _fixed_v3_problem(tmp_path, model_text=text)
+        with pytest.raises(PybnfError) as refused:
+            import_job(yaml, tmp_path / 'out')
+        assert f'line {number}: {call}' in str(refused.value)
+        assert ("A directive's arguments must be plain values" in str(refused.value)
+                and f"as Perl code (line {number})" in str(refused.value))
+        assert not (tmp_path / 'out').exists() or not any((tmp_path / 'out').iterdir())
 
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')

@@ -5261,6 +5261,26 @@ class TestEdition2ModelActionsRule:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load
 
+    @pytest.mark.parametrize('line, blocked', [
+        # Review addition: the plain-values reason at load and at export, from both places a
+        # directive stands (a loose setOption and an actions-block generate_network). A bare
+        # value is a strict-mode abort or a call under BNG2.pl, and `4 -2` an expression.
+        ('setOption("SpeciesLabel",HNauty)', False),
+        ('generate_network({overwrite=>1,max_agg=>4 -2})', True),
+    ])
+    def test_a_directive_perl_reads_differently_is_refused_at_load_and_export(
+            self, tmp_path, monkeypatch, line, blocked):
+        conf = _decay_job(tmp_path / 'job',
+                          _block(line) if blocked else f'{line}\n{_block(self.GEN)}')
+        number = self._line_of(conf, line)
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: {line}' in at_load
+                and "A directive's arguments must be plain values" in at_load
+                and f'as Perl code (line {number})' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
     def test_setmodelname_is_refused_at_load_and_export(self, tmp_path, monkeypatch):
         # #969 review. setModelName renames the files BioNetGen writes, so PyBNF does not find
         # them and every simulation of the model fails, on BNG2.pl with a missing-file error.

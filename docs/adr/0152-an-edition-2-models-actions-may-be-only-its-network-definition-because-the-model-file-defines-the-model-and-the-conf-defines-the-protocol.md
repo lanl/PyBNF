@@ -64,13 +64,22 @@ for byte, so it could bring such actions into an imported job too.
    - an allowed directive whose arguments are not plain values. BNG2.pl evaluates the
      arguments as Perl too, so `setOption("NumberPerQuantityUnit", $model->simulate_protocol())`
      runs a `begin protocol` block, and a double-quoted string interpolates `$` and `@`. A
-     directive's arguments may hold only numbers, quoted strings (a double-quoted one without
-     `$` or `@`), names used as hash keys or as values, `=>`, commas, and `{...}` or `[...]`
-     of these. The review of #907's protocol-block fix found the hole: it was open on main,
-     and once the #907 import gate stopped counting what a protocol block sets, a directive
-     that ran the block would have turned a refused import into a silently wrong one.
-     Sweeping every BNGL file under the maintainer's model trees (5,953 files) found no
-     directive this refuses that main accepted.
+     directive's arguments must parse as a list of numbers, quoted strings, and `{...}` or
+     `[...]` of these, each element separated from the next by `,` or `=>`, with a name only
+     as a hash key directly before `=>`. A string may hold no quote character and no
+     backslash, and a double-quoted one no `$` or `@`; a number has no leading zero. The
+     review of #907's protocol-block fix found the hole: it was open on main, and once the
+     #907 import gate stopped counting what a protocol block sets, a directive that ran the
+     block would have turned a refused import into a silently wrong one. A second review
+     replaced a token check with this grammar, because Perl did not read every token
+     sequence the check accepted as the values it looked like: two values with nothing
+     between them are an expression (`max_agg=>4 -2` is 2), `010` is octal 8, and BNG2.pl
+     turns every `"` of an action-block line into `'` before it evaluates the line, so
+     `"H'Nauty"` is no longer one string. A bare value is never data to BNG2.pl, which runs
+     under `use strict`: `max_stoich=>{A=>unlimited}` aborts it, and a bareword it accepts is
+     a call. Sweeping every BNGL file under the maintainer's model trees (5,953 files, 4,604
+     directive lines) found one directive this refuses that main accepted: the bare value in
+     a BNGParser test copy of `MWC.bngl`, which BNG2.pl 2.9.3 aborts on.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a
