@@ -5387,6 +5387,52 @@ class TestEdition2ModelActionsRule:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load
 
+    @staticmethod
+    def _dimer_job(tmp_path, text):
+        """An edition-2 job fitting ``k`` of ``text`` to the CountUnique dimer count."""
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'dimer.bngl').write_text(text)
+        (job / 'dimer.exp').write_text('# time\tD\n' + ''.join(
+            f'{t}\t{50 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+        conf = job / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                        'objective = sos\nmodel: dimer.bngl\nexperiment: tc, data: dimer.exp\n'
+                        'uniform_var = k 0.01 3.0\n')
+        return conf
+
+    def test_a_setoption_whose_name_a_continuation_indents_is_refused(self, tmp_path,
+                                                                       monkeypatch):
+        # Second review (#969). The continued line's indentation lands inside the quoted option
+        # name, so the scanner reads "MoleculesObservables" and BNG2.pl reads
+        # "MoleculesObs    ervables", an unknown option it stores without a word. Both are one
+        # plain call, so the job loaded. The fit writes the stripped lines and counted under
+        # CountUnique; the export keeps the lines as written, and a consumer counted under
+        # CountAll. The oracle is BNG2.pl on each text.
+        _bng2_or_skip()
+        simulate = _block(self.GEN, 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})')
+        runs = {}
+        for name, option in [('written', 'setOption("MoleculesObs\\\n    ervables","CountUnique")'),
+                             ('stripped', 'setOption("MoleculesObs\\\nervables","CountUnique")')]:
+            ran = Data(file_name=str(_run_bng2(_DIMER_BNGL + f'{option}\n{simulate}',
+                                               tmp_path / 'bng', name) / f'{name}_tc.gdat'))
+            runs[name] = ran.data[:, ran.cols['D']]
+        t = np.arange(5.0)
+        np.testing.assert_allclose(runs['written'], 100 * np.exp(-0.5 * t), rtol=1e-5)
+        np.testing.assert_allclose(runs['stripped'], 50 * np.exp(-0.5 * t), rtol=1e-5)
+        text = (_DIMER_BNGL + 'setOption("MoleculesObs\\\n    ervables","CountUnique")\n'
+                + _block(self.GEN))
+        conf = self._dimer_job(tmp_path, text)
+        number = text.splitlines().index('setOption("MoleculesObs\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: setOption("MoleculesObservables","CountUnique"). '
+                f'In an edition-2' in at_load), at_load
+        assert ("so it does not read this directive as the call shown" in at_load
+                and f'inside it (line {number}).' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
 
 _CHAIN_BNGL = """\
 begin model

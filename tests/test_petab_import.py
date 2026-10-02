@@ -5488,6 +5488,23 @@ class TestFixedModelParameterImport:
                 in str(refused.value)
                 and f'inside it (line {number}).' in str(refused.value)), str(refused.value)
 
+    @pytest.mark.parametrize('extra, first, reason', [
+        # Second review: a continuation indented inside a quoted option name (BNG2.pl reads
+        # "SpeciesLab  el", the scanner "SpeciesLabel"). It passed the import's check before;
+        # it is now refused with its reason.
+        ('setOption("SpeciesLab\\\n  el","HNauty")\n', 'setOption("SpeciesLab\\',
+         "so it does not read this directive as the call shown"),
+    ])
+    def test_a_continuation_bng2_reads_otherwise_is_refused_at_import(self, tmp_path, extra,
+                                                                        first, reason):
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + extra
+        number = text.splitlines().index(first) + 1
+        with pytest.raises(PybnfError) as refused:
+            import_job(_fixed_v3_problem(tmp_path, model_text=text), tmp_path / 'out')
+        assert reason in str(refused.value) and f'(line {number}).' in str(refused.value), \
+            str(refused.value)
+        assert not (tmp_path / 'out').exists() or not any((tmp_path / 'out').iterdir())
+
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')
         with pytest.raises(PybnfError, match="'v3' has estimate=false with nominalValue inf, "

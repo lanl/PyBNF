@@ -87,8 +87,14 @@ for byte, so it could bring such actions into an imported job too.
      `"CountUnique")` was one setOption to the scanner and loaded, while BNG2.pl skipped both
      halves as unidentified input and counted under CountAll: a job fitting the dimer count
      scored 1964 at the true rate constant instead of 0. The rule now checks a directive both
-     as the scanner joins it and as BNG2.pl does. The seven continued directives in the swept
-     trees continue between arguments, and still load.
+     as the scanner joins it and as BNG2.pl does, and requires the same call both ways, token
+     for token. Each reading alone can be one plain call: when a continued line's indentation
+     lands inside a quoted string, `setOption("MoleculesObs\` then `    ervables","CountUnique")`
+     is `"MoleculesObservables"` to the scanner and `"MoleculesObs    ervables"` to BNG2.pl,
+     an unknown option it stores without a word. The fit writes the scanner's stripped lines
+     and counted under CountUnique, while the export keeps the lines as written, and BNG2.pl
+     counted that model under CountAll (found by the third review). The seven continued
+     directives in the swept trees continue between arguments, and still load.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a

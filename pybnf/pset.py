@@ -124,10 +124,31 @@ def _bng2_statement(raw_lines, indices):
 def _is_single_directive_call_as_read(statement, raw_lines, indices):
     """Whether ``statement``, which the scanner joined from the physical lines ``indices`` of
     ``raw_lines``, is one allowed directive call (:func:`_is_single_directive_call`) both as
-    the scanner reads it and as BNG2.pl reads it (:func:`_bng2_statement`)."""
+    the scanner reads it and as BNG2.pl reads it (:func:`_bng2_statement`), and the same call
+    both ways: the same directive with the same argument tokens (:func:`_directive_tokens`).
+
+    Both readings can be plain and still differ, when the indentation of a continued line
+    lands inside a quoted string: ``setOption("MoleculesObs\\`` then
+    ``    ervables","CountUnique")`` is ``"MoleculesObservables"`` to the scanner and
+    ``"MoleculesObs    ervables"`` to BNG2.pl, which stores that unknown option and counts
+    under CountAll. The fit writes the scanner's stripped lines and so applies CountUnique,
+    while the PEtab export keeps the lines as written, so the two would disagree (#969
+    review)."""
     as_bng2 = _bng2_statement(raw_lines, indices)
     return (_is_single_directive_call(statement) and as_bng2 is not None
-            and _is_single_directive_call(as_bng2))
+            and _is_single_directive_call(as_bng2)
+            and _directive_tokens(as_bng2) == _directive_tokens(statement))
+
+
+def _directive_tokens(statement):
+    """The allowed directive call ``statement`` starts with, as its name and the tokens of its
+    arguments (:func:`_plain_argument_tokens`, the space between tokens dropped), or ``None``
+    if it does not start with one or its arguments do not tokenize."""
+    split = _split_directive_call(statement)
+    if split is None:
+        return None
+    tokens = _plain_argument_tokens(split[0])
+    return None if tokens is None else (_DIRECTIVE_CALL.match(statement).group(1), tokens)
 
 
 def _directive_call_tail(statement):
@@ -190,16 +211,23 @@ def _directive_arguments_are_plain(arguments):
     ``use strict`` refuses unless Perl reads it as a call, so no bare value is data
     (``max_stoich=>{A=>unlimited}`` aborts BNG2.pl; ``"unlimited"`` is the value it reads);
     Perl's ``=>`` quotes any name on its left, ``q``, ``s`` and ``sub`` included."""
+    tokens = _plain_argument_tokens(arguments)
+    return tokens is not None and _plain_list_end(tokens, 0, None) == len(tokens)
+
+
+def _plain_argument_tokens(arguments):
+    """The tokens of a directive's ``arguments`` as ``(kind, text)`` pairs, whitespace between
+    them dropped (``_PLAIN_ARGUMENT_TOKEN``), or ``None`` if some text is not a token."""
     tokens = []
     i = 0
     while i < len(arguments):
         match = _PLAIN_ARGUMENT_TOKEN.match(arguments, i)
         if not match:
-            return False
+            return None
         if match.lastgroup != 'space':
             tokens.append((match.lastgroup, match.group()))
         i = match.end()
-    return _plain_list_end(tokens, 0, None) == len(tokens)
+    return tokens
 
 
 def _plain_list_end(tokens, k, closer):

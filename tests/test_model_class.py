@@ -647,6 +647,37 @@ class TestRequireNoProtocolActions:
         m, _ = _scan(actions)
         m.require_no_protocol_actions('m.bngl')
 
+    @pytest.mark.parametrize('actions, first', [
+        # Second review: the two readings can each be one plain call and still differ, when a
+        # continued line's indentation lands inside a quoted string. The fit writes the
+        # scanner's stripped lines (the first reading); the export keeps the lines as written,
+        # and BNG2.pl reads them with the indentation (the second).
+        ('setOption("MoleculesObs\\\n    ervables","CountUnique")\n',
+         'setOption("MoleculesObs\\'),                    # "MoleculesObs    ervables"
+        ('begin actions\nsetOption("SpeciesLabel","HNa\\\n\tuty")\nend actions\n',
+         'setOption("SpeciesLabel","HNa\\'),              # "HNa\tuty"
+        ('begin actions\ngenerate_network({overwrite=>1,max_stoich=>{"A\\\n  "=>2}})\n'
+         'end actions\n', 'generate_network({overwrite=>1,max_stoich=>{"A\\'),   # "A  "
+    ])
+    def test_a_directive_bng2_reads_as_a_different_plain_call_is_refused(self, actions, first):
+        m, lines = _scan(actions)
+        with pytest.raises(PybnfError) as refused:
+            m.require_no_protocol_actions('m.bngl')
+        assert ("it does not read this directive as the call shown: continue a directive only "
+                f"between its arguments, with no blank or comment line inside it (line "
+                f"{lines[first]}).") in str(refused.value)
+
+    @pytest.mark.parametrize('actions', [
+        # The same splits with nothing in front of the second half, and a split between the
+        # directive's name and its parenthesis: BNG2.pl reads each as the scanner does.
+        'setOption("MoleculesObs\\\nervables","CountUnique")\n',
+        'begin actions\nsetOption("SpeciesLabel","HNa\\\nuty")\nend actions\n',
+        'setOption\\\n   ("SpeciesLabel","HNauty")\n',
+    ])
+    def test_a_directive_bng2_reads_as_the_same_call_is_accepted(self, actions):
+        m, _ = _scan(actions)
+        m.require_no_protocol_actions('m.bngl')
+
     @pytest.mark.bionetgen
     def test_bng2_reads_a_bare_value_or_a_quote_inside_a_string_as_code(self, tmp_path):
         # Review addition, the oracle for refusing these two shapes: BNG2.pl does not read
