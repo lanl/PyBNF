@@ -197,8 +197,12 @@ _ACTION_PARAMETER = re.compile(
     r'''(?:\bsetParameter\s*\(\s*|\bparameter["']?\s*(?:=>|,)\s*)["'](\w+)["']''')
 
 
-_PROTOCOL_BEGIN = re.compile(r'^begin\s+protocol\b', re.I)
-_PROTOCOL_END = re.compile(r'^end\s+protocol\b', re.I)
+# The delimiters of a ``begin protocol`` block, matched case-sensitively as BNG2.pl matches
+# them (and as BNGLModel's scan does). BNG2.pl does not read ``Begin Protocol`` as a block: it
+# skips the line as unidentified input and runs the lines under it as loose actions, so a
+# ``setParameter`` there does run.
+_PROTOCOL_BEGIN = re.compile(r'^begin\s+protocol\b')
+_PROTOCOL_END = re.compile(r'^end\s+protocol\b')
 
 
 def parameters_set_by_actions(text):
@@ -208,9 +212,10 @@ def parameters_set_by_actions(text):
 
     The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907):
     an action that sets the parameter would set it again. A ``begin protocol`` block is not
-    such an action. BioNetGen only stores it, and runs it only when a
-    ``simulate({method=>"protocol"})`` action calls it; an imported job never calls it (the
-    #969 check refuses that action in the model, and PyBNF never writes one), so a
+    such an action. BNG2.pl only stores it, and runs it only when an action calls it: a
+    ``simulate_protocol`` action, or a ``parameter_scan`` or ``bifurcate`` with
+    ``method=>"protocol"`` (``simulate`` has no protocol method). An imported job never calls
+    it (the #969 check refuses those actions in the model, and PyBNF never writes one), so a
     ``setParameter`` inside the block never runs and cannot override the table's value.
     Since #969 refuses every other action first, this gate is now a second line of defence.
     """
