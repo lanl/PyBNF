@@ -5163,6 +5163,19 @@ def _bng_objective(job_dir, values, monkeypatch, conf='imported.conf'):
     return cfg.obj.evaluate_multiple({name: ds}, cfg.exp_data, ps)
 
 
+def _v3_after_bng2pl(run_dir, model_text):
+    """Run BNG2.pl on ``model_text``, whose actions end by writing ``after.bngl``, in the new
+    directory ``run_dir``, and return the value v3 has there: what the model's own actions
+    left it at."""
+    import subprocess
+    run_dir.mkdir()
+    (run_dir / 'm.bngl').write_text(model_text)
+    subprocess.run([shutil.which('BNG2.pl'), 'm.bngl'], cwd=run_dir, check=True,
+                   capture_output=True)
+    after = (run_dir / 'after.bngl').read_text()
+    return float(re.search(r'^\s*v3\s+(\S+)', after, re.M).group(1))
+
+
 class TestFixedModelParameterImport:
     """#907: an estimate=false row naming a BNGL model parameter is written into the imported
     model copy, marked, listed in the conf header and printed; a model that already agrees is
@@ -5291,7 +5304,7 @@ class TestFixedModelParameterImport:
         # BNG2.pl runs the model file's actions after it loads the model, so an action that
         # sets v3 would undo the value written into `begin parameters`. Since #969 the import
         # refuses any such action before the #907 gate is reached, with the fitter's own
-        # check, naming the line (the gate still covers a `begin protocol` block, below).
+        # check, naming the line (the gate's own reading of these lines is tested below).
         model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
                  + f'\nbegin actions\n  {action}\nend actions\n')
         number = model.splitlines().index(f'  {action}') + 1
@@ -5302,27 +5315,32 @@ class TestFixedModelParameterImport:
                                  rf"PEtab problem the tables define the protocol"):
             import_job(yaml, tmp_path / 'out')
 
-    def test_a_parameter_a_protocol_block_sets_still_meets_the_907_gate(self, tmp_path):
-        # A `begin protocol` block is not an action to the #969 rule (nothing in an edition-2
-        # job runs it), so a setParameter there passes that check and reaches the #907 gate,
-        # which reads every logical line of the model and refuses it.
-        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
-                 + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')
-        yaml = _fixed_v3_problem(tmp_path, model_text=model)
-        with pytest.raises(NotImplementedError,
-                           match="'v3' has estimate=false with nominalValue 10, but an action "
-                                 "in the model fixedsigma_model.bngl"):
-            import_job(yaml, tmp_path / 'out')
+    @pytest.mark.parametrize('model_tail, expected', [
+        # A setParameter inside a begin protocol block never runs in an imported job, so it
+        # is not an action that sets the parameter. Whitespace and comments around the
+        # delimiters do not matter; their case does, as it does to BNG2.pl.
+        ('begin protocol\n  setParameter("v3", 3)\nend protocol\n', set()),
+        ('begin \t protocol  # wash\n  setParameter("v3", 3)\n\tend   protocol # done\n',
+         set()),
+        # BNG2.pl does not read `Begin Protocol` as a block, and runs the line under it
+        # (test_a_protocol_delimiter_counts_only_as_bng2pl_spells_it).
+        ('Begin Protocol\n  setParameter("v3", 3)\nEnd Protocol\n', {'v3'}),
+        # Outside the block the gate still sees it: loose after the block, and in an actions
+        # block after it (the #969 check refuses both first; this is the gate's own reading).
+        ('begin protocol\n  setParameter("v3", 3)\nend protocol\nsetParameter("v1", 2)\n',
+         {'v1'}),
+        ('begin protocol\nend protocol\nbegin actions\n'
+         '  parameter_scan({parameter=>"v2",par_min=>1,par_max=>2,n_scan_pts=>2})\n'
+         'end actions\n', {'v2'}),
+        # A comment that mentions a protocol block does not open one.
+        ('# begin protocol\nsetParameter("v3", 3)\n', {'v3'}),
+    ])
+    def test_the_907_gate_skips_what_a_protocol_block_sets(self, model_tail, expected):
+        from pybnf.petab._bngl import parameters_set_by_actions
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + '\n' + model_tail
+        assert parameters_set_by_actions(text) == expected
 
     @pytest.mark.bionetgen
-    @pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=(
-        'Found in review of the #969 merge: the #907 gate still reads a begin protocol block, '
-        'and says its setParameter "would override the value written into its begin parameters '
-        'line", but nothing in an imported job runs the block. BNG2.pl only stores it for '
-        'simulate({method=>"protocol"}), which #969 refuses in the model and PyBNF never '
-        'synthesizes, so the refusal blocks a problem that would import correctly. Either leave '
-        'the protocol block out of the gate, or refuse the block under #969 with a true reason '
-        '(and rewrite this test and the one above).'))
     def test_a_protocol_block_that_nothing_runs_leaves_the_table_value(self, tmp_path,
                                                                        monkeypatch):
         # Review addition. The oracle is BNG2.pl: given the model with the table's v3 = 10 and
@@ -5347,6 +5365,148 @@ class TestFixedModelParameterImport:
         out = import_job(_fixed_v3_problem(tmp_path, model_text=model), tmp_path / 'out')
         assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
             0., abs=1e-9)
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('placement, call', [
+        ('actions', 'simulate_protocol({})'),
+        ('actions', 'simulate_protocol ({})'),
+        ('actions', '1 simulate_protocol({})'),
+        ('loose', 'simulate_protocol({})'),
+        ('actions', "parameter_scan({parameter=>'v1', par_min=>1, par_max=>2, n_scan_pts=>2, "
+                    "method=>'protocol'})"),
+        ('actions', 'bifurcate({parameter=>"v1",par_min=>1,par_max=>2,n_scan_pts=>2,'
+                    'method=>"protocol"})'),
+    ])
+    def test_every_action_that_runs_a_protocol_block_is_refused(self, tmp_path, placement,
+                                                                call):
+        # Review addition. The gate skips a protocol block because nothing in an imported job
+        # can run it. The oracle is BNG2.pl: each of these calls does run the block (v3 ends at
+        # the block's 3, not the parameters line's 10), so the import must refuse each of them
+        # before the gate is reached, with the #969 check naming the line. (simulate has no
+        # protocol method: BNG2.pl aborts on simulate({method=>"protocol"}).)
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin protocol\n  setParameter("v3", 3)\n'
+                   '  simulate({method=>"ode",t_end=>1,n_steps=>1})\nend protocol\n')
+
+        def calling(*lines):
+            # Not indented: BNG2.pl drops a line index only at the very start of the line.
+            body = ''.join(f'{line}\n' for line in lines)
+            return body if placement == 'loose' else f'begin actions\n{body}end actions\n'
+
+        assert _v3_after_bng2pl(
+            tmp_path / 'bng', model.replace('    v3 3\n', '    v3 10\n')
+            + calling('generate_network({overwrite=>1})', call,
+                      'writeModel({prefix=>"after"})')) == 3.0
+        text = model + calling(call)
+        number = [line.strip() for line in text.splitlines()].index(call) + 1
+        code = ' '.join(re.sub(r'^\d+\s+', '', call).split())
+        with pytest.raises(PybnfError,
+                           match=rf"Model file 'fixedsigma_model\.bngl' carries BNGL actions .* "
+                                 rf"line {number}: {re.escape(code)}\. In a PEtab problem the "
+                                 rf"tables define the protocol"):
+            import_job(_fixed_v3_problem(tmp_path, model_text=text), tmp_path / 'out')
+
+    @pytest.mark.bionetgen
+    @pytest.mark.parametrize('block, runs', [
+        ('Begin Protocol\n  setParameter("v3", 3)\nEnd Protocol\n', True),
+        ('begin protocol\nEND PROTOCOL\n  setParameter("v3", 3)\nend protocol\n', False),
+    ])
+    def test_a_protocol_delimiter_counts_only_as_bng2pl_spells_it(self, tmp_path, monkeypatch,
+                                                                  block, runs):
+        # Review addition. BNG2.pl matches `begin protocol` and `end protocol` case-sensitively:
+        # it skips `Begin Protocol` as unidentified input and runs the setParameter under it,
+        # and it reads `END PROTOCOL` as a line inside the block, which never runs. The gate
+        # must read the delimiters the same way (as first written it matched them in any case,
+        # so it missed the first setParameter and refused the import over the second).
+        from pybnf.petab._bngl import parameters_set_by_actions
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + '\n' + block
+        assert _v3_after_bng2pl(
+            tmp_path / 'bng', model.replace('    v3 3\n', '    v3 10\n')
+            + 'begin actions\ngenerate_network({overwrite=>1})\n'
+              'writeModel({prefix=>"after"})\nend actions\n') == (3.0 if runs else 10.0)
+        assert ('v3' in parameters_set_by_actions(model)) == runs
+        yaml = _fixed_v3_problem(tmp_path, model_text=model)
+        if runs:
+            # The #969 check reads the lines as BNG2.pl does, as loose actions, and refuses them.
+            with pytest.raises(PybnfError, match=r"carries BNGL actions .* line \d+: Begin "
+                                                 r"Protocol; line \d+: setParameter\(\"v3\", 3\)"):
+                import_job(yaml, tmp_path / 'out')
+        else:
+            out = import_job(yaml, tmp_path / 'out')
+            assert _bng_objective(out, {'v1': 0.5, 'v2': 1.}, monkeypatch) == pytest.approx(
+                0., abs=1e-9)
+
+    @pytest.mark.bionetgen
+    def test_a_directive_that_runs_the_protocol_block_is_refused(self, tmp_path):
+        model = ((FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+                 + '\nbegin protocol\n  setParameter("v3", 3)\nend protocol\n')
+        call = 'generate_network({overwrite=>1, ($model->simulate_protocol({})) x 0})'
+        assert _v3_after_bng2pl(
+            tmp_path / 'bng', model.replace('    v3 3\n', '    v3 10\n')
+            + f'begin actions\n{call}\nwriteModel({{prefix=>"after"}})\nend actions\n') == 3.0
+        yaml = _fixed_v3_problem(tmp_path,
+                                 model_text=model + f'begin actions\n  {call}\nend actions\n')
+        with pytest.raises(PybnfError, match="A directive's arguments must be plain values"):
+            import_job(yaml, tmp_path / 'out')
+
+    @pytest.mark.parametrize('call', [
+        # Review addition: arguments Perl does not read as the values they look like (a bare
+        # value is a strict-mode abort or a call, `4 -2` is an expression, and BNG2.pl's
+        # " -> ' swap ends "H'Nauty" early). The import refuses each, naming the line and why.
+        'generate_network({overwrite=>1,max_stoich=>{A=>unlimited}})',
+        'generate_network({overwrite=>1,max_agg=>4 -2})',
+        'setOption("SpeciesLabel","H\'Nauty")',
+    ])
+    def test_a_directive_perl_reads_differently_is_refused_at_import(self, tmp_path, call):
+        model = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text()
+        text = model + f'begin actions\n{call}\nend actions\n'
+        number = text.splitlines().index(call) + 1
+        yaml = _fixed_v3_problem(tmp_path, model_text=text)
+        with pytest.raises(PybnfError) as refused:
+            import_job(yaml, tmp_path / 'out')
+        assert f'line {number}: {call}' in str(refused.value)
+        assert ("A directive's arguments must be plain values" in str(refused.value)
+                and f"as Perl code (line {number})" in str(refused.value))
+        assert not (tmp_path / 'out').exists() or not any((tmp_path / 'out').iterdir())
+
+    @pytest.mark.parametrize('extra, first', [
+        # Review addition: a directive the scanner joins across a comment line or an indented
+        # split name, which BNG2.pl reads otherwise (it skips the first loose, and parses
+        # `max_    agg` in the second). The import refuses each, naming the reason.
+        ('setOption("SpeciesLabel",\\\n# canonical labels\n"HNauty")\n',
+         'setOption("SpeciesLabel",\\'),
+        ('begin actions\ngenerate_network({overwrite=>1,max_\\\n    agg=>2})\nend actions\n',
+         'generate_network({overwrite=>1,max_\\'),
+    ])
+    def test_a_directive_bng2_joins_differently_is_refused_at_import(self, tmp_path, extra,
+                                                                      first):
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + extra
+        number = text.splitlines().index(first) + 1
+        with pytest.raises(PybnfError) as refused:
+            import_job(_fixed_v3_problem(tmp_path, model_text=text), tmp_path / 'out')
+        assert ("BNG2.pl joins a line continued with '\\' to the next line as it stands"
+                in str(refused.value)
+                and f'inside it (line {number}).' in str(refused.value)), str(refused.value)
+
+    @pytest.mark.parametrize('extra, first, reason', [
+        # Second review: a continuation indented inside a quoted option name (BNG2.pl reads
+        # "SpeciesLab  el", the scanner "SpeciesLabel"), and a protocol action still continued
+        # when the file ends, which the scan never read and BNG2.pl runs. Each passed the
+        # import's check before; it now refuses each with its reason.
+        ('setOption("SpeciesLab\\\n  el","HNauty")\n', 'setOption("SpeciesLab\\',
+         "so it does not read this directive as the call shown"),
+        ('setParameter("v3",2)\\\n', 'setParameter("v3",2)\\',
+         "The file ends while a line continued with '\\' is still continued"),
+    ])
+    def test_a_continuation_bng2_reads_otherwise_is_refused_at_import(self, tmp_path, extra,
+                                                                        first, reason):
+        text = (FIXEDSIGMA_DIR / 'fixedsigma_model.bngl').read_text() + extra
+        number = text.splitlines().index(first) + 1
+        with pytest.raises(PybnfError) as refused:
+            import_job(_fixed_v3_problem(tmp_path, model_text=text), tmp_path / 'out')
+        assert reason in str(refused.value) and f'(line {number}).' in str(refused.value), \
+            str(refused.value)
+        assert not (tmp_path / 'out').exists() or not any((tmp_path / 'out').iterdir())
 
     def test_a_non_finite_nominal_value_on_a_model_parameter_is_refused(self, tmp_path):
         yaml = _fixed_v3_problem(tmp_path, v3='inf')
