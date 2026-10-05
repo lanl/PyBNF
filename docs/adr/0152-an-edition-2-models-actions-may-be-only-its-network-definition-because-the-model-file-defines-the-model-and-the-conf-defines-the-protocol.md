@@ -61,6 +61,45 @@ for byte, so it could bring such actions into an imported job too.
      quoted strings. The `;` must follow the closing parenthesis directly: BNG2.pl's reader
      (`\);?\s*$`) does not read `setOption(...) ;` as a call, and skips it outside every block
      with a warning, so the option silently did not apply (found by the second review).
+   - an allowed directive whose arguments are not plain values. BNG2.pl evaluates the
+     arguments as Perl too, so `setOption("NumberPerQuantityUnit", $model->simulate_protocol())`
+     runs a `begin protocol` block, and a double-quoted string interpolates `$` and `@`. A
+     directive's arguments must parse as a list of numbers, quoted strings, and `{...}` or
+     `[...]` of these, each element separated from the next by `,` or `=>`, with a name only
+     as a hash key directly before `=>`. A string may hold no quote character and no
+     backslash, and a double-quoted one no `$` or `@`; a number has no leading zero. The
+     review of #907's protocol-block fix found the hole: it was open on main, and once the
+     #907 import gate stopped counting what a protocol block sets, a directive that ran the
+     block would have turned a refused import into a silently wrong one. A second review
+     replaced a token check with this grammar, because Perl did not read every token
+     sequence the check accepted as the values it looked like: two values with nothing
+     between them are an expression (`max_agg=>4 -2` is 2), `010` is octal 8, and BNG2.pl
+     turns every `"` of an action-block line into `'` before it evaluates the line, so
+     `"H'Nauty"` is no longer one string. A bare value is never data to BNG2.pl, which runs
+     under `use strict`: `max_stoich=>{A=>unlimited}` aborts it, and a bareword it accepts is
+     a call. Sweeping every BNGL file under the maintainer's model trees (5,953 files, 4,604
+     directive lines) found one directive this refuses that main accepted: the bare value in
+     a BNGParser test copy of `MWC.bngl`, which BNG2.pl 2.9.3 aborts on.
+   - an allowed directive that the scanner joins across a `\` continuation differently from
+     BNG2.pl. BNG2.pl's reader appends a continued line as it stands, indentation included,
+     and ends the statement at a blank or comment-only line; the scanner strips each line and
+     continues past both. So `setOption("MoleculesObservables",\`, a comment line, then
+     `"CountUnique")` was one setOption to the scanner and loaded, while BNG2.pl skipped both
+     halves as unidentified input and counted under CountAll: a job fitting the dimer count
+     scored 1964 at the true rate constant instead of 0. The rule now checks a directive both
+     as the scanner joins it and as BNG2.pl does, and requires the same call both ways, token
+     for token. Each reading alone can be one plain call: when a continued line's indentation
+     lands inside a quoted string, `setOption("MoleculesObs\` then `    ervables","CountUnique")`
+     is `"MoleculesObservables"` to the scanner and `"MoleculesObs    ervables"` to BNG2.pl,
+     an unknown option it stores without a word. The fit writes the scanner's stripped lines
+     and counted under CountUnique, while the export keeps the lines as written, and BNG2.pl
+     counted that model under CountAll (found by the third review). The seven continued
+     directives in the swept trees continue between arguments, and still load.
+   - a statement still continued with `\` when the file ends. The scan never reads it, so the
+     rule could not see it: `setParameter("k",5)\` as the file's last line loaded, the export
+     wrote it as it stands, and BNG2.pl removes the `\` and runs it (the XML it writes has
+     k = 5), while the fit, whose own actions block follows the line, ran nothing of it. It is
+     refused with its own reason, whatever the statement is. No swept file ends this way.
 
    What "an action" is comes from the fitter's own scanner, so the rule sees exactly the lines
    the fit would run, in every shape the scanner reads: indented, commented, continued with a
@@ -153,8 +192,9 @@ the PEtab export already assumed.
 ## Consequences
 
 - A job that ran before can now stop at load, when its edition-2 model carries a protocol
-  action, a `setModelName`, or a directive line with a second statement. The message names
-  every such line, up to ten, and says why for the last two.
+  action, a `setModelName`, a directive line with a second statement, or a directive whose
+  arguments are not plain values. The message names every such line, up to ten, and says why
+  for all but the first.
 - An edition-2 job that binds a model the legacy way beside its experiments no longer
   exports: the export refuses it, naming the model and its data.
 - #941 (a hand-written `parameter_scan` restores its parameter on bngsim but not on BNG2.pl)

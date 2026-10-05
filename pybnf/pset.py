@@ -85,20 +85,83 @@ _DIRECTIVE_CALL = re.compile(r'(generate_network|setOption|substanceUnits|versio
 
 def _is_single_directive_call(statement):
     """Whether ``statement`` (comment removed, continuations joined) is one allowed directive
-    call and nothing else but an optional ``;``.
+    call with plain-value arguments, and nothing else but an optional ``;``.
 
     BNG2.pl runs an action line by evaluating ``$model->`` + the line as Perl, so whatever
     follows the call's closing parenthesis runs too: ``setOption(...); $model->setParameter(...)``
     sets a parameter (#969 review). The parentheses are matched outside quoted strings. The
     ``;`` must follow the parenthesis directly, as BNG2.pl's reader (``\\);?\\s*$``) requires:
-    it skips ``setOption(...) ;`` outside every block, so the option would not apply."""
-    tail = _directive_call_tail(statement)
-    return tail is not None and re.fullmatch(r';?\s*', tail) is not None
+    it skips ``setOption(...) ;`` outside every block, so the option would not apply. The
+    arguments are Perl too, so they must be plain values (:func:`_directive_arguments_are_plain`):
+    ``generate_network({overwrite=>1, ($model->setParameter("k",5)) x 0})`` sets ``k``."""
+    split = _split_directive_call(statement)
+    if split is None:
+        return False
+    arguments, tail = split
+    return (re.fullmatch(r';?\s*', tail) is not None
+            and _directive_arguments_are_plain(arguments))
+
+
+def _bng2_statement(raw_lines, indices):
+    """The statement BNG2.pl's reader (``BNGModel.pm``'s ``get_line``) makes of the physical
+    lines ``indices`` of ``raw_lines`` that the scanner joined into one, with its line index
+    removed as the scanner removes it, or ``None`` if BNG2.pl does not read them as one
+    statement. BNG2.pl removes each line's comment and the ``\\`` that continues it, and
+    appends the next line as it stands, indentation included, where the scanner strips each
+    line first: ``max_\\`` then ``    agg=>2`` is ``max_    agg=>2`` to Perl. And it ends the
+    statement at a blank or comment-only line, where the scanner continues past it, so a
+    ``setOption`` continued across a comment is two lines BNG2.pl skips outside every block
+    as unidentified input (#969 review)."""
+    indices = sorted(indices)
+    if indices != list(range(indices[0], indices[-1] + 1)):
+        return None
+    text = ''
+    for i in indices:
+        text = re.sub(r'\\\s*$', '', text) + raw_lines[i].split('#', 1)[0]
+    return _strip_action_line_index(text.strip())
+
+
+def _is_single_directive_call_as_read(statement, raw_lines, indices):
+    """Whether ``statement``, which the scanner joined from the physical lines ``indices`` of
+    ``raw_lines``, is one allowed directive call (:func:`_is_single_directive_call`) both as
+    the scanner reads it and as BNG2.pl reads it (:func:`_bng2_statement`), and the same call
+    both ways: the same directive with the same argument tokens (:func:`_directive_tokens`).
+
+    Both readings can be plain and still differ, when the indentation of a continued line
+    lands inside a quoted string: ``setOption("MoleculesObs\\`` then
+    ``    ervables","CountUnique")`` is ``"MoleculesObservables"`` to the scanner and
+    ``"MoleculesObs    ervables"`` to BNG2.pl, which stores that unknown option and counts
+    under CountAll. The fit writes the scanner's stripped lines and so applies CountUnique,
+    while the PEtab export keeps the lines as written, so the two would disagree (#969
+    review)."""
+    as_bng2 = _bng2_statement(raw_lines, indices)
+    return (_is_single_directive_call(statement) and as_bng2 is not None
+            and _is_single_directive_call(as_bng2)
+            and _directive_tokens(as_bng2) == _directive_tokens(statement))
+
+
+def _directive_tokens(statement):
+    """The allowed directive call ``statement`` starts with, as its name and the tokens of its
+    arguments (:func:`_plain_argument_tokens`, the space between tokens dropped), or ``None``
+    if it does not start with one or its arguments do not tokenize."""
+    split = _split_directive_call(statement)
+    if split is None:
+        return None
+    tokens = _plain_argument_tokens(split[0])
+    return None if tokens is None else (_DIRECTIVE_CALL.match(statement).group(1), tokens)
 
 
 def _directive_call_tail(statement):
     """What follows the closing parenthesis of the allowed directive call ``statement`` starts
     with, or ``None`` if it does not start with one or never closes it."""
+    split = _split_directive_call(statement)
+    return None if split is None else split[1]
+
+
+def _split_directive_call(statement):
+    """``(arguments, tail)`` of the allowed directive call ``statement`` starts with -- the
+    text between its parentheses and what follows the closing one -- or ``None`` if it does
+    not start with one or never closes it."""
     match = _DIRECTIVE_CALL.match(statement)
     if not match:
         return None
@@ -117,9 +180,87 @@ def _directive_call_tail(statement):
         elif ch == ')':
             depth -= 1
             if depth == 0:
-                return statement[i + 1:]
+                return statement[match.end():i], statement[i + 1:]
         i += 1
     return None
+
+
+# One token of a plain-value directive argument list, by kind. A name is kept only as a hash
+# key (``_directive_arguments_are_plain``). A number has no leading zero: Perl reads ``010`` as
+# octal 8. A quoted string holds no backslash and no quote character of either kind, and a
+# double-quoted one no ``$`` or ``@`` (Perl interpolates both, and ``"@{[ ... ]}"`` runs
+# code): BNG2.pl turns every ``"`` of an action-block line into ``'`` before it evaluates the
+# line, so a string holding a quote or an escape is not the string Perl reads (``"a'b"``
+# becomes ``'a'b'``), while one holding neither reads the same either way. Nothing else -- a
+# parenthesis, ``$``, ``->``, an operator -- can appear in a plain value.
+_PLAIN_ARGUMENT_TOKEN = re.compile(
+    r'(?P<space>\s+)|(?P<punct>=>|[{}\[\],])|(?P<name>[A-Za-z_]\w*)'
+    r'|(?P<value>[+-]?(?:(?:0|[1-9]\d*)(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'   # a number
+    r"""|'[^'"\\]*'|"[^'"\\$@]*")""")                                   # a string
+
+_CLOSER = {'{': '}', '[': ']'}
+
+
+def _directive_arguments_are_plain(arguments):
+    """Whether a directive's ``arguments`` are plain values only: a list of numbers, quoted
+    text, ``{...}`` and ``[...]`` of them, each element separated from the next by ``,`` or
+    ``=>``, with a name allowed only as a hash key, directly before ``=>``. BNG2.pl evaluates
+    the arguments as Perl, so anything else could run code (#969 review). The list is parsed,
+    not only tokenized: two values with nothing between them are Perl operator syntax
+    (``max_agg=>4 -2`` is 2). A name in any other place is a bareword, which BNG2.pl's
+    ``use strict`` refuses unless Perl reads it as a call, so no bare value is data
+    (``max_stoich=>{A=>unlimited}`` aborts BNG2.pl; ``"unlimited"`` is the value it reads);
+    Perl's ``=>`` quotes any name on its left, ``q``, ``s`` and ``sub`` included."""
+    tokens = _plain_argument_tokens(arguments)
+    return tokens is not None and _plain_list_end(tokens, 0, None) == len(tokens)
+
+
+def _plain_argument_tokens(arguments):
+    """The tokens of a directive's ``arguments`` as ``(kind, text)`` pairs, whitespace between
+    them dropped (``_PLAIN_ARGUMENT_TOKEN``), or ``None`` if some text is not a token."""
+    tokens = []
+    i = 0
+    while i < len(arguments):
+        match = _PLAIN_ARGUMENT_TOKEN.match(arguments, i)
+        if not match:
+            return None
+        if match.lastgroup != 'space':
+            tokens.append((match.lastgroup, match.group()))
+        i = match.end()
+    return tokens
+
+
+def _plain_list_end(tokens, k, closer):
+    """The index of ``closer`` (or of the end, for ``None``) that ends the plain list starting at
+    ``tokens[k]``, or ``None`` if the list is not plain (:func:`_directive_arguments_are_plain`).
+    An element is a value, a name directly before ``=>``, or a nested ``{...}`` / ``[...]``; a
+    ``,`` or ``=>`` must separate it from the next, and only a ``,`` may end the list."""
+    expect_element = True
+    while k < len(tokens):
+        kind, text = tokens[k]
+        if text == closer and (expect_element is False or tokens[k - 1][1] != '=>'):
+            return k
+        if expect_element:
+            if kind == 'value':
+                k += 1
+            elif kind == 'name' and tokens[k + 1:k + 2] == [('punct', '=>')]:
+                k += 1
+            elif text in _CLOSER:
+                end = _plain_list_end(tokens, k + 1, _CLOSER[text])
+                if end is None:
+                    return None
+                k = end + 1
+            else:
+                return None
+            expect_element = False
+        elif text in (',', '=>'):
+            k += 1
+            expect_element = True
+        else:
+            return None
+    if closer is not None or (k and tokens[k - 1][1] == '=>'):
+        return None
+    return k
 
 
 def _format_bngl_number(x):
@@ -649,13 +790,19 @@ class BNGLModel(Model):
         # the files BioNetGen writes, so PyBNF cannot find them.
         self.compound_directive_lines = []
         self.set_model_name_lines = []
+        # A statement still continued with a ``\`` when the file ends, as ``(line number, code)``:
+        # the scan never reads it, while BNG2.pl's reader removes the ``\`` and runs the
+        # statement. The edition-2 rule refuses it, since it could not otherwise check it (#969
+        # review).
+        self.unterminated_continuation_lines = []
         # The indices of the ``setOption``-family lines that carry a line index, which the model
         # text keeps with the index removed: outside a block BNG2.pl does not strip it, and
         # would skip the line (#963).
         self.indexed_directive_line_indices = set()
         param_names_set = set()
         self.split_line_index = None  # for insertion of free parameters
-        all_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
+        raw_lines = self.bngl_file_text.splitlines()   # as BNG2.pl reads them
+        all_lines = [x.strip() for x in raw_lines]
         skip_lines = set()  # Indices of lines that should not go into self.model_lines
         protocol_lines = set()  # The subset of skip_lines that belongs to a protocol block
 
@@ -718,7 +865,7 @@ class BNGLModel(Model):
                     read_as = (min(indices) + 1, ' '.join(statement.split()))
                     if re.match(r'setModelName\b', statement):
                         self.set_model_name_lines.append(read_as)
-                    elif not _is_single_directive_call(statement):
+                    elif not _is_single_directive_call_as_read(statement, raw_lines, indices):
                         self.compound_directive_lines.append(read_as)
                 continue
 
@@ -785,7 +932,7 @@ class BNGLModel(Model):
                     self.generates_network = True
                     self.generate_network_line = statement
                     self.generate_network_lines.append(read_as)
-                    if not _is_single_directive_call(statement):
+                    if not _is_single_directive_call_as_read(statement, raw_lines, indices):
                         self.compound_directive_lines.append(read_as)
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
@@ -803,6 +950,9 @@ class BNGLModel(Model):
             if re.match(r'end\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = True
 
+        if continuation_indices:
+            self.unterminated_continuation_lines.append(
+                (min(continuation_indices) + 1, ' '.join(continuation.split())))
         if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
         self.model_lines = [
@@ -915,13 +1065,15 @@ class BNGLModel(Model):
         ``setOption``, ``substanceUnits`` and ``version`` may remain, each as the one call on
         its line. Anything else raises a :class:`PybnfError` naming the file and each offending
         line: a protocol action, a directive line that carries more than its call (BNG2.pl runs
-        the rest as code), and ``setModelName`` (it renames the files BioNetGen writes).
+        the rest as code), ``setModelName`` (it renames the files BioNetGen writes), and a
+        statement still continued with ``\\`` when the file ends (BNG2.pl runs it; the scan
+        never reads it).
         ``where`` is ``'conf'`` (a job's conf defines the protocol) or ``'petab'`` (a PEtab
         problem's tables do); ``model_file`` defaults to ``file_path``; ``note``, if given, ends
         the message.
         """
         offending = sorted(self.hand_written_actions + self.compound_directive_lines
-                           + self.set_model_name_lines)
+                           + self.set_model_name_lines + self.unterminated_continuation_lines)
         if not offending:
             return
         shown = offending[:10]
@@ -929,24 +1081,56 @@ class BNGLModel(Model):
         if len(offending) > len(shown):
             lines += f'; and {len(offending) - len(shown)} more'
         why = []
+        # A continued directive that is one plain call as the scanner joins it, but not as
+        # BNG2.pl's reader joins it (``_bng2_statement``): it gets that reason alone.
+        rejoined = [number for number, code in self.compound_directive_lines
+                    if _is_single_directive_call(code)]
         # A directive whose only fault is a space before its ``;`` runs nothing after the call:
         # BNG2.pl does not read the line as a call at all, so it gets that reason instead.
         spaced = [number for number, code in self.compound_directive_lines
                   if re.fullmatch(r'\s+;', _directive_call_tail(code) or '')]
+        # A directive that is one call, correctly ended, but whose arguments are not plain
+        # values: BNG2.pl evaluates them as Perl, so they can run code.
+        coded = [number for number, code in self.compound_directive_lines
+                 if number not in spaced and number not in rejoined
+                 and _directive_call_tail(code) is not None
+                 and re.fullmatch(r';?\s*', _directive_call_tail(code))]
         compound = [number for number, _ in self.compound_directive_lines
-                    if number not in spaced]
+                    if number not in spaced and number not in coded and number not in rejoined]
         if compound:
             numbers = ', '.join(str(number) for number in compound)
             why.append(
                 f"A directive must be the only statement on its line, with nothing after its "
                 f"call but a comment: BNG2.pl runs the rest of the line as code (line "
                 f"{numbers}).")
+        if coded:
+            numbers = ', '.join(str(number) for number in coded)
+            why.append(
+                f"A directive's arguments must be plain values -- numbers and quoted text with no "
+                f"quote or backslash inside, separated by ',' or '=>' and grouped in {{...}} or "
+                f"[...], with a name only as a key before '=>': BNG2.pl evaluates them as Perl "
+                f"code (line {numbers}).")
         if spaced:
             numbers = ', '.join(str(number) for number in spaced)
             why.append(
                 f"BNG2.pl reads a directive as a call only when a ';' after it follows its "
                 f"closing parenthesis directly: it skips any other such line outside every "
                 f"block, where the setOption family stays, and aborts on it inside one (line "
+                f"{numbers}).")
+        if rejoined:
+            numbers = ', '.join(str(number) for number in rejoined)
+            why.append(
+                f"BNG2.pl joins a line continued with '\\' to the next line as it stands, "
+                f"indentation included, and ends the directive at a blank or comment line, so "
+                f"it does not read this directive as the call shown: continue a directive only "
+                f"between its arguments, with no blank or comment line inside it (line "
+                f"{numbers}).")
+        if self.unterminated_continuation_lines:
+            numbers = ', '.join(str(number) for number, _ in self.unterminated_continuation_lines)
+            why.append(
+                f"The file ends while a line continued with '\\' is still continued: BNG2.pl "
+                f"removes the '\\' and runs the statement, but PyBNF does not read it, so this "
+                f"check cannot see it and the fit would not run it. Delete the '\\' (line "
                 f"{numbers}).")
         if self.set_model_name_lines:
             numbers = ', '.join(str(number) for number, _ in self.set_model_name_lines)

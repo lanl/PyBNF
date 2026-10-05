@@ -5261,6 +5261,26 @@ class TestEdition2ModelActionsRule:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load
 
+    @pytest.mark.parametrize('line, blocked', [
+        # Review addition: the plain-values reason at load and at export, from both places a
+        # directive stands (a loose setOption and an actions-block generate_network). A bare
+        # value is a strict-mode abort or a call under BNG2.pl, and `4 -2` an expression.
+        ('setOption("SpeciesLabel",HNauty)', False),
+        ('generate_network({overwrite=>1,max_agg=>4 -2})', True),
+    ])
+    def test_a_directive_perl_reads_differently_is_refused_at_load_and_export(
+            self, tmp_path, monkeypatch, line, blocked):
+        conf = _decay_job(tmp_path / 'job',
+                          _block(line) if blocked else f'{line}\n{_block(self.GEN)}')
+        number = self._line_of(conf, line)
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: {line}' in at_load
+                and "A directive's arguments must be plain values" in at_load
+                and f'as Perl code (line {number})' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
     def test_setmodelname_is_refused_at_load_and_export(self, tmp_path, monkeypatch):
         # #969 review. setModelName renames the files BioNetGen writes, so PyBNF does not find
         # them and every simulation of the model fails, on BNG2.pl with a missing-file error.
@@ -5326,6 +5346,113 @@ class TestEdition2ModelActionsRule:
                 f"block, where the setOption family stays, and aborts on it inside one (line "
                 f"{number})." in at_load), at_load
         assert 'runs the rest of the line as code' not in at_load, at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
+    def test_a_setoption_continued_across_a_comment_is_refused(self, tmp_path, monkeypatch):
+        # Review addition (#969). BNG2.pl's reader ends a continued statement at a comment or
+        # blank line; the scanner continues past it and read this as one setOption, so the
+        # job loaded. Outside every block BNG2.pl skips both halves as "Unidentified input"
+        # and runs under CountAll: the oracle is BNG2.pl on the model file, which counts each
+        # dimer twice (100 e^-kt, not the data's 50 e^-kt). Before the fix the job loaded and
+        # scored 1964 at the true k, against 1e-12 with the option on one line.
+        _bng2_or_skip()
+        continued = ('setOption("MoleculesObservables",\\\n# count each dimer once\n'
+                     '"CountUnique")')
+        simulate = 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})\n'
+        text = _DIMER_BNGL + f'{continued}\n{_block(self.GEN)}'
+        ran = Data(file_name=str(_run_bng2(text + simulate, tmp_path / 'bng', 'continued')
+                                 / 'continued_tc.gdat'))
+        t = ran.data[:, ran.cols['time']]
+        np.testing.assert_allclose(ran.data[:, ran.cols['D']], 100 * np.exp(-0.5 * t),
+                                   rtol=1e-5)
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'dimer.bngl').write_text(text)
+        (job / 'dimer.exp').write_text('# time\tD\n' + ''.join(
+            f'{t}\t{50 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+        conf = job / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                        'objective = sos\nmodel: dimer.bngl\nexperiment: tc, data: dimer.exp\n'
+                        'uniform_var = k 0.01 3.0\n')
+        number = text.splitlines().index('setOption("MoleculesObservables",\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: setOption("MoleculesObservables","CountUnique"). '
+                f'In an edition-2' in at_load), at_load
+        assert ("and ends the directive at a blank or comment line, so it does not read this "
+                "directive as the call shown" in at_load
+                and f'inside it (line {number}).' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
+    @staticmethod
+    def _dimer_job(tmp_path, text):
+        """An edition-2 job fitting ``k`` of ``text`` to the CountUnique dimer count."""
+        job = tmp_path / 'job'
+        job.mkdir()
+        (job / 'dimer.bngl').write_text(text)
+        (job / 'dimer.exp').write_text('# time\tD\n' + ''.join(
+            f'{t}\t{50 * np.exp(-0.5 * t):.10g}\n' for t in range(5)))
+        conf = job / 'job.conf'
+        conf.write_text('edition = 2\njob_type = de\npopulation_size = 12\nmax_iterations = 40\n'
+                        'objective = sos\nmodel: dimer.bngl\nexperiment: tc, data: dimer.exp\n'
+                        'uniform_var = k 0.01 3.0\n')
+        return conf
+
+    def test_a_setoption_whose_name_a_continuation_indents_is_refused(self, tmp_path,
+                                                                       monkeypatch):
+        # Second review (#969). The continued line's indentation lands inside the quoted option
+        # name, so the scanner reads "MoleculesObservables" and BNG2.pl reads
+        # "MoleculesObs    ervables", an unknown option it stores without a word. Both are one
+        # plain call, so the job loaded. The fit writes the stripped lines and counted under
+        # CountUnique; the export keeps the lines as written, and a consumer counted under
+        # CountAll. The oracle is BNG2.pl on each text.
+        _bng2_or_skip()
+        simulate = _block(self.GEN, 'simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"tc"})')
+        runs = {}
+        for name, option in [('written', 'setOption("MoleculesObs\\\n    ervables","CountUnique")'),
+                             ('stripped', 'setOption("MoleculesObs\\\nervables","CountUnique")')]:
+            ran = Data(file_name=str(_run_bng2(_DIMER_BNGL + f'{option}\n{simulate}',
+                                               tmp_path / 'bng', name) / f'{name}_tc.gdat'))
+            runs[name] = ran.data[:, ran.cols['D']]
+        t = np.arange(5.0)
+        np.testing.assert_allclose(runs['written'], 100 * np.exp(-0.5 * t), rtol=1e-5)
+        np.testing.assert_allclose(runs['stripped'], 50 * np.exp(-0.5 * t), rtol=1e-5)
+        text = (_DIMER_BNGL + 'setOption("MoleculesObs\\\n    ervables","CountUnique")\n'
+                + _block(self.GEN))
+        conf = self._dimer_job(tmp_path, text)
+        number = text.splitlines().index('setOption("MoleculesObs\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert (f'-- line {number}: setOption("MoleculesObservables","CountUnique"). '
+                f'In an edition-2' in at_load), at_load
+        assert ("so it does not read this directive as the call shown" in at_load
+                and f'inside it (line {number}).' in at_load), at_load
+        with pytest.raises(PybnfError) as at_export:
+            export_job(conf, tmp_path / 'out')
+        assert str(at_export.value) == at_load
+
+    def test_a_setparameter_continued_into_the_end_of_the_file_is_refused(self, tmp_path,
+                                                                           monkeypatch):
+        # Second review (#969). The scan never read a statement the file ends under while it is
+        # still continued, so this setParameter passed the rule: the job loaded, and the export
+        # wrote the line as it stands. BNG2.pl removes the '\' and runs it -- the oracle is the
+        # XML it writes after reading the file, with k = 5 -- while the fit, whose own actions
+        # block follows the line, ran nothing of it.
+        _bng2_or_skip()
+        text = _DIMER_BNGL + _block(self.GEN) + 'setParameter("k",5)\\\n'
+        ran = _run_bng2(text, tmp_path / 'bng', 'eof')
+        import subprocess
+        subprocess.run([str(_bng2_or_skip()), '--xml', 'eof.bngl'], cwd=ran, check=True,
+                       capture_output=True, text=True)
+        assert 'id="k" type="Constant" value="5"' in (ran / 'eof.xml').read_text()
+        conf = self._dimer_job(tmp_path, text)
+        number = text.splitlines().index('setParameter("k",5)\\') + 1
+        at_load = self._load_error(conf, monkeypatch)
+        assert f'-- line {number}: setParameter("k",5). In an edition-2' in at_load, at_load
+        assert ("The file ends while a line continued with '\\' is still continued" in at_load
+                and f"Delete the '\\' (line {number})." in at_load), at_load
         with pytest.raises(PybnfError) as at_export:
             export_job(conf, tmp_path / 'out')
         assert str(at_export.value) == at_load

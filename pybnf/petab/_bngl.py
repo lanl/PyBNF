@@ -197,18 +197,38 @@ _ACTION_PARAMETER = re.compile(
     r'''(?:\bsetParameter\s*\(\s*|\bparameter["']?\s*(?:=>|,)\s*)["'](\w+)["']''')
 
 
+# The delimiters of a ``begin protocol`` block, matched case-sensitively as BNG2.pl matches
+# them (and as BNGLModel's scan does). BNG2.pl does not read ``Begin Protocol`` as a block: it
+# skips the line as unidentified input and runs the lines under it as loose actions, so a
+# ``setParameter`` there does run.
+_PROTOCOL_BEGIN = re.compile(r'^begin\s+protocol\b')
+_PROTOCOL_END = re.compile(r'^end\s+protocol\b')
+
+
 def parameters_set_by_actions(text):
     """The names of the parameters the model file's own actions assign (``setParameter``, or
-    a scan's ``parameter=>``), read over comment-stripped logical lines.
+    a scan's ``parameter=>``), read over comment-stripped logical lines outside any
+    ``begin protocol`` block.
 
-    The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907).
-    Since #969 an edition-2 job refuses a model whose actions set a parameter, so this gate
-    now matters only for a ``setParameter`` inside a ``begin protocol`` block, which nothing
-    in an edition-2 job runs (see the strict xfail
-    ``test_a_protocol_block_that_nothing_runs_leaves_the_table_value``).
+    The importer's gate before it writes a fixed PEtab value into ``begin parameters`` (#907):
+    an action that sets the parameter would set it again. A ``begin protocol`` block is not
+    such an action. BNG2.pl only stores it, and runs it only when an action calls it: a
+    ``simulate_protocol`` action, or a ``parameter_scan`` or ``bifurcate`` with
+    ``method=>"protocol"`` (``simulate`` has no protocol method). An imported job never calls
+    it (the #969 check refuses those actions in the model, and PyBNF never writes one), so a
+    ``setParameter`` inside the block never runs and cannot override the table's value.
+    Since #969 refuses every other action first, this gate is now a second line of defence.
     """
-    return {m.group(1) for line in _logical_lines(text)
-            for m in _ACTION_PARAMETER.finditer(line)}
+    names = set()
+    in_protocol = False
+    for line in _logical_lines(text):
+        if _PROTOCOL_BEGIN.match(line):
+            in_protocol = True
+        elif _PROTOCOL_END.match(line):
+            in_protocol = False
+        elif not in_protocol:
+            names.update(m.group(1) for m in _ACTION_PARAMETER.finditer(line))
+    return names
 
 
 # A BNGL numeric literal: an optional sign, digits with an optional point, and an optional
