@@ -2786,7 +2786,7 @@ For Adaptive MCMC
 
   Prefer :ref:`start_point <start_point>` for new configurations. It is read by every ``job_type``, it is
   matched by **name** rather than by position — ``starting_params`` is positional against declaration
-  order, while every result file PyBNF writes is alphabetical, so round-tripping a result row back into
+  order, while ``samples.txt`` and ``sorted_params_*.txt`` are alphabetical, so round-tripping a result row back into
   it silently permutes the values — and it is validated against the declared bounds. Note also that
   ``continue_run = 1`` overrides ``starting_params`` entirely.
 
