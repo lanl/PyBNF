@@ -147,10 +147,17 @@ _REFUSED_VALUES = {'refine': 0, 'bootstrap': 0}
 # The cluster main() starts; the filter's independent runs use the local one.
 _CLUSTER_KEYS = frozenset({'cluster_type', 'scheduler_file', 'scheduler_node', 'worker_nodes'})
 
-# Global keys the loader acts on before the filter weighs a row, which it cannot honour.
+# Keys the loader acts on before the filter weighs a row, which it cannot honour. Beside the global
+# normalization key, these are config.py's passthrough keys that are not structural: no schema owns
+# them, so the shared check never reports one, and one the filter neither read nor refused would be
+# ignored without a word.
 _REFUSED_GLOBAL_KEYS = {
     'normalization': 'the loader would normalize the data before any row is weighed',
     'postprocess': 'it weighs each segment as integrated and runs no postprocessing script',
+    'mutant': 'it integrates the model without conditions',
+    'expression': 'it weighs the model\'s own segments, not an analytical objective',
+    'callable': 'it weighs the model\'s own segments, not an analytical objective',
+    'data': 'its data are those of its one experiment: line',
 }
 
 # Keys every configuration carries that the parser or the loader fill in.

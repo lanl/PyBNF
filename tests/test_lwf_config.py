@@ -64,6 +64,12 @@ def test_a_postprocessing_script_is_refused_by_name(tmp_path):
     assert 'does not accept postprocess' in message and 'no postprocessing script' in message
 
 
+def test_an_analytical_objective_expression_is_refused_by_name(tmp_path):
+    """An expression line was accepted and ignored: no schema owns it, so neither check saw it."""
+    message = _refusal(tmp_path, extra=['expression = (x - 1)^2'])
+    assert 'does not accept expression' in message and 'analytical objective' in message
+
+
 def test_ind_var_rounding_is_read_by_the_objective_and_not_reported_unused(tmp_path, capsys):
     H.require_bng2pl()
     load_config(C.write_job(tmp_path, replace={'verbosity': None},
@@ -288,6 +294,15 @@ def test_the_key_lists_name_global_keys_only():
     assert (lw._READ_GLOBAL_KEYS | set(lw._REFUSED_VALUES) | lw._CLUSTER_KEYS
             <= set(GlobalConfig.owned_keys()))
     assert lw._STRUCTURAL_KEYS <= config.STRUCTURAL_PASSTHROUGH
+
+
+def test_every_passthrough_key_is_structural_reported_unused_or_refused():
+    """No schema owns a passthrough key, so the shared check never reports one; one the filter
+    neither reads nor refuses would be ignored without a word, as postprocess was."""
+    from pybnf import config
+
+    assert config.STRUCTURAL_PASSTHROUGH <= (lw._STRUCTURAL_KEYS | {'max_iterations'}
+                                             | set(lw._REFUSED_GLOBAL_KEYS))
 
 
 def test_a_petab_export_of_an_lwf_job_is_refused(tmp_path):

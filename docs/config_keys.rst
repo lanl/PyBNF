@@ -3067,8 +3067,8 @@ mean, so it accepts only ``location = mean`` and refuses, rather than warns on, 
 dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
 the kernel then moves the model's free parameters only. A key the filter does not read is reported
 as unused, as under any job type; ``refine`` and ``bootstrap`` other than 0, the cluster keys, and
-``normalization`` and ``postprocess``, which the loader would act on before any row is weighed, are
-refused.
+``normalization``, ``postprocess`` and the analytical-objective keys ``expression``, ``callable`` and
+``data``, which the loader would act on before any row is weighed, are refused.
 
 **lwf_particles**
   The number of particles.
