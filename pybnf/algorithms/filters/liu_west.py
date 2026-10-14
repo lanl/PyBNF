@@ -556,6 +556,9 @@ class LiuWestFilter(Algorithm):
         self._build_integrator(names)
         self._resolve_kernel(names)
         self._rows = [_one_row(self._exp, k) for k in range(len(self.times))]
+        # Each row as it is scored: on the clock of its own segment (see _from_origin).
+        self._scored_rows = [_from_origin(row, 0.0 if k == 0 else float(self.times[k - 1]))
+                             for k, row in enumerate(self._rows)]
         self._seed = self._seed_sequence.entropy
         self._seed_given = config.random_seed_given
         self._run = 0
@@ -1119,8 +1122,8 @@ class LiuWestFilter(Algorithm):
                 zero += 1
                 continue
             score = self.objective.evaluate_multiple(
-                {self.model.name: {self.suffix: segment.data}},
-                {self.model.name: {self.suffix: self._rows[k]}},
+                {self.model.name: {self.suffix: _from_origin(segment.data, t0)}},
+                {self.model.name: {self.suffix: self._scored_rows[k]}},
                 self._pset(theta[i]), show_warnings=(k == 0))
             if score is None or not np.isfinite(score):
                 failed += 1
@@ -1725,6 +1728,18 @@ def _one_row(data, k):
     headers = [data.headers[i] for i in range(len(data.headers))]
     return Data.from_columns(np.array(data.data[k:k + 1], dtype=float), headers,
                              indvar=data.indvar)
+
+
+def _from_origin(data, origin):
+    """``data`` with ``origin`` subtracted from its independent variable. The objective matches a
+    data row to a simulated row with ``np.isclose`` at its default relative tolerance, 1e-5, which
+    cannot tell a segment's two rows apart once its step is below 1e-5 of the time (row 100,000
+    of a series of step 1): it then scores the row on the segment's first row, a raw cumulative
+    value. Measured from the segment's start, the two rows are 0 and one step."""
+    arr = np.array(data.data, dtype=float)
+    arr[:, data.cols[data.indvar]] -= origin
+    headers = [data.headers[i] for i in range(len(data.headers))]
+    return Data.from_columns(arr, headers, indvar=data.indvar)
 
 
 def _time_headers(times):
