@@ -83,6 +83,7 @@ repos:
           tests/test_bngsim_segment.py
           tests/test_lwf.py
           tests/test_lwf_config.py
+          tests/test_lwf_oracles.py
           tests/test_lwf_runs.py
           tests/test_lwf_state.py
           tests/test_tutorial_liu_west.py
