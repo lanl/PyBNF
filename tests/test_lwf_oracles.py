@@ -12,16 +12,31 @@ must refuse rather than run.
   has its own line.
 * ``neg_bin_r``, which ``objective = neg_bin`` reads as the whole-fit dispersion the filter
   compares with the column's, must not be reported as unused.
+
+A second review of the fixes added:
+
+* Rows 1, 99,999 and 100,000 of a time-invariant model score alike under either
+  ``ind_var_rounding``, as scipy's negative binomial at scipy's ODE increment.
+* ``_exact`` reads back as the same double for every finite double, and through the parser.
+* ``lwf_jitter`` is used wherever it is accepted and refused wherever nothing uses it.
+* A job with no free parameter is refused naming that cause.
+* ``neg_bin_r`` is reported or refused when nothing reads it.
+* A state file holding a negative predicted count is refused.
 """
 
+import io
 import shutil
+import struct
+from contextlib import redirect_stdout
 
 import numpy as np
 import pytest
 from scipy import stats
 from scipy.integrate import solve_ivp
 
+from pybnf.algorithms.filters import liu_west as lw
 from pybnf.algorithms.filters.liu_west import _Population
+from pybnf.objective import _build_sigma_source
 from pybnf.printing import PybnfError
 
 from . import lwf_harness as C
@@ -158,7 +173,7 @@ def test_lwf_jitter_is_refused_when_every_free_parameter_acts_only_on_the_initia
     replace = {k: (v.format(r=20) if v else v) for k, v in FIXED.items()}
     replace.update({'loguniform_var = beta': None, 'uniform_var = gamma': None})
     conf = C.write_job(tmp_path, replace=replace, extra=['lwf_jitter = 0.4'])
-    with pytest.raises(PybnfError, match='lwf_jitter'):
+    with pytest.raises(PybnfError, match=r'moves no parameter: every free parameter \(I0\)'):
         C.build(conf)
 
 
@@ -185,3 +200,165 @@ def test_neg_bin_r_is_not_reported_unused_when_the_whole_fit_objective_reads_it(
         printing.verbosity = level
     assert alg._dispersion_value == 5.0
     assert 'neg_bin_r is not used' not in capsys.readouterr().out
+
+
+FIXED_20 = {
+    'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+    'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at 20, location = mean, '
+                         'cumulative',
+    'loguniform_var = r': None,
+}
+NO_RATES = {'loguniform_var = beta': None, 'uniform_var = gamma': None}
+NO_GAMMA = {'uniform_var = gamma': None}
+NO_I0 = {'loguniform_var = I0': None}
+
+
+def _scipy_increment(beta, gamma, i0, span):
+    """rho (C(span) - C(0)) of lwf_harness.MODEL from its seed state, by scipy's LSODA."""
+    def rhs(_t, y):
+        s, i, _r, _c = y
+        infection = beta / N * s * i
+        return [-infection, infection - gamma * i, gamma * i, infection]
+    sol = solve_ivp(rhs, (0.0, span), [N - i0, i0, 0.0, 0.0], t_eval=[0.0, span],
+                    method='LSODA', rtol=1e-12, atol=1e-12)
+    assert sol.success
+    return RHO * (sol.y[3, -1] - sol.y[3, 0])
+
+
+@pytest.mark.parametrize('rounding', [0, 1])
+def test_rows_1_99999_and_100000_score_one_segment_alike_and_as_scipy_does(tmp_path, rounding):
+    """The model is time-invariant, so a particle integrated from its seed state over [t0, t0 + 1]
+    predicts the same increment at any t0. Row 1 (t0 = 0), row 99,999 (one step short of the
+    1e-5 ambiguity) and row 100,000 (on it) must therefore score alike, and each must be
+    nbinom.logpmf(4 | r, increment) at scipy's increment, which no PyBNF code computes."""
+    rows = 100_000
+    alg = C.build(C.write_job(tmp_path, counts=[4] * rows, replace={
+        'lwf_particles': 'lwf_particles = 6'}, extra=['ind_var_rounding = %d' % rounding]))
+    assert alg.objective.rounding == rounding
+    pop = alg._initial_population()
+    theta = alg._theta(pop.u)
+    names = [v.name for v in alg.variables]
+    beta, gamma, r, i0 = (theta[:, names.index(n)] for n in ('beta', 'gamma', 'r', 'I0'))
+    increment = np.array([_scipy_increment(beta[i], gamma[i], i0[i], 1.0)
+                          for i in range(len(theta))])
+    oracle = stats.nbinom.logpmf(4.0, r, r / (r + increment))
+
+    scored = {}
+    for k in (0, rows - 2, rows - 1):
+        t0 = 0.0 if k == 0 else float(alg.times[k - 1])
+        t1 = float(alg.times[k])
+        assert t1 - t0 == 1.0
+        trial = _Population(u=pop.u.copy(), state=pop.state.copy(), weights=pop.weights)
+        loglik, _, failed, zero = alg._weigh(trial, theta, t0, t1, k, 4.0)
+        assert failed == 0 and zero == 0, k
+        scored[k] = loglik
+        np.testing.assert_allclose(loglik, oracle, rtol=1e-5, err_msg='row %d' % (k + 1))
+    np.testing.assert_allclose(scored[rows - 1], scored[0], rtol=1e-7)
+    np.testing.assert_allclose(scored[rows - 2], scored[0], rtol=1e-7)
+
+
+def test_exact_reads_back_as_the_same_double_for_every_finite_double():
+    """``_exact`` is quoted in the fingerprint and in the hint a user copies into the
+    configuration, so it must parse back, through the noise_model parser, to the very double."""
+    rng = np.random.default_rng(20261014)
+    patterns = rng.integers(0, 2 ** 63, size=20000, dtype=np.uint64)
+    values = [struct.unpack('<d', struct.pack('<Q', int(b)))[0] for b in patterns]
+    values += [20.0, 20.000001, 20.000004, 1e16, 1e22, 1.7976931348623157e308, 5e-324,
+               2.2250738585072014e-308, 1e-7, 0.1, 9007199254740993.0, 123456789012345678.0]
+    for x in (v for v in values if np.isfinite(v)):
+        text = lw._exact(x)
+        assert not text.endswith('.0'), text
+        assert float(text) == x, (x, text)
+        assert _build_sigma_source('fix_at', text).const == x, (x, text)
+
+
+# Every combination: the dispersion free or fixed; the free parameters start-only, moved, or
+# both; lwf_jitter set or not; an lwf_parameter_jitter line on a moved parameter or not. The
+# expectation is the kernel's h per moved parameter, or the phrase the refusal must hold.
+JITTER_CASES = [
+    ('free_r_start_only_jitter', NO_RATES, ['lwf_jitter = 0.4'], {'r': 0.4}),
+    ('free_r_start_only_no_key', NO_RATES, [], {'r': lw.DEFAULT_JITTER}),
+    ('free_r_start_only_line_r', NO_RATES, ['lwf_jitter = 0.4', 'lwf_parameter_jitter = r 0.2'],
+     'every parameter the kernel moves has an lwf_parameter_jitter line (r)'),
+    ('fixed_r_start_only_jitter', {**FIXED_20, **NO_RATES}, ['lwf_jitter = 0.4'],
+     'the kernel moves no parameter: every free parameter (I0)'),
+    ('fixed_r_start_only_no_key', {**FIXED_20, **NO_RATES}, [], {}),
+    ('fixed_r_start_only_line_I0', {**FIXED_20, **NO_RATES}, ['lwf_parameter_jitter = I0 0.2'],
+     'lwf_parameter_jitter names I0, which acts on the model only through its initial state'),
+    ('fixed_r_both_jitter', {**FIXED_20, **NO_GAMMA}, ['lwf_jitter = 0.4'], {'beta': 0.4}),
+    ('fixed_r_both_line_beta', {**FIXED_20, **NO_GAMMA},
+     ['lwf_jitter = 0.4', 'lwf_parameter_jitter = beta 0.2'],
+     'every parameter the kernel moves has an lwf_parameter_jitter line (beta)'),
+    ('fixed_r_both_line_beta_no_key', {**FIXED_20, **NO_GAMMA}, ['lwf_parameter_jitter = beta 0.2'],
+     {'beta': 0.2}),
+    ('fixed_r_moved_only_jitter', {**FIXED_20, **NO_GAMMA, **NO_I0}, ['lwf_jitter = 0.4'],
+     {'beta': 0.4}),
+    ('free_r_both_line_r', NO_GAMMA, ['lwf_jitter = 0.4', 'lwf_parameter_jitter = r 0.2'],
+     {'beta': 0.4, 'r': 0.2}),
+]
+
+
+@pytest.mark.parametrize('replace, extra, expected', [c[1:] for c in JITTER_CASES],
+                         ids=[c[0] for c in JITTER_CASES])
+def test_lwf_jitter_is_used_wherever_it_is_accepted(tmp_path, replace, extra, expected):
+    conf = C.write_job(tmp_path, replace={**replace, 'lwf_particles': 'lwf_particles = 10'},
+                       extra=extra)
+    if isinstance(expected, str):
+        with pytest.raises(PybnfError) as info:
+            C.build(conf)
+        assert expected in info.value.message
+        return
+    alg = C.build(conf)
+    names = [v.name for v in alg.variables]
+    assert {n: float(h) for n, h in zip(names, alg.jitter) if h > 0} == expected
+    assert set(alg.start_only) == {'I0'} & set(names)
+
+
+@pytest.mark.parametrize('extra', [[], ['lwf_jitter = 0.4']], ids=['no_key', 'lwf_jitter'])
+def test_a_job_with_no_free_parameter_is_refused_naming_that_cause(tmp_path, extra):
+    """With the dispersion fixed and no prior line, every particle is the same model: there is
+    nothing to filter. The refusal must say so, not crash in the kernel's set-up, and not say
+    that every free parameter, of which there are none, acts through the initial state."""
+    conf = C.write_job(tmp_path, replace={**FIXED_20, **NO_RATES, **NO_I0}, extra=extra)
+    with pytest.raises(PybnfError, match='no free parameter'):
+        C.build(conf)
+
+
+def test_neg_bin_r_is_reported_when_the_noise_model_lines_leave_it_unread(tmp_path):
+    """With the count declared by the two noise_model lines (dispersion fit r), nothing reads
+    neg_bin_r = 5: the weights and the forecast use r. Before d724ea00 the line was reported as
+    not used; it must still be reported, or refused, rather than accepted without a word."""
+    import pybnf.printing as printing
+    conf = C.write_job(tmp_path, replace={'lwf_particles': 'lwf_particles = 10'},
+                       extra=['neg_bin_r = 5'])
+    level = printing.verbosity
+    printing.verbosity = 1
+    out = io.StringIO()
+    try:
+        with redirect_stdout(out):
+            alg = C.build(conf)
+    except PybnfError as exc:
+        assert 'neg_bin_r' in exc.message
+        return
+    finally:
+        printing.verbosity = level
+    assert alg._dispersion_name == 'r'
+    assert 'neg_bin_r is not used' in out.getvalue()
+
+
+def test_a_state_file_holding_a_negative_predicted_count_is_refused(tmp_path):
+    """Since 8a1fff2f the filter writes max(increase, 0), so a negative predicted count in a state
+    file was not written by this version; continuing from it would write a predicted_counts.txt
+    whose early rows are raw falls and whose later rows are 0."""
+    replace = {'lwf_particles': 'lwf_particles = 10'}
+    alg = C.build(C.write_job(tmp_path, replace=replace, counts=C.COUNTS[:3]))
+    C.run(alg)
+    path = alg.state_files[0]
+    arrays = lw._read_state(path)
+    arrays['predicted'] = arrays['predicted'].copy()
+    arrays['predicted'][0, 0] = -1.0
+    lw._write_state(path, arrays)
+    continued = C.build(C.write_job(tmp_path, replace=replace, counts=C.COUNTS[:5],
+                                    extra=['lwf_continue = 1']))
+    with pytest.raises(PybnfError, match='predicted'):
+        C.run(continued)
