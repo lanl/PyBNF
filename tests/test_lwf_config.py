@@ -232,6 +232,19 @@ def test_a_whole_fit_objective_that_differs_from_the_columns_line_is_refused(tmp
     assert "'noise_model = neg_bin, dispersion = %s, location = mean'" % dispersion in message
 
 
+def test_a_fixed_dispersion_is_quoted_exactly_in_the_refusal_and_its_hint(tmp_path):
+    """%g quoted 20.000001 and 20.000004 both as 20, so the refusal named two equal values and its
+    hint told the user to write a value other than the one they wrote."""
+    message = _load_refusal(tmp_path, replace={
+        'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at 20.000001, '
+                                 'location = mean',
+        'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at 20.000004, '
+                             'location = mean, cumulative',
+        'loguniform_var = r': None})
+    assert "fix_at 20.000001, where the cases line's is fix_at 20.000004" in message
+    assert "'noise_model = neg_bin, dispersion = fix_at 20.000004, location = mean'" in message
+
+
 def test_an_objective_token_that_stands_for_the_columns_line_loads(tmp_path):
     """``objective = neg_bin_dynamic`` with ``noise_location = mean`` is the whole-fit line
     ``noise_model = neg_bin, dispersion = fit r__FREE, location = mean``."""

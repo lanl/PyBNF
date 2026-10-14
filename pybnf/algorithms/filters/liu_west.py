@@ -184,9 +184,17 @@ def _declaration(column='<obs>', dispersion='fit <r>'):
 
 
 def _dispersion_text(source):
-    """``fit <r>`` or ``fix_at <value>``, as the noise_model line writes it."""
+    """``fit <r>`` or ``fix_at <value>``, as the noise_model line writes it, the value exact: the
+    fingerprint quotes this text, so a rounded value would let a continuation change it."""
     return ('fit %s' % source.name if isinstance(source, FreeParameterSigma)
-            else 'fix_at %g' % source.const)
+            else 'fix_at %s' % _exact(source.const))
+
+
+def _exact(value):
+    """``value`` in the fewest digits that read back as the same float, without a trailing ``.0``:
+    ``20`` and ``20.000001``, where ``%g`` gave ``20`` for both."""
+    text = repr(float(value))
+    return text[:-2] if text.endswith('.0') else text
 
 
 def _require_edition_2(d):
@@ -1516,8 +1524,8 @@ def _check_whole_fit_objective(obj, column, source, cf):
         differs = "the dispersion %s, where the %s line's is %s" % (dispersion.name, column,
                                                                     source.name)
     elif isinstance(source, ConstantSigma) and dispersion.const != source.const:
-        differs = "the dispersion fix_at %g, where the %s line's is fix_at %g" % (
-            dispersion.const, column, source.const)
+        differs = "the dispersion fix_at %s, where the %s line's is fix_at %s" % (
+            _exact(dispersion.const), column, _exact(source.const))
     else:
         return
     what = ("the whole-fit objective 'objective = %s'" % cf['objective']
