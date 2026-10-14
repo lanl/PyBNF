@@ -304,21 +304,26 @@ def liu_west_move(x, weights, h, z, var_floor=None):
     """One Liu–West move of the rows of ``x`` (particles by parameters, in the working space),
     ``x'_ij = a_j x_ij + (1 - a_j) m_j + h_j (z L^T)_ij`` with ``a_j = sqrt(1 - h_j**2)``.
     ``var_floor`` floors the covariance's diagonal. Returns ``(moved, cholesky)``; ``cholesky`` is
-    False when the covariance did not factor and the noise was independent per parameter."""
+    False when the covariance did not factor and the noise was independent per parameter.
+
+    Every sum is numpy's own reduction, not a BLAS product: Accelerate's ``ddot`` rounds the last
+    place differently with the two arrays' memory alignment, which differs from run to run, and a
+    continuation and a cluster run must write what one sequential run writes byte for byte."""
     x = np.asarray(x, dtype=float)
     w = np.asarray(weights, dtype=float)
     h = np.broadcast_to(np.asarray(h, dtype=float), (x.shape[1],))
     a = np.sqrt(1.0 - h ** 2)
     # A weight of 0 times a value that is not finite would be nan.
     weighed = np.where((w > 0.0)[:, None], x, 0.0)
-    mean = w @ weighed
+    mean = np.sum(w[:, None] * weighed, axis=0)
     dev = weighed - mean
-    cov = (dev * w[:, None]).T @ dev
+    cov = np.sum((dev * w[:, None])[:, :, None] * dev[:, None, :], axis=0)
     diag = np.arange(cov.shape[0])
     if var_floor is not None:
         cov[diag, diag] = np.maximum(cov[diag, diag], var_floor)
     try:
-        noise = z @ np.linalg.cholesky(cov).T
+        lower = np.linalg.cholesky(cov)
+        noise = np.sum(z[:, None, :] * lower[None, :, :], axis=2)   # z L^T
         cholesky = True
     except np.linalg.LinAlgError:
         noise = z * np.sqrt(cov[diag, diag])
@@ -1115,7 +1120,8 @@ class LiuWestFilter(Algorithm):
         live = weights > 0.0
         rows = []
         for j in range(theta.shape[1]):
-            rows.append([float(weights @ np.where(live, theta[:, j], 0.0)),
+            # np.sum, not @: see liu_west_move on BLAS and byte-identical output.
+            rows.append([float(np.sum(weights * np.where(live, theta[:, j], 0.0))),
                          *_weighted_quantiles(theta[:, j], weights, (0.025, 0.5, 0.975))])
         return rows
 
