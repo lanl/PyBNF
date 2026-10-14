@@ -1069,7 +1069,8 @@ class LiuWestFilter(Algorithm):
             log_evidence = top + math.log(float(w.sum()))
             weights = w / w.sum()
         pop.u, pop.state, pop.weights = trial.u, trial.state, weights
-        pop.predicted.append(predicted)
+        # The expected count is the mean the noise model scores: a fall of the output is 0.
+        pop.predicted.append(np.maximum(predicted, 0.0))
         ess = weight_ess(pop.weights)
         resampled = ess < self.threshold * len(pop.weights)
         if resampled:
@@ -1272,8 +1273,8 @@ class LiuWestFilter(Algorithm):
 
     def _predicted_note(self):
         return ('The expected count at each assimilated row (the increase of %s over the interval '
-                'ending at that time) along the ancestral line of each particle of the same '
-                'resample.' % self.observable)
+                'ending at that time, or 0 where it fell, as the noise model scores it) along the '
+                'ancestral line of each particle of the same resample.' % self.observable)
 
     def _forecasts_note(self):
         return ('Counts drawn from the job\'s noise model (negative binomial, the prediction taken '

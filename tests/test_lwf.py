@@ -204,6 +204,14 @@ def test_a_zero_count_weighs_a_fall_of_the_output_as_the_expected_count_zero(tmp
     np.testing.assert_allclose(logliks, expected, rtol=1e-9)
 
 
+def test_a_fall_of_the_output_is_written_as_the_expected_count_zero(tmp_path):
+    """predicted_counts.txt holds the expected count the weights score, which for a fall of the
+    output is 0; the raw fall, negative, was written before."""
+    out = C.run(_build(tmp_path, particles=20, model=FALLING, counts=(0,) * 12, replace=ON_K))
+    _, predicted = C.read_table(out / 'predicted_counts.txt')
+    assert predicted.shape == (20, 12) and np.all(predicted == 0.0)
+
+
 def test_a_nan_row_is_integrated_over_but_not_scored(tmp_path):
     alg = _build(tmp_path, particles=30, counts=(4, 6, 'nan', 10))
     pop = alg._initial_population()
