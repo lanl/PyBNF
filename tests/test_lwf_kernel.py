@@ -139,6 +139,15 @@ def test_systematic_resampling_never_selects_a_particle_of_weight_0():
         assert np.all(w[ancestors] > 0.0)
 
 
+def test_at_offset_0_a_first_particle_of_weight_0_is_not_selected():
+    """The position 0 equals the cumulative sum of a first particle of weight 0, which a search
+    to the left of equal values hands to that particle."""
+    w = np.array([0.0, 0.25, 0.0, 0.5, 0.25])
+    ancestors = lw.systematic_resample(w, 0.0)
+    assert np.all(w[ancestors] > 0.0)
+    assert list(ancestors) == [1, 1, 3, 3, 4]
+
+
 def test_time_headers_keep_distinct_times_distinct():
     assert lw._time_headers([1.0, 2.5, 1e6, 1e6 + 1]) == ['1', '2.5', '1000000', '1000001']
 

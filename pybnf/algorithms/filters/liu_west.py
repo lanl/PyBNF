@@ -296,8 +296,10 @@ def systematic_resample(weights, uniform):
     positions = (uniform + np.arange(n)) / n
     # The cumulative sum of normalized weights can end a few ulps below 1, which would hand a
     # position above it to particle n - 1 whatever its weight: clamp to the last positive weight.
+    # side='right': a position equal to a cumulative sum goes past every particle of weight 0
+    # there, so at offset 0 a first particle of weight 0 does not take the position 0.
     last = np.flatnonzero(weights > 0.0)[-1]
-    return np.minimum(np.searchsorted(np.cumsum(weights), positions), last)
+    return np.minimum(np.searchsorted(np.cumsum(weights), positions, side='right'), last)
 
 
 def liu_west_move(x, weights, h, z, var_floor=None):
