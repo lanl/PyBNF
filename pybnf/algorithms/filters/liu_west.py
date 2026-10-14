@@ -960,7 +960,7 @@ class LiuWestFilter(Algorithm):
     def _reached(self, k):
         if k == 0:
             return 'before assimilating any row'
-        return 'after assimilating row %d of %d (t = %g)' % (k, len(self.times), self.times[k - 1])
+        return 'after assimilating row %d of %d (t = %.15g)' % (k, len(self.times), self.times[k - 1])
 
     def _stop_for_budget(self, results):
         """Say once, in the log and ``stop_reason.txt``, which rows each run assimilated before
@@ -1068,7 +1068,7 @@ class LiuWestFilter(Algorithm):
             logw = np.where(live, np.log(np.where(live, pop.weights, 1.0)) + loglik, -np.inf)
         if not np.isfinite(logw).any():
             raise _DegenerateUpdate(
-                'Degenerate update at row %d (t = %g, count %g): no particle can explain it. Of '
+                'Degenerate update at row %d (t = %.15g, count %g): no particle can explain it. Of '
                 'the %d particle(s) with weight, %d failed to integrate and %d predicted no '
                 'increase of %s over the interval, which cannot produce a positive count.'
                 % (k + 1, t1, count, int(live.sum()), failed, zero, self.observable))
@@ -1092,7 +1092,7 @@ class LiuWestFilter(Algorithm):
         self._by_row.append((t1, self._summaries(self._theta(pop.u), pop.weights)))
         if distinct < max(2.0, _DISTINCT_WARN_FRAC * len(pop.weights)):
             self._note_once('impoverished',
-                            'only %d distinct particle(s) of %d after the update at t = %g: the '
+                            'only %d distinct particle(s) of %d after the update at t = %.15g: the '
                             'population is impoverished, and its intervals rest on a handful of '
                             'points.' % (distinct, len(pop.weights), t1))
 
@@ -1138,7 +1138,7 @@ class LiuWestFilter(Algorithm):
             if c1 - c0 < -level:
                 self._note_once('backwards',
                                 '%s decreased over an interval under some particles (first at '
-                                't = %g), so it is not cumulative under those parameters.'
+                                't = %.15g), so it is not cumulative under those parameters.'
                                 % (column, t1))
             if count > 0 and c1 - c0 <= level:
                 zero += 1
@@ -1277,7 +1277,7 @@ class LiuWestFilter(Algorithm):
         return True
 
     def _parameters_note(self, k):
-        through = ('through row %d of %d (t = %g)' % (k, len(self.times), self.times[k - 1])
+        through = ('through row %d of %d (t = %.15g)' % (k, len(self.times), self.times[k - 1])
                    if k else 'before any row was assimilated')
         return ('One row per particle of an equal-weight resample of the population %s, in each '
                 'parameter\'s own units.' % through)
@@ -1320,7 +1320,7 @@ class LiuWestFilter(Algorithm):
                 mean[i] = c1 - c0 if c1 - c0 > _zero_level(c0, c1) else 0.0
             if not alive.any():
                 raise PybnfError('Every particle failed to integrate by the forecast interval '
-                                 'ending at t = %g, so there is no forecast to write.' % t1)
+                                 'ending at t = %.15g, so there is no forecast to write.' % t1)
             r = dispersion[alive]
             draws[alive, j] = rng.negative_binomial(r, r / (r + mean[alive]))
             t0 = t1
@@ -1333,7 +1333,7 @@ class LiuWestFilter(Algorithm):
 
     def _rows_text(self, k):
         return 'Rows assimilated: %d of %d%s.' % (
-            k, len(self.times), '' if not k else ' (t = %g to %g)' % (self.times[0],
+            k, len(self.times), '' if not k else ' (t = %.15g to %.15g)' % (self.times[0],
                                                                      self.times[k - 1]))
 
     def _run_stop_text(self, result):
@@ -1378,7 +1378,7 @@ class LiuWestFilter(Algorithm):
         stopped = self._run_stop_text(result)
         times = result.sample.forecast_times
         if times:
-            lines.append('Forecast: %d interval(s), to t = %g.' % (len(times), times[-1]))
+            lines.append('Forecast: %d interval(s), to t = %.15g.' % (len(times), times[-1]))
         elif self.forecast_intervals and stopped:
             lines.append('No forecast was written.')
         printed = lines[2:]
@@ -1401,7 +1401,7 @@ class LiuWestFilter(Algorithm):
             k = r.assimilated
             line = 'Run %d: %d of %d rows assimilated%s' % (
                 r.run, k, len(self.times),
-                '' if not k else ' (t = %g to %g)' % (self.times[0], self.times[k - 1]))
+                '' if not k else ' (t = %.15g to %.15g)' % (self.times[0], self.times[k - 1]))
             if r.history:
                 ess = [u.weight_ess for u in r.history]
                 line += ('; weight ESS %.1f after the last row, minimum %.1f; log evidence %.4f'
@@ -1418,7 +1418,7 @@ class LiuWestFilter(Algorithm):
                          'assimilated different numbers of rows (%s).'
                          % ', '.join('run %d: %d' % (r.run, r.assimilated) for r in results))
         if combined and times and all(r.sample.forecasts is not None for r in results):
-            lines.append('Forecast: %d interval(s), to t = %g.' % (len(times), times[-1]))
+            lines.append('Forecast: %d interval(s), to t = %.15g.' % (len(times), times[-1]))
         elif self.forecast_intervals and stopped:
             lines.append('No forecast was written.')
         printed = lines[2:]
@@ -1479,18 +1479,18 @@ def _resolve_grid(data, suffix):
         raise PybnfError(
             'Row(s) %s of the experiment %s have the time %s. Every particle starts at t = 0, so '
             'every time must be a finite number after 0.'
-            % (', '.join(map(str, bad[:6])), suffix, ', '.join('%g' % times[i - 1] for i in bad[:6])))
+            % (', '.join(map(str, bad[:6])), suffix, ', '.join('%.15g' % times[i - 1] for i in bad[:6])))
     gaps = np.diff(np.concatenate(([0.0], times)))
     if np.any(gaps <= 0.0):
         row = int(np.flatnonzero(gaps <= 0.0)[0]) + 1
-        raise PybnfError('The times of the experiment %s do not increase at row %d (t = %g).'
+        raise PybnfError('The times of the experiment %s do not increase at row %d (t = %.15g).'
                          % (suffix, row, times[row - 1]))
     step = float(np.min(gaps))
     off = np.flatnonzero(np.abs(gaps - step) > _STEP_TOL * step)
     if off.size:
         row = int(off[0]) + 1
         raise PybnfError(
-            'Row %d of the experiment %s (t = %g) is %g after %s, and the step of the data is %g; '
+            'Row %d of the experiment %s (t = %.15g) is %g after %s, and the step of the data is %g; '
             'each count is scored over the interval since the row before it.'
             % (row, suffix, times[row - 1], gaps[row - 1],
                'the origin t = 0' if row == 1 else 'the row before it', step),
