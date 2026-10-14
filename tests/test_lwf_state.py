@@ -250,7 +250,7 @@ def test_the_state_file_holds_the_rows_and_the_arrays_the_run_ended_with(tmp_pat
     C.run(alg)
     held = lw._read_state(alg.state_files[0])
     assert sorted(held) == sorted(lw.STATE_KEYS)
-    assert str(held['format']) == lw.STATE_FORMAT and int(held['format_version']) == 1
+    assert str(held['format']) == lw.STATE_FORMAT and int(held['format_version']) == lw.STATE_VERSION
     np.testing.assert_array_equal(held['times'], [1.0, 2.0, 3.0, 4.0])
     np.testing.assert_array_equal(held['counts'], C.COUNTS[:4])
     for key in ('u', 'state', 'weights'):
@@ -304,8 +304,8 @@ def test_a_missing_state_file_is_refused_naming_where_it_was_looked_for(tmp_path
     (lambda path: Path(path).write_bytes(b'not an archive'), 'it cannot be read'),
     (lambda path: lw._write_state(path, {'x': np.zeros(3)}),
      'it is not a state file of the Liu–West filter'),
-    (lambda path: _rewrite(path, format_version=np.array(2)),
-     'it is not of state-file format version 1'),
+    (lambda path: _rewrite(path, format_version=np.array(lw.STATE_VERSION - 1)),
+     'it is not of state-file format version %d' % lw.STATE_VERSION),
     (lambda path: _rewrite(path, by_row=None), 'it lacks by_row'),
     (lambda path: _rewrite(path, run=np.array(1)), 'it does not hold independent run 0'),
     (lambda path: _rewrite(path, fingerprint=np.array('not json')),

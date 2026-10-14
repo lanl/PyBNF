@@ -64,7 +64,7 @@ DEFAULT_STATE_FILE = 'lwf_state.npz'
 
 #: What a state file says it is, and the version of its layout.
 STATE_FORMAT = 'pybnf.lwf.state'
-STATE_VERSION = 1
+STATE_VERSION = 2   # 2: fix_at quoted exactly in the fingerprint; predicted counts are max(increase, 0)
 
 #: The remedy every refusal of a continuation names.
 _FRESH_RUN = 'Start a fresh run with lwf_continue = 0, which filters every row from the prior.'
@@ -916,6 +916,8 @@ class LiuWestFilter(Algorithm):
             finite['history'] = np.delete(saved['history'], 1, axis=1)   # but the count
             bad = [key for key, values in finite.items() if not np.isfinite(values).all()]
             problem = 'holding a value that is not a finite number'
+        if not bad and (saved['predicted'] < 0.0).any():
+            bad, problem = ['predicted'], 'holding a negative expected count'
         if bad:
             raise PybnfError('The state file %s is damaged (%s %s), so lwf_continue = 1 cannot '
                              'continue from it.' % (path, ', '.join(bad), problem), hint=_FRESH_RUN)
