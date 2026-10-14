@@ -3082,7 +3082,8 @@ as unused, as under any job type; ``refine`` and ``bootstrap`` other than 0, the
 **lwf_jitter**
   The kernel's *h*, strictly between 0 and 1, for each moved parameter without an
   ``lwf_parameter_jitter`` line: a modelling choice of how fast the free parameters may drift
-  (see :ref:`alg-lwf-sample`). Refused when every moved parameter has its own line.
+  (see :ref:`alg-lwf-sample`). Refused when every moved parameter has its own line, or when the
+  kernel moves no parameter because every free parameter acts only through the initial state.
 
   Default: 0.15
 

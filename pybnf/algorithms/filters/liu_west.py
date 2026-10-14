@@ -602,7 +602,13 @@ class LiuWestFilter(Algorithm):
                 'state, so the kernel never moves it and the jitter would be ignored.' % named[0],
                 hint='Remove the lwf_parameter_jitter line for %s.' % named[0])
         moved = [n for n in names if n not in start_only]
-        if self._jitter_given is not None and moved and all(n in self._jitter_lines for n in moved):
+        if self._jitter_given is not None and not moved:
+            raise PybnfError(
+                'lwf_jitter = %r is set, but the kernel moves no parameter: every free parameter '
+                '(%s) acts on the model only through its initial state, so lwf_jitter would be '
+                'ignored.' % (self._jitter_given, ', '.join(start_only)),
+                hint='Remove the lwf_jitter line.')
+        if self._jitter_given is not None and all(n in self._jitter_lines for n in moved):
             raise PybnfError(
                 'lwf_jitter = %r is set, but every parameter the kernel moves has an '
                 'lwf_parameter_jitter line (%s), so lwf_jitter would be ignored.'
