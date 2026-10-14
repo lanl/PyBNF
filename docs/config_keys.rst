@@ -3065,8 +3065,11 @@ filter draws its forecast counts from the negative binomial with the predicted i
 mean, so it accepts only ``location = mean`` and refuses, rather than warns on, the implicit median.
 ``objective = neg_bin_dynamic`` with ``noise_location = mean`` is that whole-fit line with the
 dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
-the kernel then moves the model's free parameters only. A key the filter does not read is reported
-as unused, as under any job type; ``refine``, ``bootstrap``, ``noise_profiling`` and
+the kernel then moves the model's free parameters only. A fixed dispersion must be a finite number
+above 0, and a fitted one needs a prior that stays above 0. ``objective = neg_bin`` with
+``neg_bin_r = <value>`` is the whole-fit line ``fix_at <value>``; elsewhere ``neg_bin_r`` is refused,
+since the dispersion is the one the noise_model lines declare. A key the filter does not read is
+reported as unused, as under any job type; ``refine``, ``bootstrap``, ``noise_profiling`` and
 ``linear_profiling`` other than 0, the cluster keys, ``starting_params``, and ``normalization``,
 ``postprocess`` and the analytical-objective keys ``expression``, ``callable`` and ``data``, which the
 loader would act on before any row is weighed, are refused.

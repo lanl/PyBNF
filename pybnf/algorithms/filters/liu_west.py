@@ -133,13 +133,13 @@ class LWFConfig(PyBNFConfigModel):
         return conf_dict
 
 
-# Global keys the filter reads. neg_bin_r is the whole-fit dispersion under objective = neg_bin,
-# which must equal the column's fix_at.
+# Global keys the filter reads. neg_bin_r is read too, but only under objective = neg_bin, where it is
+# the whole-fit dispersion that must equal the column's fix_at (see _check_keys_not_read).
 _READ_GLOBAL_KEYS = frozenset({
     'edition', 'job_type', 'output_dir', 'random_seed', 'bng_command', 'bngl_backend',
     'generate_network', 'wall_time_fit', 'wall_time_sim', 'wall_time_gen', 'delete_old_files',
     'simulation_dir', 'objective', 'noise_location', 'initialization', 'parallel_count',
-    'ind_var_rounding', 'neg_bin_r',
+    'ind_var_rounding',
 })
 
 # Global keys main() or the loader acts on, accepted at the one value that asks for nothing. The
@@ -220,9 +220,17 @@ def _check_keys_not_read(d):
     for key, why in _REFUSED_GLOBAL_KEYS.items():
         if key in d:
             raise _refusal(key, why, hint='Remove the line.')
+    read = _READ_GLOBAL_KEYS
+    if 'neg_bin_r' in d:
+        if d.get('objective') != 'neg_bin':
+            # Not the dispersion: a user who wrote it to set one would be scored with another.
+            raise _refusal('neg_bin_r = %s' % d['neg_bin_r'],
+                           'only objective = neg_bin reads it, and here the dispersion is the one '
+                           'the noise_model lines declare', hint='Remove the line.')
+        read = read | {'neg_bin_r'}
     for key, value in d.items():
         if (not isinstance(key, str) or key in own or key in _STRUCTURAL_KEYS
-                or key in _READ_GLOBAL_KEYS or key not in known):
+                or key in read or key not in known):
             continue
         if key in _REFUSED_VALUES:
             if value != _REFUSED_VALUES[key]:
@@ -526,6 +534,7 @@ class LiuWestFilter(Algorithm):
         self._dispersion_name = None if fixed else self._noise_source.name
         self._dispersion_value = self._noise_source.const if fixed else None
         _check_parameters(config)
+        _check_free_dispersion(config.variables, self._dispersion_name)
         cf = config.config
         self.particles = int(cf['lwf_particles'])
         self.threshold = float(cf['lwf_resample_threshold'])
@@ -1520,6 +1529,11 @@ def _resolve_noise_model(obj, column, cf):
         raise _refusal('the dispersion source %s on %s' % (type(source).__name__, column), why)
     if not obj._is_cumulative(column):
         raise _refusal('the column %s without the cumulative flag' % column, why)
+    if isinstance(source, ConstantSigma) and not (math.isfinite(source.const) and source.const > 0):
+        # Otherwise every particle would fail to score, and the run would blame the data row.
+        raise _refusal('the dispersion fix_at %s on %s' % (_exact(source.const), column),
+                       'a negative binomial dispersion is a finite number above 0',
+                       hint='Write a dispersion above 0 on both noise_model lines.')
     _check_whole_fit_objective(obj, column, source, cf)
     return source
 
@@ -1565,6 +1579,10 @@ def _check_parameters(config):
     """A prior with finite support needs reflecting bounds to keep the kernel in it; no free
     parameter declares a start point. A ``var`` or ``logvar`` line, or a record with no prior, is
     refused upstream by the declaration rule (ADR-0118), since the filter is not a refiner."""
+    if not config.variables:
+        raise _refusal('a job with no free parameter', 'every particle would be the same model, '
+                       'so there is nothing to filter',
+                       hint='Declare a prior for at least one free parameter.')
     for v in config.variables:
         lo, hi = v.prior_support()
         box_lo, box_hi = _box_in_sampling_space(v)
@@ -1578,6 +1596,19 @@ def _check_parameters(config):
     if config.config.get('initialization') not in ('lh', 'rand'):
         raise PybnfError("initialization = %s is not a way to draw the initial population: it "
                          "must be lh or rand." % config.config.get('initialization'))
+
+
+def _check_free_dispersion(variables, name):
+    """Refuse a fitted dispersion whose prior reaches below 0, where no negative binomial exists:
+    every particle drawn or moved there would be counted as failing to integrate, and a run with
+    many of them would blame the data row. A log-scale prior stays above 0."""
+    v = next((v for v in variables if v.name == name), None)
+    if v is not None and not v.log_space and v.lower_bound < 0.0:
+        raise _refusal('the dispersion %s, whose prior reaches below 0 (lower bound %s)'
+                       % (name, _exact(v.lower_bound)),
+                       'a negative binomial dispersion is above 0',
+                       hint='Give %s a prior that stays above 0, a loguniform_var or reflecting '
+                            'bounds from 0, say.' % name)
 
 
 def _box_in_sampling_space(v):

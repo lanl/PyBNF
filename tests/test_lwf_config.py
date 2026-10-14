@@ -245,6 +245,27 @@ def test_a_fixed_dispersion_is_quoted_exactly_in_the_refusal_and_its_hint(tmp_pa
     assert "'noise_model = neg_bin, dispersion = fix_at 20.000004, location = mean'" in message
 
 
+@pytest.mark.parametrize('value', ['0', '-5', 'inf', 'nan'])
+def test_a_fixed_dispersion_that_is_not_a_finite_number_above_0_is_refused(tmp_path, value):
+    """The first three loaded, and every particle was then counted as failing to integrate, with
+    the hint blaming the data row; nan was refused as differing from itself."""
+    message = _load_refusal(tmp_path, replace={
+        'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at %s, location = mean'
+                                 % value,
+        'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at %s, '
+                             'location = mean, cumulative' % value,
+        'loguniform_var = r': None})
+    assert 'the dispersion fix_at %s on cases' % value in message and 'above 0' in message
+
+
+@pytest.mark.parametrize('line, bound', [('uniform_var = r -10 100', '-10'),
+                                         ('normal_var = r 20 30', '-inf')])
+def test_a_fitted_dispersion_whose_prior_reaches_below_0_is_refused(tmp_path, line, bound):
+    """Every particle drawn or moved below 0 was counted as failing to integrate."""
+    message = _load_refusal(tmp_path, replace={'loguniform_var = r': line})
+    assert 'the dispersion r, whose prior reaches below 0 (lower bound %s)' % bound in message
+
+
 def test_an_objective_token_that_stands_for_the_columns_line_loads(tmp_path):
     """``objective = neg_bin_dynamic`` with ``noise_location = mean`` is the whole-fit line
     ``noise_model = neg_bin, dispersion = fit r__FREE, location = mean``."""

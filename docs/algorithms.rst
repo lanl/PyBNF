@@ -858,7 +858,10 @@ Everything a configuration declares that the filter does not honour is refused b
   ``callable`` and ``data``;
 * any observation model but ``neg_bin`` at ``location = mean`` on the cumulative column, with the
   dispersion fitted or fixed (the :ref:`key reference <lwf_keys>`), since the forecast draws counts
-  from the negative binomial parameterized by its mean;
+  from the negative binomial parameterized by its mean; a fixed dispersion that is not a finite
+  number above 0, or a fitted one whose prior reaches below 0; and ``neg_bin_r`` unless
+  ``objective = neg_bin`` reads it;
+* a job with no free parameter, in which every particle is the same model;
 * a prior with finite support but no reflecting bounds; start points, ``initial_value`` and
   ``starting_params``, since the initial population must be a prior draw for the weights to be
   likelihood times prior
