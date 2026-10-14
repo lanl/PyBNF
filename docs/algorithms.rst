@@ -859,12 +859,16 @@ Everything a configuration declares that the filter does not honour is refused b
 * any observation model but ``neg_bin`` at ``location = mean`` on the cumulative column, with the
   dispersion fitted or fixed (the :ref:`key reference <lwf_keys>`), since the forecast draws counts
   from the negative binomial parameterized by its mean;
-* a prior with finite support but no reflecting bounds; start points and ``initial_value``, since
-  the initial population must be a prior draw for the weights to be likelihood times prior
+* a prior with finite support but no reflecting bounds; start points, ``initial_value`` and
+  ``starting_params``, since the initial population must be a prior draw for the weights to be
+  likelihood times prior
   (``initialization_distribution`` is reported as unused for the same reason);
 * ``population_size`` other than 1, and ``parallel_count`` with one run or below 1;
-* ``refine`` or ``bootstrap`` set to anything but 0, which ``main()`` would act on, and the cluster
-  keys, since Independent Runs use the local cluster;
+* ``refine`` or ``bootstrap`` set to anything but 0, which ``main()`` would act on,
+  ``noise_profiling`` or ``linear_profiling`` set to anything but 0, since the filter profiles
+  nothing, and the cluster keys, since Independent Runs use the local cluster;
+* ``lwf_jitter`` when no parameter would use it: every moved parameter has its own
+  ``lwf_parameter_jitter`` line, or the kernel moves none;
 * rows not one step apart, the first one step after :math:`t = 0` (a missing one is a ``nan`` row),
   and a count below 0 or not finite.
 

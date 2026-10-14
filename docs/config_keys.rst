@@ -3066,9 +3066,10 @@ mean, so it accepts only ``location = mean`` and refuses, rather than warns on, 
 ``objective = neg_bin_dynamic`` with ``noise_location = mean`` is that whole-fit line with the
 dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
 the kernel then moves the model's free parameters only. A key the filter does not read is reported
-as unused, as under any job type; ``refine`` and ``bootstrap`` other than 0, the cluster keys, and
-``normalization``, ``postprocess`` and the analytical-objective keys ``expression``, ``callable`` and
-``data``, which the loader would act on before any row is weighed, are refused.
+as unused, as under any job type; ``refine``, ``bootstrap``, ``noise_profiling`` and
+``linear_profiling`` other than 0, the cluster keys, ``starting_params``, and ``normalization``,
+``postprocess`` and the analytical-objective keys ``expression``, ``callable`` and ``data``, which the
+loader would act on before any row is weighed, are refused.
 
 **lwf_particles**
   The number of particles.

@@ -133,16 +133,19 @@ class LWFConfig(PyBNFConfigModel):
         return conf_dict
 
 
-# Global keys the filter reads.
+# Global keys the filter reads. neg_bin_r is the whole-fit dispersion under objective = neg_bin,
+# which must equal the column's fix_at.
 _READ_GLOBAL_KEYS = frozenset({
     'edition', 'job_type', 'output_dir', 'random_seed', 'bng_command', 'bngl_backend',
     'generate_network', 'wall_time_fit', 'wall_time_sim', 'wall_time_gen', 'delete_old_files',
     'simulation_dir', 'objective', 'noise_location', 'initialization', 'parallel_count',
-    'ind_var_rounding',
+    'ind_var_rounding', 'neg_bin_r',
 })
 
-# Global keys main() acts on, accepted at the one value that asks for nothing.
-_REFUSED_VALUES = {'refine': 0, 'bootstrap': 0}
+# Global keys main() or the loader acts on, accepted at the one value that asks for nothing. The
+# filter profiles nothing, so a profiling switch is refused here, before the loader reports why it
+# cannot profile this fit.
+_REFUSED_VALUES = {'refine': 0, 'bootstrap': 0, 'noise_profiling': 0, 'linear_profiling': 0}
 
 # The cluster main() starts; the filter's independent runs use the local one.
 _CLUSTER_KEYS = frozenset({'cluster_type', 'scheduler_file', 'scheduler_node', 'worker_nodes'})
@@ -158,6 +161,7 @@ _REFUSED_GLOBAL_KEYS = {
     'expression': 'it weighs the model\'s own segments, not an analytical objective',
     'callable': 'it weighs the model\'s own segments, not an analytical objective',
     'data': 'its data are those of its one experiment: line',
+    'starting_params': 'the initial population is a prior draw',
 }
 
 # Keys every configuration carries that the parser or the loader fill in.
