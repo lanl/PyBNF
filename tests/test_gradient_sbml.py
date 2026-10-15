@@ -634,7 +634,14 @@ def test_sbml_amount_species_seed_folds_the_unit_conversion(tmp_path):
     assert ic_seed_map == {'S0': (SeedTerm(IC, 'S', ONE),)}
     cond = MutationSet([Mutation('S0', '=', 's0_free', is_param_ref=True)], 'c')
     route = route_for_model(model, ['s0_free'], cond)
-    assert route.routes['s0_free'].contributions == (RouteContribution(IC, 'S', 1.0),)
+    # bngsim carries this seed on S0's own axis, divided by the volume (lanl/bngsim#170), and
+    # both axes are read into PyBNF's value units (#553), so the route is that axis -- the seed
+    # map's derivative stays what the ic route would use where bngsim does not carry it. This
+    # used to be the ic route, on a measurement from before both of those; reporting the
+    # species as unseeded doubled the seed whenever the parameter's own axis was requested too.
+    assert ('S', 'S0') in {(s, p) for s, row in model.backend_ic_sensitivity().items()
+                           for p in row}
+    assert route.routes['s0_free'].contributions == (RouteContribution(PARAM, 'S0', 1.0),)
 
 
 # The Bertozzi_PNAS2020 shape, minimised: one estimated parameter I0 seeds TWO species
@@ -710,18 +717,34 @@ def test_sbml_fd_oracle_multi_species_seed_and_derived_parameter(tmp_path):
     through a derived parameter with a point-dependent factor (#530).
 
     ``g`` is the sharp case: it is both a rate constant the ODE reads directly *and* an input
-    to ``beta``, so its column is the sum of its own parameter axis and ``beta``'s scaled by
-    ``R0/N``. Dropping either half leaves a gradient that still looks plausible."""
+    to ``beta``, so its derivative has both halves. Where they come from is the backend's
+    answer: while bngsim holds ``beta`` live (re-deriving it whenever ``R0`` or ``g`` is
+    written), ``g``'s own column is the total derivative and carries the ``beta`` chain, and
+    adding ``beta``'s column scaled by ``R0/N`` counts that half twice -- exactly 2x for
+    ``r0_free`` and about 4x for ``g_free`` once lanl/bngsim#941 made ``beta``'s column the
+    derivative with ``beta`` held fixed. Only a ``beta`` the backend does not hold live needs
+    its column routed. Dropping or doubling either half leaves a gradient that still looks
+    plausible, which is why this is an FD oracle."""
     xml_path = Path(tmp_path) / 'seir.xml'
     xml_path.write_text(_SEIR_LIKE_SBML)
+    live = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        str(xml_path), str(xml_path), pset=PSet([]),
+        actions=(TimeCourse({'time': '10', 'step': '1'}),)).backend_live_parameters()
 
     def _check(route):
-        assert route.is_point_dependent
         # I0's two species seeds (I = I0, S = N - I0) are both carried on I0's own parameter
-        # axis, so neither needs an ic term (#537). The derived-parameter chain is untouched.
+        # axis, so neither needs an ic term (#537).
         assert set(route.sensitivity_ic) == set()
-        assert 'beta' in route.sensitivity_params
-        assert len(route.routes['g_free'].contributions) == 2   # beta chain + g's own axis
+        if 'beta' in live:
+            # The chain through beta is inside R0's and g's own columns.
+            assert 'beta' not in route.sensitivity_params
+            assert not route.is_point_dependent
+            assert route.routes['g_free'].contributions == (RouteContribution(PARAM, 'g', 1.0),)
+            assert route.routes['r0_free'].contributions == (
+                RouteContribution(PARAM, 'R0', 1.0),)
+        else:
+            assert 'beta' in route.sensitivity_params and route.is_point_dependent
+            assert len(route.routes['g_free'].contributions) == 2   # beta chain + g's own axis
 
     _assert_fd_matches(
         tmp_path, str(xml_path), 'seirfd',
@@ -770,9 +793,13 @@ _ALIASED_PARAM_SBML = """<?xml version="1.0" encoding="UTF-8"?>
 def test_sbml_bind_by_id_free_param_also_routes_what_it_seeds(tmp_path):
     """A free parameter bound **by id** reaches the columns it seeds, not just its own (#534).
 
-    `k_src` is a model parameter, so bind-by-id classification gave it the `k_src` parameter axis
-    and stopped there -- an axis that is identically zero, because no rate law reads `k_src`. The
-    result was a silently-zero gradient column, the failure mode ADR-0095 exists to prevent."""
+    `k_src` is a model parameter that no rate law reads; it reaches the trajectory only through
+    `k_used = k_src`. Which column carries that is the backend's answer, not an inference. While
+    bngsim holds `k_used` live -- re-deriving it whenever `k_src` is written -- `k_src`'s own
+    column is the total derivative, and routing `k_used`'s column as well doubled the gradient
+    once lanl/bngsim#941 made that column the derivative with `k_used` held fixed. Where the
+    backend does not hold `k_used` live, `k_src`'s own column is identically zero and `k_used`'s
+    is the one that moves; leaving it out there is the silently-zero column of #534."""
     xml_path = Path(tmp_path) / 'aliased.xml'
     xml_path.write_text(_ALIASED_PARAM_SBML)
     xml = str(xml_path)
@@ -782,10 +809,14 @@ def test_sbml_bind_by_id_free_param_also_routes_what_it_seeds(tmp_path):
     assert seeds == {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)}
 
     route = route_for_model(model, ['k_src'], None)
-    assert route.routes['k_src'].contributions == (
-        RouteContribution(PARAM, 'k_used', 1.0),      # the column that actually moves
-        RouteContribution(PARAM, 'k_src', 1.0))       # its own, identically zero, axis
-    assert 'k_used' in route.sensitivity_params
+    if 'k_used' in model.backend_live_parameters():
+        assert route.routes['k_src'].contributions == (RouteContribution(PARAM, 'k_src', 1.0),)
+        assert route.sensitivity_params == ['k_src']
+    else:
+        assert route.routes['k_src'].contributions == (
+            RouteContribution(PARAM, 'k_used', 1.0),      # the column that actually moves
+            RouteContribution(PARAM, 'k_src', 1.0))       # its own, identically zero, axis
+        assert 'k_used' in route.sensitivity_params
 
 
 @_needs_output_sens
@@ -813,6 +844,27 @@ def test_sbml_fd_oracle_amount_species_seed(tmp_path):
         free=[FreeParameter('s0_free', 'uniform_var', 1.0, 1e4, value=120.0)],
         model_params=lambda theta: {'S0': theta['s0_free'], 'k': 0.3},
         truth={'S0': 100.0, 'k': 0.3}, column='S', sigma=2.0)
+
+
+_AMOUNT_RATE_SEED_SBML = _AMOUNT_SEED_SBML.replace(
+    '<ci>S0</ci></math></initialAssignment>',
+    '<apply><times/><cn>100</cn><ci>k</ci></apply></math></initialAssignment>')
+
+
+@_needs_output_sens
+def test_sbml_fd_oracle_amount_species_rate_constant_seed(tmp_path):
+    """An amount species in a size-2 compartment seeded by a rate constant (``S = 100*k``), so
+    ``k``'s own axis is requested for the rate law. bngsim's axis carries the seed too; the
+    router, told the species was unseeded, added the ic term on top and the column came back
+    about 2x. Fails on bngsim 0.16.0 before this change (and on ``main`` once an evaluation stops
+    saving, which is what made that seeding visible)."""
+    xml_path = Path(tmp_path) / 'amount_rate.xml'
+    xml_path.write_text(_AMOUNT_RATE_SEED_SBML)
+    _assert_fd_matches(
+        tmp_path, str(xml_path), 'amountratefd', cond=None,
+        free=[FreeParameter('k', 'uniform_var', 0.01, 3.0, value=0.45)],
+        model_params=lambda theta: {'k': theta['k']},
+        truth={'k': 0.3}, column='S', sigma=2.0)
 
 
 # A rate constant that ALSO seeds a species initial value -- the steady-state-initialisation

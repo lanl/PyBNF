@@ -59,7 +59,10 @@ A free parameter that binds no model id of its own can still reach the model thr
 every sensitivity column ``target`` reaches (:func:`classify_condition_target`): :data:`PARAM`
 on ``target`` itself for an ordinary global (e.g. a shared rate multiplier), plus one term per
 entity whose **initial value** ``target`` seeds -- a species initial condition (:data:`IC`) or
-a parameter an ``initialAssignment`` derives (:data:`PARAM`). Because one free parameter may be
+a parameter an ``initialAssignment`` derives (:data:`PARAM`). Either term is dropped when the
+backend reports its own parameter axis already carries it: a seeded species
+(:meth:`backend_ic_sensitivity`, #537) or a derived parameter it keeps tracking its expression
+(:meth:`backend_live_parameters`, lanl/bngsim#941). Because one free parameter may be
 assigned to *several* targets in one condition, and one target may seed *several* entities, a
 route is a **sum** over its contributions (:class:`ParamRoute`).
 
@@ -447,7 +450,7 @@ def classify_free_param(free_param, param_ids, species_initializers):
 
 
 def classify_condition_target(target, param_ids, species_names, ic_seed_map,
-                              rhs_symbols=None, backend_ic_seeds=None):
+                              rhs_symbols=None, backend_ic_seeds=None, live_params=None):
     """Classify the model entity a param-ref condition sets: return a list of
     ``(axis, key, node)`` seeding terms.
 
@@ -472,10 +475,14 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map,
     That, and a target binding no sensitivity entity at all, raise
     :class:`GradientNotSupported` -- keeping a gradient/EFIM fit honest rather than emitting a
     silently-wrong column.
+
+    ``live_params`` is the backend's set of derived parameters it holds live; a seeded
+    parameter in it is carried inside the target's own axis (:func:`classify_bound_id`).
     """
     terms = classify_bound_id(target, param_ids, species_names, ic_seed_map,
                               rhs_symbols=rhs_symbols,
-                              backend_ic_seeds=backend_ic_seeds)
+                              backend_ic_seeds=backend_ic_seeds,
+                              live_params=live_params)
     if terms:
         return terms
     raise GradientNotSupported(
@@ -485,7 +492,7 @@ def classify_condition_target(target, param_ids, species_names, ic_seed_map,
 
 
 def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initializers=(),
-                      rhs_symbols=None, backend_ic_seeds=None):
+                      rhs_symbols=None, backend_ic_seeds=None, live_params=None):
     """Every sensitivity column a model id reaches: ``[(axis, key, node), ...]``, possibly empty.
 
     The shared core of "what does this id move?", used for **both** a condition target and a
@@ -514,6 +521,20 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
     :func:`classify_free_param` has always recognised an initial-condition parameter, and is what
     a caller that supplies no ``ic_seed_map`` at all still relies on.
 
+    A **derived parameter the backend holds live** is the same question one level up.
+    ``live_params`` is the backend's answer (:meth:`backend_live_parameters`, the parameters
+    whose ``param_is_expression`` is set): bngsim re-derives such a parameter whenever an
+    input is written, and its parameter axis is the total derivative through it, so the id's
+    own column already carries ``d(derived)/d(id)``. A :data:`PARAM` seed onto a live derived
+    parameter is therefore dropped, and the id's own axis is kept however little the
+    right-hand side reads the id itself, because the chain is inside it. Adding the derived
+    parameter's column on top counted the chain twice once lanl/bngsim#941 made that column
+    the derivative with the derived parameter held fixed. A seed onto a derived parameter the
+    backend does **not** hold live (overridden, or evaluated once at load) is kept: then the id's
+    column does not carry it. ``None`` -- the caller cannot say -- keeps every such seed, which
+    is what a backend-free caller of this pure core relies on; :func:`route_for_model` refuses
+    a model that cannot say rather than reach that default.
+
     Empty when the id binds nothing at all (a free sigma); the caller decides whether that is a
     :data:`NONE` route or a refusal.
     """
@@ -525,6 +546,12 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
         # below -- the same column twice.
         seeds = tuple(SeedTerm(IC, species, derivative.ONE)
                       for species, expr in species_initializers if expr.strip() == name)
+    # A derived parameter the backend re-derives live is INSIDE this id's own parameter axis,
+    # so routing its column as well counts the chain twice (lanl/bngsim#941).
+    chained = frozenset(s.key for s in seeds
+                        if s.target == PARAM and live_params is not None
+                        and s.key in live_params)
+    seeds = tuple(s for s in seeds if not (s.target == PARAM and s.key in chained))
     # An initial-value seed the backend already carries is INSIDE this id's own parameter
     # axis, so routing it again on the ic axis counts it twice (#537, lanl/bngsim#155).
     carried = _backend_carries(name, seeds, backend_ic_seeds)
@@ -532,14 +559,15 @@ def classify_bound_id(name, param_ids, species_names, ic_seed_map, species_initi
              if not (s.target == IC and s.key in carried)]
     if name in species_names:
         terms.append((IC, name, derivative.ONE))
-    elif name in param_ids and not (carried == frozenset()
-                                    and _seeds_only_initial_conditions(seeds)
-                                    and _absent_from_rhs(name, rhs_symbols)):
+    elif name in param_ids and (chained or not (carried == frozenset()
+                                                and _seeds_only_initial_conditions(seeds)
+                                                and _absent_from_rhs(name, rhs_symbols))):
         # Keep the id's own axis unless it is provably identically zero: nothing seeded into
         # it and a right-hand side the model states never reads the id. Keeping it is always
         # arithmetically safe now that the seeds it duplicates have been dropped above, so an
         # unanswerable model (``rhs_symbols is None``) simply keeps it (#535's error) instead
-        # of having to choose between two silent wrongs.
+        # of having to choose between two silent wrongs. A live derived chain is seeded into
+        # it, so it is never zero then.
         terms.append((PARAM, name, derivative.ONE))
     return terms
 
@@ -566,13 +594,15 @@ def _seed_terms(target, ic_seed_map):
         return ()
     seeds = ic_seed_map[target]
     if seeds is None:
+        # Reached both for a free parameter bound to ``target`` by id and for a condition that
+        # sets it, so the message names neither: it says what ``target`` does.
         raise GradientNotSupported(
-            f"Condition sets '{target}', which seeds another entity's initial value through an "
-            f"expression the gradient path cannot differentiate -- one outside its arithmetic "
-            f"grammar (a function call, a piecewise), or one reaching the initial value through "
-            f"an assignmentRule or a second initialAssignment. Routing this per-condition "
-            f"estimated initial condition (ADR-0076) would need a chain rule PyBNF does not "
-            f"compose (#530). Use a gradient-free optimizer or sampler for this fit.")
+            f"'{target}' seeds another entity's initial value through an expression the "
+            f"gradient path cannot differentiate -- one outside its arithmetic grammar (a "
+            f"function call, a piecewise), or one reaching the initial value through an "
+            f"assignmentRule or a second initialAssignment. A gradient column for '{target}', "
+            f"whether it is fitted or set by a condition, would need a chain rule PyBNF does "
+            f"not compose (#530). Use a gradient-free optimizer or sampler for this fit.")
     if isinstance(seeds, str):
         # Backward-compatible shorthand: the bare ``{param -> species}`` seed map of #511.
         return (SeedTerm(IC, seeds, derivative.ONE),)
@@ -607,7 +637,8 @@ def _absent_from_rhs(name, rhs_symbols):
 
 
 def route_experiment(free_params, param_values, species_initializers, condition=None,
-                     ic_seed_map=None, rhs_symbols=None, backend_ic_seeds=None):
+                     ic_seed_map=None, rhs_symbols=None, backend_ic_seeds=None,
+                     live_params=None):
     """Build the :class:`ExperimentRouting` for one experiment (pure -- no model, no sim).
 
     ``free_params`` is the ordered free-parameter id list (the config's declared variables);
@@ -618,7 +649,9 @@ def route_experiment(free_params, param_values, species_initializers, condition=
     (``None`` for the wildtype experiment); ``ic_seed_map`` the ``{model parameter ->
     SeedTerms}`` initial-value seed map (:func:`classify_condition_target`); ``rhs_symbols`` the
     ids the ODE right-hand side reads, or ``None`` when the model cannot say -- in which case
-    every bound id keeps its own axis (:func:`classify_bound_id`).
+    every bound id keeps its own axis (:func:`classify_bound_id`); ``backend_ic_seeds`` and
+    ``live_params`` the backend's own answers to which initial-condition seeds and which derived
+    parameters its parameter axis carries (:func:`classify_bound_id`).
 
     A parameter-reference perturbation (a per-condition estimated initial condition, ADR-0076)
     ``target = free_param`` **composes** the chain rule: the referenced free parameter reaches
@@ -664,7 +697,8 @@ def route_experiment(free_params, param_values, species_initializers, condition=
                     f"optimizer or sampler for this fit.")
             for axis, key, node in classify_condition_target(
                     mut.name, param_ids, species_names, ic_seed_map,
-                    rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds):
+                    rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds,
+                    live_params=live_params):
                 constant = derivative.is_constant(node)
                 ref_contribs.setdefault(free_param, []).append(RouteContribution(
                     axis, key, _evaluate_factor(node, env, free_param),
@@ -681,7 +715,8 @@ def route_experiment(free_params, param_values, species_initializers, condition=
         scale = derivative.num(condition_factor(name, condition))
         for axis, key, node in classify_bound_id(
                 name, param_ids, species_names, ic_seed_map, species_initializers,
-                rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds):
+                rhs_symbols=rhs_symbols, backend_ic_seeds=backend_ic_seeds,
+                live_params=live_params):
             scaled = derivative.mul(scale, node)
             constant = derivative.is_constant(scaled)
             contribs.append(RouteContribution(
@@ -746,6 +781,13 @@ def route_for_model(model, free_params, condition=None):
     which keeps every bound id's own axis. ``condition`` may be a
     :class:`pybnf.pset.MutationSet`, a condition *name* resolved against ``model.mutants``, or
     ``None`` for the wildtype experiment.
+
+    The two things only the backend can say -- which initial-condition seeds and which derived
+    parameters its parameter axis carries -- are read off the model too
+    (:meth:`backend_ic_sensitivity`, :meth:`backend_live_parameters`), never assumed: a model
+    that seeds either kind but cannot answer is refused, because each wrong guess is a column
+    off by a whole seeding term. The backend then holds every run model to the same answers
+    (:mod:`pybnf._bngsim_seeding`).
     """
     param_values, species_initializers, ic_seed_map = model.sensitivity_entity_namespace()
     rhs_symbols = getattr(model, 'ode_rhs_symbols', lambda: None)()
@@ -759,10 +801,156 @@ def route_for_model(model, free_params, condition=None):
             "count it twice, and both mistakes are silent -- a gradient column at a multiple of "
             "its true value, or one missing its whole right-hand-side half. Upgrade bngsim, or "
             "use a gradient-free optimizer or sampler for this fit.")
+    live_params = getattr(model, 'backend_live_parameters', lambda: None)()
+    if live_params is None and _seeds_any_parameter(ic_seed_map):
+        raise GradientNotSupported(
+            "This model derives a parameter from others (an initialAssignment on a parameter), "
+            "and the backend cannot report whether it keeps that parameter tracking its "
+            "expression (no 'param_is_expression'). While it does, the inputs' own sensitivity "
+            "columns already carry the chain through it and adding the derived parameter's "
+            "column counts it twice; once it does not, that column is the only place the chain "
+            "is. Upgrade bngsim, or use a gradient-free optimizer or sampler for this fit.")
     condition = _resolve_condition(model, condition)
-    return route_experiment(free_params, param_values, species_initializers, condition,
-                            ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
-                            backend_ic_seeds=backend_ic_seeds)
+    _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition,
+                                           species_initializers)
+    routing = route_experiment(free_params, param_values, species_initializers, condition,
+                               ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
+                               backend_ic_seeds=backend_ic_seeds, live_params=live_params)
+    _refuse_relative_condition_on_a_derived_parameter(model, condition, routing)
+    _refuse_scan_of_a_differentiated_parameter(model, free_params, param_values, condition,
+                                               routing)
+    return routing
+
+
+def _refuse_scan_of_a_differentiated_parameter(model, free_params, param_values, condition,
+                                               routing):
+    """Refuse a scored parameter scan whose swept parameter is fitted or requested.
+
+    The scan writes its own value to the parameter at every dose, over whatever the fit or a
+    condition gave it, so the objective does not depend on that parameter through the scan:
+    a central difference of the loss is zero. Its sensitivity column is not -- it is the
+    derivative at the dose value -- and the scan point's seeding is read off a model holding
+    the dose as well, so the assembled gradient would be a nonzero number for a flat
+    direction. A scan whose output is not scored is left alone (it bears no sensitivities);
+    one whose scored status is not yet known is treated as scored."""
+    reader = getattr(model, 'scanned_parameters', None)
+    if reader is None:
+        return
+    differentiated = ({name for name in free_params if name in param_values}
+                      | set(routing.sensitivity_params))
+    scored = getattr(model, '_scored_suffixes', None)
+    offset = getattr(condition, 'suffix', '') if condition is not None else ''
+    for suffix, param in reader():
+        if param not in differentiated:
+            continue
+        if scored is not None and (suffix + offset) not in scored:
+            continue
+        raise GradientNotSupported(
+            "Model '%s': the parameter_scan with suffix '%s' sweeps '%s', which this fit "
+            "differentiates%s. The scan writes its own value to '%s' at every dose, so the "
+            "objective does not move with the fitted value, but the gradient column for it is "
+            "the derivative at the dose and would come back nonzero."
+            % (getattr(model, 'name', '?'), suffix + offset, param,
+               ' (a fitted parameter)' if param in free_params else
+               ' (a condition binds a fitted parameter to it)', param),
+            hint=["Do not fit the scanned parameter; scan a parameter the fit does not vary.",
+                  "Or use a gradient-free job_type (e.g. job_type = de)."])
+
+
+def _refuse_relative_condition_on_a_derived_parameter(model, condition, routing):
+    """Refuse a relative condition (``* / + -``) on a derived parameter whose inputs the
+    route differentiates.
+
+    The condition's value is computed from the derived parameter's value at the fit point --
+    ``Btot * 2`` with ``Btot = 2*A0`` writes ``4*A0`` -- and then written as a number, which
+    overrides the expression. The experiment therefore still moves with ``A0``, but no
+    sensitivity column carries that: ``A0``'s column follows the overridden ``Btot``, which no
+    longer reads it. An absolute ``=`` is a different case (the value really is independent of
+    the inputs) and is not refused here."""
+    if condition is None or not routing.sensitivity_params:
+        return
+    reader = getattr(model, 'derived_parameter_inputs', None)
+    if reader is None:
+        return      # a backend with no derived parameters to report
+    inputs = reader()
+    requested = set(routing.sensitivity_params)
+    for mut in condition:
+        if mut.operation == '=' or getattr(mut, 'is_species', False):
+            continue
+        if inputs is None:
+            live = getattr(model, 'backend_live_parameters', lambda: None)()
+            if live is not None and mut.name not in live:
+                continue
+            raise GradientNotSupported(
+                "Condition '%s' applies '%s %s %s' to '%s' of model '%s', which may be a derived "
+                "parameter, and this bngsim build cannot report what a derived parameter reads, "
+                "so whether a gradient column misses the condition's dependence on it cannot be "
+                "decided." % (getattr(condition, 'suffix', '') or '?', mut.name, mut.operation,
+                              mut.value, mut.name, getattr(model, 'name', '?')),
+                hint=["Give the condition an absolute '=' value, or use a gradient-free "
+                      "job_type (e.g. job_type = de)."])
+        reached = sorted(inputs.get(mut.name, frozenset()) & requested)
+        if not reached:
+            continue
+        raise GradientNotSupported(
+            "Condition '%s' applies '%s %s %s' to '%s', a derived parameter of model '%s' that "
+            "reads %s. The condition's value is computed from those inputs at each evaluation "
+            "and then written as a number, which overrides the expression: the experiment "
+            "still moves with %s, but no gradient column carries that dependence."
+            % (getattr(condition, 'suffix', '') or '?', mut.name, mut.operation, mut.value,
+               mut.name, getattr(model, 'name', '?'), ', '.join(reached), ', '.join(reached)),
+            hint=["Write the condition on an input of '%s' instead (it then moves '%s' through "
+                  "its expression), or give the condition an absolute '=' value." % (
+                      mut.name, mut.name),
+                  "Or use a gradient-free job_type (e.g. job_type = de)."])
+
+
+def _seeds_any_parameter(ic_seed_map):
+    """Whether any parameter in the seed map feeds another parameter's value."""
+    for seeds in (ic_seed_map or {}).values():
+        if seeds and not isinstance(seeds, str) and any(s.target == PARAM for s in seeds):
+            return True
+    return False
+
+
+def _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition,
+                                           species_initializers=()):
+    """Refuse a free parameter, or a condition, that writes a parameter the model's own
+    ``initialAssignment`` defines -- when the evaluation overwrites the write.
+
+    On the SBML/Antimony backend the assignment wins over a written value whenever an
+    evaluation re-derives the model's initial values: whenever it changes anything an
+    assignment reads (a free parameter, a condition target, a scanned parameter, a
+    pre-equilibration condition), and always on the reload path. Then the written value never
+    reaches the model, and a gradient column for it describes a write the objective does not
+    see. When nothing re-derives the values the write stands, and fitting the target is an
+    ordinary fit; that is not refused. The backend decides
+    (:meth:`initial_assignment_writes_overwritten`); a model with no such method (every
+    ``.net`` model: a written ``ConstantExpression`` overrides its expression) is unaffected.
+    """
+    decide = getattr(model, 'initial_assignment_writes_overwritten', None)
+    if decide is None:
+        return
+    species = {name for name, _ in (species_initializers or ())}
+    bound = [name for name in free_params if name in param_values or name in species]
+    hits, cause = decide(bound, condition)
+    if not hits:
+        return
+    by_condition = {mut.name for mut in (condition or ())}
+    if set(hits) <= set(bound):
+        who = 'a free parameter of the same name'
+    elif set(hits) <= by_condition:
+        who = 'a condition'
+    else:
+        who = 'a parameter scan or a pre-equilibration condition'
+    raise GradientNotSupported(
+        "Model '%s' defines %s by an initialAssignment, and %s writes %s; %s. The written "
+        "value never reaches the model, so the gradient has no column that describes it."
+        % (getattr(model, 'name', '?'), ', '.join("'%s'" % n for n in hits), who,
+           'it' if len(hits) == 1 else 'them', cause),
+        hint=["Fit the parameters the assignment reads instead, or remove the "
+              "initialAssignment from the model.",
+              "Or use a gradient-free job_type (e.g. job_type = de)."])
 
 
 def _seeds_any_initial_condition(ic_seed_map):
@@ -788,7 +976,31 @@ def apply_routing(model, routing):
     """
     model.enable_output_sensitivities(
         params=routing.sensitivity_params, ic=routing.sensitivity_ic)
+    _record_experiment_columns(model, [routing])
     return routing
+
+
+def _record_experiment_columns(model, routings):
+    """Tell ``model`` which columns each condition's route reads, keyed by condition suffix
+    (``''`` for the wildtype).
+
+    The request is the union over every experiment, so a column one experiment reads is also
+    computed in another that never reads it -- where a condition can legitimately pin what the
+    column follows (``k2 = 0.8`` beside another condition's ``k1 = x``). The run-time checks
+    compare a run model with its route only on the columns the running experiment's route
+    reads (:func:`pybnf._bngsim_seeding.experiment_columns`). A model without the method (a
+    test double) keeps comparing on the whole request."""
+    record = getattr(model, 'set_experiment_columns', None)
+    if record is None:
+        return
+    columns = {}
+    for routing in routings:
+        condition = routing.condition
+        key = getattr(condition, 'suffix', '') if condition is not None else ''
+        params, ic = columns.setdefault(key, (set(), set()))
+        params.update(routing.sensitivity_params)
+        ic.update(routing.sensitivity_ic)
+    record({key: (frozenset(params), frozenset(ic)) for key, (params, ic) in columns.items()})
 
 
 def apply_routings(model, routings):
@@ -810,6 +1022,7 @@ def apply_routings(model, routings):
             if key not in ic:
                 ic.append(key)
     model.enable_output_sensitivities(params=params, ic=ic)
+    _record_experiment_columns(model, routings)
     return params, ic
 
 

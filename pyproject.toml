@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "bngsim>=0.15.0,<1",
+    "bngsim>=0.16.0,<1",
     "dask>=2024.1.0",
     "distributed>=2024.1.0",
     "libroadrunner>=1.6.0",
@@ -46,7 +46,7 @@ dependencies = [
 
 [project.optional-dependencies]
 antimony = [
-    "bngsim[antimony]>=0.15.0,<1",
+    "bngsim[antimony]>=0.16.0,<1",
 ]
 # The PEtab math translator (pybnf.petab.formula, ADR-0035): an expression
 # observableFormula is parsed/serialized through petab's sympy-backed math grammar

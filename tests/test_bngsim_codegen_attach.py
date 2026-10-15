@@ -142,23 +142,21 @@ def test_the_artifact_is_rebuilt_on_unpickle(tmp_path):
             or getattr(again._engine_model, '_codegen_c_source', ''))
 
 
-def _net_codegen_path_present():
-    # Evaluated at collection, so it must not raise where bngsim is absent; the
-    # bngsim marker skips these tests there.
-    try:
-        import bngsim._codegen as cg
-    except ImportError:
-        return False
-    return hasattr(cg, 'generate_rhs_c')
+def _keeps_an_overridden_chain_rule():
+    # Evaluated at collection, so it must not raise where bngsim is absent (the witness then
+    # answers False and the bngsim marker skips the test). The witness runs this very case --
+    # a pinned derived parameter, with and without codegen -- once per process, which is what
+    # PyBNF itself decides on (ADR-0153); it replaces looking for the .net codegen module.
+    return not _runtime.sensitivity_follows_derived_overrides()
 
 
 @pytest.mark.xfail(
-    _net_codegen_path_present(),
+    _keeps_an_overridden_chain_rule(),
     strict=True,
     raises=AssertionError,
-    reason='lanl/bngsim#694: this bngsim compiles .net models through its .net codegen '
-           'path, whose sensitivity RHS keeps a pinned derived parameter\'s chain rule '
-           'however it is rebuilt',
+    reason='lanl/bngsim#694: this bngsim keeps a pinned derived parameter\'s chain rule in '
+           'its sensitivity RHS however it is rebuilt; PyBNF refuses such a run (ADR-0153), '
+           'and this test reads bngsim directly',
 )
 def test_a_sensitivity_run_is_not_served_a_stale_chain_rule(tmp_path):
     """k2 = 2*k1 drives A -> B. A probe attaches a sensitivity artifact to the base engine

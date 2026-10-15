@@ -484,7 +484,7 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     reason is prose, and it used to be allowed to go missing: the pin ``bngsim>=0.12.2,<1``
     admitted builds on both sides of the upstream change that writes the reason into a note
     beside the cached artifact, so a warm cache could legitimately say nothing. The floor is
-    now ``bngsim>=0.15.0,<1``, which is the release that carries the note, so silence is no
+    now ``bngsim>=0.16.0,<1``, past 0.15.0, the release that brought the note, so silence is no
     longer one of the answers and the warm reason is asserted word for word against the cold
     one.
     """

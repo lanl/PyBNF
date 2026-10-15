@@ -478,14 +478,27 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         the routings already asked for are kept, so an ordinary route is unaffected. The
         cost is real and inherent -- a full initial-condition axis is one sensitivity system
         per state -- which is the price of carrying the state at a knot.
+
+        The record of which columns each condition's route reads
+        (:func:`pybnf.gradient.routing.apply_routings`) is kept too, with every carried
+        state's initial-condition column added to each condition, since every segment reads
+        them. A fresh request clears the record, and without one each run-time check would
+        compare a segment with the whole union request -- refusing a condition that pins what
+        another condition's column follows (#991).
         """
         request = getattr(model, '_sensitivity_request', None)
         params = list(getattr(request, 'params', None) or [])
         ic = list(getattr(request, 'ic', None) or [])
-        for state in _state_names(model):
+        states = _state_names(model)
+        for state in states:
             if state not in ic:
                 ic.append(state)
+        columns = getattr(model, '_experiment_columns', None)
         model.enable_output_sensitivities(params=params, ic=ic)
+        if columns is not None:
+            model.set_experiment_columns(
+                {condition: (read_params, frozenset(read_ic) | frozenset(states))
+                 for condition, (read_params, read_ic) in columns.items()})
 
     def _make_backend(self, model, suffix):
         """The segment simulator for one scored ``(model, condition)`` pair.

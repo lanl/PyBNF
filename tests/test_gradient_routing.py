@@ -210,11 +210,32 @@ def test_classify_condition_target_seeds_several_entities():
 
 def test_classify_condition_target_seeding_a_derived_parameter_keeps_its_own_axis():
     """A target that seeds a *parameter* an initialAssignment derives keeps its own parameter
-    axis too: ``gamma_`` is both a rate constant and an input to ``beta_N = R0_*gamma_/N_``,
-    so both columns carry its derivative (#530)."""
+    axis: ``gamma_`` is both a rate constant and an input to ``beta_N = R0_*gamma_/N_``.
+
+    Whether ``beta_N``'s column is added on top is the backend's answer (lanl/bngsim#941). A
+    ``beta_N`` the backend does not hold live -- overridden, or evaluated once at load -- is not
+    inside ``gamma_``'s column, so its column carries that half of the derivative (#530). One it
+    holds live is re-derived whenever ``gamma_`` is written, so ``gamma_``'s own column is
+    already the total and adding ``beta_N``'s counts the chain twice."""
     seed_map = {'gamma_': (SeedTerm(PARAM, 'beta_N', ('sym', 'R0_')),)}
-    assert classify_condition_target('gamma_', {'gamma_', 'beta_N'}, set(), seed_map) == [
+    ids = {'gamma_', 'beta_N'}
+    assert classify_condition_target('gamma_', ids, set(), seed_map,
+                                     live_params=frozenset()) == [
         (PARAM, 'beta_N', ('sym', 'R0_')), (PARAM, 'gamma_', ONE)]
+    assert classify_condition_target('gamma_', ids, set(), seed_map,
+                                     live_params={'beta_N'}) == [(PARAM, 'gamma_', ONE)]
+
+
+def test_a_live_derived_chain_keeps_an_otherwise_droppable_own_axis():
+    """``R0_`` seeds only the live ``beta_N`` and one species, and no rate law reads it. Its own
+    axis would be dropped as identically zero if the species seed were all there was (ADR-0097),
+    but the live chain is inside that axis, so it must stay -- dropping it deletes the whole
+    ``beta_N`` half of the derivative."""
+    seed_map = {'R0_': (SeedTerm(PARAM, 'beta_N', ('sym', 'g_')), SeedTerm(IC, 'X', ONE))}
+    terms = R.classify_bound_id('R0_', {'R0_', 'beta_N', 'g_'}, {'X'}, seed_map,
+                                rhs_symbols=frozenset({'beta_N', 'g_'}),
+                                backend_ic_seeds={}, live_params={'beta_N'})
+    assert terms == [(IC, 'X', ONE), (PARAM, 'R0_', ONE)]
 
 
 def test_classify_bound_id_is_the_shared_core_for_a_free_parameter_and_a_target():
@@ -631,6 +652,95 @@ def test_route_for_model_without_the_reader_is_fine_when_nothing_seeds():
     assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
 
 
+class _DerivingModel:
+    """``k_src`` is read by no rate law and seeds the derived parameter ``k_used`` the rate law
+    reads (``k_used = k_src``); whether the backend holds ``k_used`` live is the test's."""
+
+    name = 'm'
+    mutants = ()
+
+    def __init__(self, live, overwritten=()):
+        self._live = live
+        self._overwritten = list(overwritten)
+        self.asked = []
+
+    def sensitivity_entity_namespace(self):
+        return ({'k_src': 0.3, 'k_used': 0.3}, [('S', 'S')],
+                {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)})
+
+    def ode_rhs_symbols(self):
+        return frozenset({'k_used', 'S'})
+
+    def backend_ic_sensitivity(self):
+        return {}
+
+    def backend_live_parameters(self):
+        return self._live
+
+    def initial_assignment_writes_overwritten(self, free_params, condition):
+        """The backend's answer, canned: which writes an initialAssignment overwrites."""
+        self.asked.append((list(free_params), condition))
+        if not self._overwritten:
+            return [], ''
+        return list(self._overwritten), 'the evaluation derives the initial values again'
+
+
+def test_route_for_model_drops_a_derived_parameter_the_backend_holds_live():
+    """The lanl/bngsim#941 rule: a live ``k_used`` is inside ``k_src``'s own column, so the
+    route is that column alone; an overridden one is not, so its column is the chain."""
+    live = R.route_for_model(_DerivingModel({'k_used'}), ['k_src'])
+    assert live.routes['k_src'].contributions == (RouteContribution(PARAM, 'k_src', 1.0),)
+    pinned = R.route_for_model(_DerivingModel(frozenset()), ['k_src'])
+    assert pinned.routes['k_src'].contributions == (
+        RouteContribution(PARAM, 'k_used', 1.0),   # the chain, which only this column carries
+        RouteContribution(PARAM, 'k_src', 1.0))    # its own axis, zero here (#534)
+
+
+def test_route_for_model_refuses_when_the_backend_cannot_report_liveness():
+    """Both answers are silently wrong when guessed -- a doubled chain or a missing one -- so a
+    model that derives a parameter from another is refused if the backend cannot say whether it
+    keeps the derived one live."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='param_is_expression'):
+        R.route_for_model(_DerivingModel(None), ['k_src'])
+    # A model that derives no parameter is not refused for the missing answer.
+    r = R.route_for_model(_SeedingModel({'S()': {'k': 2.0}}), ['k'])
+    assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+
+
+@pytest.mark.parametrize('how', ['free parameter', 'condition'])
+def test_route_for_model_refuses_writing_a_parameter_an_assignment_defines(how):
+    """A free parameter (or a condition's parameter reference) that writes ``k_used``, which
+    the model's own initialAssignment defines, has no gradient column when the evaluation
+    derives the initial values again over the write. The backend decides whether it does
+    (:meth:`initial_assignment_writes_overwritten`); the router refuses on its answer, says who
+    writes and why the write is lost, and passes the backend only names that bind to a model
+    parameter."""
+    from pybnf.gradient import GradientNotSupported
+    model = _DerivingModel({'k_used'}, overwritten=['k_used'])
+    if how == 'free parameter':
+        call, who = (['k_used', 'not_a_model_parameter'], None), 'a free parameter of the same name'
+    else:
+        condition = MutationSet([Mutation('k_used', '=', 'k_free', is_param_ref=True)], 'c')
+        call, who = (['k_free'], condition), 'a condition'
+    with pytest.raises(GradientNotSupported,
+                       match="defines 'k_used' by an initialAssignment, and %s writes it; the "
+                             "evaluation derives the initial values again" % who):
+        R.route_for_model(model, *call)
+    bound, condition = model.asked[-1]
+    assert 'not_a_model_parameter' not in bound
+    assert condition is call[1]
+
+
+def test_route_for_model_lets_a_write_the_evaluation_keeps_through():
+    """When the backend reports no write overwritten -- nothing the evaluation changes feeds an
+    initialAssignment -- fitting the target is an ordinary fit and is routed, not refused."""
+    model = _DerivingModel({'k_used'}, overwritten=())
+    routing = R.route_for_model(model, ['k_used'])
+    assert routing.routes['k_used'].contributions == (RouteContribution(PARAM, 'k_used', 1.0),)
+    assert model.asked == [(['k_used'], None)]
+
+
 class _CapturingModel:
     """Records the request :func:`apply_routings` hands to the gradient path."""
 
@@ -799,3 +909,21 @@ def test_apply_routing_honors_capability_gate(decay_model, monkeypatch):
         R.apply_routing(decay_model, routing)
     assert 'output sensitivities' in str(exc.value).lower()
     assert decay_model._sensitivity_request is None   # request stays inactive
+
+
+def test_relative_condition_refusal_fails_closed_when_inputs_are_unknown():
+    """A backend that reports derived parameters but not what they read cannot tell whether a
+    relative condition on one reaches a requested column, so the condition is refused rather
+    than routed; a relative condition on a primary parameter is unaffected."""
+    from pybnf.gradient import GradientNotSupported
+
+    class _Unknown(_DerivingModel):
+        def derived_parameter_inputs(self):
+            return None
+
+    model = _Unknown({'k_used'})
+    relative = MutationSet([Mutation('k_used', '*', 2.0)], 'dbl')
+    with pytest.raises(GradientNotSupported, match=r"Condition 'dbl' applies 'k_used \* 2.0' to "
+                                                   r"'k_used' of model 'm', which may be a derived"):
+        R.route_for_model(model, ['k_src'], relative)
+    R.route_for_model(model, ['k_src'], MutationSet([Mutation('k_src', '*', 2.0)], 'p'))

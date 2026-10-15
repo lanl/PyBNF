@@ -24,6 +24,17 @@ from .pset import (
     TimeCourse,
 )
 from ._seed import resolve_action_seed
+from ._bngsim_seeding import (
+    check_live_parameters,
+    check_overridden_derived,
+    check_seeding,
+    declare_rows,
+    derived_parameter_inputs,
+    experiment_columns,
+    holds_value,
+    live_parameters,
+    seed_rows,
+)
 
 
 _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
@@ -322,6 +333,12 @@ _ENGINE_TEMPLATE_CACHE = {}
 # failed, so it is warmed. See issues #543 and #544.
 _ENGINE_TEMPLATE_WARM_ATTEMPTED = {}
 
+# Each template's own initial-condition seeding (``effective_ic_sensitivity()``), keyed like
+# the cache above and holding the template it was read from, for the same reason the warm memo
+# does. The router reads it once at setup; the run-time check reads it at every sensitivity
+# run, which is why it is kept (:meth:`BngsimSbmlModelNoTimeout._template_seed_rows`).
+_TEMPLATE_SEED_ROWS = {}
+
 
 def _template_is_warm(template):
     """Does ``template`` already carry a codegen artifact built for sensitivities (#543)?
@@ -366,7 +383,9 @@ from ._bngsim_caps import (
     SensRhsStatus,
     bngsim,
     feature_missing_reason,
+    gradient_floor_problem,
     probe_sens_rhs,
+    sensitivity_follows_derived_overrides,
 )
 
 try:
@@ -498,6 +517,14 @@ class BngsimSbmlModelNoTimeout(Model):
     # _make_simulator test fakes, unpickling) answers "cannot say" rather than raising -- and
     # "cannot say" keeps every parameter axis, which is the safe direction.
     _rhs_symbols = None
+
+    # ``(id(engine), species, condition)``: the species the evaluation that built ``engine``
+    # assigned a value of its own, and the suffix of the condition it ran under
+    # (:meth:`_engine_model_for_action`). ``None`` until one is built.
+    _prepared_literal_species = None
+    # ``{condition suffix: (params, ic)}``: the columns each condition's route reads
+    # (:meth:`set_experiment_columns`). ``None`` compares a run on the whole request.
+    _experiment_columns = None
 
     # Explicit CVODE tolerances (``sbml_rtol`` / ``sbml_atol``, #546). ``None`` means
     # "not stated": rtol then takes the backend default and atol is derived from the
@@ -762,10 +789,14 @@ class BngsimSbmlModelNoTimeout(Model):
         A parameter with an ``initialAssignment`` is a **derived constant** --
         SBML re-evaluates it whenever one of its dependencies changes, exactly
         as it does a species initial (``beta_N = R0_*gamma_/N_`` in
-        Bertozzi_PNAS2020). bngsim evaluates it once at load and ``set_param``
-        does not propagate to it, so it must be recomputed here too; leaving it
-        at its load-time value silently simulated a different model than the
-        reload path did (#531). A parameter an ``assignmentRule`` or
+        Bertozzi_PNAS2020). It is recomputed here too, because leaving it at its
+        load-time value silently simulated a different model than the reload
+        path did (#531). bngsim releases since then hold such a parameter as a
+        live expression and re-derive it on ``set_param``; the recomputed value
+        is then only *checked* against bngsim's, never written over it, because
+        a write that misses by one ulp overrides the expression and takes the
+        chain rule out of the inputs' sensitivity columns
+        (:meth:`_prepare_engine_model`). A parameter an ``assignmentRule`` or
         ``rateRule`` governs is excluded -- bngsim recomputes *those*
         dynamically, so an initial override would fight the rule.
         """
@@ -954,6 +985,13 @@ class BngsimSbmlModelNoTimeout(Model):
         time -- no simulation.
         """
         return self._rhs_symbols
+
+    def scanned_parameters(self):
+        """``[(suffix, parameter)]`` for each parameter scan, for the router, which refuses a
+        scored scan of a differentiated parameter
+        (:func:`pybnf.gradient.routing.route_for_model`)."""
+        return [(act.suffix, act.param) for act in getattr(self, 'actions', ())
+                if isinstance(act, ParamScan)]
 
     @staticmethod
     def _ruled_symbols(sbml_model):
@@ -1427,6 +1465,19 @@ class BngsimSbmlModelNoTimeout(Model):
         ``phase_overrides`` (name -> value pairs) is the pre-equilibration condition
         (ADR-0052, #547): the state the unmeasured first phase is initialized in,
         applied like a mutant so it wins over the fit vector.
+
+        A recomputed value bngsim **already holds** is not written (:mod:`pybnf._bngsim_seeding`):
+        a derived parameter it keeps live at that value, or a species initial value its own
+        ``initialAssignment`` already gives. Either write could only round-trip the value,
+        and one that misses by an ulp does structural damage the gradient cannot see -- it
+        overrides the derived parameter's expression (lanl/bngsim#188) or retires the
+        species' seed (lanl/bngsim#113). Skipping it is also what leaves most evaluations with
+        no ``save_concentrations()`` at all. When a species write is still needed (a value
+        bngsim does not derive: a free parameter or condition bound to a species, a scan or
+        a pre-equilibration condition on one), the save makes the state a captured baseline,
+        which bngsim >= lanl/bngsim#982 no longer seeds from the parameters; on the gradient
+        path the seeding read just before the save is declared back after the reset, so the
+        run is seeded exactly as an unsaved model would be.
         """
         engine_model = self._get_engine_template().clone()
         touched_species = self._apply_param_set_engine(engine_model)
@@ -1441,16 +1492,42 @@ class BngsimSbmlModelNoTimeout(Model):
                 if self._set_engine_value_if_present(engine_model, name, value):
                     touched_species = True
         if param_overrides:
+            live = live_parameters(engine_model) or frozenset()
             for param_name, value in param_overrides.items():
+                if param_name in live and holds_value(
+                        engine_model.get_param(param_name), value):
+                    continue
                 engine_model.set_param(param_name, float(value))
         if ic_overrides:
             for species_name, ic in ic_overrides.items():
+                if self._engine_holds_species_value(engine_model, species_name, ic):
+                    continue
                 self._set_engine_value_if_present(engine_model, species_name, ic)
-            touched_species = True
+                touched_species = True
         if touched_species:
+            rows = seed_rows(engine_model) if self._seeding_matters() else None
             engine_model.save_concentrations()
-        engine_model.reset()
+            engine_model.reset()
+            declare_rows(engine_model, rows, model_name=self.name,
+                         where='preparing the model for this evaluation')
+        else:
+            engine_model.reset()
         return engine_model
+
+    def _engine_holds_species_value(self, engine_model, name, value):
+        """Whether ``engine_model`` already holds species ``name`` at the PyBNF value ``value``
+        -- the comparison :meth:`_set_engine_value_if_present`'s write would otherwise make."""
+        if name not in self._species_name_set:
+            return False
+        wanted = float(value) * self._species_unit_factor[name]
+        return holds_value(engine_model.get_concentration(name), wanted)
+
+    def _seeding_matters(self):
+        """Whether this run reads parameter-axis sensitivity columns, whose initial-condition
+        seeding then has to be the one the routing was built on (:mod:`pybnf._bngsim_seeding`).
+        """
+        req = self._sensitivity_request
+        return req is not None and bool(req.params)
 
     def _recompute_initial_assignments(self, mut=None, scan_override=None,
                                        phase_overrides=None):
@@ -1494,12 +1571,24 @@ class BngsimSbmlModelNoTimeout(Model):
         ``phase_overrides`` carries a pre-equilibration experiment's *equilibration*
         condition (ADR-0052, #547) into the build, so the unmeasured first phase starts
         from a model initialized under it -- initialAssignments included.
+
+        Also records which species this evaluation itself assigned a value of its own (a free
+        parameter, a condition, a scan point or a pre-equilibration condition naming a species,
+        and not overwritten again by that species' own initialAssignment), and the condition it
+        ran under: the run-time check compares the run with that condition's route, and a
+        species so written no longer depends on what seeded it
+        (:meth:`_check_run_model_matches_route`).
         """
         scan_param = scan_override[0] if scan_override is not None else None
+        literal = self._species_written_by(mut, scan_param, phase_overrides)
+        condition = getattr(mut, 'suffix', '') if mut is not None else ''
         if self._needs_structural_reload(mut=mut, scan_param=scan_param):
             doc = self._build_sbml_doc(mut=mut, scan_override=scan_override,
                                        phase_overrides=phase_overrides)
-            return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+            engine = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+            # A reload evaluates every initialAssignment over the written values.
+            return self._prepared(engine, literal - set(self._initial_expr_species or ()),
+                                  condition)
         ic_overrides = param_overrides = None
         if self._changes_touch_initials(mut=mut, scan_param=scan_param,
                                         phase_overrides=phase_overrides):
@@ -1507,12 +1596,42 @@ class BngsimSbmlModelNoTimeout(Model):
                 # No in-place initial evaluation available -> reload to stay correct.
                 doc = self._build_sbml_doc(mut=mut, scan_override=scan_override,
                                            phase_overrides=phase_overrides)
-                return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+                engine = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+                return self._prepared(engine, literal - set(self._initial_expr_species or ()),
+                                      condition)
             ic_overrides, param_overrides = self._recompute_initial_assignments(
                 mut=mut, scan_override=scan_override, phase_overrides=phase_overrides)
-        return self._prepare_engine_model(
+            literal -= set(ic_overrides)
+        engine = self._prepare_engine_model(
             mut=mut, scan_override=scan_override, ic_overrides=ic_overrides,
             param_overrides=param_overrides, phase_overrides=phase_overrides)
+        return self._prepared(engine, literal, condition)
+
+    def _assignment_targets(self):
+        """The species and parameters this model's own ``initialAssignment``\\ s define."""
+        return (set(getattr(self, '_initial_expr_species', None) or ())
+                | set(getattr(self, '_initial_expr_params', None) or ()))
+
+    def _species_written_by(self, mut, scan_param, phase_overrides):
+        """The species this evaluation writes a value of its own to, by name."""
+        names = set(self.param_set.keys()) if self.param_set is not None else set()
+        names.update(mi.name for mi in (mut or ()))
+        if scan_param is not None:
+            names.add(scan_param)
+        names.update(name for name, _ in (phase_overrides or ()))
+        return {name for name in names if name in self._species_name_set}
+
+    def _prepared(self, engine, literal, condition):
+        """Remember which species the evaluation that built ``engine`` assigned itself, and
+        under which condition it ran.
+
+        Kept by identity, not by reference: an engine model does not survive the pickling and
+        deep copies this object goes through. Every engine that reaches a sensitivity
+        ``Simulator`` (:meth:`_make_simulator`) is built here and handed over before the next
+        one is built, so the latest entry is the one that applies, and an engine of any other
+        identity is checked with no exemption."""
+        self._prepared_literal_species = (id(engine), frozenset(literal), condition)
+        return engine
 
     def model_text(self, mut=None):
         logger.info('Generating model text for %s', self.name)
@@ -1735,10 +1854,15 @@ class BngsimSbmlModelNoTimeout(Model):
         tensor; otherwise the full per-point :class:`~pybnf.data.OutputSensitivities` (all
         rows), whose final row the scan stacks down the dose axis
         (:func:`pybnf.data.stack_scan_sensitivities`). Each dose point is an independent,
-        reset-to-seed ODE run, so ``∂species/∂θ`` at its end-of-run row is well-posed."""
-        if self._sensitivity_request is None or not getattr(
-                result, 'has_sensitivities', False) or getattr(
-                result, 'has_sensitivities_ic', False):
+        reset-to-seed ODE run, so ``∂species/∂θ`` at its end-of-run row is well-posed.
+
+        A point carrying only, or also, an initial-condition axis is kept: the condition used to
+        read ``not has_sensitivities or has_sensitivities_ic``, which dropped exactly the
+        tensors #530 meant to admit, and the assembly then reported "no forward-sensitivity
+        tensor" for a scan whose route read that axis."""
+        if self._sensitivity_request is None or not (
+                getattr(result, 'has_sensitivities', False)
+                or getattr(result, 'has_sensitivities_ic', False)):
             return None
         return self._extract_output_sensitivities(result)
 
@@ -1762,9 +1886,27 @@ class BngsimSbmlModelNoTimeout(Model):
                 "'output_sensitivities' feature, or run a gradient-free fit."
                 % (reason or 'feature unavailable')
             )
+        too_old = gradient_floor_problem()
+        if too_old:
+            raise PybnfError(
+                "Gradient-based fitting is not supported here: %s. Upgrade bngsim, or run a "
+                "gradient-free fit." % too_old)
         self._sensitivity_request = _SensitivityRequest(
             params=list(params or []), ic=list(ic or []),
         )
+        self._experiment_columns = None
+
+    def set_experiment_columns(self, columns):
+        """Record ``{condition suffix: (params, ic)}``, the columns each condition's route reads
+        (:func:`pybnf.gradient.routing.apply_routings`). The run-time checks compare a run with
+        its route on the running condition's columns only."""
+        self._experiment_columns = dict(columns)
+
+    def _experiment_params(self, condition):
+        """The requested parameter columns condition ``condition``'s route reads
+        (:func:`pybnf._bngsim_seeding.experiment_columns`)."""
+        return experiment_columns(self._sensitivity_request, self._experiment_columns,
+                                  condition)[0]
 
     def analytic_sens_rhs_status(self):
         """What this model's forward sensitivities will actually run on (#606).
@@ -1869,29 +2011,168 @@ class BngsimSbmlModelNoTimeout(Model):
         fit needs at another point.
 
         Answered from model structure alone -- no simulation -- so the routing can be built once
-        at setup, and state-dependent by design, so it is read from the configured model.
+        at setup. It is read off the unconfigured template, and every run model is held to the
+        same answer (:meth:`_prepare_engine_model`, :meth:`_check_run_model_matches_route`).
         ``None`` when the backend cannot say, which the router refuses rather than guessing at.
         """
-        model = self._get_engine_template()
-        reader = getattr(model, 'effective_ic_sensitivity', None)
-        if reader is None:
-            return None
-        try:
-            seeded = reader()
-        except Exception:                                   # pragma: no cover - defensive
-            return None
-        # Restricted to species PyBNF reads on the SAME scale the backend does. The ``ic`` axis
-        # is rescaled by each species' PyBNF-value -> concentration factor when the tensor is
-        # read (:meth:`_extract_output_sensitivities`) and the ``parameter`` axis is not, so for
-        # a species whose factor is not 1 the two axes are in different units and the parameter
-        # axis cannot stand in for an ic term: substituting one for the other on a
-        # ``hasOnlySubstanceUnits`` species in a size-2 compartment overstates its column by
-        # exactly 2 (measured; ``test_sbml_fd_oracle_amount_species_seed`` is the oracle).
-        # Reporting such a species as unseeded keeps the router on the ic route, which the same
-        # oracle validates. No model in the PEtab benchmark subset both seeds an initial
-        # condition and carries a non-unit factor, so nothing real is given up.
-        return {species: row for species, row in seeded.items()
-                if self._species_unit_factor.get(species, 1.0) == 1.0}
+        # Every species, whatever its unit factor. A species whose PyBNF value is an amount in a
+        # compartment of size other than 1 used to be reported as unseeded, on a measurement
+        # that its parameter column was off by the compartment size. That predates both axes
+        # being read into PyBNF's value units (#553) and bngsim dividing such a seed by the
+        # volume (lanl/bngsim#170, in every release PyBNF accepts): its parameter column is now
+        # the total derivative to rounding (``test_sbml_fd_oracle_amount_species_seed``), and
+        # reporting it as unseeded made the router add the ic term on top of it whenever the
+        # parameter's own axis was requested too -- a doubled seed for a rate constant that
+        # also sets an amount (``test_sbml_fd_oracle_amount_species_rate_constant_seed``).
+        return self._template_seed_rows()
+
+    def _template_seed_rows(self):
+        """The unconfigured template's ``effective_ic_sensitivity()``, read once per template.
+
+        ``None`` when the build has no reader. Memoized per template (the template is cloned,
+        never configured), because the run-time check reads it at every sensitivity run."""
+        template = self._get_engine_template()
+        key = getattr(self, '_engine_template_key', None)
+        cached = _TEMPLATE_SEED_ROWS.get(key)
+        if cached is not None and cached[0] is template:
+            rows = cached[1]
+        else:
+            try:
+                rows = seed_rows(template)
+            except Exception:                               # pragma: no cover - defensive
+                rows = None
+            _TEMPLATE_SEED_ROWS[key] = (template, rows)
+        return None if rows is None else {s: dict(r) for s, r in rows.items()}
+
+    def backend_live_parameters(self):
+        """The derived parameters the backend holds live, read off the unconfigured template.
+
+        The router's second backend question (:func:`pybnf.gradient.routing.classify_bound_id`):
+        a parameter an ``initialAssignment`` defines and bngsim keeps tracking its expression is
+        carried inside its inputs' own sensitivity columns, so the router must not add its
+        column on top. ``None`` when the build cannot say."""
+        return live_parameters(self._get_engine_template())
+
+    def derived_parameter_inputs(self):
+        """``{derived parameter: every parameter it reads}`` as the unconfigured template holds
+        them (:func:`pybnf._bngsim_seeding.derived_parameter_inputs`), or ``None``."""
+        return derived_parameter_inputs(self._get_engine_template())
+
+    def initial_assignment_writes_overwritten(self, free_params, condition):
+        """``(names, cause)``: the writes of this fit that a model ``initialAssignment`` overwrites.
+
+        A value written to a parameter or species this model's own ``initialAssignment``
+        defines lasts only until the evaluation re-derives the initial values
+        (:meth:`_recompute_initial_assignments`), which it does when the same evaluation changes
+        something an ``initialAssignment`` reads, and always on the reload path. Decided per
+        scored ``(action, condition)`` pair, because each is its own evaluation
+        (:meth:`_engine_model_for_action`): it writes the free parameters, the condition's
+        targets (absolute or relative) and the action's own baked-in writes -- a plain scan's
+        parameter at each dose, a pre-equilibration's equilibration condition -- and re-derives
+        if any of those feeds an assignment. A pre-equilibrated scan's dose and a measurement
+        condition are written onto the equilibrated model afterwards, so they stand. A write in
+        one experiment is therefore not refused for what another experiment changes. ``names``
+        is empty when nothing is overwritten; ``cause`` names the experiment and what re-derives
+        the values. The scalar path's own handling of such a write is #865."""
+        defined = self._assignment_targets()
+        targets = [mut.name for mut in (condition or ())]
+        offset = getattr(condition, 'suffix', '') if condition is not None else ''
+        scored = getattr(self, '_scored_suffixes', None)
+        deps = set(self._initial_dep_names or ())
+        reload = self._needs_structural_reload()
+        ids = set(self.param_names or ()) | set(self._species_name_set)
+        changed_by_fit = {name for name in free_params if name in ids} | set(targets)
+        writes, causes = set(), []
+        for act in getattr(self, 'actions', ()):
+            suffix = getattr(act, 'suffix', '') + offset
+            if scored is not None and suffix not in scored:
+                continue
+            baked = set()
+            if getattr(act, 'preequilibrate', False):
+                baked.update(name for _kind, name, _value
+                             in (getattr(act, 'equil_perturbations', None) or ()))
+            elif isinstance(act, ParamScan):
+                baked.add(act.param)
+            here = (changed_by_fit | baked) & defined
+            if not here:
+                continue
+            if reload:
+                writes |= here
+                causes.append("experiment '%s' reads this model again from SBML, which "
+                              "evaluates its initialAssignments over any written value" % suffix)
+                continue
+            feeders = sorted((changed_by_fit | baked) & deps)
+            if feeders:
+                writes |= here
+                causes.append("in experiment '%s' the evaluation also changes %s, which an "
+                              "initialAssignment reads, so the initial values are derived again "
+                              "over the written value"
+                              % (suffix, ', '.join("'%s'" % name for name in feeders)))
+        if not writes:
+            return [], ''
+        return sorted(writes), '; '.join(causes)
+
+    def _check_run_model_matches_route(self, engine_model, literal_species=(),
+                                       condition=None):
+        """Refuse a sensitivity run on a model that does not answer the router's two questions
+        the way the unconfigured template did (:mod:`pybnf._bngsim_seeding`).
+
+        Compared on the requested parameter columns: which derived parameters on a chain from a
+        requested parameter are live, and which ``(species, parameter)`` initial-condition seeds
+        are present.
+
+        The run is compared with what *this experiment's* route assumed: only on the columns
+        the route of the running ``condition`` reads. The request is the union over every
+        experiment, so a column another experiment reads is computed here without being read,
+        and a condition can legitimately pin what it follows (``k2 = 0.8`` here, ``k1 = x``
+        there). Within those columns, a species the evaluation assigned a value of its own
+        (``literal_species``, :meth:`_engine_model_for_action`) is not seeded by what seeds it
+        elsewhere. A derived parameter needs no such exemption: an override that a requested
+        column can reach is a write to an ``initialAssignment`` target while its input moves,
+        which :func:`pybnf.gradient.routing.route_for_model` refuses at load. Silent for an
+        engine model that can answer neither question (a test double)."""
+        req = self._sensitivity_request
+        if req is None:
+            return
+        params = self._experiment_params(condition)
+        if not params:
+            return
+        if (live_parameters(engine_model) is None
+                and getattr(engine_model, 'effective_ic_sensitivity', None) is None):
+            return
+        where = "an ODE action of experiment '%s'" % (self._current_action_suffix or '')
+        seed_map = getattr(self, '_ic_seed_map', None) or {}
+        chained = set()
+        for param in params:
+            seeds = seed_map.get(param)
+            # A bare-string entry is the #511 shorthand for one species seed: no parameter.
+            if seeds and not isinstance(seeds, str):
+                chained.update(s.key for s in seeds if s.target == PARAM)
+        check_live_parameters(engine_model, self.backend_live_parameters(), chained,
+                              model_name=self.name, where=where)
+        self._check_overridden_derived(engine_model, where, condition=condition)
+        expected = self._template_seed_rows()
+        if expected is None:
+            return
+        check_seeding(engine_model, expected, params, model_name=self.name, where=where,
+                      exempt_species=literal_species)
+
+    def _check_overridden_derived(self, engine_model, where, also_overridden=(),
+                                  condition=None):
+        """On a bngsim build that differentiates through an overridden derived parameter,
+        refuse a run that overrides one a parameter the condition's route reads feeds
+        (:func:`pybnf._bngsim_seeding.check_overridden_derived`)."""
+        req = self._sensitivity_request
+        if req is None or sensitivity_follows_derived_overrides():
+            return
+        params = self._experiment_params(condition)
+        if not params:
+            return
+        check_overridden_derived(engine_model, self.backend_live_parameters(),
+                                 self.derived_parameter_inputs(), params,
+                                 model_name=self.name, where=where,
+                                 also_overridden=also_overridden,
+                                 rhs_symbols=self.ode_rhs_symbols())
 
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
@@ -1985,6 +2266,14 @@ class BngsimSbmlModelNoTimeout(Model):
         # Gradient path (#385/#455): a no-op on the scalar path (empty kwargs), so the
         # Simulator construction is byte-identical there.
         kwargs.update(self._sensitivity_request_kwargs(method))
+        if kwargs.get('sensitivity_params'):
+            # Every Simulator this backend builds starts from a freshly prepared model, so
+            # this is where the run model has to match what the routing was built on.
+            prepared = getattr(self, '_prepared_literal_species', None)
+            if prepared and prepared[0] == id(engine_model):
+                self._check_run_model_matches_route(engine_model, prepared[1], prepared[2])
+            else:
+                self._check_run_model_matches_route(engine_model)
         try:
             return bngsim.Simulator(engine_model, **kwargs)
         except bngsim.SsaValidationError as exc:
@@ -2444,6 +2733,12 @@ class BngsimSbmlModelNoTimeout(Model):
                 timeout=timeout, steady_state=True, sim=sim, suffix=f'{suffix}_preequil')
         for name, value in measure:
             self._set_engine_value_if_present(engine_model, name, value)
+        if carry:
+            # The measurement condition can override a derived parameter on the advanced
+            # model, after the check the equilibration's Simulator was built under.
+            self._check_overridden_derived(
+                engine_model, "the measurement condition of experiment '%s'" % act.suffix,
+                condition=getattr(mut, 'suffix', '') if mut is not None else '')
         return engine_model, sim, carry, equil_result
 
     def _run_preequilibrated_time_course(self, act, mut, *, method, seed, timeout, suffix):
@@ -2525,6 +2820,11 @@ class BngsimSbmlModelNoTimeout(Model):
                       "dose axis is a parameter rather than the state."])
         engine_model, sim, carry, _ = self._begin_preequilibration(
             act, mut, method=method, seed=seed, timeout=timeout, suffix=suffix)
+        if carry:
+            self._check_overridden_derived(
+                engine_model, "the dose-response scan of experiment '%s'" % act.suffix,
+                also_overridden=(act.param,),
+                condition=getattr(mut, 'suffix', '') if mut is not None else '')
         engine_model.save_concentrations()
         scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
         rows = []
