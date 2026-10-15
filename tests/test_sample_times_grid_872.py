@@ -38,6 +38,14 @@ def _decay_block():
     return _model_block(FIXTURES / 'e2e_ode_decay.bngl')
 
 
+def past_start(out, start):
+    """The rows of a continued run's output after its start, ``start``: BNG2.pl writes no row
+    there. Whether the bridge does is not a grid rule (lanl/PyBNF#1011 has it append a continued
+    run as BNG2.pl does), so a row there is left out either way."""
+    t = _times(out)
+    return slice(1, None) if len(t) and abs(t[0] - start) < 1e-9 else slice(None)
+
+
 def _closed_form(t, t_start=0.0):
     return 100.0 * np.exp(-K * (np.asarray(t, dtype=float) - t_start))
 
@@ -96,35 +104,35 @@ def test_an_ssa_sample_times_action_starts_at_t_start(tmp_path):
     assert out['Stot'][1] < 100.0
 
 
-# Each: (id, the two actions, BNG2.pl's rows of the continued one).
+# Each: (id, the two actions, BNG2.pl's rows of the continued one, the clock it starts on).
 _CONTINUED = [
     ('after_late_sample_times',
      ['simulate({method=>"ode",sample_times=>[1,2,5],suffix=>"a"})',
-      'simulate({continue=>1,method=>"ode",t_end=>20,n_steps=>2,suffix=>"x"})'], [12.5, 20]),
+      'simulate({continue=>1,method=>"ode",t_end=>20,n_steps=>2,suffix=>"x"})'], [12.5, 20], 5),
     ('after_t_end_below_last',
      ['simulate({method=>"ode",t_end=>7,sample_times=>[0,5,10],suffix=>"a"})',
-      'simulate({continue=>1,method=>"ode",t_end=>20,n_steps=>2,suffix=>"x"})'], [13.5, 20]),
+      'simulate({continue=>1,method=>"ode",t_end=>20,n_steps=>2,suffix=>"x"})'], [13.5, 20], 7),
     ('sample_times_continued',
      ['simulate({method=>"ode",t_end=>4,n_steps=>2,suffix=>"a"})',
-      'simulate({continue=>1,method=>"ode",sample_times=>[2,5,10],suffix=>"x"})'], [5, 10]),
+      'simulate({continue=>1,method=>"ode",sample_times=>[2,5,10],suffix=>"x"})'], [5, 10], 4),
 ]
 
 
-@pytest.mark.parametrize('actions, rows', [c[1:] for c in _CONTINUED],
+@pytest.mark.parametrize('actions, rows, clock', [c[1:] for c in _CONTINUED],
                          ids=[c[0] for c in _CONTINUED])
-def test_a_continued_action_starts_on_bng2pls_clock(tmp_path, actions, rows):
+def test_a_continued_action_starts_on_bng2pls_clock(tmp_path, actions, rows, clock):
     """After a run, the model's clock is the time of its last row (5, or the t_end of 7), so
     ``continue=>1`` divides [5, 20] or [7, 20] into its steps, and a continued sample_times
     action starts at the previous end (4) and drops the listed time before it. The bridge used
-    to leave its clock elsewhere. BNG2.pl writes no row at a continued run's start; the bridge
-    writes it (scoring matches by time). The values continue one decay from t = 0."""
+    to leave its clock elsewhere. BNG2.pl writes no row at a continued run's start
+    (:func:`past_start`). The values continue one decay from t = 0."""
     bng = _run_bng2pl(tmp_path, actions, 'decay_x.gdat')
     np.testing.assert_allclose(bng[:, 0], rows, atol=1e-9)
     np.testing.assert_allclose(bng[:, 1], _closed_form(bng[:, 0]), rtol=1e-5)
     out = _run_bridge(tmp_path, actions, ['a', 'x'], 'x')
-    np.testing.assert_allclose(_times(out)[1:], bng[:, 0], atol=1e-9)
-    np.testing.assert_allclose(out['Stot'][1:], bng[:, 1], rtol=1e-5)
-    np.testing.assert_allclose(out['Stot'][0], _closed_form(_times(out)[0]), rtol=1e-5)
+    rest = past_start(out, clock)
+    np.testing.assert_allclose(_times(out)[rest], bng[:, 0], atol=1e-9)
+    np.testing.assert_allclose(out['Stot'][rest], bng[:, 1], rtol=1e-5)
 
 
 # Each: (id, actions, BNG2.pl's .scan values by the closed form).
@@ -488,16 +496,19 @@ def test_data_at_a_time_the_grid_does_not_write_is_refused_at_load(tmp_path, opt
 
 
 def test_data_on_the_grid_and_the_cases_not_judged_at_load_still_load(tmp_path):
-    """Not refused: data on the rows, the nearest-row matching of ind_var_rounding = 1, a
-    step-count grid (whose rows the objective matches to within its relative tolerance), a grid
-    known only when it runs (an expression, continue=>1), and a run that can stop early."""
+    """Not refused: data on the rows, data a step grid hits to within rounding (0.1*3 is not 0.3
+    in binary, and the objective matches to within its relative tolerance), the nearest-row
+    matching of ind_var_rounding = 1, a grid known only when it runs (an expression,
+    continue=>1), and a run that can stop early."""
     action = 'simulate({method=>"ode",t_end=>7,sample_times=>[0,5,10],suffix=>"x"})'
     on_grid = '# time Stot\n5 22.313016\n7 12.245643\n'
     off_grid = '# time Stot\n5 22.313016\n10 4.978707\n'
     _legacy_configuration(tmp_path, [_GEN, action], on_grid)
     _legacy_configuration(tmp_path, [_GEN, action], off_grid, ind_var_rounding=1)
+    _legacy_configuration(tmp_path, [_GEN, 'simulate({method=>"ode",t_end=>0.9,n_steps=>3,'
+                                           'suffix=>"x"})'], '# time Stot\n0.3 91.39\n0.9 76.34\n')
     for shape in ('t_end=>0.1*70,sample_times=>[0,5,10]',            # an expression
-                  't_end=>12,n_steps=>4',                            # a step count
+                  't_end=>12,n_steps=>4*1',                          # an expression
                   't_end=>7,sample_times=>[0,5,10],stop_if=>"Stot<1"'):
         _legacy_configuration(tmp_path, [_GEN, 'simulate({method=>"ode",%s,suffix=>"x"})'
                                          % shape], off_grid)
@@ -505,6 +516,41 @@ def test_data_on_the_grid_and_the_cases_not_judged_at_load_still_load(tmp_path):
                                            'suffix=>"a"})',
                                      'simulate({method=>"ode",continue=>1,sample_times=>[5,7,9],'
                                      't_end=>7,suffix=>"x"})'], off_grid)
+
+
+def test_only_the_output_kept_for_a_suffix_is_judged(tmp_path):
+    """execute keeps the output of the last action that writes a suffix (BNG2.pl writes it
+    afresh unless that action continues), so data are judged against that one (#1005 review).
+    A step grid that is kept is judged too: data at 1 after [1,2,5] then t_end=>10,n_steps=>5
+    has no row (rows 0, 2, ..., 10), where judging the first action let it through."""
+    first = 'simulate({method=>"ode",sample_times=>[1,2,5],suffix=>"x"})'
+    steps = 'simulate({method=>"ode",t_end=>10,n_steps=>5,suffix=>"x"})'
+    code, log = _bng2pl(tmp_path, 'decay', _decay_block(),
+                        ['generate_network({overwrite=>1})', first, steps])
+    assert code == 0, log
+    np.testing.assert_allclose(np.loadtxt(tmp_path / 'decay_x.gdat', ndmin=2)[:, 0],
+                               [0, 2, 4, 6, 8, 10], atol=1e-9)
+    with pytest.raises(PybnfError) as info:
+        _legacy_configuration(tmp_path, [_GEN, first, steps], '# time Stot\n1 74.08\n4 30.12\n')
+    assert info.value.log_message == ('Model decay, simulate action with suffix "x": the data '
+                                      'for "x" has t = 1, where the action writes no row')
+    assert 'writes rows at t = 0, 2, 4, 6, 8, 10' in info.value.message
+    _legacy_configuration(tmp_path, [_GEN, first, steps], '# time Stot\n4 30.12\n8 9.07\n')
+
+
+def test_time_error_data_off_the_grid_still_loads(tmp_path):
+    """A time_error fit integrates over a dense grid that its data need not lie on (ADR-0112)."""
+    from pybnf import config, parse
+    model = tmp_path / 'm.bngl'
+    model.write_text(_decay_block())
+    (tmp_path / 'tc.exp').write_text('# time Stot\n1.33 67.1\n2.71 44.4\n')
+    conf = ['edition = 2', 'model: %s' % model, 'output_dir = %s' % (tmp_path / 'out'),
+            'job_type = de', 'bngl_backend = bngsim', 'uniform_var = k 0.1 1',
+            'population_size = 4', 'max_iterations = 1',
+            'experiment: tc, t_end: 5, n_steps: 10, data: %s' % (tmp_path / 'tc.exp'),
+            'noise_model = normal, sigma = fix_at 1, time_error = truncated_normal, '
+            'sigma_t = fix_at 0.3']
+    config.Configuration(parse.ploop([ln + '\n' for ln in conf]))
 
 
 def test_a_conditions_data_is_checked_against_its_actions_rows(tmp_path, monkeypatch):

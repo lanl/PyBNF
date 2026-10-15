@@ -808,7 +808,8 @@ Other Path Keys
   ``output_step_interval``, or, beside ``stop_if``, ``print_on_stop`` other than 1 -- is not
   supported by the bridge: ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the
   option. So is ``stop_if`` on a stochastic method (``ssa``, ``psa``): BNG2.pl checks it after
-  every reaction and stops between output times, where the bridge checks it only at output times.
+  every reaction and stops between output times, where the bridge checks it only at output times;
+  and on a steady-state ``parameter_scan``, whose points the bridge solves without it.
   That holds for an action in a protocol block that a ``simulate_protocol`` action or a
   ``method=>"protocol"`` scan runs, too, except that PyBNF cannot run such a model on BNG2.pl
   either: it simulates the model's generated ``.net`` file there, which carries no protocol block
@@ -825,8 +826,12 @@ Other Path Keys
   ``t_end``, is not written; times are compared with 15 significant digits, as BNG2.pl writes them
   for ``run_network``. A ``parameter_scan`` point with ``sample_times`` takes its row at that
   end. BNGsim's NFsim takes the same rows, and refuses ``continue=>1``, as BNG2.pl's does (it
-  used to ignore it). A datum at a time such a grid does not write is refused when the
-  configuration loads (unless ``ind_var_rounding = 1``), since no simulation could score it. A
+  used to ignore it). The output kept for a suffix is the last action that writes it (a run
+  that does not continue writes it afresh, in BNG2.pl as in BNGsim). When that is a ``simulate``
+  whose rows are known as the configuration loads -- its ``sample_times`` or its step count,
+  written as numbers, and no ``stop_if``, ``steady_state`` or ``continue=>1`` -- a datum at a time
+  it does not write is refused then, since no simulation could score it (unless
+  ``ind_var_rounding = 1``, or the fit has a ``time_error``). A
   grid that starts at a negative ``t_start`` (BNG2.pl stops on it) or ends where it starts
   (BNG2.pl integrates nothing: it writes the one row at ``t_start``, or, continuing a run, stops)
   is refused. BNGsim used to integrate from the first listed time, reporting the initial state
@@ -843,8 +848,15 @@ Other Path Keys
   ``steady_state``, which is where a ``continue=>1`` action starts and what the next action
   simulates from. It used to keep the state it had integrated to ``t_end`` after a ``stop_if``,
   and the clock at ``t_end`` after either (`#1010 <https://github.com/lanl/PyBNF/issues/1010>`_).
-  A gradient fit that continues from a ``stop_if`` stop is refused, since BNGsim cannot put the
-  derivatives back at the stop row.
+  BNGsim stops at the first output time at which the condition holds. On a regular grid that is
+  where BNG2.pl stops too; on a coarse, irregular one BNG2.pl, which checks the condition against
+  the integrator's internal state, can stop one output time earlier. Each point of a
+  ``parameter_scan`` with ``stop_if`` stops on it too, as BNG2.pl's simulate at each point does,
+  and takes its row there; BNGsim used to read each point at ``t_end``. A scan with ``stop_if``
+  that starts from a carried state (a ``simulate`` before it with no ``resetConcentrations()``)
+  is refused when it runs. A gradient fit that continues from a ``stop_if`` stop, directly or
+  from a snapshot of it, is refused, since BNGsim cannot put the derivatives back at the stop
+  row.
 
   **Network-free experiments need BNGsim.** BNG2.pl's NFsim takes an output grid only as
   ``t_end`` with ``n_steps`` of 1 or more, and BNG2.pl has no RuleMonkey. An edition-2

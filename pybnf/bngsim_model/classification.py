@@ -305,14 +305,14 @@ def _allowed_bngsim_backends_for_action(action_line):
     ps_params = _parse_parameter_scan_action(line)
     if ps_params is not None:
         backend = _classify_action_method_backend(ps_params.get('method', 'ode'))
-        if backend is None or unread_grid_options(ps_params):
+        if backend is None or unread_grid_options(ps_params, scan=True):
             return frozenset(), True
         return frozenset((backend,)), True
 
     bf_params = _parse_bifurcate_action(line)
     if bf_params is not None:
         backend = _classify_action_method_backend(bf_params.get('method', 'ode'))
-        if backend is None or unread_grid_options(bf_params):
+        if backend is None or unread_grid_options(bf_params, scan=True):
             return frozenset(), True
         return frozenset((backend,)), True
 
@@ -407,7 +407,7 @@ def bngsim_unread_action_options(actions):
                                (_parse_bifurcate_action, 'param_scan')):
             params = parse(line)
             if params is not None:
-                options = unread_grid_options(params)
+                options = unread_grid_options(params, scan=default == 'param_scan')
                 if options:
                     found.append((params.get('suffix', default), options))
                 break

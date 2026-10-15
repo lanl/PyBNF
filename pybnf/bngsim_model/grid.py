@@ -28,11 +28,15 @@ listed twice is written twice. Each time is compared as BNG2.pl hands it to run_
 reads the model's species and clock back from the last row the run wrote (BNGAction.pm
 757-779), and so does the bridge (``BngsimModel._settle_after_run``): the end of the grid, or,
 for a run that stops early on ``stop_if`` or at ``steady_state``, the row it stopped at (#1010).
+The two can stop at different rows: run_network checks ``stop_if`` against CVODE's internal
+state, which may be past the output time it writes, so on a coarse, irregular grid it can stop
+one row before the first output time at which the condition holds; the bridge stops there.
 A ``continue=>1`` action starts there. Edition-2 experiments list t = 0 first, with
 ``t_start=>0`` and no ``t_end``, so their rows are the listed times. This was lanl/PyBNF#872: the
 bridge integrated from the first listed time, reporting the initial state there, and ignored a
-``t_end`` below the last one. When the configuration loads, a datum at a time such a grid does
-not write is refused (:func:`literal_sample_time_rows`), since no simulation could score it.
+``t_end`` below the last one. When the configuration loads, a datum at a time the kept output of
+its suffix does not write is refused where those rows are known (:func:`kept_output_rows`), since
+no simulation could score it.
 
 On NFsim, BNG2.pl reads ``n_steps`` and nothing else for the grid (``n_output_steps`` is not
 read, and there is no default step count), requires ``t_end`` greater than ``t_start``, and
@@ -54,8 +58,10 @@ an end that is not after ``t_start`` (BNG2.pl integrates nothing: it writes the 
 ``t_start``, or, continuing a run, no row, and then stops; the bridge's runs take two or more
 times).
 
-A ``continue=>1`` action writes no row at its start in BNG2.pl; the bridge writes it, and
-scoring, which matches by time, reads only the rows BNG2.pl also writes.
+A ``continue=>1`` action writes no row at its start in BNG2.pl, which appends its rows to the
+output of the runs before it on the same suffix (run_network ``-x``); how the bridge keeps such
+a chain is not a grid rule, and the check of data against rows at load does not judge it
+(:func:`kept_output_rows`).
 
 Some options BNG2.pl reads decide an action's rows in a way these rules cannot see
 (:data:`UNREAD_GRID_OPTIONS`): an ``argfile`` supplies ``t_end``, ``n_steps`` or
@@ -98,9 +104,11 @@ NETWORK_FREE_METHODS = frozenset(('nf', 'nfsim', 'nf_reject', 'nf_exact', 'rm', 
 #: that the bridge does not read as BNG2.pl does (the module docstring says how each does it).
 #: ``print_on_stop`` is one only beside ``stop_if`` and when it is not 1, its default: BNG2.pl
 #: passes it to run_network only with the stop condition (BNGAction.pm 424-432). ``stop_if`` is
-#: one only on a stochastic method (:data:`STOCHASTIC_NETWORK_METHODS`, or ``poplevel``):
+#: one on a stochastic method (:data:`STOCHASTIC_NETWORK_METHODS`, or ``poplevel``):
 #: run_network checks it there after every reaction, so the run stops, and writes its last row,
-#: between output times, where the bridge checks it only at the output times (#1010).
+#: between output times, where the bridge checks it only at the output times (#1010). It is one
+#: on a steady-state scan too (``steady_state=>1``), whose points the bridge solves to steady
+#: state without a stop condition; other ODE scans honour it point by point.
 UNREAD_GRID_OPTIONS = ('argfile', 'max_sim_steps', 'output_step_interval', 'print_on_stop',
                        'stop_if')
 
@@ -109,19 +117,22 @@ UNREAD_GRID_OPTIONS = ('argfile', 'max_sim_steps', 'output_step_interval', 'prin
 STOCHASTIC_NETWORK_METHODS = frozenset(('ssa', 'psa', 'pla'))
 
 
-def _unread(option, params):
+def _unread(option, params, scan):
     if option == 'print_on_stop':
         return 'stop_if' in params and str(params[option]).strip() != '1'
     if option == 'stop_if':
         method = str(params.get('method', 'ode')).strip().lower()
-        return method in STOCHASTIC_NETWORK_METHODS or 'poplevel' in params
+        if method in STOCHASTIC_NETWORK_METHODS or 'poplevel' in params:
+            return True
+        return scan and _number(params.get('steady_state', 0)) != 0
     return True
 
 
-def unread_grid_options(params):
-    """The :data:`UNREAD_GRID_OPTIONS` a parsed action names, in that order."""
+def unread_grid_options(params, scan=False):
+    """The :data:`UNREAD_GRID_OPTIONS` a parsed action names, in that order. ``scan`` says the
+    action is a ``parameter_scan`` or ``bifurcate``."""
     return [option for option in UNREAD_GRID_OPTIONS if option in params
-            and _unread(option, params)]
+            and _unread(option, params, scan)]
 
 
 def unread_options_refusal(where, options):
@@ -139,7 +150,8 @@ def unread_options_refusal(where, options):
            ' read %s as BNG2.pl does' % ('it' if len(options) == 1 else 'them') if stop else '',
            " On a stochastic method BNG2.pl checks stop_if after every reaction, so it stops, "
            "writes its last row and leaves its state between output times; the bridge checks "
-           "it only at the output times." if stop else ''))
+           "it only at the output times. On a steady-state scan the bridge solves each point "
+           "to steady state with no stop condition." if stop else ''))
 
 
 _BOTH_STEP_KEYS = ("'n_steps' and 'n_output_steps' are the same thing, cannot define both. "
@@ -244,14 +256,98 @@ def _check_literal_sample_times(params, where):
     sample_time_rows(where, sorted(listed), t_start, t_end, continued=bool(_resumes(params)))
 
 
+def kept_outputs(action_lines):
+    """``{suffix: (kind, params, chained)}``: for each output suffix among ``action_lines``, the
+    action whose output the run keeps (``execute`` keeps one output per suffix): the last
+    ``simulate`` / ``parameter_scan`` / ``bifurcate`` that writes it. A run that does not
+    continue writes the suffix's output afresh, in BNG2.pl as on the bridge. ``chained`` says
+    the kept action sets ``continue=>1`` (or an expression for it): BNG2.pl appends its rows to
+    the output of the runs before it on the same suffix (run_network ``-x``), so the output is
+    the chain of those runs, which :func:`kept_output_rows` does not judge (lanl/PyBNF#1011 is
+    to have the bridge append it too, and may judge it there)."""
+    kept = {}
+    for action_line in action_lines:
+        line = _statement(action_line)
+        if not line:
+            continue
+        for kind, parse in (('simulate', _parse_simulate_action),
+                            ('parameter_scan', _parse_parameter_scan_action),
+                            ('bifurcate', _parse_bifurcate_action)):
+            params = parse(line)
+            if params is not None:
+                default = 'time_course' if kind == 'simulate' else 'param_scan'
+                kept[params.get('suffix', default)] = (
+                    kind, params, kind == 'simulate' and _resumes(params) is not False)
+                break
+    return kept
+
+
+def kept_output_rows(action_lines):
+    """``{suffix: rows}`` for each suffix whose kept output (:func:`kept_outputs`) has rows
+    known before anything runs: a ``simulate`` that does not continue an earlier run and whose
+    grid is literal, its ``sample_times`` (:func:`literal_sample_time_rows`) or its step count
+    (:func:`literal_step_rows`). A scan, a continued chain, and a grid known only when it runs
+    are left out."""
+    rows = {}
+    for suffix, (kind, params, chained) in kept_outputs(action_lines).items():
+        if kind != 'simulate' or chained:
+            continue
+        grid = literal_sample_time_rows(params)
+        if grid is None:
+            grid = literal_step_rows(params)
+        if grid is not None:
+            rows[suffix] = grid
+    return rows
+
+
+def literal_step_rows(params):
+    """The times of the rows a ``simulate`` writes for its step count, when they are known before
+    anything runs, on BNG2.pl and on the bridge alike: ``t_start`` and the ``n_steps`` (or
+    ``n_output_steps``; one by default) equal steps after it to ``t_end``. ``None`` when the grid
+    is ``sample_times``, a value is an expression, the run can stop early (``stop_if``,
+    ``steady_state``), ``continue=>1`` takes ``t_start`` from the clock, or the grid is refused.
+    Nor for an NFsim run that starts after 0, whose rows BNG2.pl labels by the time since its
+    start and the bridge by the time itself, nor for an action naming an option that changes its
+    rows in a way these rules do not see (:data:`UNREAD_GRID_OPTIONS`)."""
+    if unread_grid_options(params):
+        return None
+    method = str(params.get('method', 'ode')).strip().lower()
+    network_free = method in NETWORK_FREE_METHODS
+    keys = ('n_steps',) if network_free else ('n_steps', 'n_output_steps')
+    if 'sample_times' in params and not any(key in params for key in keys):
+        return None
+    if 'stop_if' in params or _number(params.get('steady_state', 0)) != 0:
+        return None
+    resumes = _resumes(params)
+    if resumes is None or (resumes and 't_start' not in params) or 't_end' not in params:
+        return None
+    if not network_free and 'n_steps' in params and 'n_output_steps' in params:
+        return None
+    key = next((key for key in keys if key in params), None)
+    if key is None and network_free:
+        return None
+    t_start = _number(params.get('t_start', 0))
+    t_end = _number(params['t_end'])
+    steps = _number(params[key]) if key is not None else 1
+    if None in (t_start, t_end, steps) or (network_free and t_start != 0):
+        return None
+    steps = int(steps)
+    if steps < 1 or not t_end > t_start:
+        return None
+    return [t_start + k * (t_end - t_start) / steps for k in range(steps + 1)]
+
+
 def literal_sample_time_rows(params):
     """The times of the rows a ``simulate`` writes for its ``sample_times``, when they are known
     before anything runs, on BNG2.pl and on the bridge alike (:func:`sample_time_rows`); else
     ``None``. They are not known when the grid is a step count, when a time is an expression,
     when ``continue=>1`` takes ``t_start`` from the model's clock, or when the run can stop
     early (``stop_if``, ``steady_state``); nor when the grid is refused (the set-up and
-    BNG2.pl say why)."""
+    BNG2.pl say why), or the action names an option that changes its rows in a way these rules
+    do not see (:data:`UNREAD_GRID_OPTIONS`)."""
     if 'sample_times' not in params or 'n_steps' in params or 'n_output_steps' in params:
+        return None
+    if unread_grid_options(params):
         return None
     raw = params['sample_times']
     method = str(params.get('method', 'ode')).strip().lower()
@@ -368,7 +464,7 @@ def scan_output_grid(ps_params, where, t_start=None, evaluate=None):
     protocol block at each point instead (``simulate_protocol``), whose own ``simulate``
     actions carry their grids. ``t_start`` is the points' start, required with ``evaluate``."""
     method = str(ps_params.get('method', 'ode')).strip().lower()
-    unread = unread_grid_options(ps_params)
+    unread = unread_grid_options(ps_params, scan=True)
     if unread:
         raise unread_options_refusal(where, unread)
     if method == 'protocol':

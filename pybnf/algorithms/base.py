@@ -232,16 +232,29 @@ def _unread_options_note(model):
     return note
 
 
+#: The remedy for a model that runs its protocol block with ``simulate_protocol``: no backend PyBNF
+#: has runs that action, so changing the backend does not help (#1005 review).
+_SIMULATE_PROTOCOL_REMEDY = (
+    'The bngsim bridge does not run a simulate_protocol action, and PyBNF\'s BNG2.pl path drops '
+    "the protocol block: write the protocol's steps into the actions block, or run the protocol "
+    'from a parameter_scan with method=>"protocol", which the bridge runs.')
+
+
 def _bng2pl_reason(model, bngl_backend, bngsim_available, bridge_backend):
     """``(why, remedy)`` for :func:`refuse_protocol_on_bng2pl` when set-up hands the BNGL
-    ``model``, which generates its network, to BNG2.pl rather than to the bngsim bridge."""
+    ``model``, which generates its network, to BNG2.pl rather than to the bngsim bridge. A model
+    that runs its protocol with ``simulate_protocol`` gets that action's remedy whatever the
+    reason, since the bridge does not run it either."""
+    simulate_protocol = runs_simulate_protocol(model.actions)
     if bngl_backend == BNGL_BACKEND_BIONETGEN:
         return ('bngl_backend = bionetgen simulates it with BNG2.pl',
+                _SIMULATE_PROTOCOL_REMEDY if simulate_protocol else
                 'Set bngl_backend = bngsim (or remove the line: auto picks bngsim when it is '
                 'installed), which runs the protocol block.')
     if not bngsim_available:
         return ('bngl_backend = auto simulates it with BNG2.pl, because bngsim is not available '
                 '(%s)' % _bngsim_unavailable_reason(),
+                _SIMULATE_PROTOCOL_REMEDY if simulate_protocol else
                 'Make bngsim available (install it, and unset PYBNF_NO_BNGSIM if it is set): it '
                 'runs the protocol block.')
     if bridge_backend in BNGSIM_SUPPORTED_BNGL_BACKENDS:
@@ -251,12 +264,12 @@ def _bng2pl_reason(model, bngl_backend, bngsim_available, bridge_backend):
     unread = _unread_options(model)
     if unread:
         remedy = ("Write each such action's t_end and step count into the action itself (and "
-                  "drop a stop_if on a stochastic method), so that the bngsim bridge runs the "
-                  "model.")
-    elif runs_simulate_protocol(model.actions):
-        remedy = ('The bngsim bridge does not run a simulate_protocol action: write the '
-                  "protocol's steps into the actions block, or run the protocol from a "
-                  'parameter_scan with method=>"protocol", which the bridge runs.')
+                  "drop a stop_if on a stochastic method or a steady-state scan), so that the "
+                  "bngsim bridge runs the model.")
+        if simulate_protocol:
+            remedy += ' ' + _SIMULATE_PROTOCOL_REMEDY
+    elif simulate_protocol:
+        remedy = _SIMULATE_PROTOCOL_REMEDY
     else:
         remedy = ('Change the actions the bngsim bridge does not support (the log file names '
                   'the model), so that it runs the model.')

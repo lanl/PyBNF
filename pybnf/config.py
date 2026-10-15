@@ -1883,38 +1883,44 @@ class Configuration:
         for model in self.models.values():
             refuse_ambiguous_output_keys(model, edition=ed)
 
-    def _refuse_data_without_rows(self):
-        """Refuse a datum at a time that the BNGL ``simulate`` it is scored against writes no row
-        at (#872 review).
+    @staticmethod
+    def _times_text(rows):
+        """The times of an output's rows, for a message: all of them, or the first and last few
+        of a long grid."""
+        shown = ['%g' % t for t in rows]
+        return ', '.join(shown if len(shown) <= 12 else shown[:5] + ['...'] + shown[-5:])
 
-        A ``simulate`` whose grid is its ``sample_times`` writes the rows
+    def _refuse_data_without_rows(self):
+        """Refuse a datum at a time that the output it is scored against has no row at (#872
+        review).
+
+        ``execute`` keeps one output per suffix: the last action that writes it
+        (:func:`~pybnf.bngsim_model.grid.kept_outputs`). When that is a ``simulate`` whose grid
+        is its ``sample_times``, it writes the rows
         :func:`~pybnf.bngsim_model.grid.sample_time_rows` lists, on BNG2.pl and on the bngsim
-        bridge alike: from ``t_start``, and no later than ``t_end``. When those are known as the
-        configuration loads (:func:`~pybnf.bngsim_model.grid.literal_sample_time_rows`), every
-        time of the data scored against the action must be one of them, matched as the objective
-        matches it (equal to within its relative tolerance, ``_sim_row_for``). Otherwise every
-        evaluation raises, every job is scored as a failed simulation, and the fit ends
-        "Fitting complete" at an objective of inf. With ``ind_var_rounding = 1`` the objective
-        takes the nearest row instead, so nothing is refused; a datum at ``t = inf`` (a steady
-        state) is scored against the last row. Data are matched to an action by output key, its
-        condition included (:func:`~pybnf.output_keys.output_pairs`). A step-count grid, and a
-        ``sample_times`` grid known only when it runs, are not checked here."""
-        from .bngsim_model.grid import _statement, literal_sample_time_rows
-        from .bngsim_model.parsing import _parse_simulate_action
+        bridge alike: from ``t_start``, and no later than ``t_end``; one with a step count writes
+        ``t_start`` and its equal steps to ``t_end``. When those are known as the configuration
+        loads (:func:`~pybnf.bngsim_model.grid.kept_output_rows`), every time of the data
+        scored against the output must be one of them, matched as the objective matches it
+        (equal to within its relative tolerance, ``_sim_row_for``, so a datum a step grid hits
+        to within rounding is matched). Otherwise every evaluation raises, every job is scored
+        as a failed simulation, and the fit ends "Fitting complete" at an objective of inf.
+        Nothing is refused with ``ind_var_rounding = 1``, where the objective takes the nearest
+        row, or with ``time_error``, which integrates over a dense grid the data need not be on;
+        a datum at ``t = inf`` (a steady state) is scored against the last row. Data are matched
+        to an output by key, its condition included
+        (:func:`~pybnf.output_keys.output_pairs`). Not judged: a kept output that is a scan, a
+        ``continue=>1`` chain, or a grid known only when it runs."""
+        from .bngsim_model.grid import kept_output_rows
         from .output_keys import output_pairs
-        if self.config.get('ind_var_rounding', 0):
+        if self.config.get('ind_var_rounding', 0) or self._time_error_active():
             return
         for model in self.models.values():
             data = self.exp_data.get(model.name) or {}
             if not isinstance(model, BNGLModel) or not data:
                 continue
-            grids = []
-            for line in model.actions:
-                params = _parse_simulate_action(_statement(line))
-                rows = None if params is None else literal_sample_time_rows(params)
-                if rows is not None:
-                    grids.append((params.get('suffix', 'time_course'), (params, rows)))
-            for key, suffix, (params, rows), _condition in output_pairs(model, grids):
+            grids = list(kept_output_rows(model.actions).items())
+            for key, suffix, rows, _condition in output_pairs(model, grids):
                 exp = data.get(key)
                 if exp is None or min(exp.cols, key=exp.cols.get) != 'time':
                     continue
@@ -1927,14 +1933,16 @@ class Configuration:
                 raise PybnfError(
                     'Model %s, simulate action with suffix "%s": the data for "%s" has t = %s, '
                     'where the action writes no row' % (model.name, suffix, key, listed),
-                    'Model %s, simulate action with suffix "%s" writes rows at t = %s: BNG2.pl '
-                    'starts the run at t_start and writes that row, then each of its sample_times '
-                    'after t_start and before the end, then the end (its t_end when it gives one, '
-                    'else its last sample time), and the bngsim bridge writes the same rows. The '
-                    'data for "%s" has t = %s, which no simulation, on either backend, has a row '
-                    'to score against, so every evaluation would fail. Add the time to the '
-                    "action's sample_times (and move its t_end past it), or remove the data."
-                    % (model.name, suffix, ', '.join('%g' % t for t in rows), key, listed))
+                    'Model %s, simulate action with suffix "%s" writes rows at t = %s, on BNG2.pl '
+                    'and on the bngsim bridge alike: the run starts at t_start and writes that '
+                    'row, then those of its step count, or of its sample_times after t_start and '
+                    'before the end and then the end (its t_end when it gives one, else its last '
+                    'sample time). It is the last action that writes "%s", so its output is the '
+                    'one kept. The data for "%s" has t = %s, which no simulation, on either '
+                    'backend, has a row to score against, so every evaluation would fail. Give '
+                    'the action an output time there (in its sample_times or its step count, and '
+                    'with its t_end past it), or remove the data.'
+                    % (model.name, suffix, self._times_text(rows), suffix, key, listed))
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read

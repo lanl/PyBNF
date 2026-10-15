@@ -115,8 +115,9 @@ class _SimulateActionState:
     ADR-0151). A labelled snapshot's own carried flag is kept beside it in the action loop.
 
     ``stopped_early`` says the carried state is the trigger row of a ``stop_if`` run, put back
-    after the run (#1010) without the ``dx/dθ`` bngsim would carry: a sensitivity run that
-    carries it is refused rather than seeded from nothing.
+    after the run (#1010) without the ``dx/dθ`` bngsim would carry: a sensitivity run (or scan)
+    that carries it is refused rather than seeded from nothing. A snapshot keeps the flag of the
+    state it saved (``stopped_baseline`` for the default slot), and a reset to it restores it.
     """
     sim: object
     method: str = 'ode'
@@ -125,6 +126,7 @@ class _SimulateActionState:
     carried_state: bool = False
     carried_baseline: bool = False
     stopped_early: bool = False
+    stopped_baseline: bool = False
     # The gradient path's record of the initial-condition seeding (pybnf._bngsim_seeding):
     # ``baseline_seed`` is what a fresh start from the reset target is seeded with -- read
     # before the save that made it, declared again after every reset back to it -- and
@@ -181,6 +183,10 @@ class _ScanSettings:
     timeout: object
     scan_timeout: object
     scan_eval_timeout: object
+    # The scan's stop_if, and the step count of each point's simulate, whose output times are
+    # where it is checked (None, and the 2-point run, without one; #1005 review).
+    stop_if: object = None
+    stop_steps: int = 1
 
 
 @dataclass
@@ -1260,6 +1266,7 @@ class BngsimModel(NetModel):
         # a carried one. bngsim keeps them apart from the default slot, as BioNetGen does, so
         # saving one does not change what a plain resetConcentrations() restores (#830).
         labelled_carried = {}
+        labelled_stopped = {}     # ...and whether it was a stop_if run's stop row (#1010)
         # Active setConcentration() expressions waiting to be replayed at the
         # next parameter_scan(). Cleared on resetConcentrations and
         # saveConcentrations. See issue #46.
@@ -1329,7 +1336,7 @@ class BngsimModel(NetModel):
                     # The reset target is the seed ICs -- or, once a saveConcentrations() has
                     # redefined it, that snapshot, which is carried if the state it captured was.
                     state.carried_state = state.carried_baseline
-                    state.stopped_early = False
+                    state.stopped_early = state.stopped_baseline
                     if not state.carried_state:
                         declare_rows(model, state.baseline_seed, model_name=self.name,
                                      where='the action %s' % line)
@@ -1342,7 +1349,7 @@ class BngsimModel(NetModel):
                             "before it." % (self.name, line, label, label))
                     model.restore_concentrations(label)
                     state.carried_state = labelled_carried[label]
-                    state.stopped_early = False
+                    state.stopped_early = labelled_stopped.get(label, False)
                 concentration_overrides.clear()
                 continue
 
@@ -1375,6 +1382,7 @@ class BngsimModel(NetModel):
                     model.save_concentrations()
                     # ...and it becomes the reset target, carried iff the live state is.
                     state.carried_baseline = state.carried_state
+                    state.stopped_baseline = state.stopped_early
                     state.baseline_seed = held
                     state.baseline_assigned = set(state.assigned)
                     declare_rows(model, held, model_name=self.name,
@@ -1383,6 +1391,7 @@ class BngsimModel(NetModel):
                     # A labelled snapshot leaves the default reset target alone (#830).
                     model.save_concentrations(label)
                     labelled_carried[label] = state.carried_state
+                    labelled_stopped[label] = state.stopped_early
                 continue
 
             if _is_save_parameters(line):
@@ -1451,6 +1460,7 @@ class BngsimModel(NetModel):
                     timeout=timeout,
                     concentration_overrides=concentration_overrides,
                     carried_state=state.carried_state,
+                    stopped_state=state.stopped_early,
                 ))
                 continue
 
@@ -1462,6 +1472,7 @@ class BngsimModel(NetModel):
                     timeout=timeout,
                     concentration_overrides=concentration_overrides,
                     carried_state=state.carried_state,
+                    stopped_state=state.stopped_early,
                 ))
                 continue
 
@@ -1485,6 +1496,7 @@ class BngsimModel(NetModel):
         # Saved parameters and labelled species snapshots, as in _execute_actions.
         param_snapshots = _initial_parameter_snapshots(model, self._protocol)
         labelled_carried = {}
+        labelled_stopped = {}     # ...and whether it was a stop_if run's stop row (#1010)
 
         for action_index, action_line in enumerate(self._protocol):
             line = _collapse_action_line_continuations(action_line).strip()
@@ -1545,7 +1557,7 @@ class BngsimModel(NetModel):
                     # The reset target, which a saveConcentrations() may have redefined to a
                     # carried state (as in _execute_actions).
                     state.carried_state = state.carried_baseline
-                    state.stopped_early = False
+                    state.stopped_early = state.stopped_baseline
                 else:
                     if label not in labelled_carried:
                         raise PybnfError(
@@ -1554,7 +1566,7 @@ class BngsimModel(NetModel):
                             "runs before it." % (self.name, line, label, label))
                     model.restore_concentrations(label)
                     state.carried_state = labelled_carried[label]
-                    state.stopped_early = False
+                    state.stopped_early = labelled_stopped.get(label, False)
                 continue
 
             # ── saveConcentrations() ──
@@ -1563,9 +1575,11 @@ class BngsimModel(NetModel):
                 if label is None:
                     model.save_concentrations()
                     state.carried_baseline = state.carried_state
+                    state.stopped_baseline = state.stopped_early
                 else:
                     model.save_concentrations(label)
                     labelled_carried[label] = state.carried_state
+                    labelled_stopped[label] = state.stopped_early
                 continue
 
             # ── saveParameters() ──
@@ -1756,30 +1770,34 @@ class BngsimModel(NetModel):
 
         That row is the grid's end (``plan.t_end``) unless the run stopped early.
 
-        * ``stop_if``: run_network stops an ODE run at the first output time at which the
-          condition holds, and bngsim cuts its result there too, but bngsim checks the
-          condition only after integrating the whole interval, so it leaves the model at
-          ``t_end``. Every species is put back at the trigger row (``Result.species`` holds
-          every species of a network model, :meth:`_restore_stopped_state`) and the clock at
-          its time. A stochastic method's ``stop_if`` never reaches here: BNG2.pl stops it
-          between output times, and the bridge does not run it (grid.UNREAD_GRID_OPTIONS).
+        * ``stop_if``: bngsim cuts its result at the first output row at which the condition
+          holds, but it checks the condition only after integrating the whole interval, so
+          it leaves the model at ``t_end``. Every species is put back at the cut row
+          (``Result.species`` holds every species of a network model,
+          :meth:`_put_back_stop_row`) and the clock at its time. On a regular grid that is
+          the row run_network stops an ODE run at. It is not always: run_network checks the
+          condition against CVODE's internal state, which can be past the output time it
+          writes, so on a coarse, irregular grid it can stop one row earlier (with
+          ``sample_times=>[0.5,3.3,6.9,7.25,20]`` and a crossing at 6.93, at 6.9 where the
+          bridge stops at 7.25). That depends on CVODE's steps and is not emulated. A
+          stochastic method's ``stop_if`` never reaches here: BNG2.pl stops it between output
+          times, and the bridge does not run it (grid.UNREAD_GRID_OPTIONS).
         * ``steady_state``: bngsim stops the run at steady state and holds that state; the
           clock is the last row's time, not ``t_end``.
         """
         end = plan.t_end
         stopped = plan.stopped
         if stopped:
-            end = self._restore_stopped_state(plan, result)
+            end = self._put_back_stop_row(plan.sim, result, plan.suffix)
         elif plan.run_kwargs.get('steady_state') and len(result.time):
             end = float(result.time[-1])
         state.current_time = end
         state.carried_state = True   # the simulator now holds an advanced state
         state.stopped_early = stopped
 
-    def _restore_stopped_state(self, plan, result):
-        """Put every species back at the last row of a run cut short by ``stop_if``, and the
-        clock at its time; return that time."""
-        sim = plan.sim
+    def _put_back_stop_row(self, sim, result, suffix):
+        """Put every species of ``sim``'s model back at the last row of a run cut short by
+        ``stop_if``, and the clock at its time; return that time."""
         names = list(result.species_names)
         held = list(getattr(sim, 'species_names', names))
         species = np.asarray(result.species, dtype=float)
@@ -1790,7 +1808,7 @@ class BngsimModel(NetModel):
                 "the state it stopped at cannot be put back: its result reports %d species of "
                 "the model's %d. BNG2.pl continues from that state; the bngsim bridge would "
                 "continue from the run's t_end instead."
-                % (self._grid_label(), plan.suffix, len(names), len(held)),
+                % (self._grid_label(), suffix, len(names), len(held)),
                 hint="Run the model with bngl_backend = bionetgen.")
         time = float(result.time[-1])
         sim.set_state(species[-1], time=time)
@@ -2062,7 +2080,8 @@ class BngsimModel(NetModel):
         return rows, obs_names, expr_names
 
     def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0,
-                            timeout=None, concentration_overrides=None, carried_state=False):
+                            timeout=None, concentration_overrides=None, carried_state=False,
+                            stopped_state=False):
         """Execute a parameter_scan() or bifurcate() action.
 
         Resolves the action's settings once, dispatches to the matching scan
@@ -2092,7 +2111,8 @@ class BngsimModel(NetModel):
         # other strategy leaves it None.
         self._pending_scan_sens = None
         if carried_state:
-            rows, obs_names, expr_names = self._scan_carried_state(model, s, is_bifurcate)
+            rows, obs_names, expr_names = self._scan_carried_state(model, s, is_bifurcate,
+                                                                   stopped_state)
         elif s.use_ss and s.reset_conc and s.ss_method == _SS_METHOD_NEWTON:
             rows, obs_names, expr_names = self._scan_newton_steady_state(model, s)
         elif s.use_ss and s.reset_conc:
@@ -2196,6 +2216,21 @@ class BngsimModel(NetModel):
         scan_timeout = _normalize_sim_timeout(timeout, method=method)
         scan_eval_timeout = _normalize_sim_timeout(timeout, method='ode')
 
+        # BNG2.pl runs simulate at each point with the scan's options, stop_if included: the
+        # point stops at the first of its output times at which the condition holds, and its
+        # row is that one. So with a stop_if each point runs on its own output grid, the
+        # scan's n_steps (or n_output_steps; one step by default) or sample_times, rather than
+        # the two points that are enough for its final state. A protocol scan runs the
+        # protocol's own simulate actions, whose options BNG2.pl reads instead.
+        stop_if = ps_params.get('stop_if')
+        if stop_if is not None and method != 'protocol':
+            stop_if = str(stop_if).strip().strip('"').strip("'") or None
+        else:
+            stop_if = None
+        step_key = 'n_steps' if 'n_steps' in ps_params else 'n_output_steps'
+        stop_steps = (int(_eval_numeric(str(ps_params[step_key])))
+                      if step_key in ps_params else 1)
+
         return _ScanSettings(
             param_name=param_name,
             t_start=t_start,
@@ -2214,9 +2249,27 @@ class BngsimModel(NetModel):
             timeout=timeout,
             scan_timeout=scan_timeout,
             scan_eval_timeout=scan_eval_timeout,
+            stop_if=stop_if,
+            stop_steps=stop_steps,
         )
 
-    def _scan_carried_state(self, model, s, is_bifurcate):
+    @staticmethod
+    def _run_scan_point(sim, s, run):
+        """``(result, stopped)`` of one scan point's ``run()`` on ``sim``, under the scan's
+        ``stop_if`` when it has one: cut at the first output row at which the condition holds,
+        which BNG2.pl's simulate at that point writes last and reads its row from."""
+        if not s.stop_if:
+            return run(), False
+        sim.add_stop_condition(s.stop_if, label=s.stop_if)
+        try:
+            return run(), False
+        except _runtime.bngsim.StopConditionMet as exc:
+            logger.info('scan stop_if triggered: %s', s.stop_if)
+            return exc.result, True
+        finally:
+            sim.clear_stop_conditions()
+
+    def _scan_carried_state(self, model, s, is_bifurcate, stopped_state=False):
         """Scan invoked with a CARRIED model state -- a ``simulate`` advanced the
         system off its seed before the scan (pre-equilibration + intervention;
         issue #474, the preincubate->wash->dose-scan protocol).
@@ -2244,7 +2297,26 @@ class BngsimModel(NetModel):
         carried-state scan (#475) needs no sensitivities and runs on the ordinary
         sensitivity-free path, as before.
         """
+        if s.stop_if:
+            # bngsim's native scan checks a stop condition against each point's run and
+            # raises out of the whole scan at the first point that stops.
+            raise PybnfError(
+                "Model %s: the parameter_scan with suffix '%s' has stop_if and starts from a "
+                "carried state (a simulate ran before it with no resetConcentrations()). The "
+                "bngsim bridge's carried-state scan cannot stop each point on it, as BNG2.pl's "
+                "simulate at each point does." % (self._grid_label(), s.suffix),
+                hint="Run the model with bngl_backend = bionetgen, or put a "
+                     "resetConcentrations() before the scan.")
         bears = self._action_bears_sensitivities()
+        if bears and stopped_state:
+            raise PybnfError(
+                "Model %s: the parameter_scan with suffix '%s' starts each point from the state a "
+                "stop_if run stopped at, on the gradient path. That state is put back at the row "
+                "where the stop condition held, as BNG2.pl leaves it, but bngsim cannot put back "
+                "its dx/dtheta there, so the scan's derivatives would be wrong."
+                % (self._grid_label(), s.suffix),
+                hint="Run a gradient-free job_type (e.g. job_type = de), or put a "
+                     "resetConcentrations() between the stop_if run and the scan.")
         if bears:
             self._require_carried_scan_sensitivities(model, s)
             # bngsim writes the scanned parameter itself at each point, so a scan of a derived
@@ -2777,22 +2849,26 @@ class BngsimModel(NetModel):
             )
             ss_kwargs = {'steady_state': True} if use_ss else {}
             if sample_times is not None:
-                result = point_sim.run(
+                result, stopped = self._run_scan_point(point_sim, s, lambda: point_sim.run(
                     t_span=(sample_times[0], sample_times[-1]),
                     n_points=len(sample_times),
                     sample_times=sample_times,
                     seed=scan_seed,
                     **ss_kwargs,
                     **_with_sim_timeout({}, scan_timeout),
-                )
+                ))
             else:
-                result = point_sim.run(
+                result, stopped = self._run_scan_point(point_sim, s, lambda: point_sim.run(
                     t_span=(t_start, t_end),
-                    n_points=_SS_SCAN_N_POINTS if use_ss else 2,
+                    n_points=(_SS_SCAN_N_POINTS if use_ss
+                              else s.stop_steps + 1 if s.stop_if else 2),
                     seed=scan_seed,
                     **ss_kwargs,
                     **_with_sim_timeout({}, scan_timeout),
-                )
+                ))
+            if stopped:
+                # The next point continues from where this one stopped, as in BNG2.pl.
+                self._put_back_stop_row(point_sim, result, s.suffix)
             row, row_obs, row_expr = self._scan_result_to_row(
                 result, value, print_functions=print_funcs,
             )
@@ -2841,6 +2917,7 @@ class BngsimModel(NetModel):
             and sample_times is None
             and len(points) >= 4
             and not gradient_ode
+            and not s.stop_if
         )
         if use_batch:
             params = [{param_name: float(v)} for v in points]
@@ -2892,19 +2969,20 @@ class BngsimModel(NetModel):
                     poplevel,
                 )
                 if sample_times is not None:
-                    result = point_sim.run(
+                    result, _stopped = self._run_scan_point(point_sim, s, lambda: point_sim.run(
                         t_span=(sample_times[0], sample_times[-1]),
                         n_points=len(sample_times),
                         sample_times=sample_times,
                         seed=scan_seed,
                         **_with_sim_timeout({}, scan_timeout),
-                    )
+                    ))
                 else:
-                    result = point_sim.run(
-                        t_span=(t_start, t_end), n_points=2,
+                    result, _stopped = self._run_scan_point(point_sim, s, lambda: point_sim.run(
+                        t_span=(t_start, t_end),
+                        n_points=s.stop_steps + 1 if s.stop_if else 2,
                         seed=scan_seed,
                         **_with_sim_timeout({}, scan_timeout),
-                    )
+                    ))
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )

@@ -21,6 +21,7 @@ from pybnf.printing import PybnfError
 
 from . import recovery_harness as R
 from .test_bngsim_output_grid import _bng2pl, _bngsim_net, _times
+from .test_sample_times_grid_872 import past_start
 
 pytestmark = pytest.mark.bngsim
 
@@ -118,18 +119,16 @@ def test_the_action_after_a_stop_starts_from_the_stop_row(tmp_path, after, rows,
     np.testing.assert_allclose(bng['x'][:, 1], a, rtol=1e-5)
     np.testing.assert_allclose(bng['x'][:, 2], b, rtol=1e-5)
     x = out['x']
-    got = slice(1, None) if 'continue' in after else slice(None)    # the bridge's start row
+    got = past_start(x, 7.0) if 'continue' in after else slice(None)
     np.testing.assert_allclose(_times(x)[got], bng['x'][:, 0], atol=1e-9)
     np.testing.assert_allclose(x['Atot'][got], bng['x'][:, 1], rtol=1e-5)
     np.testing.assert_allclose(x['Btot'][got], bng['x'][:, 2], rtol=1e-5)
-    if 'continue' in after:
-        assert _times(x)[0] == 7.0 and np.isclose(x['Atot'][0], _exact(7.0)[0], rtol=1e-6)
 
 
 def test_the_clock_after_a_steady_state_stop_is_its_last_row(tmp_path):
     """The issue's model: both stop at t = 250 at steady state (A = 100), and BNG2.pl's
     continued run over [250, 1100] in 2 steps writes 675 and 1100. The bridge's clock read
-    t_end = 1000, so it wrote 1000, 1050 and 1100."""
+    t_end = 1000, so it wrote 1050 and 1100 (after a row at 1000)."""
     actions = ['simulate({method=>"ode",t_end=>1000,n_steps=>100,steady_state=>1,suffix=>"eq"})',
                'simulate({method=>"ode",continue=>1,t_end=>1100,n_steps=>2,suffix=>"x"})']
     bng, out = _both(tmp_path, STEADY, actions, ['eq', 'x'])
@@ -137,7 +136,8 @@ def test_the_clock_after_a_steady_state_stop_is_its_last_row(tmp_path):
     assert end < 1000
     np.testing.assert_allclose(_times(out['eq'])[-1], end, atol=1e-9)
     np.testing.assert_allclose(bng['x'][:, 0], [(end + 1100) / 2, 1100], atol=1e-9)
-    np.testing.assert_allclose(_times(out['x']), [end, (end + 1100) / 2, 1100], atol=1e-9)
+    rest = past_start(out['x'], end)
+    np.testing.assert_allclose(_times(out['x'])[rest], bng['x'][:, 0], atol=1e-9)
     np.testing.assert_allclose(out['x']['Atot'], 100.0, rtol=1e-4)
 
 
@@ -253,3 +253,102 @@ def test_the_issues_threshold_fit_scores_as_on_bng2pl(tmp_path, monkeypatch):
     alg = R.build(conf, 'de')
     R.drive(alg)
     assert alg.trajectory.best_score() < 1.0
+
+
+# ---------------------------------------------------------------------------------------------
+# stop_if on a scan's points (#1005 review, R2), and a stopped state in a snapshot (R5)
+# ---------------------------------------------------------------------------------------------
+
+def _scan_both(tmp_path, options, extra=()):
+    """BNG2.pl's .scan and the bridge's rows for a kdeg scan of MODEL with ``options``."""
+    from pybnf import pset
+    from pybnf.data import Data
+    import pybnf.bngsim_model as bngsim_model
+    scan = ('parameter_scan({parameter=>"kdeg",par_scan_vals=>[0.1,0.2],method=>"ode",%s,'
+            'suffix=>"s"})' % options)
+    actions = list(extra) + [scan]
+    code, log = _bng2pl(tmp_path, 'm', MODEL, ['generate_network({overwrite=>1})'] + actions)
+    assert code == 0, log
+    bng = Data(file_name=str(tmp_path / 'm_s.scan'))
+    model = bngsim_model.BngsimModel('m', actions, [('parameter_scan', 's')], [],
+                                     nf=str(tmp_path / 'm.net'))
+    model.param_set = pset.PSet([])
+    return bng, model
+
+
+@pytest.mark.parametrize('options, stops', [
+    ('t_end=>20,n_steps=>20,stop_if=>"Atot<500"', [7, 4]),
+    ('t_end=>20,n_output_steps=>10,stop_if=>"Atot<500"', [8, 4]),
+    ('sample_times=>[0,2,4,6,8,10,20],stop_if=>"Atot<500"', [8, 4]),
+], ids=['n_steps', 'n_output_steps', 'sample_times'])
+def test_each_scan_point_stops_on_the_scans_stop_if(tmp_path, options, stops):
+    """BNG2.pl runs simulate at each point with the scan's options, stop_if included, and reads
+    the point's row from the last row written: the first output time at which A < 500. The
+    bridge read A at t_end. Oracle: BNG2.pl's .scan and the closed form at the stop times."""
+    bng, model = _scan_both(tmp_path, options)
+    a = 1000 * np.exp(-np.array([0.1, 0.2]) * np.array(stops))
+    np.testing.assert_allclose(bng['Atot'], a, rtol=1e-6)
+    np.testing.assert_allclose(bng['Btot'], 1000 - a, rtol=1e-6)
+    out = model.execute(str(tmp_path / 'run'), 'm_bngsim', 60)['s']
+    np.testing.assert_allclose(out['Atot'], bng['Atot'], rtol=1e-6)
+    np.testing.assert_allclose(out['Btot'], bng['Btot'], rtol=1e-6)
+
+
+def test_a_continuation_scans_first_point_stops_on_its_stop_if(tmp_path):
+    """reset_conc=>0 takes the same per-point stop. (Its later points start from the seed on
+    the bridge, not from the point before, lanl/PyBNF#871, so only the first is compared.)"""
+    bng, model = _scan_both(tmp_path, 't_end=>20,n_steps=>20,stop_if=>"Atot<500",reset_conc=>0')
+    np.testing.assert_allclose(bng['Atot'][0], 1000 * np.exp(-0.7), rtol=1e-6)
+    out = model.execute(str(tmp_path / 'run'), 'm_bngsim', 60)['s']
+    np.testing.assert_allclose(out['Atot'][0], bng['Atot'][0], rtol=1e-6)
+
+
+def test_a_scan_stop_if_the_bridge_cannot_honour_is_not_the_bridges(tmp_path):
+    """A steady-state scan's points are solved to steady state with no stop condition: such a
+    scan is not the bridge's (auto runs it on BNG2.pl). A scan from a carried state runs on
+    bngsim's native scan, which cannot stop one point: refused when it runs."""
+    from pybnf.bngsim_model.classification import (bngsim_unread_action_options,
+                                                   classify_actions_for_bngsim)
+    steady = ('parameter_scan({parameter=>"kdeg",par_scan_vals=>[0.1,0.2],method=>"ode",'
+              't_end=>20,n_steps=>20,steady_state=>1,stop_if=>"Atot<500",suffix=>"s"})')
+    actions = ['generate_network({overwrite=>1})', steady]
+    assert classify_actions_for_bngsim(actions) is None
+    assert bngsim_unread_action_options(actions) == [('s', ['stop_if'])]
+    plain = steady.replace(',steady_state=>1', '')
+    assert classify_actions_for_bngsim(['generate_network({overwrite=>1})', plain]) is not None
+    _bng, model = _scan_both(tmp_path, 't_end=>20,n_steps=>20,stop_if=>"Atot<500"',
+                             extra=['simulate({method=>"ode",t_end=>1,n_steps=>1,suffix=>"a"})'])
+    with pytest.raises(PybnfError) as info:
+        model.execute(str(tmp_path / 'run'), 'm_bngsim', 60)
+    assert 'has stop_if and starts from a carried state' in info.value.message
+
+
+@pytest.mark.parametrize('between', [
+    ['saveConcentrations()', 'resetConcentrations()'],
+    ['saveConcentrations("s")', 'resetConcentrations("s")'],
+], ids=['unlabelled', 'labelled'])
+def test_a_snapshot_keeps_its_stopped_state_for_the_gradient_refusal(tmp_path, between):
+    """A snapshot taken at the stop row restores a stopped state; the gradient refusal names
+    the stop, rather than failing inside bngsim on a missing pre-equilibration seed."""
+    import pybnf.bngsim_model as bngsim_model
+    from pybnf import pset
+    code, log = _bng2pl(tmp_path, 'm', MODEL, ['generate_network({overwrite=>1})', STOP])
+    assert code == 0, log
+    after = 'simulate({method=>"ode",t_end=>5,n_steps=>5,suffix=>"x"})'
+    m = bngsim_model.BngsimModel('m', [STOP] + between + [after],
+                                 [('simulate', 'eq'), ('simulate', 'x')], [],
+                                 nf=str(tmp_path / 'm.net'))
+    m.param_set = pset.PSet([])
+    m.enable_output_sensitivities(params=['kdeg'])
+    with pytest.raises(PybnfError) as info:
+        m.execute(str(tmp_path / 'run'), 'g', 60)
+    assert 'continues from the state a stop_if run stopped at' in info.value.message
+
+
+def test_a_scored_scan_after_a_stop_is_refused_for_the_stop(tmp_path):
+    """A carried-state scan on the gradient path after a stop is refused naming the stop."""
+    _bng, model = _scan_both(tmp_path, 't_end=>20,n_steps=>20', extra=[STOP])
+    model.enable_output_sensitivities(params=['kdeg'])
+    with pytest.raises(PybnfError) as info:
+        model.execute(str(tmp_path / 'run'), 'g', 60)
+    assert 'starts each point from the state a stop_if run stopped at' in info.value.message
