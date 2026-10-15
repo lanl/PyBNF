@@ -2170,7 +2170,7 @@ class TestSsMethodRouting:
         FakeModel = _install_ss_fakes(monkeypatch, record)
         # 2 points (<4) keeps the non-threaded per-point Newton path.
         obj = _SsScanFakes.make_obj(
-            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],'
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],t_end=>100,'
             'method=>"ode",steady_state=>1,ss_method=>"newton",suffix=>"scan"})'
         )
         ds = obj._execute_actions(FakeModel())
@@ -2183,7 +2183,7 @@ class TestSsMethodRouting:
         record = {'run_calls': [], 'ss_calls': 0, 'clone_count': 0}
         FakeModel = _install_ss_fakes(monkeypatch, record)
         obj = _SsScanFakes.make_obj(
-            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],'
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],t_end=>100,'
             'method=>"ode",steady_state=>1,ss_method=>"kinsol",suffix=>"scan"})'
         )
         obj._execute_actions(FakeModel())

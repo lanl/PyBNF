@@ -31,6 +31,8 @@ from ..bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
+from ..bngsim_model.classification import bngsim_unread_action_options
+from ..bngsim_model.grid import check_output_grids
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
                          replicated_information_criteria)
@@ -504,9 +506,14 @@ class Algorithm(ABC):
 
             if isinstance(m, BNGLModel) and explicit_bngsim:
                 if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
+                    unread = bngsim_unread_action_options(m.actions)
                     raise PybnfError(
                         f'bngl_backend = bngsim was requested for model {m.name}, but its BNGL actions are not '
-                        'supported by the bngsim bridge.'
+                        'supported by the bngsim bridge.' + ''.join(
+                            ' The action with suffix "%s" names %s, which BNG2.pl reads to decide '
+                            'its output rows and the bridge does not; bngl_backend = auto or '
+                            'bionetgen runs it on BNG2.pl.' % (suffix, ', '.join(options))
+                            for suffix, options in unread)
                     )
                 if not bngsim_available:
                     raise PybnfError(
@@ -579,6 +586,10 @@ class Algorithm(ABC):
                         m.name,
                     )
 
+                if use_hybrid or use_bngsim:
+                    # BNG2.pl's rules for each action's output grid (#990 review): refused here,
+                    # outside the fall-back below, since BNG2.pl refuses the same actions.
+                    check_output_grids(m.name, list(m.actions) + list(m.protocol or ()))
                 if use_hybrid:
                     # Hybrid path: generate_network already ran; now generate XML
                     # by running BNG2.pl again with generate_network + writeXML
@@ -737,6 +748,8 @@ class Algorithm(ABC):
                     final_model_list.append(m)
                     continue
 
+                # BNG2.pl's rules for each action's output grid (#990 review).
+                check_output_grids(m.name, list(m.actions) + list(m.protocol or ()))
                 logger.info(f'Model {m.name} is NF-only; generating XML for bngsim network-free simulation')
 
                 if not os.path.isdir(init_dir):
@@ -1287,6 +1300,13 @@ class Algorithm(ABC):
         May be overridden in subclasses that don't use self.max_iterations to track the iteration count
         """
         self.max_iterations += n
+
+    def prepare_resume(self):
+        """Called once on an algorithm reloaded from a backup by ``-r``, before it runs again.
+
+        A no-op here. An algorithm whose backups from an earlier PyBNF hold less than its own
+        do overrides it to fill the gap and to say what the resumed run will do differently
+        (``Adaptive_MCMC.prepare_resume``, #990)."""
 
     def _fold_group_result(self, res):
         """Accumulate one completed sub-result into its JobGroup (smoothing /

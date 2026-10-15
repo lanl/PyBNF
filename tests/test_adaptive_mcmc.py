@@ -881,6 +881,21 @@ def _data(col, rows):
     return d
 
 
+def _prime(am, suffixes, columns, noise=(), model='m'):
+    """Point ``am``'s trajectory recording at ``columns`` (and ``noise`` columns) of the
+    experiments ``suffixes`` of one model named ``model``, as ``__init__`` sets it up from a
+    configuration (#990). The names are set after construction because they are not the
+    parabola model's, which the configuration would refuse; the buffers are allocated by the
+    first result that supplies them."""
+    am.output_columns = list(columns)
+    am.output_noise_columns = list(noise)
+    am.output_noise_specs = None           # resolved for these columns on first use
+    am.trajectory_suffixes = {model: list(suffixes)}
+    for name in ('output_run_current', 'output_run_all', 'output_run_noise_current',
+                 'output_run_noise_all'):
+        setattr(am, name, {})
+
+
 class TestConstraintSatisfactionWorkerScoring:
     """The default objective-scoring path (``local_objective_eval=0`` with
     ``parallelize_models=1``) scores on the worker and then nulls ``res.simdata``
@@ -960,26 +975,18 @@ class TestOutputTrajectoryCrossProductSuffixes:
 
     @staticmethod
     def _diagonal_am(tmp_path, *, noise=False):
-        """An ``am`` primed into the edition-2 diagonal-only trajectory state:
-        two scored keys (WT, KOko), each 3 time points, buffers keyed by
-        ``<scored key> + <obs>`` only. Mirrors what ``__init__`` builds from a real
-        edition-2 ``time_length`` without needing the full one-model + condition wiring."""
-        overrides = {'output_trajectory': [TestOutputTrajectoryCrossProductSuffixes.OBS]}
+        """An ``am`` primed into the edition-2 diagonal-only trajectory state: two experiments
+        (WT, KOko) of model ``m``, which is what ``__init__`` derives from a real edition-2
+        one-model + condition configuration (#990), without needing that wiring."""
+        overrides = {'output_trajectory': ['y']}
         if noise:
-            overrides['output_noise_trajectory'] = [TestOutputTrajectoryCrossProductSuffixes.OBS]
+            overrides['output_noise_trajectory'] = ['y']
             overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
-        am.output_columns = [TestOutputTrajectoryCrossProductSuffixes.OBS]
-        am.time = {'WT': 2, 'KOko': 2}  # scored diagonal: 3 time points each
-        diag = ['WT' + am.output_columns[0], 'KOko' + am.output_columns[0]]
-        am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
-        am.output_run_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
-        if noise:
-            am.output_noise_columns = list(am.output_columns)
-            am.output_run_noise_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
-            am.output_run_noise_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
+        _prime(am, ['WT', 'KOko'], [TestOutputTrajectoryCrossProductSuffixes.OBS],
+               noise=[TestOutputTrajectoryCrossProductSuffixes.OBS] if noise else ())
         return am
 
     def _cross_product_result(self, am):
@@ -1101,46 +1108,31 @@ class TestAdaptiveSeedFileHeader:
 
 
 # --------------------------------------------------------------------------- #
-# A configured trajectory name that no simulation produces (lanl/PyBNF#755)
+# A configured trajectory name that no simulation produces (lanl/PyBNF#755, #990)
 # --------------------------------------------------------------------------- #
-class TestAnUnmatchedTrajectoryNameIsReported:
+class TestAnUnmatchedTrajectoryNameIsRefused:
     """``output_trajectory`` / ``output_noise_trajectory`` name columns of the simulation
-    result, and nothing validated them. A name that matches no column is filled by
-    nothing -- the accumulate loop runs only ``if l in cols`` -- so its buffer stays as
-    allocated, all zeros, and the write step skips it, writing only rows that are not all
-    zero. The user got a ``Runs/`` directory with fewer ``traj_*.txt`` files than the conf
-    asked for, and no indication of which name was dropped or why: a typo looked exactly
-    like a fit that never asked for it (#755).
-
-    The check runs against the first completed simulation rather than at config load,
-    where the rest of the codebase refuses an undeclared name: no model class exposes its
-    observable names (``BNGLModel`` records only the boolean ``has_observables``), and a
-    column need not come from the model file at all, since the measurement layer
-    contributes its own."""
+    result. A name that matches no column is filled by nothing, so the user got a ``Runs/``
+    directory with fewer ``traj_*.txt`` files than the conf asked for (#755). That was then
+    reported as a warning at the first simulation, printed only at ``verbosity >= 1``, and
+    the run still exited 0 without the file (#990). It is now refused: when the configuration
+    loads, against the names the model files define, and at the first simulation for a name
+    that slips past that, against the columns the experiments actually produced."""
 
     OBS = 'MEK_pRDS'
     TYPO = 'MEK_pRDZ'          # deliberately not a prefix of OBS, so assertions can tell
-    REPORT = 'of any simulation in this fit'
 
     @staticmethod
     def _am_wanting(tmp_path, wanted, noise_wanted=()):
-        """An ``am`` asking for ``wanted`` trajectories, primed with one scored key."""
-        overrides = {'output_trajectory': list(wanted)}
+        """An ``am`` asking for ``wanted`` trajectories of one experiment, ``WT``."""
+        overrides = {'output_trajectory': ['y']}
         if noise_wanted:
-            overrides['output_noise_trajectory'] = list(noise_wanted)
+            overrides['output_noise_trajectory'] = ['y']
             overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
-        am.time = {'WT': 2}
-        am.output_columns = list(wanted)
-        am.output_noise_columns = list(noise_wanted)
-        for names, cur, allr in ((wanted, 'output_run_current', 'output_run_all'),
-                                 (noise_wanted, 'output_run_noise_current',
-                                  'output_run_noise_all')):
-            buffers = {'WT' + n: np.zeros((am.num_parallel, 1, 3)) for n in names}
-            setattr(am, cur, dict(buffers))
-            setattr(am, allr, dict(buffers))
+        _prime(am, ['WT'], wanted, noise=noise_wanted)
         return am
 
     def _result(self, am):
@@ -1152,52 +1144,77 @@ class TestAnUnmatchedTrajectoryNameIsReported:
         res.score = 5.0
         return res
 
-    def _warning(self, capsys):
-        lines = [l for l in capsys.readouterr().out.splitlines() if self.REPORT in l]
-        assert len(lines) == 1, f'expected one report, got {lines}'
-        return lines[0]
+    @pytest.mark.parametrize('key', ['output_trajectory', 'output_noise_trajectory'])
+    def test_a_name_no_model_defines_is_refused_when_the_configuration_loads(self, tmp_path,
+                                                                             key):
+        """parabola.bngl defines the observable x and the function y; Y is neither."""
+        overrides = {key: ['y', 'Y']}
+        if key == 'output_noise_trajectory':
+            overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})
+        with pytest.raises(PybnfError) as info:
+            algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, **overrides))
+        assert info.value.log_message == (
+            f'{key} names Y, which is not a column any simulation in this fit produces')
+        assert info.value.message.endswith('The names it could match are: x, y.')
 
-    def test_a_name_no_simulation_produces_is_named(self, tmp_path, capsys):
+    def test_several_names_are_refused_together(self, tmp_path):
+        with pytest.raises(PybnfError) as info:
+            algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                                  output_trajectory=['X', 'y', 'Y']))
+        assert info.value.log_message == ('output_trajectory names X, Y, which are not a column '
+                                          'any simulation in this fit produces')
+
+    def test_a_name_no_experiment_produces_is_refused_at_the_first_simulation(self, tmp_path):
+        """A name can pass the load check without being an output column (the check accepts
+        every identifier of the model files, so that it never refuses a real column)."""
         am = self._am_wanting(tmp_path, [self.OBS, self.TYPO])
-        am.got_result(self._result(am))
-        line = self._warning(capsys)
-        assert line.startswith(f'Warning: output_trajectory names {self.TYPO}, which is not')
-        assert line.endswith(f'The simulations produce: {self.OBS}, time.')
+        with pytest.raises(PybnfError) as info:
+            am.got_result(self._result(am))
+        assert info.value.log_message == (
+            f"output_trajectory names {self.TYPO}, which is not a column of any experiment's "
+            f"simulation")
+        assert info.value.message.endswith(f'The simulations produce: {self.OBS}, time.')
+        assert am.output_run_recorded == set()
 
-    def test_the_name_that_matched_is_not_named(self, tmp_path, capsys):
-        """Only the unmatched name is rolled off; the one that worked appears solely in
-        the list of what is available."""
-        am = self._am_wanting(tmp_path, [self.OBS, self.TYPO])
-        am.got_result(self._result(am))
-        roll_call, _, produced = self._warning(capsys).partition('The simulations produce:')
-        assert self.TYPO in roll_call and self.OBS not in roll_call
-        assert self.OBS in produced
+    def test_a_model_identifier_that_is_not_a_column_passes_the_load_and_stops_the_run(
+            self, tmp_path):
+        """counter is the parabola model's molecule type: in its file, never a column."""
+        am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                                   output_trajectory=['counter']))
+        am.start_run()
+        ps = _uniform_pset('iter0run0')
+        res = algorithms.Result(ps, None, ps.name)
+        res.out = {'parabola': {'par1': _data('y', [(0, 1), (1, 2)])}}
+        res.score = 5.0
+        with pytest.raises(PybnfError, match='output_trajectory names counter, which is not'):
+            am.got_result(res)
 
-    def test_a_fit_whose_names_all_match_says_nothing(self, tmp_path, capsys):
+    def test_a_fit_whose_names_all_match_is_recorded(self, tmp_path):
         am = self._am_wanting(tmp_path, [self.OBS])
         am.got_result(self._result(am))
-        assert self.REPORT not in capsys.readouterr().out
+        assert am.output_run_recorded == {('WT' + self.OBS, 0)}
 
-    def test_the_warning_is_emitted_once(self, tmp_path, capsys):
-        """It is a property of the conf, not of the sample -- one line, not one per
-        accepted move for the rest of the run."""
-        am = self._am_wanting(tmp_path, [self.TYPO])
-        for _ in range(3):
-            am.got_result(self._result(am))
-        assert capsys.readouterr().out.count(self.REPORT) == 1
-
-    def test_the_noise_key_is_checked_under_its_own_name(self, tmp_path, capsys):
+    def test_the_noise_key_is_checked_under_its_own_name(self, tmp_path):
         am = self._am_wanting(tmp_path, [self.OBS], noise_wanted=[self.TYPO])
-        am.got_result(self._result(am))
-        line = self._warning(capsys)
-        assert line.startswith(f'Warning: output_noise_trajectory names {self.TYPO},')
+        with pytest.raises(PybnfError) as info:
+            am.got_result(self._result(am))
+        assert info.value.log_message.startswith(f'output_noise_trajectory names {self.TYPO},')
 
-    def test_several_unmatched_names_are_reported_together(self, tmp_path, capsys):
-        am = self._am_wanting(tmp_path, [self.TYPO, 'scaled_pSOS1'])
-        am.got_result(self._result(am))
-        line = self._warning(capsys)
-        assert f'names {self.TYPO}, scaled_pSOS1, which are not columns' in line
-        assert 'written for them' in line          # plural agreement throughout
+    def test_two_experiments_that_would_share_a_file_are_refused(self, tmp_path):
+        """A file is named by experiment suffix and column with no separator, so ``epi`` +
+        ``cases2`` and ``epic`` + ``ases2`` are one file, which both would append to."""
+        am = self._am_wanting(tmp_path, ['cases2', 'ases2'])
+        _prime(am, ['epi', 'epic'], ['cases2', 'ases2'])
+        res = algorithms.Result(_uniform_pset('iter0run0'), None, 'iter0run0')
+        res.out = {'m': {'epi': _data('cases2', [(0, 1), (1, 2)]),
+                         'epic': _data('ases2', [(0, 3), (1, 4)])}}
+        res.score = 5.0
+        with pytest.raises(PybnfError) as info:
+            am.got_result(res)
+        assert info.value.log_message == ('output_trajectory would write two trajectories to '
+                                          'one file, epicases2')
+        assert ('cases2 of model m in experiment epi and ases2 of model m in experiment epic'
+                in info.value.message)
 
 
 # --------------------------------------------------------------------------- #
@@ -1221,16 +1238,13 @@ class TestARecordedSampleIsWrittenWhateverItsValues:
     OBS = 'OBS'
 
     @staticmethod
-    def _am(tmp_path, wanted=(OBS,), buffer_keys=('WTOBS',)):
-        """An ``am`` past burn-in that samples on every iteration, with one scored key."""
-        cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_trajectory=list(wanted),
+    def _am(tmp_path, wanted=(OBS,)):
+        """An ``am`` past burn-in that samples on every iteration, with one experiment."""
+        cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_trajectory=['y'],
                            burn_in=1, adaptive=0, sample_every=1, output_hist_every=10**9)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
-        am.time = {'WT': 2}
-        am.output_columns = list(wanted)
-        am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in buffer_keys}
-        am.output_run_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in buffer_keys}
+        _prime(am, ['WT'], wanted)
         am.iteration[0] = 1
         return am
 
@@ -1267,9 +1281,10 @@ class TestARecordedSampleIsWrittenWhateverItsValues:
 
     def test_a_name_no_column_supplied_still_writes_no_file(self, tmp_path):
         """#755's case must not turn into a file of zeros now that zeros are written: the
-        slot is never recorded, because no result column ever supplied it."""
-        am = self._am(tmp_path, wanted=('TYPO',), buffer_keys=('WTTYPO',))
-        self._feed(am, [1.0, 2.0, 3.0])
+        name is refused at the first simulation (#990), before anything is recorded."""
+        am = self._am(tmp_path, wanted=('TYPO',))
+        with pytest.raises(PybnfError):
+            self._feed(am, [1.0, 2.0, 3.0])
         assert am.output_run_recorded == set()
         assert self._rows(am, 'traj_WTTYPO_chain_0.txt') == []
 
@@ -1319,20 +1334,19 @@ class TestCombiningChainsWithAFileTheRunNeverWrote:
 
     @staticmethod
     def _am(tmp_path, keys=('WTOBS',), wanted=('OBS',), noise=False):
-        overrides = {'output_trajectory': list(wanted)}
+        overrides = {'output_trajectory': ['y']}
         if noise:
-            overrides['output_noise_trajectory'] = list(wanted)
+            overrides['output_noise_trajectory'] = ['y']
             overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 2, UNIFORM_VARS, burn_in=2, adaptive=2,
                            max_iterations=10, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
         # A buffer key is an experiment suffix followed by its column, matched exactly (#986).
-        am.time = {k[:-len(w)]: 2 for k in keys for w in wanted if k.endswith(w)}
-        am.output_columns = list(wanted)
+        _prime(am, [k[:-len(w)] for k in keys for w in wanted if k.endswith(w)], wanted,
+               noise=wanted if noise else ())
         am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in keys}
         if noise:
-            am.output_noise_columns = list(wanted)
             am.output_run_noise_current = dict(am.output_run_current)
         runs = Path(cfg.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         return am, runs
@@ -1412,13 +1426,13 @@ def test_the_output_noise_draws_a_negative_prediction_as_the_mean_zero():
 
 def test_a_noise_trajectory_under_a_noise_model_that_is_not_neg_bin_is_refused(tmp_path):
     """Under the default chi_sq the draw never ran, and the noise files held zeros."""
-    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_noise_trajectory=['A'])
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_noise_trajectory=['y'])
     with pytest.raises(PybnfError) as info:
         algorithms.Adaptive_MCMC(cfg)
     # main() prints the message and logs the summary: both name the column and its family.
     assert info.value.log_message.startswith(
-        'output_noise_trajectory names A, whose noise model is Gaussian, not neg_bin')
-    assert "A's is Gaussian. Declare it with a neg_bin noise model" in info.value.message
+        'output_noise_trajectory names y, whose noise model is Gaussian, not neg_bin')
+    assert "y's is Gaussian. Declare it with a neg_bin noise model" in info.value.message
 
 
 def test_a_median_located_noise_draw_is_around_the_mean_that_places_the_median():
@@ -1592,6 +1606,9 @@ def test_a_noise_column_whose_name_is_inside_another_key_is_drawn_with_its_own_m
                                     for v in am.variables])
     am.current_pset[0].name = 'iter0run0'
     am.ln_current_P[0] = 0.0
+    for key in ('epicases', 'epicases2'):      # as a recorded result allocates them (#990)
+        am.output_run_noise_current[key] = np.zeros((1, 1, 13))
+        am.output_run_noise_all[key] = np.zeros((1, 1, 13))
     am.iteration[0] = am.valid_range
     am._record_iteration(0)
     row = am.factor[0]
@@ -1631,8 +1648,7 @@ def test_a_run_resumed_from_a_backup_made_before_986_still_draws_its_noise(tmp_p
                        objfunc='neg_bin', neg_bin_r=20.0)
     am = algorithms.Adaptive_MCMC(cfg)
     am.start_run()
-    key = next(iter(am.output_run_noise_current))    # 'par1y'
-    n = am.output_run_noise_current[key].shape[-1]
+    key, n = 'par1y', 21          # parabola's par1 action: n_steps 20, so 21 output rows
 
     def result(name, prediction, score):
         res = algorithms.Result(_uniform_pset(name), None, name)
@@ -1793,3 +1809,670 @@ def test_the_output_noise_draws_the_predicted_mean_at_a_large_dispersion():
     assert draws[:, 0].max() == 0
     for j in (1, 2, 3):
         assert abs(draws[:, j].mean() - series[j]) < 6.0 * np.sqrt(series[j] / n), series[j]
+
+
+# --------------------------------------------------------------------------------------------
+# Trajectory outputs of every experiment, normalized once, and refused where wrong (#990)
+# --------------------------------------------------------------------------------------------
+
+def _parabola_result(name, values, score=5.0, *, master=False):
+    """A scored Result of the parabola model's one experiment, ``par1``, carrying ``y``. On
+    the worker-scoring path the data is on ``out``; on the master-scoring path
+    (``local_objective_eval = 1``, ``smoothing > 1``) it stays on ``simdata`` and ``out`` is
+    never set."""
+    sim = {'parabola': {'par1': _data('y', list(enumerate(values)))}}
+    res = algorithms.Result(_uniform_pset(name), sim if master else None, name)
+    if not master:
+        res.out = sim
+    res.score = score
+    return res
+
+
+@pytest.mark.parametrize('wanted', [[], ['y']])
+def test_a_chain_whose_first_simulation_failed_goes_on(tmp_path, wanted):
+    """A chain's first result is always accepted, and a FailedSimulation has no ``out``, so a
+    genuine failure of the first simulation stopped every am run with ``AttributeError:
+    'FailedSimulation' object has no attribute 'out'``, trajectory outputs or not. Nothing is
+    recorded for it; the chain's next, successful, result is."""
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS,
+                       **({'output_trajectory': wanted} if wanted else {}))
+    am = algorithms.Adaptive_MCMC(cfg)
+    am.start_run()
+    failed = algorithms.FailedSimulation(_uniform_pset('iter0run0'), 'iter0run0', 1)
+    failed.score = np.inf                          # as score_result leaves it
+    proposals = am.got_result(failed)
+    assert am.accept is True and am.iteration[0] == 1
+    assert am.output_run_recorded == set() and am.output_run_current == {}
+    assert [p.name for p in proposals] == ['iter1run0']
+    am.got_result(_parabola_result('iter1run0', [1.0, 2.0, 3.0]))
+    assert am.accept is True
+    if wanted:
+        np.testing.assert_array_equal(am.output_run_current['par1y'][0], [[1.0, 2.0, 3.0]])
+        assert am.output_run_recorded == {('par1y', 0)}
+
+
+def test_a_result_scored_on_the_master_is_recorded(tmp_path):
+    """Scored on the master, a result keeps its data on ``simdata``, and only
+    ``parallelize_models > 1`` copied it to ``out``: ``local_objective_eval = 1`` and
+    ``smoothing > 1`` stopped at the first accepted result with ``AttributeError``."""
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                               output_trajectory=['y']))
+    am.start_run()
+    res = _parabola_result('iter0run0', [4.0, 5.0, 6.0], master=True)
+    assert not hasattr(res, 'out')
+    am.got_result(res)
+    np.testing.assert_array_equal(am.output_run_current['par1y'][0], [[4.0, 5.0, 6.0]])
+
+
+def test_an_experiment_whose_output_changes_length_is_refused(tmp_path):
+    """A buffer is allocated at the length of the first output that supplies it, and a file
+    row holds one sample of that length. A later output of another length used to fail inside
+    numpy's broadcasting; it is refused, naming the experiment, the column and both lengths."""
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                               output_trajectory=['y']))
+    am.start_run()
+    am.got_result(_parabola_result('iter0run0', [1.0, 2.0, 3.0], score=5.0))
+    with pytest.raises(PybnfError) as info:
+        am.got_result(_parabola_result('iter1run0', [1.0, 2.0], score=1.0))
+    assert info.value.log_message == ("Experiment par1's simulation gave 2 rows of y, where an "
+                                      "earlier one gave 3")
+
+
+def test_the_scored_series_is_recorded_as_it_was_scored_not_normalized_again(tmp_path):
+    """The side that scored a result normalized its data in place before scoring it, so the
+    trajectory is recorded as it arrives. It was normalized again here, with the whole-fit
+    ``{data key: transforms}`` map passed as one experiment's transforms, which raised
+    ``ValueError: too many values to unpack``. Oracle: the values handed in, which an ``init``
+    normalization applied a second time would have divided by 2."""
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, normalization='init',
+                                               output_trajectory=['y']))
+    assert am.config.config['normalization'] == {'par1': [('init', ['x', 'y'])]}
+    am.start_run()
+    am.got_result(_parabola_result('iter0run0', [2.0, 4.0, 8.0]))
+    np.testing.assert_array_equal(am.output_run_current['par1y'][0], [[2.0, 4.0, 8.0]])
+
+
+@pytest.mark.parametrize('key', ['output_trajectory', 'output_noise_trajectory'])
+def test_a_trajectory_of_an_analytically_scaled_column_is_refused(tmp_path, key):
+    """``scale`` is profiled against the data inside the objective, so the simulated series
+    the file would hold is off the data's scale by the factor the fit applied."""
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, normalization='scale',
+                                              **{key: ['y']}))
+    assert info.value.log_message == f'{key} names y, which normalization scales analytically'
+    assert 'normalization scales y analytically (scale) in experiment par1.' in info.value.message
+
+
+def test_a_noise_trajectory_of_a_normalized_column_is_refused(tmp_path, monkeypatch):
+    """The issue's edition-1 case, ``objfunc = neg_bin`` with ``normalization = init``, which
+    stopped at the first accepted result with ``ValueError``. A count drawn around a normalized
+    prediction is no count of anything, so the combination is refused when the configuration
+    loads."""
+    with pytest.raises(PybnfError) as info:
+        _edition_1_noise_am(tmp_path, monkeypatch,
+                            ['objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init'])
+    assert info.value.log_message == ('output_noise_trajectory names cases_Cum, which '
+                                      'normalization transforms')
+    assert 'a normalized value in experiment epi, not an expected count' in info.value.message
+
+
+def test_a_run_resumed_from_a_backup_made_before_990_records_every_experiment(tmp_path):
+    """`-r` unpickles without running __init__, so a backup made before #990 has no
+    ``trajectory_suffixes``: they are resolved from the configuration at the first result."""
+    import pickle
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                               output_trajectory=['y']))
+    am.start_run()
+    del am.trajectory_suffixes
+    am = pickle.loads(pickle.dumps(am))
+    assert 'trajectory_suffixes' not in vars(am)
+    am.got_result(_parabola_result('iter0run0', [1.0, 2.0]))
+    assert am.trajectory_suffixes == {'parabola': ['par1']}
+    assert am.output_run_recorded == {('par1y', 0)}
+
+
+@pytest.mark.parametrize('fit_type', ['mh', 'pt', 'dream', 'p_dream', 'de', 'check'])
+def test_a_trajectory_output_outside_am_is_refused_when_the_run_starts(tmp_path, fit_type):
+    """Both keys are global, so every other job type accepted them and wrote nothing; the
+    repository's own dream and p_dream benchmark configurations asked for them. The refusal
+    belongs to starting a run: the configuration itself still loads, because it is also loaded
+    to read a finished run back (#990 review)."""
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, fit_type=fit_type, output_trajectory=['y'],
+                       output_noise_trajectory=['y'])
+    with pytest.raises(PybnfError) as info:
+        cfg.check_trajectory_output_job_type()
+    assert info.value.log_message == (
+        'output_trajectory and output_noise_trajectory are written only by job_type = am, and '
+        f'this is job_type = {fit_type}')
+
+
+def test_am_is_not_refused_its_trajectory_outputs(tmp_path):
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_trajectory=['y'])
+    cfg.check_trajectory_output_job_type()
+
+
+def test_a_dream_run_naming_a_trajectory_is_refused_before_its_output_directory_is_made(
+        tmp_path, monkeypatch, capsys):
+    """Through pybnf's main: the refusal ends a fresh run with an error on the console, before
+    the output directory is prepared."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR)
+    (tmp_path / 'epi.exp').write_text('# time cases\n' + ''.join(
+        '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'dream.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'fit_type = dream', 'output_dir = out',
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'loguniform_var = beta__FREE 0.3 1.2',
+        'uniform_var = gamma__FREE 0.1 0.5', 'output_trajectory = cases',
+        'population_size = 4', 'max_iterations = 30', 'burn_in = 5']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'dream.conf') == 1
+    assert ('output_trajectory is written only by job_type = am (Adaptive MCMC); job_type = '
+            'dream would ignore it' in capsys.readouterr().out)
+    assert not (tmp_path / 'out').exists()
+
+
+def _edition_2_config(tmp_path, monkeypatch, lines):
+    """``load_config`` of an edition-2 job over the Liu-West SIR model (``cases`` is
+    ``rho*CumInf``), with an unconditioned experiment ``epi`` and ``epi2`` under ``hi``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    (tmp_path / 'sir.bngl').write_text(L.MODEL)
+    L.write_data(tmp_path / 'cases.exp')
+    (tmp_path / 'job.conf').write_text('\n'.join([
+        'edition = 2', 'model: sir.bngl', 'job_type = am', 'output_dir = out',
+        'experiment: epi, data: cases.exp', 'condition: hi, perturbations: rho = 0.6',
+        'experiment: epi2, condition: hi, data: cases.exp',
+        'uniform_var = beta 0.3 1.2', 'uniform_var = gamma 0.1 0.5',
+        'population_size = 1', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        *lines]) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return load_config(str(tmp_path / 'job.conf'))
+
+
+def test_the_recorded_experiments_are_the_configured_ones_conditions_included(
+        tmp_path, monkeypatch):
+    """The one model runs both actions under both conditions; the experiments are ``epi`` and
+    ``epi2`` under ``hi``, data keys ``epi`` and ``epi2hi``. The buffers used to be keyed by the
+    action suffixes ``epi`` and ``epi2`` (``time_length``), so ``epi2hi`` was never recorded."""
+    from pybnf.algorithms.samplers.adaptive_mcmc import _experiment_suffixes
+    cfg = _edition_2_config(tmp_path, monkeypatch,
+                            ['noise_model = gaussian, sigma = fix_at 5, location = mean'])
+    assert sorted(cfg.models['sir'].get_suffixes()) == ['epi', 'epi2', 'epi2hi', 'epihi']
+    assert _experiment_suffixes(cfg) == {'sir': ['epi', 'epi2hi']}
+
+
+_FAMILY_LINES = {
+    'gaussian': ('gaussian, sigma = fix_at 5', 'linear'),
+    'lognormal': ('lognormal, sigma = fix_at 0.5', 'log'),
+    'lnnormal': ('lnnormal, sigma = fix_at 0.5', 'log'),
+    'laplace': ('laplace, scale = fix_at 5', 'linear'),
+    'student_t': ('student_t, sigma = fix_at 5', 'linear'),
+    'neg_bin': ('neg_bin, dispersion = fix_at 20, location = mean', None),
+}
+
+
+@pytest.mark.parametrize('family', sorted(_FAMILY_LINES))
+def test_scale_is_refused_on_a_noise_family_with_no_additive_scale(tmp_path, monkeypatch,
+                                                                   family):
+    """``scale`` is profiled in the space the noise family adds its error in, which
+    ``_scale_mode`` reads off the family's ``additive_on``. neg_bin has none, and every
+    evaluation raised ``AttributeError`` in the objective, which the scoring turned into a
+    failed simulation. Every other family loads, and its profile space resolves."""
+    line, space = _FAMILY_LINES[family]
+    lines = ['noise_model = gaussian, sigma = fix_at 5, location = mean',
+             'noise_model cases = %s' % line, 'normalization cases = scale']
+    if space is not None:
+        cfg = _edition_2_config(tmp_path, monkeypatch, lines)
+        assert cfg.obj._scale_mode('cases') == space
+        return
+    with pytest.raises(PybnfError) as info:
+        _edition_2_config(tmp_path, monkeypatch, lines)
+    assert info.value.log_message == ('normalization scales cases analytically, but its noise '
+                                      'model NegBinomial has no additive scale')
+    assert 'cases (experiment epi, epi2hi) is scored by NegBinomial' in info.value.message
+    assert info.value.message.endswith('gaussian, laplace, lnnormal, lognormal, normal, '
+                                       'student_t.')
+
+
+def test_the_scale_refusal_reads_the_additive_scale_not_the_family_class():
+    """Any family without an additive scale is refused, not only NegBinomial."""
+    from types import SimpleNamespace
+
+    class Counts:
+        pass
+
+    owner = SimpleNamespace(obj=SimpleNamespace(_spec_for=lambda column: (Counts(), {})))
+    with pytest.raises(PybnfError) as info:
+        config.Configuration._require_additive_scale(owner, {'e1': frozenset({'c'})})
+    assert info.value.log_message == ('normalization scales c analytically, but its noise '
+                                      'model Counts has no additive scale')
+
+
+_DECAY = """begin model
+begin parameters
+  A0  100
+  k   0.5
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() A0
+end seed species
+begin observables
+  Molecules Atot A()
+  Molecules Cnt A()
+end observables
+begin reaction rules
+  A() -> 0  k
+end reaction rules
+end model
+"""
+
+
+def _trajectories(runs, name):
+    """The rows of one per-chain trajectory file, without the never-simulated all-zero row
+    the first write puts at the top (lanl/PyBNF#859, a separate issue)."""
+    rows = np.loadtxt(runs / name, ndmin=2)
+    return rows[~(rows == 0).all(axis=1)]
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('local_objective_eval', [0, 1])
+def test_an_edition_2_run_writes_every_experiment_normalized_once(tmp_path, monkeypatch,
+                                                                  local_objective_eval):
+    """A first-order decay A(t) = A0 exp(-k t), with A0 the fitted parameter, measured in
+    experiment ``slow`` (k = 0.5) and in ``quick`` under the condition ``fast`` (k = 1).
+
+    Oracle, in closed form and the same for every row whatever A0 the chain was at: ``Atot``,
+    normalized by ``floor 0.1, init``, is (exp(-k t) + 0.1) / 1.1, because the floor adds 0.1
+    of the maximum, A0 at t = 0, and init divides by the t = 0 value. The floor is not
+    idempotent, so a second normalization would show. ``Cnt``, the same species unnormalized,
+    is A0 exp(-k t), a row divided by its first entry is exp(-k t), and its noise trajectory
+    holds counts of the same shape. ``quick`` under ``fast`` (data key ``quickfast``) used to
+    get no file at all, and the normalization used to stop the run. Both scoring paths: the
+    workers (``local_objective_eval = 0``) and the master (1), which ``am`` could not run."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'decay.bngl').write_text(_DECAY)
+    (tmp_path / 'decay.exp').write_text('# time Atot Cnt\n' + ''.join(
+        '%d %g %d\n' % (t, 100 * np.exp(-0.5 * t), round(100 * np.exp(-0.5 * t)))
+        for t in range(1, 6)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'edition = 2', 'model: decay.bngl', 'bngl_backend = bngsim', 'job_type = am',
+        'output_dir = out', 'experiment: slow, data: decay.exp',
+        'condition: fast, perturbations: k = 1',
+        'experiment: quick, condition: fast, data: decay.exp',
+        'noise_model = gaussian, sigma = fix_at 1, location = mean',
+        'noise_model Cnt = neg_bin, dispersion = fix_at 50, location = mean',
+        'normalization Atot = floor 0.1, init', 'uniform_var = A0 50 200',
+        'output_trajectory = Atot, Cnt', 'output_noise_trajectory = Cnt',
+        'population_size = 1', 'max_iterations = 10', 'burn_in = 2', 'adaptive = 2',
+        'sample_every = 1', 'step_size = 20', 'random_seed = 1', 'parallel_count = 1',
+        'local_objective_eval = %d' % local_objective_eval]) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'am.conf') == 0
+    runs = tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs'
+    assert sorted(p.name for p in runs.glob('traj_*')) == [
+        'traj_noise_quickfastCnt_chain_0.txt', 'traj_noise_slowCnt_chain_0.txt',
+        'traj_quickfastAtot_chain_0.txt', 'traj_quickfastCnt_chain_0.txt',
+        'traj_slowAtot_chain_0.txt', 'traj_slowCnt_chain_0.txt']
+    times = np.arange(6.0)
+    for experiment, k in (('slow', 0.5), ('quickfast', 1.0)):
+        normalized = _trajectories(runs, 'traj_%sAtot_chain_0.txt' % experiment)
+        assert normalized.shape[0] >= 5
+        expected = (np.exp(-k * times) + 0.1) / 1.1
+        np.testing.assert_allclose(normalized, np.tile(expected, (len(normalized), 1)),
+                                   rtol=1e-5)
+        counts = _trajectories(runs, 'traj_%sCnt_chain_0.txt' % experiment)
+        assert len(set(counts[:, 0])) > 1          # the chain moved A0, and Cnt with it
+        np.testing.assert_allclose(counts / counts[:, :1],
+                                   np.tile(np.exp(-k * times), (len(counts), 1)), rtol=1e-5)
+        drawn = np.loadtxt(runs / ('traj_noise_%sCnt_chain_0.txt' % experiment), ndmin=2)
+        assert drawn.shape[1] == 6 and (drawn >= 0).all() and (drawn == np.round(drawn)).all()
+
+
+@pytest.mark.bngsim
+def test_an_edition_1_mutant_gets_its_trajectories_normalized_as_scored(tmp_path, monkeypatch):
+    """The edition-1 sibling: a mutant ``hi`` (rho = 0.6 against 0.5) of the SIR model, whose
+    output suffix ``epihi`` had no buffer, under the legacy per-file ``normalization = peak:
+    epi.exp``, which stopped the run. Oracle, from ``cases`` = rho * CumInf with ``CumInf``
+    recorded beside it (in no data file, so unnormalized, and the same in both experiments,
+    since rho changes no dynamics): ``epi``'s ``cases``, peak-normalized as scored, is CumInf /
+    max(CumInf), and ``epihi``'s, not normalized, is 0.6 * CumInf."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR)
+    for name in ('epi.exp', 'epihi.exp'):
+        (tmp_path / name).write_text('# time cases cases_Cum\n' + ''.join(
+            '%d %d %d\n' % (t, c, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'mutant = sir1 hi rho=0.6 : epihi.exp',
+        'fit_type = am', 'objfunc = sos', 'normalization = peak: epi.exp', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'output_trajectory = cases, CumInf', 'population_size = 1', 'max_iterations = 10',
+        'burn_in = 2', 'adaptive = 2', 'sample_every = 1', 'step_size = 0.05',
+        'random_seed = 1', 'parallel_count = 1']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'am.conf') == 0
+    runs = tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs'
+    assert sorted(p.name for p in runs.glob('traj_*')) == [
+        'traj_epiCumInf_chain_0.txt', 'traj_epicases_chain_0.txt',
+        'traj_epihiCumInf_chain_0.txt', 'traj_epihicases_chain_0.txt']
+    cum, cum_hi = (_trajectories(runs, 'traj_%sCumInf_chain_0.txt' % s) for s in ('epi', 'epihi'))
+    cases, cases_hi = (_trajectories(runs, 'traj_%scases_chain_0.txt' % s)
+                       for s in ('epi', 'epihi'))
+    assert cum.shape == cum_hi.shape == cases.shape == cases_hi.shape and cum.shape[0] >= 5
+    assert (cum.max(axis=1) > 0).all()
+    np.testing.assert_allclose(cum_hi, cum, rtol=1e-9)
+    np.testing.assert_allclose(cases, cum / cum.max(axis=1, keepdims=True), rtol=1e-9)
+    np.testing.assert_allclose(cases_hi, 0.6 * cum_hi, rtol=1e-9)
+
+
+# --------------------------------------------------------------------------------------------
+# #990 review: normalization shapes, a penalized first result, resume, shared files, #998
+# --------------------------------------------------------------------------------------------
+
+_E1_SIR_TWO = _E1_SIR.replace(
+    'simulate({method=>"ode",suffix=>"epi",t_end=>12,n_steps=>12,print_functions=>1})\n',
+    'simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12,print_functions=>1})\n'
+    'resetConcentrations()\n'
+    'simulate({method=>"ode",suffix=>"b",t_end=>12,n_steps=>12,print_functions=>1})\n')
+
+
+def _edition_1_two_experiments(tmp_path, monkeypatch, lines):
+    """``load_config`` of an edition-1 am job: experiment ``a`` measures ``cases``, ``b``
+    measures ``Inf``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR_TWO)
+    for name, header in (('a.exp', 'cases'), ('b.exp', 'Inf')):
+        (tmp_path / name).write_text('# time %s\n' % header + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : a.exp, b.exp', 'fit_type = am', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'population_size = 1', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        *lines]) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return load_config(str(tmp_path / 'am.conf'))
+
+
+_NORMALIZATION_SHAPES = {
+    'e1_global': (1, ['normalization = init']),
+    'e1_per_file': (1, ['normalization = init: a.exp']),
+    'e1_per_file_columns': (1, ['normalization = init: (b.exp: Inf)']),
+    'e1_two_files': (1, ['normalization = init: a.exp', 'normalization = peak: b.exp']),
+    'e2_per_observable': (2, ['normalization cases = init']),
+    'e2_per_experiment': (2, ['normalization epi2.cases = init']),
+    'e2_whole_fit_and_override': (2, ['normalization = peak', 'normalization epi.cases = init']),
+}
+
+
+@pytest.mark.parametrize('shape', sorted(_NORMALIZATION_SHAPES))
+def test_the_experiments_a_noise_column_is_refused_for_are_the_ones_normalization_changes(
+        tmp_path, monkeypatch, shape):
+    """Every shape of the compiled ``normalization`` setting: a global string, per file,
+    per file and column, several files, per observable, per experiment, and a whole-fit rule
+    beside an override. The legacy per-file form keeps the file names beside the data keys
+    (``{'a.exp': 'init', 'a': [...]}``), and reading a file name as an experiment refused a
+    column no file normalizes (#990 review).
+
+    Oracle: ``Result.normalize`` -- what scoring applies -- run on a synthetic simulation of
+    every experiment; a column is normalized in exactly the experiments where it changed."""
+    from pybnf.algorithms.core import Result
+    from pybnf.algorithms.samplers.adaptive_mcmc import _experiment_suffixes
+    from types import SimpleNamespace
+    edition_number, lines = _NORMALIZATION_SHAPES[shape]
+    if edition_number == 1:
+        cfg = _edition_1_two_experiments(tmp_path, monkeypatch, ['objfunc = sos', *lines])
+    else:
+        cfg = _edition_2_config(tmp_path, monkeypatch, [
+            'noise_model = gaussian, sigma = fix_at 5, location = mean', *lines])
+    suffixes = _experiment_suffixes(cfg)
+    raw = np.column_stack([np.arange(4.0), 2.0 + np.arange(4.0), 3.0 + np.arange(4.0)])
+    sim = {model: {s: _data_columns(['cases', 'Inf'], raw) for s in outputs}
+           for model, outputs in suffixes.items()}
+    Result(None, sim, 'x').normalize(cfg.config['normalization'])
+    stub = SimpleNamespace(config=cfg, _trajectory_suffixes=lambda: suffixes)
+    for column, index in (('cases', 1), ('Inf', 2)):
+        changed = sorted(s for outputs in sim.values() for s, d in outputs.items()
+                         if not np.array_equal(d.data[:, index], raw[:, index]))
+        got = algorithms.Adaptive_MCMC._normalizing_experiments(stub, column)
+        assert got == changed, (shape, column, cfg.config['normalization'])
+
+
+def _data_columns(names, array):
+    d = data.Data()
+    d.data = d._read_file_lines(['# time %s\n' % ' '.join(names)] + [
+        ' '.join('%r' % float(v) for v in row) + '\n' for row in array], r'\s+')
+    return d
+
+
+def test_a_noise_column_normalized_in_one_experiment_names_it(tmp_path, monkeypatch):
+    """The refusal names the experiment, not a data file: ``b``, where ``Inf`` is normalized."""
+    cfg = _edition_1_two_experiments(tmp_path, monkeypatch, [
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
+        'normalization = peak: b.exp', 'output_noise_trajectory = Inf'])
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
+    assert info.value.log_message == ('output_noise_trajectory names Inf, which normalization '
+                                      'transforms')
+    assert 'a normalized value in experiment b, not an expected count' in info.value.message
+
+
+def test_an_edition_2_refusal_names_the_experiment_and_its_condition(tmp_path, monkeypatch):
+    cfg = _edition_2_config(tmp_path, monkeypatch, [
+        'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+        'normalization epi2.cases = init'])
+    stub = type('Stub', (), {})()
+    stub.config = cfg
+    assert algorithms.Adaptive_MCMC._experiment_label(stub, 'epi2hi') == 'epi2 (condition hi)'
+    assert algorithms.Adaptive_MCMC._experiment_label(stub, 'epi') == 'epi'
+
+
+@pytest.mark.parametrize('master', [False, True], ids=['worker', 'master'])
+def test_a_penalized_first_result_records_nothing_and_checks_nothing(tmp_path, master):
+    """A chain's first result is accepted whatever its score. One the scoring penalized
+    (score inf) may carry data it never finished with -- here, without the ``y`` the fit
+    asks for -- and the master path used to read that as the fit's columns and stop the run
+    on a name it called misspelled. Nothing is recorded or checked for it on either path; the
+    chain's next, finished, result is recorded."""
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                               output_trajectory=['y']))
+    am.start_run()
+    unfinished = {'parabola': {'par1': _data('x', [(0, 1), (1, 2)])}}
+    res = algorithms.Result(_uniform_pset('iter0run0'), unfinished if master else None,
+                            'iter0run0')
+    if not master:
+        res.out = unfinished
+    res.score = np.inf
+    am.got_result(res)
+    assert am.accept is True
+    assert am.output_run_current == {} and not am._trajectory_names_checked
+    am.got_result(_parabola_result('iter1run0', [1.0, 2.0], master=master))
+    np.testing.assert_array_equal(am.output_run_current['par1y'][0], [[1.0, 2.0]])
+
+
+def _edition_1_mutant_am(tmp_path, monkeypatch):
+    """An edition-1 am over the SIR model with a mutant ``hi``: experiments ``epi``, ``epihi``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR)
+    for name in ('epi.exp', 'epihi.exp'):
+        (tmp_path / name).write_text('# time cases\n' + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'mutant = sir1 hi rho=0.6 : epihi.exp',
+        'fit_type = am', 'objfunc = sos', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'output_trajectory = cases', 'population_size = 2', 'max_iterations = 40',
+        'burn_in = 10', 'adaptive = 10']) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
+
+
+@pytest.mark.parametrize('made', ['before_990', 'after_990'])
+def test_resuming_a_backup_made_before_990_says_which_files_start_late(tmp_path, monkeypatch,
+                                                                       capsys, made):
+    """A backup made before #990 recorded only the action suffixes of ``time_length`` (kept as
+    ``self.time``), so the mutant ``epihi`` had no file. ``-r`` records it from then on, so its
+    files are shorter than ``epi``'s and do not line up with them, and the resumed run says
+    so: which experiment, from which iteration, and how many rows the others already hold.
+    A backup made after #990 records every experiment from the start and says nothing.
+    Driven through ``pybnf._load_resumed_algorithm``, as ``-r`` does."""
+    import pickle
+    from types import SimpleNamespace
+    from pybnf.pybnf import _load_resumed_algorithm
+    am = _edition_1_mutant_am(tmp_path, monkeypatch)
+    am.start_run()
+    am.iteration = [9, 9]
+    runs = tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs'
+    for chain in (0, 1):
+        np.savetxt(runs / ('traj_epicases_chain_%d.txt' % chain), np.ones((7, 13)))
+    if made == 'before_990':
+        del am.trajectory_suffixes                 # what __init__ kept before #990 ...
+        am.time = {'epi': 12}                     # ... and what it kept instead
+    backup = tmp_path / 'out' / 'alg_backup.bp'
+    with open(backup, 'wb') as f:
+        pickle.dump((am, []), f)
+    capsys.readouterr()
+    resumed, _pending, _config = _load_resumed_algorithm(backup, SimpleNamespace(resume=0))
+    out = capsys.readouterr().out
+    assert resumed.trajectory_suffixes == {'sir1': ['epi', 'epihi']}
+    if made == 'after_990':
+        assert 'Note:' not in out
+        return
+    assert ("Note: this run was backed up before PyBNF recorded the trajectories of experiment "
+            "epihi. A chain's traj_* files for it begin with the first move it accepts after "
+            "iteration 9, where the run resumes, so they are shorter than the other experiments' "
+            "files, which already hold 7 rows in every chain, and do not line up with them row "
+            "for row.") in out
+
+
+def _two_models_sharing_a_suffix(tmp_path, monkeypatch, wanted, print_functions=True):
+    """Two edition-1 models, each with an action ``a`` (rho 0.5 and 0.25)."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    one = _E1_SIR.replace('suffix=>"epi"', 'suffix=>"a"')
+    if not print_functions:
+        one = one.replace(',print_functions=>1', '')
+    for sub, text in (('m1', one), ('m2', one.replace('rho    0.5', 'rho    0.25'))):
+        (tmp_path / sub).mkdir()
+        (tmp_path / sub / ('sir_%s.bngl' % sub)).write_text(text)
+        (tmp_path / sub / 'a.exp').write_text('# time Inf\n' + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = m1/sir_m1.bngl : m1/a.exp', 'model = m2/sir_m2.bngl : m2/a.exp',
+        'fit_type = am', 'objfunc = sos', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'output_trajectory = %s' % wanted, 'population_size = 1', 'max_iterations = 40',
+        'burn_in = 10', 'adaptive = 10']) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return load_config(str(tmp_path / 'am.conf'))
+
+
+@pytest.mark.parametrize('wanted', ['Inf', 'cases'])
+def test_two_models_sharing_a_suffix_and_a_column_are_refused_when_the_configuration_loads(
+        tmp_path, monkeypatch, wanted):
+    """Both models write a column ``Inf`` (an observable, always written) or ``cases`` (a
+    function their action prints) for experiment ``a``, and both would go to
+    ``traj_a<column>_chain_<n>.txt``. That is known from the model files, so it is refused
+    when the configuration loads, not at the first simulation."""
+    cfg = _two_models_sharing_a_suffix(tmp_path, monkeypatch, wanted)
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
+    assert info.value.log_message == ('output_trajectory would write two trajectories to one '
+                                      'file, a%s' % wanted)
+    assert ('%s of model sir_m1 in experiment a and %s of model sir_m2 in experiment a'
+            % (wanted, wanted)) in info.value.message
+
+
+def test_a_function_the_actions_do_not_print_cannot_share_a_file(tmp_path, monkeypatch):
+    """Without ``print_functions`` neither model writes ``cases``, so there is no file to share
+    and nothing to refuse at load; the name is then refused at the first simulation, as one
+    no experiment produces."""
+    cfg = _two_models_sharing_a_suffix(tmp_path, monkeypatch, 'cases', print_functions=False)
+    am = algorithms.Adaptive_MCMC(cfg)
+    assert am.trajectory_suffixes == {'sir_m1': ['a'], 'sir_m2': ['a']}
+
+
+@pytest.mark.parametrize('action, prints', [
+    ('simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12,print_functions=>1})', True),
+    ('simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12})', False),
+    ('simulate({method=>"ode",suffix=>"a",print_functions=>0})', False),
+    ('simulate({suffix=>"a",print_functions=>1});', True),
+    ('simulate_ode({suffix=>"a",print_functions=>"1"})', True),
+    ('parameter_scan({suffix=>"d",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>3,'
+     'print_functions=>1})', True),
+    ('simulate({suffix=>"a",print_functions=>$p})', None),
+    ('simulate {suffix=>"a"}', None),
+])
+def test_whether_an_action_prints_functions(action, prints):
+    from pybnf.algorithms.samplers.adaptive_mcmc import _prints_functions
+    assert _prints_functions(action) is prints
+
+
+_PARABOLA_TEXT = (Path(__file__).parent / 'bngl_files' / 'parabola.bngl').read_text()
+
+
+@pytest.mark.parametrize('steps', ['n_output_steps=>20', ''], ids=['n_output_steps', 'none'])
+@pytest.mark.parametrize('fit_type', ['de', 'am'])
+def test_a_simulate_with_n_output_steps_or_no_step_count_loads(tmp_path, steps, fit_type):
+    """``find_t_length`` refused both for every job type, to compute a length only am read
+    (#998). BNG2.pl takes ``n_output_steps`` for ``n_steps`` and defaults to one step. The
+    length is gone, and am sizes its buffers from the output it records."""
+    text = _PARABOLA_TEXT.replace('n_steps=>20,', steps + (',' if steps else ''))
+    assert ('n_output_steps=>20' in text) == bool(steps) and 'n_steps' not in text
+    model = tmp_path / 'parabola.bngl'
+    model.write_text(text)
+    exp = Path(__file__).parent / 'bngl_files' / 'par1.exp'
+    out = str(tmp_path) + '/'
+    base = {'population_size': 1, 'max_iterations': 100, 'step_size': 0.2,
+            'output_hist_every': 5, 'sample_every': 2, 'burn_in': 10, 'adaptive': 10,
+            'credible_intervals': [68, 95], 'output_dir': out, 'models': {str(model)},
+            'exp_data': {str(exp)}, 'initialization': 'lh', str(model): [str(exp)],
+            'fit_type': fit_type, **UNIFORM_VARS}
+    if fit_type == 'am':
+        base['output_trajectory'] = ['y']
+    cfg = config.Configuration(base)
+    assert 'time_length' not in cfg.config
+    if fit_type == 'am':
+        am = algorithms.Adaptive_MCMC(cfg)
+        assert am.trajectory_suffixes == {'parabola': ['par1']}
+
+
+def test_an_n_output_steps_run_writes_the_rows_bng2pl_writes(tmp_path, monkeypatch):
+    """End to end on BNG2.pl, which writes 21 rows for ``n_output_steps=>20`` over t = -10..10.
+    Oracle: the parabola model's observable ``x`` counts up from -10 at rate 1, so x(t) = t,
+    and every recorded row of ``x`` is the 21 times -10, -9, ..., 10, whatever the chain's
+    parameters."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'parabola.bngl').write_text(
+        _PARABOLA_TEXT.replace('n_steps=>20,', 'n_output_steps=>20,'))
+    (tmp_path / 'par1.exp').write_text(
+        (Path(__file__).parent / 'bngl_files' / 'par1.exp').read_text())
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = parabola.bngl : par1.exp', 'fit_type = am', 'objfunc = sos',
+        'bngl_backend = bionetgen', 'output_dir = out',
+        'uniform_var = v1__FREE 0 1', 'uniform_var = v2__FREE 0 2', 'uniform_var = v3__FREE 0 5',
+        'output_trajectory = x', 'population_size = 1', 'max_iterations = 8', 'burn_in = 2',
+        'adaptive = 2', 'sample_every = 1', 'step_size = 0.05', 'random_seed = 1',
+        'parallel_count = 1']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'am.conf') == 0
+    rows = _trajectories(tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs', 'traj_par1x_chain_0.txt')
+    assert rows.shape[0] >= 4
+    np.testing.assert_allclose(rows, np.tile(np.arange(-10.0, 11.0), (len(rows), 1)), atol=1e-9)
+

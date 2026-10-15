@@ -58,6 +58,7 @@ from .scan import (
     _SS_SCAN_N_POINTS,
 )
 from .output import _write_saved_action_outputs
+from .grid import describe_action, grid_refusal, scan_t_end, simulate_output_grid
 from .classification import (
     _normalize_action_method,
     _normalize_sim_timeout,
@@ -1265,17 +1266,23 @@ class BngsimModel(NetModel):
             sim_params.get('poplevel'),
         )
 
-        # Parse sample_times (list of string values from BNGL)
-        sample_times = _resolve_sample_times(sim_params)
-
         # Gap 1: continue=>1
         continue_flag = bool(int(_eval_numeric(str(sim_params.get('continue', 0)))))
         if continue_flag and 't_start' not in sim_params:
             t_start = state.current_time
         else:
             t_start = _eval_numeric(str(sim_params.get('t_start', 0)))
-        t_end = _eval_numeric(str(sim_params.get('t_end', 100)))
-        n_steps = int(_eval_numeric(str(sim_params.get('n_steps', 100))))
+        # The output grid by BNG2.pl's rules (grid.py): n_output_steps is n_steps, one step by
+        # default, t_end required without sample_times. These used to default to 100 and 100.
+        where = describe_action(self._grid_label(), sim_params)
+        if null_nf_sample_times and method == 'nf' and 'sample_times' in sim_params \
+                and 'n_steps' not in sim_params:
+            # The .net bridge's NFsim takes no sample_times (nor does BNG2.pl's); it used to
+            # drop them with a warning and run on its own default grid.
+            raise grid_refusal(where, 'sample_times not supported in this version of NFsim')
+        sample_times, t_end, n_steps = simulate_output_grid(
+            sim_params, where, method, t_start=t_start,
+            evaluate=lambda value: _eval_numeric(str(value)))
         suffix = sim_params.get('suffix', 'time_course')
         # Gate this action's sensitivity request on whether its output is scored
         # (#475): set before any Simulator (re)construction below reads it.
@@ -1321,13 +1328,6 @@ class BngsimModel(NetModel):
         stop_if = sim_params.get('stop_if')
         if stop_if is not None:
             stop_if = stop_if.strip().strip('"').strip("'")
-
-        # sample_times is not supported for NFsim (possible future
-        # BNGsim / NFsim enhancement)
-        if null_nf_sample_times and method == 'nf' and sample_times is not None:
-            logger.warning(
-                "sample_times is not supported for NFsim — ignoring")
-            sample_times = None
 
         if method == 'psa':
             if state.method != 'psa' or state.poplevel != poplevel:
@@ -1377,6 +1377,11 @@ class BngsimModel(NetModel):
             sample_times=sample_times, t_start=t_start, t_end=t_end, n_steps=n_steps,
             run_kwargs=run_kwargs, stop_if=stop_if,
         )
+
+    def _grid_label(self):
+        """The model name a grid refusal gives (grid.py); a test double built without
+        ``__init__`` has none, and is named by its class."""
+        return getattr(self, 'name', type(self).__name__)
 
     @staticmethod
     def _run_prepared_simulate(plan, stop_log_label):
@@ -1683,7 +1688,6 @@ class BngsimModel(NetModel):
         concentration_overrides = concentration_overrides or {}
         param_name = ps_params.get('parameter', '')
         t_start = _eval_numeric(str(ps_params.get('t_start', 0)))
-        t_end = _eval_numeric(str(ps_params.get('t_end', 100)))
         suffix = ps_params.get('suffix', 'param_scan')
         use_ss = int(_eval_numeric(str(ps_params.get('steady_state', 0))))
         ss_method = _normalize_ss_method(ps_params.get('ss_method'))
@@ -1713,6 +1717,11 @@ class BngsimModel(NetModel):
 
         # Resolve sample_times for passthrough to each scan-point simulation
         sample_times = _resolve_sample_times(ps_params)
+        # BNG2.pl runs simulate at each scan point, which requires t_end without sample_times
+        # (grid.py); it used to default to 100 here.
+        t_end = scan_t_end(ps_params, describe_action(
+            self._grid_label(), ps_params, 'bifurcate' if is_bifurcate else 'parameter_scan'),
+            sample_times, evaluate=lambda value: _eval_numeric(str(value)))
         if sample_times is not None:
             t_start = sample_times[0]
             t_end = sample_times[-1]
