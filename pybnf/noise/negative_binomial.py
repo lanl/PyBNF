@@ -43,6 +43,20 @@ def _d_fit_d_r_series(r, k, m):
     return x * x * (second + x * third)
 
 
+def draw_count(rng, mean, r):
+    """One negative binomial count of ``mean`` and dispersion ``r`` from the numpy Generator
+    ``rng``. Up to r ~ 1e3 it is the draw PyBNF has always made, ``nbinom.rvs`` at the clipped
+    ``prob = r/(r + mean)``, so a seeded draw is unchanged to the bit. A larger ``r`` took the
+    clip's floor of ``r * 1e-10`` as the mean too (#987: at r = 1e12 every mean below 100 was
+    drawn as ~100), and ``prob`` rounds next to 1 there, so it draws gamma-Poisson with the
+    floor capped, in the same order of the same stream as numpy's own negative binomial."""
+    from scipy import stats
+    if r * _MEAN_FLOOR_REL <= _MEAN_FLOOR_MAX:
+        prob = np.clip(r / (r + mean), _PROB_CLIP, 1 - _PROB_CLIP)
+        return stats.nbinom.rvs(n=r, p=prob, size=1, random_state=rng)[0]
+    return rng.poisson(rng.gamma(r, max(mean, _mean_floor(r)) / r))
+
+
 def _mean_floor(r):
     """The smallest mean the score and its derivatives take for dispersion ``r``."""
     return min(r * _MEAN_FLOOR_REL, _MEAN_FLOOR_MAX)

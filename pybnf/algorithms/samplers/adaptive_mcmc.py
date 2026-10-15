@@ -12,6 +12,7 @@ from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 from ...noise import ConstantSigma, FreeParameterSigma, NegBinomial
+from ...noise.negative_binomial import draw_count
 from ...noise.source import FormulaSigma
 from ...objective import NegBinLikelihood, NegBinLikelihood_Dynamic
 from types import SimpleNamespace
@@ -21,7 +22,6 @@ from typing import Any
 import numpy as np
 import shutil
 from pathlib import Path
-from scipy import stats
 
 
 class AdaptiveMCMCConfig(MCMCFamilyConfig):
@@ -589,9 +589,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             # The distribution mean the noise model scores: a negative prediction is 0, and
             # a median-located prediction is inverted to its mean.
             mean = family._mean(float(timeseries[i]), float(self.r))
-            self.prob = np.clip(self.r / (self.r + mean), 1e-10, 1 - 1e-10)
-            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1,
-                                               random_state=rng)[0]
+            self.output[i] = draw_count(rng, mean, float(self.r))
 
         return self.output
 

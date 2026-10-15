@@ -1773,3 +1773,23 @@ def test_a_noise_trajectory_under_a_time_error_is_refused(tmp_path, monkeypatch)
         algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
     assert info.value.log_message == ('output_noise_trajectory names cases, but the fit has a '
                                       'time_error')
+
+
+def test_the_output_noise_draws_the_predicted_mean_at_a_large_dispersion():
+    """lanl/PyBNF#987: the draw clipped prob = r/(r + mean) at 1 - 1e-10 like the old score, so at
+    r = 1e12 every predicted count below 100 was drawn as a count of about 100. There the negative
+    binomial is Poisson to O(m / r): over 4000 draws the sample mean lies within 6 standard errors
+    of m, and a prediction of 0 draws 0."""
+    from types import SimpleNamespace
+    from pybnf.algorithms.samplers.adaptive_mcmc import Adaptive_MCMC
+    from pybnf.noise import MEAN, ConstantSigma, NegBinomial
+    stub = SimpleNamespace(output_noise_specs={
+        'c': (NegBinomial(location=MEAN), ConstantSigma(1e12), False)})
+    series = np.array([0.0, 1.0, 5.0, 50.0])
+    rng = np.random.default_rng(7)
+    n = 4000
+    draws = np.array([Adaptive_MCMC.generateBinomialNoise(stub, series, None, rng, 'c')
+                      for _ in range(n)])
+    assert draws[:, 0].max() == 0
+    for j in (1, 2, 3):
+        assert abs(draws[:, j].mean() - series[j]) < 6.0 * np.sqrt(series[j] / n), series[j]
