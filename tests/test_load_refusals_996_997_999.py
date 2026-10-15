@@ -508,6 +508,8 @@ def test_auto_without_bngsim_is_refused_when_the_fit_sets_its_models_up(tmp_path
     if unavailable == 'PYBNF_NO_BNGSIM':
         monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
     else:
+        # The bngsim-less CI leg sets PYBNF_NO_BNGSIM, which the reason reports first.
+        monkeypatch.delenv('PYBNF_NO_BNGSIM', raising=False)
         monkeypatch.setattr(algorithm_base, 'BNGSIM_AVAILABLE', False)
         monkeypatch.setattr(algorithm_base, 'BNGSIM_ERROR', 'No module named bngsim')
     with patch.object(algorithm_base, 'run_subprocess',
