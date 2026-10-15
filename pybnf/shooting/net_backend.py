@@ -46,6 +46,7 @@ import threading
 
 import numpy as np
 
+from .._bngsim_seeding import declare_rows
 from ..data import Data, OutputSensitivities
 from ..printing import PybnfError
 from .backend import SegmentBackend, SegmentSimulationFailed
@@ -81,6 +82,11 @@ class NetSegmentBackend(SegmentBackend):
         self.n_simulations = 0
         self._point = None          # identity of the PSet the prepared lanes hold
         self._lanes = []            # one (model copy, engine, Simulator) per lane
+        # Per lane, the initial-condition seeding its engine's own start has (gradient path;
+        # None otherwise), so a restart from that start can declare it again; and the lanes a
+        # knot has been saved into, whose reset target is no longer that start.
+        self._lane_seeds = {}
+        self._lane_knotted = set()
         self._lock = threading.RLock()
 
     # -- the contract -----------------------------------------------------------
@@ -120,7 +126,13 @@ class NetSegmentBackend(SegmentBackend):
                              'got %r.' % (times,))
         with self._lock:
             self._sync_point(pset)
+            # A knot's save made the knot this lane's reset target, so a later start from the
+            # model's own initial state would integrate from the knot instead. Such a start gets a
+            # freshly prepared lane rather than that.
+            if not initial_state and lane in self._lane_knotted:
+                self._drop_lane(lane)
             prepared, engine, sim = self._context(lane)
+            own_seed = self._lane_seeds.get(lane)
             self.n_simulations += 1
         if initial_state:
             for name, value in initial_state.items():
@@ -131,7 +143,16 @@ class NetSegmentBackend(SegmentBackend):
                         % (getattr(self.model, 'name', '?'), name))
                 engine.set_concentration(name, float(value))
             engine.save_concentrations()
+            with self._lock:
+                self._lane_knotted.add(lane)
         engine.reset()
+        # The reset drops every initial-condition declaration (pybnf._bngsim_seeding). A knot is
+        # an auxiliary variable of the transcription, so nothing is seeded from the parameters;
+        # the model's own start is seeded as the lane's preparation read it, which its save
+        # retired on bngsim >= lanl/bngsim#982.
+        declare_rows(engine, ({} if initial_state else own_seed) if own_seed is not None else None,
+                     model_name=getattr(self.model, 'name', '?'),
+                     where="restarting segment '%s' of multiple shooting" % self.suffix)
         try:
             result = sim.run(t_span=(times[0], times[-1]), n_points=len(times),
                              sample_times=times, **self._run_kwargs())
@@ -158,6 +179,8 @@ class NetSegmentBackend(SegmentBackend):
         if self._point is pset:
             return
         self._lanes = []
+        self._lane_seeds = {}
+        self._lane_knotted = set()
         self.model.param_set = pset
         # The per-action sensitivity gate (#475) reads this: without it a scored
         # experiment's segments would run sensitivity-free and the assembly would find no
@@ -169,6 +192,8 @@ class NetSegmentBackend(SegmentBackend):
         with self._lock:
             if 0 <= lane < len(self._lanes):
                 self._lanes[lane] = None
+                self._lane_seeds.pop(lane, None)
+                self._lane_knotted.discard(lane)
 
     def _context(self, lane):
         """Lane ``lane``'s model copy, engine model and ``Simulator``, built on demand and
@@ -196,11 +221,15 @@ class NetSegmentBackend(SegmentBackend):
                     # A free parameter of another model in a multi-model fit; the ordinary
                     # execute path warns and carries on, and so does this one.
                     pass
-            prepared._sync_species_initial_concentrations(engine)
+            own_seed = prepared._sync_species_initial_concentrations(engine)
             engine.reset()
+            declare_rows(engine, own_seed, model_name=getattr(self.model, 'name', '?'),
+                         where="preparing segment '%s' of multiple shooting" % self.suffix)
             sim = _runtime().bngsim.Simulator(
                 engine, method='ode', **prepared._codegen_kwargs('ode'),
                 **prepared._sensitivity_request_kwargs('ode'))
+            prepared._check_run_seeding(
+                engine, (), where="segment '%s' of multiple shooting" % self.suffix)
         except PybnfError:
             self._point = None
             raise
@@ -209,6 +238,7 @@ class NetSegmentBackend(SegmentBackend):
             raise SegmentSimulationFailed(
                 'the model could not be prepared at this point (%s: %s)'
                 % (type(exc).__name__, exc)) from exc
+        self._lane_seeds[lane] = own_seed
         self._lanes[lane] = (prepared, engine, sim)
         return self._lanes[lane]
 

@@ -326,6 +326,63 @@ BNGSIM_HAS_TRACKING_ATOL = bool(
 )
 
 
+# Whether a Newton (KINSOL) steady state's ``dY_ss/dθ`` carries a parameter's
+# initial-condition seeding through a **conserved total** (lanl/bngsim#704, merged with
+# lanl/bngsim#982). ``A <-> B`` started at ``A0`` relaxes to ``B* = A0 kf/(kf + kr)``, which
+# depends on ``A0`` only through ``A + B``; a build without the fix returns
+# ``dB*/dA0 = 0``. Neither a feature key nor the version identifies it (the build that
+# carries it still declares 0.16.0), so it is answered by running that model once, on first
+# use. ``False`` when the probe cannot run, which keeps the refusal it gates on the safe
+# side.
+_SS_IC_SEEDING_NET = """begin parameters
+    1 A0    10    # Constant
+    2 kf    1     # Constant
+    3 kr    1     # Constant
+end parameters
+begin species
+    1 A() A0
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Bobs                 2
+end groups
+"""
+_SS_IC_SEEDING = None
+
+
+def steady_state_sensitivity_carries_ic_seeding():
+    """Whether a Newton steady state differentiates through a seeded conserved total."""
+    global _SS_IC_SEEDING
+    if _SS_IC_SEEDING is None:
+        _SS_IC_SEEDING = _probe_steady_state_ic_seeding()
+    return _SS_IC_SEEDING
+
+
+def _probe_steady_state_ic_seeding():
+    if not (BNGSIM_AVAILABLE and BNGSIM_HAS_SS_OUTPUT_SENS):
+        return False
+    import os
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 'ss_seed_probe.net')
+            with open(path, 'w') as handle:
+                handle.write(_SS_IC_SEEDING_NET)
+            model = bngsim.Model.from_net(path)
+            result = bngsim.Simulator(model, method='ode').steady_state(
+                sensitivity_params=['A0'])
+            if not result.converged:
+                return False
+            column = result.output_sensitivities(['observable:Bobs'], axis='parameter')
+            return abs(float(column[0][0]) - 0.5) < 1e-6
+    except Exception:
+        return False
+
+
 def event_sens_min_version():
     """The first bngsim RELEASE whose forward sensitivities survive a discrete event (#536).
 

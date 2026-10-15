@@ -210,11 +210,32 @@ def test_classify_condition_target_seeds_several_entities():
 
 def test_classify_condition_target_seeding_a_derived_parameter_keeps_its_own_axis():
     """A target that seeds a *parameter* an initialAssignment derives keeps its own parameter
-    axis too: ``gamma_`` is both a rate constant and an input to ``beta_N = R0_*gamma_/N_``,
-    so both columns carry its derivative (#530)."""
+    axis: ``gamma_`` is both a rate constant and an input to ``beta_N = R0_*gamma_/N_``.
+
+    Whether ``beta_N``'s column is added on top is the backend's answer (lanl/bngsim#941). A
+    ``beta_N`` the backend does not hold live -- overridden, or evaluated once at load -- is not
+    inside ``gamma_``'s column, so its column carries that half of the derivative (#530). One it
+    holds live is re-derived whenever ``gamma_`` is written, so ``gamma_``'s own column is
+    already the total and adding ``beta_N``'s counts the chain twice."""
     seed_map = {'gamma_': (SeedTerm(PARAM, 'beta_N', ('sym', 'R0_')),)}
-    assert classify_condition_target('gamma_', {'gamma_', 'beta_N'}, set(), seed_map) == [
+    ids = {'gamma_', 'beta_N'}
+    assert classify_condition_target('gamma_', ids, set(), seed_map,
+                                     live_params=frozenset()) == [
         (PARAM, 'beta_N', ('sym', 'R0_')), (PARAM, 'gamma_', ONE)]
+    assert classify_condition_target('gamma_', ids, set(), seed_map,
+                                     live_params={'beta_N'}) == [(PARAM, 'gamma_', ONE)]
+
+
+def test_a_live_derived_chain_keeps_an_otherwise_droppable_own_axis():
+    """``R0_`` seeds only the live ``beta_N`` and one species, and no rate law reads it. Its own
+    axis would be dropped as identically zero if the species seed were all there was (ADR-0097),
+    but the live chain is inside that axis, so it must stay -- dropping it deletes the whole
+    ``beta_N`` half of the derivative."""
+    seed_map = {'R0_': (SeedTerm(PARAM, 'beta_N', ('sym', 'g_')), SeedTerm(IC, 'X', ONE))}
+    terms = R.classify_bound_id('R0_', {'R0_', 'beta_N', 'g_'}, {'X'}, seed_map,
+                                rhs_symbols=frozenset({'beta_N', 'g_'}),
+                                backend_ic_seeds={}, live_params={'beta_N'})
+    assert terms == [(IC, 'X', ONE), (PARAM, 'R0_', ONE)]
 
 
 def test_classify_bound_id_is_the_shared_core_for_a_free_parameter_and_a_target():
@@ -629,6 +650,76 @@ def test_route_for_model_without_the_reader_is_fine_when_nothing_seeds():
 
     r = R.route_for_model(_Plain(None), ['k'])
     assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+
+
+class _DerivingModel:
+    """``k_src`` is read by no rate law and seeds the derived parameter ``k_used`` the rate law
+    reads (``k_used = k_src``); whether the backend holds ``k_used`` live is the test's."""
+
+    name = 'm'
+    mutants = ()
+
+    def __init__(self, live, defined=frozenset()):
+        self._live = live
+        self._defined = frozenset(defined)
+
+    def sensitivity_entity_namespace(self):
+        return ({'k_src': 0.3, 'k_used': 0.3}, [('S', 'S')],
+                {'k_src': (SeedTerm(PARAM, 'k_used', ONE),)})
+
+    def ode_rhs_symbols(self):
+        return frozenset({'k_used', 'S'})
+
+    def backend_ic_sensitivity(self):
+        return {}
+
+    def backend_live_parameters(self):
+        return self._live
+
+    def initial_assignment_parameters(self):
+        return self._defined
+
+
+def test_route_for_model_drops_a_derived_parameter_the_backend_holds_live():
+    """The lanl/bngsim#941 rule: a live ``k_used`` is inside ``k_src``'s own column, so the
+    route is that column alone; an overridden one is not, so its column is the chain."""
+    live = R.route_for_model(_DerivingModel({'k_used'}), ['k_src'])
+    assert live.routes['k_src'].contributions == (RouteContribution(PARAM, 'k_src', 1.0),)
+    pinned = R.route_for_model(_DerivingModel(frozenset()), ['k_src'])
+    assert pinned.routes['k_src'].contributions == (
+        RouteContribution(PARAM, 'k_used', 1.0),   # the chain, which only this column carries
+        RouteContribution(PARAM, 'k_src', 1.0))    # its own axis, zero here (#534)
+
+
+def test_route_for_model_refuses_when_the_backend_cannot_report_liveness():
+    """Both answers are silently wrong when guessed -- a doubled chain or a missing one -- so a
+    model that derives a parameter from another is refused if the backend cannot say whether it
+    keeps the derived one live."""
+    from pybnf.gradient import GradientNotSupported
+    with pytest.raises(GradientNotSupported, match='param_is_expression'):
+        R.route_for_model(_DerivingModel(None), ['k_src'])
+    # A model that derives no parameter is not refused for the missing answer.
+    r = R.route_for_model(_SeedingModel({'S()': {'k': 2.0}}), ['k'])
+    assert r.routes['k'].contributions == (RouteContribution(PARAM, 'k', 1.0),)
+
+
+@pytest.mark.parametrize('how', ['free parameter', 'condition'])
+def test_route_for_model_refuses_writing_a_parameter_an_assignment_defines(how):
+    """A free parameter (or a condition's parameter reference) that writes ``k_used``, which
+    the model's own initialAssignment defines, has no gradient column: SBML evaluates the
+    assignment over the written value whenever the initial values are re-derived."""
+    from pybnf.gradient import GradientNotSupported
+    model = _DerivingModel({'k_used'}, defined={'k_used'})
+    if how == 'free parameter':
+        call = (['k_used'], None)
+    else:
+        call = (['k_free'], MutationSet([Mutation('k_used', '=', 'k_free',
+                                                  is_param_ref=True)], 'c'))
+    with pytest.raises(GradientNotSupported, match="defines 'k_used' by an initialAssignment"):
+        R.route_for_model(model, *call)
+    # Fitting the input the assignment reads is fine.
+    assert R.route_for_model(model, ['k_src']).routes['k_src'].contributions == (
+        RouteContribution(PARAM, 'k_src', 1.0),)
 
 
 class _CapturingModel:

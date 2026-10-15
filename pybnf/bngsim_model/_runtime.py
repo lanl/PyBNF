@@ -26,4 +26,6 @@ BNGSIM_HAS_SCAN_SENS_CARRY = _bngsim_caps.BNGSIM_HAS_SCAN_SENS_CARRY
 BNGSIM_VERSION = _bngsim_caps.BNGSIM_VERSION
 feature_missing_reason = _bngsim_caps.feature_missing_reason
 probe_sens_rhs = _bngsim_caps.probe_sens_rhs
+steady_state_sensitivity_carries_ic_seeding = (
+    _bngsim_caps.steady_state_sensitivity_carries_ic_seeding)
 SensRhsStatus = _bngsim_caps.SensRhsStatus
