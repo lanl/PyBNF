@@ -151,6 +151,70 @@ class _SimulateRunPlan:
     stop_if: object
 
 
+def _is_continuation(sim_params):
+    """Whether a parsed ``simulate`` asks to continue the run before it (``continue=>1``), read
+    as :meth:`BngsimModel._prepare_simulate_run` reads it."""
+    return bool(int(_eval_numeric(str(sim_params.get('continue', 0)))))
+
+
+def _append_continued_run(previous, continued, suffix, model_name):
+    """``previous`` with the rows of ``continued`` appended: the output BNG2.pl writes for a
+    ``simulate`` with ``continue=>1`` under a suffix an earlier run of the same action list
+    already wrote (#1009).
+
+    BNG2.pl's ``run_network -x`` appends the continued trajectory to the existing file and does
+    not repeat its starting point, which is the earlier run's last row, so that row is dropped
+    when the continued run reports it. The forward-sensitivity tensors are appended the same
+    way: a continued run carries ``dx/dtheta`` from the run before (``carry_sensitivities``), so
+    the two are one trajectory's derivatives. Anything that would make the two not one
+    trajectory -- different columns, a different sensitivity request, or a continued run that
+    starts before the earlier one ended (BNG2.pl refuses a ``t_start`` other than the current
+    model time) -- is refused rather than stitched."""
+    headers = [previous.headers[i] for i in sorted(previous.headers)]
+    if [continued.headers[i] for i in sorted(continued.headers)] != headers:
+        raise PybnfError(
+            "Model %s: the simulate with suffix '%s' and continue=>1 writes different columns "
+            "from the run before it under that suffix, so the two cannot be appended into one "
+            "output as BNG2.pl appends them. Give both the same print_functions setting, or "
+            "give the continued run its own suffix." % (model_name, suffix))
+    indvar = previous.indvar
+    rows = np.asarray(continued.data, dtype=float)
+    end = float(np.asarray(previous.data, dtype=float)[-1, previous.cols[indvar]])
+    start = float(rows[0, continued.cols[indvar]]) if rows.shape[0] else end
+    tolerance = 1e-9 * max(1.0, abs(end))
+    if start < end - tolerance:
+        raise PybnfError(
+            "Model %s: the simulate with suffix '%s' and continue=>1 starts at %s = %g, before "
+            "the run it continues ended (%g). BNG2.pl appends a continued run to that output "
+            "only from the current model time, and refuses any other t_start."
+            % (model_name, suffix, indvar, start, end))
+    skip = 1 if rows.shape[0] and abs(start - end) <= tolerance else 0
+    data = Data.from_columns(
+        np.vstack([np.asarray(previous.data, dtype=float), rows[skip:]]), headers,
+        indvar=indvar)
+    before, after = previous.output_sensitivities, continued.output_sensitivities
+    if before is None and after is None:
+        return data
+    if (before is None or after is None or before.selectors != after.selectors
+            or list(before.param_names) != list(after.param_names)
+            or list(before.ic_species) != list(after.ic_species)):
+        raise PybnfError(
+            "Model %s: the simulate with suffix '%s' and continue=>1 carries different forward "
+            "sensitivities from the run before it under that suffix, so the two cannot be "
+            "appended into one output." % (model_name, suffix))
+
+    def joined(a, b):
+        if a is None and b is None:
+            return None
+        return np.concatenate([a, b[skip:]], axis=0)
+
+    data.output_sensitivities = OutputSensitivities(
+        selectors=list(before.selectors), param_names=list(before.param_names),
+        ic_species=list(before.ic_species), d_param=joined(before.d_param, after.d_param),
+        d_ic=joined(before.d_ic, after.d_ic))
+    return data
+
+
 @dataclass
 class _ScanSettings:
     """Resolved settings for one parameter_scan()/bifurcate() action.
@@ -1302,7 +1366,11 @@ class BngsimModel(NetModel):
                 result = self._run_prepared_simulate(plan, stop_log_label='stop_if triggered')
                 state.current_time = plan.t_end
                 state.carried_state = True   # the simulator now holds an advanced state
-                ds[plan.suffix] = self._result_to_data(result, print_functions=plan.print_funcs)
+                data = self._result_to_data(result, print_functions=plan.print_funcs)
+                if plan.suffix in ds and _is_continuation(sim_params):
+                    # BNG2.pl appends a continue=>1 run to the output of the same suffix (#1009).
+                    data = _append_continued_run(ds[plan.suffix], data, plan.suffix, self.name)
+                ds[plan.suffix] = data
                 continue
 
             sp = _parse_set_parameter(line)

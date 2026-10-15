@@ -173,13 +173,17 @@ Required Keys
       "model as is"). An experiment run under a condition names its output, and its data
       key, by the experiment's name followed by the condition's name, and a model runs each
       of its experiments under each of its conditions whenever something reads that run's
-      output. So names that spell one output that is read in two ways — an experiment
-      ``data`` with no condition beside an experiment ``dat`` and a condition ``a`` of the
-      same model, whether or not any experiment uses ``a`` — are refused at load, naming
-      both. Two pairings nobody measured that happen to spell the same output (``Egf`` under
-      ``TnfInh`` and ``EgfTnf`` under ``Inh``) are never run, and load. Nor may an experiment
-      be named after another's pre-equilibration phase (``x_preequil`` beside an experiment
-      ``x`` with ``preequilibrate:``), whose output is stored under that name. A name that
+      output (data, a constraint, including its ``at`` / ``between`` variables, or a
+      postprocessing script). So names that spell one output that is read in two ways — an
+      experiment ``data`` with no condition beside an experiment ``dat`` and a condition ``a``
+      of the same model, whether or not any experiment uses ``a`` — are refused at load,
+      naming both. Two pairings nothing reads that happen to spell the same output (``Egf``
+      under ``TnfInh`` and ``EgfTnf`` under ``Inh``) load: they may still run (BNG2.pl and
+      RoadRunner run every pairing, and so does bngsim for ``job_type = check`` or a model
+      with an action no experiment wrote), and a saved simulation file under that name may
+      hold either, but nothing scores or constrains them. Nor may an experiment be named after
+      another's pre-equilibration phase (``x_preequil`` beside an experiment ``x`` with
+      ``preequilibrate:``), whose output is stored under that name. A name that
       merely ends with a condition's name (``no_inhibition`` beside ``inhibition``) is fine:
       PyBNF reads each output back from the experiment and condition that produced it, never
       from its spelling. (ADR-0153)

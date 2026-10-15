@@ -20,6 +20,8 @@ pre-equilibration's unmeasured phase (``<name>_preequil``) -- since ``execute`` 
 their own suffix too.
 """
 
+from collections import namedtuple
+
 from .printing import PybnfError
 
 __all__ = ['simulation_conditions', 'output_pairs', 'resolve_output_key', 'action_outputs',
@@ -60,14 +62,20 @@ def _truthy(value):
         return True
 
 
+#: One action line that writes an output: its suffix (the bngsim default when it names none),
+#: its kind (``simulate``, ``parameter_scan`` or ``bifurcate``), whether it is a ``simulate``
+#: with ``continue=>1``, whether it names its suffix, and whether its method is network-free.
+ActionOutput = namedtuple('ActionOutput', 'suffix kind continues explicit network_free')
+
+
 def action_outputs(model):
-    """``[(suffix, kind, continues)]``: every action line of ``model`` that writes an output
-    under its own suffix, in order -- a ``simulate`` (any ``simulate_*`` spelling),
-    ``parameter_scan`` or ``bifurcate`` line, with the default suffix the bngsim backends give a
-    line that names none. ``continues`` is a ``simulate`` with ``continue=>1``, which BNG2.pl
-    appends to the output of the same suffix. Empty for a model whose actions are objects
-    (SBML, RoadRunner): those write only the outputs they register."""
+    """``[ActionOutput]``: every action line of ``model`` that writes an output under its own
+    suffix, in order -- a ``simulate`` (any ``simulate_*`` spelling), ``parameter_scan`` or
+    ``bifurcate`` line, with the default suffix the bngsim backends give a line that names
+    none. Empty for a model whose actions are objects (SBML, RoadRunner): those write only the
+    outputs they register."""
     import re
+    from .bngsim_model.grid import NETWORK_FREE_METHODS
     from .bngsim_model.parsing import _collapse_action_line_continuations, _parse_action_dict
     outputs = []
     for action in getattr(model, 'actions', None) or []:
@@ -88,26 +96,53 @@ def action_outputs(model):
         params = _parse_action_dict(line, name)
         if params is None:
             continue
-        outputs.append((str(params.get('suffix', default)), kind,
-                        kind == 'simulate' and _truthy(params.get('continue'))))
+        method = str(params.get('method', '')).strip().strip('"\'').lower()
+        outputs.append(ActionOutput(
+            str(params.get('suffix', default)), kind,
+            kind == 'simulate' and _truthy(params.get('continue')), 'suffix' in params,
+            name == 'simulate_nf' or method in NETWORK_FREE_METHODS))
     return outputs
 
 
-def unregistered_outputs(model):
-    """``{suffix: count}``: the outputs ``model``'s action lines write beyond the ones it
-    registers -- a pre-equilibration's equilibration phase (``<name>_preequil``), or a legacy
-    action line with no ``suffix=>`` -- counted per suffix, so a phase that shares a suffix with a
-    registered experiment counts as a second writer of it. Nothing scores them, but ``execute``
-    stores each under its own suffix, once as written and once per condition, so one can
-    overwrite an output that is scored."""
+def unregistered_outputs(model, bng2pl=False):
+    """``{suffix: count}``: the writers of an output ``model``'s action lines store beyond the
+    ones it registers, where they can replace an output that is read.
+
+    * A pre-equilibration's unmeasured phase (``<name>_preequil``, :attr:`phase_outputs`)
+      always counts: both backends store it under that name, so the name is reserved whatever
+      the order of the experiments.
+    * Any other unregistered line -- one with no ``suffix=>``, which the bngsim backends store
+      under ``time_course`` / ``param_scan``, or a ``bifurcate`` -- counts only when the bngsim
+      backends may run the model (``bng2pl`` false: BNG2.pl writes a suffix-less line to
+      ``<prefix>.gdat`` and reads back only the registered outputs), and, where it shares a
+      suffix with a registered action, only when it comes after the last of those: the run
+      keeps the last write, so an earlier warm-up line replaces nothing."""
     registered = {}
     for suffix in _action_suffixes(model):
         registered[suffix] = registered.get(suffix, 0) + 1
-    written = {}
-    for suffix, _kind, _cont in action_outputs(model):
-        written[suffix] = written.get(suffix, 0) + 1
-    return {suffix: n - registered.get(suffix, 0) for suffix, n in written.items()
-            if n > registered.get(suffix, 0)}
+    phases = set(getattr(model, 'phase_outputs', None) or {})
+    lines = action_outputs(model)
+    hidden = {}
+    for suffix in phases:
+        writers = sum(1 for o in lines if o.suffix == suffix and o.explicit)
+        if writers > registered.get(suffix, 0):
+            hidden[suffix] = writers - registered.get(suffix, 0)
+    if bng2pl:
+        return hidden
+    last_registered = {}
+    for i, out in enumerate(lines):
+        if (out.explicit and out.kind != 'bifurcate' and out.suffix in registered
+                and out.suffix not in phases):
+            last_registered[out.suffix] = i
+    for i, out in enumerate(lines):
+        if out.suffix in phases:
+            continue
+        if out.explicit and out.kind != 'bifurcate' and out.suffix in registered:
+            continue
+        if out.suffix in registered and i < last_registered.get(out.suffix, -1):
+            continue
+        hidden[out.suffix] = hidden.get(out.suffix, 0) + 1
+    return hidden
 
 
 def output_pairs(model, actions=None):
@@ -170,14 +205,14 @@ def resolve_output_key(model, key, actions=None):
     return action, condition
 
 
-def _producers(model):
+def _producers(model, bng2pl=False):
     """``{key: [(action suffix, condition, registered)]}`` over every output ``execute``
     stores: the registered pairs and the unregistered outputs (:func:`unregistered_outputs`),
     each as written and under each condition."""
     by_key = {}
     for key, suffix, _action, condition in output_pairs(model):
         by_key.setdefault(key, []).append((suffix, condition, True))
-    for suffix, count in unregistered_outputs(model).items():
+    for suffix, count in unregistered_outputs(model, bng2pl=bng2pl).items():
         for _ in range(count):
             for condition in simulation_conditions(model):
                 key = suffix + (condition.suffix if condition is not None else '')
@@ -207,7 +242,7 @@ def _off_diagonal(producer, declared):
     return (condition.suffix if condition is not None else '') != declared[suffix]
 
 
-def refuse_ambiguous_output_keys(model, edition=2, consumed=None, declared=None):
+def refuse_ambiguous_output_keys(model, edition=2, consumed=None, declared=None, bng2pl=False):
     """Refuse a model two of whose simulations produce one output key that is read (#850, #833).
 
     ``execute`` writes the second over the first, the data loaded for that key is scored
@@ -218,17 +253,20 @@ def refuse_ambiguous_output_keys(model, edition=2, consumed=None, declared=None)
     ``consumed`` is the set of keys something reads, or ``None`` to count every key the model
     registers (edition 1, where every pair runs and ``am`` records every key). An edition-2
     model runs a pair only when its key is read (the emit set, #484), so two pairs that spell a
-    key nothing reads never run and are left alone; two that spell a read key both run, and
-    are refused. The outputs an action writes without registering them
+    key nothing reads are left alone: a pruned model does not run them, and where they do run
+    (BNG2.pl, RoadRunner, ``job_type = check``, a model with an action no experiment wrote)
+    nothing reads what they write. Two that spell a read key both run, and are refused. The outputs an action writes without registering them
     (:func:`unregistered_outputs`) always run; one that spells a read key is refused too. Two
     of those alone overwrite nothing anyone reads.
 
     ``declared`` maps an edition-2 experiment's name to the condition it names (``''`` for
     none); it chooses the words, and says when a pair is an experiment run under a condition it
-    did not name. ``edition`` also only chooses the words."""
+    did not name. ``edition`` also only chooses the words. ``bng2pl`` says the model runs only
+    on BNG2.pl, which stores no suffix-less output under a suffix (:func:`unregistered_outputs`).
+    """
     declared = declared or {}
     phases = dict(getattr(model, 'phase_outputs', None) or {})
-    for key, producers in _producers(model).items():
+    for key, producers in _producers(model, bng2pl=bng2pl).items():
         if len(producers) < 2 or not any(registered for _s, _c, registered in producers):
             continue
         if consumed is not None and key not in consumed:
@@ -297,13 +335,21 @@ def refuse_duplicate_action_suffixes(model, edition=2):
         return
     outputs = action_outputs(model)
     for suffix, indices in repeated.items():
-        lines = [(kind, cont) for s, kind, cont in outputs if s == suffix]
-        if (len(lines) == len(indices) and lines[0][0] == 'simulate'
-                and all(kind == 'simulate' and cont for kind, cont in lines[1:])):
+        lines = [o for o in outputs
+                 if o.suffix == suffix and o.explicit and o.kind != 'bifurcate']
+        # A network-free run cannot continue: BNG2.pl's NFsim refuses continue=>1 and the
+        # bngsim network-free bridge keeps only the last run's output.
+        if (len(lines) == len(indices) and lines[0].kind == 'simulate'
+                and all(o.kind == 'simulate' and o.continues and not o.network_free
+                        for o in lines[1:])
+                and not lines[0].network_free):
             continue
         kinds = [registered[i][0] if not isinstance(registered[i], str) else 'action'
                  for i in indices]
-        if all(i < from_file for i in indices) and len(set(kinds)) == 1:
+        # A repeat that asks to continue but cannot be appended is not "the last one wins":
+        # whoever wrote it meant one output of both runs.
+        if (all(i < from_file for i in indices) and len(set(kinds)) == 1
+                and not any(o.continues for o in lines[1:])):
             continue
         raise PybnfError(
             "Model '%s' has %d actions that write the output '%s' (%s). Only one of them would be "

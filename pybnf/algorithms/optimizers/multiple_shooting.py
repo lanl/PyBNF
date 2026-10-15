@@ -517,6 +517,7 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             return BngsimSegmentBackend(model, action, mutant, suffix, timeout=timeout)
         sim_params, mutant = self._resolve_net_action(model, suffix)
         self._require_simple_net_action(sim_params, suffix)
+        self._require_fresh_net_start(model, sim_params, suffix)
         return NetSegmentBackend(model, sim_params, mutant, suffix, timeout=timeout)
 
     def _resolve_sbml_action(self, model, suffix):
@@ -593,6 +594,92 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                   'SBML model with \'sbml_backend = bngsim\' -- whose species and '
                   'initial-condition sensitivities are what a knot carries.',
                   'Or fit with job_type = gntr, which needs no segment transcription.'])
+
+    def _require_fresh_net_start(self, model, sim_params, suffix):
+        """Refuse a ``.net`` experiment whose scored ``simulate()`` does not start from the
+        model's own state and parameters (#910).
+
+        A segment lane is the model as declared, with the fit vector and the condition applied
+        and nothing else: no earlier action of the list is replayed. The ordinary path runs the
+        whole list, so an earlier ``simulate`` / scan whose end state the scored run inherits,
+        a ``setParameter`` / ``setConcentration`` / ``addConcentration`` it runs under, or a
+        restored snapshot, makes it a different experiment from the one segmented -- the
+        pre-equilibration protocol of #910, or two model-file ``simulate`` lines of one suffix
+        with no reset between them, whose second ``execute`` keeps. The lines before the scored
+        one are walked as the backend runs them: an unlabelled ``resetConcentrations()``
+        returns to the default snapshot (the seed, unless a ``saveConcentrations()`` moved it),
+        a ``resetParameters`` to its snapshot, and the experiment start PyBNF writes before
+        every synthesized experiment (ADR-0151) is such a pair of resets. Anything else that
+        can change the state or the parameters, and any action this cannot read, counts.
+        """
+        import re
+        from ...bngsim_model.parsing import (
+            _collapse_action_line_continuations, _is_reset_concentrations, _is_reset_parameters,
+            _is_save_concentrations, _is_save_parameters, _parse_simulate_action,
+            _snapshot_label)
+        lines = []
+        for raw in getattr(model, 'actions', []) or []:
+            line = _collapse_action_line_continuations(str(raw))
+            line = re.sub(r'#.*$', '', line.strip()).strip()
+            if line:
+                lines.append(line)
+        wanted = sim_params.get('suffix', 'time_course')
+        scored = None
+        for i, line in enumerate(lines):
+            parsed = _parse_simulate_action(line.rstrip(';').strip())
+            if parsed is not None and parsed.get('suffix', 'time_course') == wanted:
+                scored = i          # the last one is the output execute keeps
+        if scored is None:
+            return
+        no_ops = ('generate_network', 'generate_hybrid_model', 'setOption', 'version',
+                  'substanceUnits', 'setModelName', 'visualize')
+        state_by = params_by = None          # the line that last left each changed, if any
+        baseline_by = None                   # what the default snapshot holds, if not the seed
+        state_saved, params_saved = {}, {}
+        for line in lines[:scored]:
+            if _is_reset_concentrations(line):
+                label = _snapshot_label(line)
+                state_by = baseline_by if label is None else state_saved.get(label, line)
+                continue
+            if _is_save_concentrations(line):
+                label = _snapshot_label(line)
+                if label is None:
+                    baseline_by = state_by
+                else:
+                    state_saved[label] = state_by
+                continue
+            if _is_reset_parameters(line):
+                params_by = params_saved.get(_snapshot_label(line), line)
+                continue
+            if _is_save_parameters(line):
+                params_saved[_snapshot_label(line)] = params_by
+                continue
+            match = re.match(r'(\w+)\s*\(', line)
+            name = match.group(1) if match else ''
+            if name in no_ops or name.startswith('write'):
+                continue
+            if name == 'setParameter':
+                params_by = line
+            elif name in ('setConcentration', 'addConcentration'):
+                state_by = line
+            else:
+                # A simulate or scan advances the state (and a BNG2.pl scan leaves its
+                # parameter at the last dose); anything unread is taken to change both.
+                state_by = line
+                if not name.startswith('simulate'):
+                    params_by = line
+        culprit = state_by or params_by
+        if culprit is None:
+            return
+        raise PybnfError(
+            "Multiple shooting (job_type = ms) restarts experiment '%s' from the model's own "
+            "initial state and parameters, but its action list runs '%s' before the scored "
+            "simulate() with no reset in between, so the run the fit scores starts from what "
+            "that action left: a different experiment from the one segmented (#910)."
+            % (suffix, culprit),
+            hint=['Fit with job_type = gntr, which runs the whole action list.',
+                  'Or give the scored simulate() a fresh start: resetConcentrations() (and '
+                  'resetParameters() after any setParameter) immediately before it.'])
 
     def _require_simple_net_action(self, sim_params, suffix):
         """Refuse a ``.net`` ``simulate()`` action that is not a plain measured time course.

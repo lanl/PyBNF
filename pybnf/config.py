@@ -1914,11 +1914,13 @@ class Configuration:
         collision is refused only on a key :meth:`_consumed_output_keys` lists."""
         ed = edition.resolve_edition(self.config.get('edition'))
         declared = getattr(self, '_experiment_conditions', {})
+        # BNG2.pl stores a suffix-less action's output in its own file, never under a suffix.
+        bng2pl = self.config.get('bngl_backend') == 'bionetgen'
         for base, model in self.models.items():
             refuse_duplicate_action_suffixes(model, edition=ed)
             consumed = self._consumed_output_keys(base, model) if ed >= 2 else None
             refuse_ambiguous_output_keys(
-                model, edition=ed, consumed=consumed,
+                model, edition=ed, consumed=consumed, bng2pl=bng2pl,
                 declared={name: cond for name, cond in declared.items()
                           if self._experiment_data_keys[name][0] == base})
 
@@ -1936,13 +1938,7 @@ class Configuration:
             if model_name == base:
                 experiment_names.add(name)
                 consumed.add(data_key)
-        producible = set(model.get_suffixes())
-        for cs in getattr(self, 'constraints', None) or []:
-            if cs.base_model != base:
-                continue
-            consumed.add(cs.base_suffix)
-            for c in cs.constraints:
-                consumed |= self._constraint_ref_suffixes(c, producible)
+        consumed |= self._constraint_read_suffixes(base, set(model.get_suffixes()))
         consumed |= {suffix for (model_name, suffix) in getattr(self, 'postprocessing', {}) or {}
                      if model_name == base}
         conditions = simulation_conditions(model)
@@ -2187,12 +2183,7 @@ class Configuration:
                 continue
             producible = set(model.get_suffixes())
             emit = set(self.exp_data.get(base, {}).keys())
-            for cs in self.constraints:
-                if cs.base_model != base:
-                    continue
-                emit.add(cs.base_suffix)
-                for c in cs.constraints:
-                    emit |= self._constraint_ref_suffixes(c, producible)
+            emit |= self._constraint_read_suffixes(base, producible)
             emit |= {suff for (m, suff) in self.postprocessing if m == base}
             missing = emit - producible
             if missing:
@@ -2203,17 +2194,39 @@ class Configuration:
                     f"so the pair is simulated (lanl/PyBNF#484).")
             self.emit_suffixes[base] = emit
 
-    @staticmethod
-    def _constraint_ref_suffixes(constraint, producible):
+    def _constraint_read_suffixes(self, base, producible):
+        """Every output suffix of model ``base`` a constraint reads: the home ``base_suffix`` of
+        each constraint set on ``base``, and every dotted ``suffix.observable`` reference of
+        **any** constraint set that names one of ``base``'s outputs -- a constraint resolves a
+        dotted reference against every model (:meth:`pybnf.constraint.Constraint.get_key`), so
+        one bound to another model reads this one's output too (#1011 review)."""
+        reads = set()
+        for cs in getattr(self, 'constraints', None) or []:
+            if cs.base_model == base:
+                reads.add(cs.base_suffix)
+            for c in cs.constraints:
+                reads |= self._constraint_ref_suffixes(c, producible)
+        return reads
+
+    #: Every attribute through which a constraint reads an output: its two sides, the
+    #: ``altpenalty`` sides, and the enforcement variables of ``at X=v``, a split ``at``, and
+    #: ``between X=v1, Y=v2`` (:mod:`pybnf.constraint`).
+    _CONSTRAINT_READS = ('quant1', 'quant2', 'alt1', 'alt2', 'atvar', 'atvar1', 'atvar2',
+                         'startvar', 'endvar')
+
+    @classmethod
+    def _constraint_ref_suffixes(cls, constraint, producible):
         """The producible output suffixes one constraint references through a dotted
-        ``suffix.observable`` quantity (its two sides and any ``altpenalty`` sides). A
-        bare observable (no ``.``) resolves to the constraint's own ``base_suffix`` (already
-        unioned by the caller), so only dotted cross-references matter here. Restricting to
-        ``producible`` suffixes keeps a stray token (e.g. a numeric bound that slipped
-        through) from polluting the emit-set; a genuine dotted ref to an off-diagonal cell
-        is kept alive (defensive) rather than silently pruned (#484)."""
+        ``suffix.observable`` quantity: its two sides, any ``altpenalty`` sides, and its
+        enforcement variables (``at EgfTnfInh.Aobs=3`` reads ``EgfTnfInh``). A bare observable
+        (no ``.``) resolves to the constraint's own ``base_suffix`` (already unioned by the
+        caller), so only dotted cross-references matter here. Restricting to ``producible``
+        suffixes keeps a stray token (e.g. a numeric bound that slipped through) from polluting
+        the emit-set; a genuine dotted ref to an off-diagonal cell is kept alive (defensive)
+        rather than silently pruned (#484)."""
         refs = set()
-        for q in (constraint.quant1, constraint.quant2, constraint.alt1, constraint.alt2):
+        for attribute in cls._CONSTRAINT_READS:
+            q = getattr(constraint, attribute, None)
             if isinstance(q, str) and '.' in q:
                 prefix = q.split('.', 1)[0]
                 if prefix in producible:

@@ -254,26 +254,41 @@ a run requests from it. Its keying is unchanged: condition suffix, ``''`` for th
 20. **Only a key something reads is refused, and every writer of it counts (review of #1004).**
     Item 18 refused every pair of keys two simulations spell. In edition 2 a pair runs only
     when its key is read (the emit set of ADR-0069), so ``Egf`` under ``TnfInh`` and ``EgfTnf``
-    under ``Inh``, which both spell ``EgfTnfInh`` and which nothing measures, never run and
-    overwrite nothing; refusing them was a false refusal. Edition 2 now refuses a collision
-    only on a key something reads: a data key, an experiment's own output, a constraint's home
-    or cross-reference, a postprocessing target (checked again once those load), and every key
-    of an action no experiment synthesized, which runs unpruned. Two pairs that spell a read
-    key are both in the emit set, so both run; with the check switched off the scored output
-    is the second one's (``data`` at ``k1 = 0.9`` instead of 0.3). Edition 1 runs everything,
-    and ``am`` records every key, so it still refuses every collision. The writers counted now
-    include the outputs an action stores without registering them -- a pre-equilibration's
-    phase ``<name>_preequil``, or a legacy line with no suffix -- so an experiment named
-    ``x_preequil`` beside a pre-equilibrated ``x`` is refused; it was scored against the phase
-    (987.654 where about 0 was right). Two registered actions with one suffix are refused too
-    (a ``time_course`` key reusing an experiment's name kept whichever ran last, and multiple
-    shooting segmented the first), except what BNG2.pl itself makes of a model file: a
-    ``simulate`` with ``continue=>1`` that resumes the run before it, which it appends to the
-    same output, and two actions of one kind in the model file, the later writing over the
-    earlier, as the Miller 2025 MEK isoform models do. Every backend keeps that last output, and
-    the resolver now keeps the last action too. And an edition-1 mutant's data file is resolved
-    from the pairs like any other key: ``.*(?=b)`` had accepted ``xbc.exp`` under mutant ``b``
-    and scored it against the unmutated ``xbc``.
+    under ``Inh``, which both spell ``EgfTnfInh`` and which nothing measures, overwrite nothing
+    anyone reads; refusing them was a false refusal. (They may still run: BNG2.pl and
+    RoadRunner prune nothing, nor does bngsim for ``job_type = check`` or a model with an
+    action no experiment wrote.) Edition 2 now refuses a collision only on a key something
+    reads: a data key, an experiment's own output, a constraint's home or a dotted reference in
+    any constraint set, through its sides or its ``at`` / ``between`` variables (a second
+    review found those two missing: two pairs spelling a key only such a reference read were
+    admitted, and on BNG2.pl the constraint scored whichever ran last, 1.30079 where 0.2611 was
+    right), a postprocessing target (checked again once those load), and every key of an action
+    no experiment synthesized, which runs unpruned. The emit set reads the same constraint
+    references, which also stops a separable model pruning the pair an ``at`` variable reads
+    (#484). Two pairs that spell a read key are both in the emit set, so both run; with the
+    check switched off the scored output is the second one's (``data`` at ``k1 = 0.9`` instead
+    of 0.3). Edition 1 runs everything, and ``am`` records every key, so it still refuses every
+    collision. The writers counted now include the outputs an action stores without registering
+    them -- a pre-equilibration's phase ``<name>_preequil``, always, and on bngsim a line with
+    no suffix (stored under ``time_course``) that comes after the last registered writer of
+    that name, since the run keeps the last write and BNG2.pl writes such a line to
+    ``<prefix>.gdat`` -- so an experiment named ``x_preequil`` beside a pre-equilibrated ``x``
+    is refused; it was scored against the phase (987.654 where about 0 was right). Two
+    registered actions with one suffix are refused too (a ``time_course`` key reusing an
+    experiment's name kept whichever ran last, and multiple shooting segmented the first),
+    except what BNG2.pl itself makes of a model file. Two actions of one kind in the model
+    file, the later writing over the earlier, as the Miller 2025 MEK isoform models do: every
+    backend keeps that last output, and the resolver keeps the last action too, though multiple
+    shooting now refuses a scored ``.net`` run that an earlier action feeds with no reset
+    between them (the #910 refusal), so it never segments the second from the model's own
+    state. And a ``simulate`` with ``continue=>1`` that resumes the run before it, which
+    BNG2.pl appends to the same output: the bngsim ``.net`` path kept only the continued
+    segment (#1009, silent with ``ind_var_rounding = 1``) and now appends it the same way, rows
+    and forward sensitivities, dropping the repeated start row; a network-free model cannot
+    continue (BNG2.pl's NFsim refuses it, and the bridge keeps the last run), so there the
+    repeat is refused. And an edition-1 mutant's data file is resolved from the pairs like any
+    other key: ``.*(?=b)`` had accepted ``xbc.exp`` under mutant ``b`` and scored it against
+    the unmutated ``xbc``.
 
 ## Consequences
 
