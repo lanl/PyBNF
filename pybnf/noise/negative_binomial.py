@@ -4,6 +4,7 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import betainc, betaln, digamma, loggamma
 
+from ..printing import PybnfError
 from .base import NoiseModel
 from .location import MEDIAN
 
@@ -12,9 +13,9 @@ from .location import MEDIAN
 _PROB_CLIP = 1e-10
 
 #: The mean-side image of that clip: ``prob <= 1 - _PROB_CLIP`` iff
-#: ``mean >= r * _PROB_CLIP/(1 - _PROB_CLIP)``. Every derivative that divides by the mean
-#: floors it here (:meth:`NegBinomial._mean_for_slope`) so a zero prediction -- which the
-#: value path scores finitely -- yields a finite slope rather than ``nan``/``-inf``.
+#: ``mean >= r * _PROB_CLIP/(1 - _PROB_CLIP)``. Capped at ``_MEAN_FLOOR_MAX``, it is the floor
+#: (:func:`_mean_floor`) the score and every derivative that divides by the mean put on it, so a
+#: zero prediction yields a finite score and slope rather than ``nan``/``-inf``.
 _MEAN_FLOOR_REL = _PROB_CLIP / (1 - _PROB_CLIP)
 
 #: The cap on that floor. ``r * _MEAN_FLOOR_REL`` grows with the dispersion, and from r ~ 1e7 on
@@ -22,6 +23,24 @@ _MEAN_FLOOR_REL = _PROB_CLIP / (1 - _PROB_CLIP)
 #: (#987). Capped at 1e-7, the floor is unchanged for r up to ~1e3 and keeps a zero prediction
 #: finite at any r.
 _MEAN_FLOOR_MAX = 1e-7
+
+
+#: Where ``d(data_fit)/dr`` switches to its large-r series: ``r >= _SERIES_R_FACTOR * max(k, m, 1)``.
+_SERIES_R_FACTOR = 1e4
+
+
+def _d_fit_d_r_series(r, k, m):
+    """``d(data_fit)/dr`` at a fixed mean for ``r`` far above ``k`` and ``m``. The closed form,
+    ``psi(r) - psi(r + k) + log1p(m/r) + (k - m)/(r + m)``, has terms of order ``max(k, m)/r``
+    that cancel to order ``1/r**2``, and the digamma difference is held to absolute precision
+    only, so at a large ``r`` it is noise: at ``r = 1e12`` it summed to -0.096 for +4.5e-10, the
+    wrong sign (#987 review). The expansion in ``1/r`` instead: ``((k - m)**2 - k) / (2 r**2) +
+    (k**2/2 - k/6 - k**3/3 + k m**2 - 2 m**3/3) / r**3 + O(r**-4)``, relative error of order
+    ``(max(k, m)/r)**2`` past the switch."""
+    x = 1.0 / r
+    second = ((k - m) ** 2 - k) / 2.0
+    third = k * k / 2.0 - k / 6.0 - k ** 3 / 3.0 + k * m * m - 2.0 * m ** 3 / 3.0
+    return x * x * (second + x * third)
 
 
 def _mean_floor(r):
@@ -87,8 +106,14 @@ def _mean_for_median(prediction, r):
     hi = max(target, 1.0)
     while gap(hi) > 0.0:
         hi *= 2.0
-        if hi > 1e15:
-            return hi  # pathological prediction; give up at a huge mean
+        if hi > 1e300:
+            # Below r ~ 1e-3 a median of 0 needs a mean beyond any double. Returning the bound
+            # (1e15, as this did) scored that mean instead, with no word (#987 review).
+            raise PybnfError(
+                'The negative binomial median cannot be placed at %r with dispersion %r'
+                % (prediction, r),
+                'At dispersion %r the mean that puts the median at %r is beyond 1e300. Use '
+                'location = mean, or a larger dispersion.' % (r, prediction))
     return brentq(gap, 0.0, hi)
 
 
@@ -156,17 +181,17 @@ class NegBinomial(NoiseModel):
         A MEAN-centered prediction of **exactly** zero is not pathological -- it is what
         any model whose output is gated off over part of the fit window predicts there (an
         epidemic model before its start time ``t0``, a stimulus-driven readout before the
-        stimulus). :meth:`data_fit` scores such a point finitely because it clips
-        ``prob = r/(r+mean)`` at ``1 - _PROB_CLIP``; every *derivative* below instead
+        stimulus). :meth:`data_fit` scores such a point finitely because it floors the mean
+        (:func:`_mean_floor`); every *derivative* below instead
         divides by the mean (``r (mean - obs) / (mean (r + mean))``, ``r / (mean (r+mean))``),
         which at ``mean == 0`` is ``0/0 -> nan`` for an observed zero and ``-inf`` otherwise.
         That ``nan`` propagates into the gradient and out to the optimizer, which then tries
         to assign a free parameter ``nan``.
 
-        So mirror the value path's clip on the mean side: ``prob <= 1 - _PROB_CLIP`` is
-        exactly ``mean >= r _PROB_CLIP / (1 - _PROB_CLIP)``, i.e. this floor. The slope
-        is then the finite value belonging to the objective actually being scored -- large
-        (order ``obs / (r _PROB_CLIP)``) where the model predicts zero against a positive
+        So take the value path's floor here too: ``r _PROB_CLIP / (1 - _PROB_CLIP)``, capped at
+        ``_MEAN_FLOOR_MAX`` (#987). The slope is then the finite value belonging to the objective
+        actually being scored -- large (order ``obs`` over the floor) where the model predicts
+        zero against a positive
         count, which is correct: the objective there really is nearly flat-then-cliff, and a
         large finite push toward a positive prediction is the right search direction.
         MEDIAN centering never reaches the floor (``_mean_for_median`` returns a strictly
@@ -194,8 +219,11 @@ class NegBinomial(NoiseModel):
             # log p and log(1 - p) without forming p, and the binomial coefficient as
             # -log k - betaln(r, k) rather than loggamma(k + r) - loggamma(r).
             m = max(mean, _mean_floor(noise))
-            log_p = -np.log1p(m / noise)
-            log_q = np.log(m) - np.logaddexp(np.log(noise), np.log(m))
+            log_r, log_m = np.log(noise), np.log(m)
+            log_sum = np.logaddexp(log_r, log_m)
+            # m / r overflows once m > r * 1.8e308, so a mean above r takes the difference of logs.
+            log_p = -np.log1p(m / noise) if m <= noise else log_r - log_sum
+            log_q = log_m - log_sum
             log_coefficient = (-np.log(observation) - betaln(noise, observation)
                                if observation > 0 else 0.0)
             log_pmf = log_coefficient + noise * log_p + observation * log_q
@@ -284,8 +312,11 @@ class NegBinomial(NoiseModel):
         r = noise
         mean = self._mean_for_slope(prediction, r)
         prob = r / (r + mean)
-        d_fit_d_r = (digamma(r) - digamma(observation + r) - np.log(prob) - 1.0
-                     + (r + observation) / (r + mean))
+        if r >= _SERIES_R_FACTOR * max(observation, mean, 1.0):
+            d_fit_d_r = _d_fit_d_r_series(r, observation, mean)
+        else:
+            d_fit_d_r = (digamma(r) - digamma(observation + r) - np.log(prob) - 1.0
+                         + (r + observation) / (r + mean))
         if self.location is MEDIAN:
             target = max(prediction, 0.0)
             d_fit_d_mean = r * (mean - observation) / (mean * (r + mean))

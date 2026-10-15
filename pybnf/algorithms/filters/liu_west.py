@@ -89,9 +89,9 @@ _ZERO_REL = 2.0 ** -42
 _VAR_FLOOR_FRAC = 1e-12
 
 # The dispersions the filter takes: those its forecast draw honours. numpy's negative binomial
-# draw keeps its mean to r = 1e14 and is biased from 1e15, and it fails near r = 1e-35 for a
-# mean above 1e3. The range leaves a margin on each side. (The score itself is exact at any r
-# since lanl/PyBNF#987.)
+# draw keeps a mean of about 10 or more to r = 1e14 and is biased from 1e15 (at r = 1e12 a mean
+# below 1e-3 is drawn low, by under 4e-5 counts), and it fails near r = 1e-35 for a mean above
+# 1e3. The range leaves a margin on each side. (The score is right at any r since #987.)
 _DISPERSION_MIN, _DISPERSION_MAX = 1e-6, 1e12
 _DISPERSION_RANGE_WHY = 'since the forecast draw is wrong for a dispersion far outside it'
 
@@ -1612,7 +1612,7 @@ def _check_parameters(config):
 def _check_free_dispersion(variables, name):
     """Refuse a fitted dispersion whose prior reaches below 0, where no negative binomial exists
     (every particle drawn or moved there would be counted as failing to integrate, and a run with
-    many of them would blame the data row), or above _DISPERSION_MAX, where the score is wrong.
+    many of them would blame the data row), or above _DISPERSION_MAX, near where the forecast draw is biased.
     A log-scale prior stays above 0. A prior bounded at 0 is accepted: a particle lands on 0 only
     by a fold, with probability near 1e-12 per move, and is then given weight 0."""
     v = next((v for v in variables if v.name == name), None)

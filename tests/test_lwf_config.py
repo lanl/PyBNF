@@ -277,7 +277,7 @@ def test_a_fixed_dispersion_at_either_end_of_the_range_loads(tmp_path, value):
     ('normal_var = r 20 30', 'whose prior reaches below 0 (lower bound -inf)'),
     ('loguniform_var = r 1 1e13', 'whose prior reaches above 1e+12 (upper bound 10000000000000)'),
     ('lognormal_var = r 1 1', 'whose prior reaches above 1e+12 (upper bound inf)'),
-], ids=['below_0', 'unbounded_normal', 'above_1e6', 'unbounded_lognormal'])
+], ids=['below_0', 'unbounded_normal', 'above_1e12', 'unbounded_lognormal'])
 def test_a_fitted_dispersion_whose_prior_leaves_the_range_is_refused(tmp_path, line, phrase):
     """Every particle drawn or moved below 0 was counted as failing to integrate, and above 1e12
     the forecast draw nears where numpy's is biased."""
