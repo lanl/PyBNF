@@ -111,12 +111,20 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
     return PSet(mut_param_list)
 
 
+# The names in the namespace below that BNG2.pl refuses as a parameter name ("Cannot use
+# built-in function name 'exp' as a parameter name", BioNetGen 2.9.2). No model BNG2.pl accepts
+# defines one, so each always means the built-in. The namespace's other names -- e, pi, log,
+# atan2, ceil, floor, pow -- are ordinary parameter names to BNG2.pl (its constants are _e and
+# _pi), and where a model defines one, BNG2.pl and bngsim read the parameter, so it wins here too.
+_BNG_RESERVED_EVAL_NAMES = frozenset({
+    'exp', 'log10', 'log2', 'sqrt', 'abs', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+    'min', 'max', 'if', 'rint',
+})
+
+
 def _build_safe_eval_namespace(seed=None):
     """Build a safe expression-evaluation namespace for .net math."""
-    # Start from seed so that builtin math names always take precedence.
-    # BNG2.pl reserves these names; no valid model should shadow them.
-    ns = dict(seed) if seed else {}
-    ns.update({
+    ns = {
         'exp': math.exp,
         'log': math.log,
         'log10': math.log10,
@@ -143,8 +151,11 @@ def _build_safe_eval_namespace(seed=None):
         # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
         # so match BNG to keep PyBNF's expression evaluation faithful.
         'rint': lambda x: math.floor(x + 0.5),
-        '__builtins__': {},
-    })
+    }
+    if seed:
+        ns.update((name, value) for name, value in seed.items()
+                  if name not in _BNG_RESERVED_EVAL_NAMES)
+    ns['__builtins__'] = {}
     return ns
 
 
@@ -345,6 +356,52 @@ def _parse_net_rhs_symbols(net_lines):
     return frozenset(names)
 
 
+# A number or a name in a .net expression; the number first, so the e of 1e-9 is no name.
+_NET_NUMBER_OR_NAME = re.compile(r'(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|([A-Za-z_]\w*)')
+_NET_SPECIES_ROW = re.compile(r'\d+\s+\S+\s+(.+)$')
+
+
+def _net_names(text):
+    """The names a .net expression or line reads, numbers left out."""
+    return {m.group(1) for m in _NET_NUMBER_OR_NAME.finditer(text) if m.group(1)}
+
+
+def initial_state_only_ids(net_lines, ids):
+    """The ids among ``ids``, in order, that act on a .net model only through its initial state:
+    the id, or a parameter derived from it, appears in a ``species`` initializer, and neither
+    appears on any line outside the ``parameters`` and ``species`` blocks (an unfamiliar block
+    counts as acting later). A method that carries each particle's state gains nothing by
+    changing such an id later.
+    """
+    blocks = _net_blocks(net_lines)
+    reads = {name: _net_names(expr) for name, expr in _net_param_definitions(net_lines).items()}
+    seeds = set()
+    for line in blocks.get('species', ()):
+        row = _NET_SPECIES_ROW.match(line)
+        seeds |= _net_names(row.group(1) if row else line)
+    acts_later = set()
+    for block, lines in blocks.items():
+        if block not in ('parameters', 'species'):
+            for line in lines:
+                acts_later |= _net_names(line)
+    found = []
+    for name in ids:
+        reach = _derived_closure(name, reads)
+        if reach & seeds and not reach & acts_later:
+            found.append(name)
+    return tuple(found)
+
+
+def _derived_closure(name, reads):
+    """``name`` and every parameter whose definition reads it, directly or through another."""
+    reach, grew = {name}, True
+    while grew:
+        new = {p for p, deps in reads.items() if p not in reach and deps & reach}
+        reach |= new
+        grew = bool(new)
+    return reach
+
+
 def _parse_bngl_param_block(model_lines):
     """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
     params = []
@@ -378,13 +435,6 @@ def _parse_bngl_param_block(model_lines):
     return params
 
 
-_BUILTIN_EVAL_NAMES = frozenset({
-    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
-})
-
-
 def _evaluate_bngl_params(param_exprs, input_overrides=None):
     """Evaluate ordered BNGL parameter expressions top-to-bottom."""
     if input_overrides is None:
@@ -416,8 +466,7 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                     f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
-        # Don't let parameter values shadow builtin math functions
-        if name not in _BUILTIN_EVAL_NAMES:
+        if name not in _BNG_RESERVED_EVAL_NAMES:
             ns[name] = value
         result[name] = value
 

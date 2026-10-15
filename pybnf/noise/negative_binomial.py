@@ -133,10 +133,11 @@ class NegBinomial(NoiseModel):
 
     def _mean(self, prediction, noise):
         """The distribution mean for ``prediction`` under the location interpretation:
-        the prediction itself for ``MEAN``, the median inversion for ``MEDIAN``."""
+        the prediction itself for ``MEAN``, the median inversion for ``MEDIAN``. A negative
+        prediction is the mean 0, since unclamped ``prob = r/(r + mean)`` leaves ``(0, 1]``."""
         if self.location is MEDIAN:
             return _mean_for_median(prediction, noise)
-        return prediction
+        return max(prediction, 0.0)
 
     def _mean_for_slope(self, prediction, noise):
         """:meth:`_mean`, floored away from zero for the expressions that divide by it.

@@ -518,8 +518,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
         else:
             self.r = self.config.config['neg_bin_r']
         for i in range(len(timeseries)):
-            self.prob = np.clip( self.r/(self.r+timeseries[i]), 1e-10, 1-1e-10)
-            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1, random_state=rng)
+            # A negative prediction is the mean 0, as the noise model scores it.
+            mean = max(float(timeseries[i]), 0.0)
+            self.prob = np.clip(self.r / (self.r + mean), 1e-10, 1 - 1e-10)
+            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1,
+                                               random_state=rng)[0]
 
         return self.output
 

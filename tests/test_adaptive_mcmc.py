@@ -1380,3 +1380,19 @@ class TestCombiningChainsWithAFileTheRunNeverWrote:
         assert 'missing 2 per-chain files' in out
         assert 'combined_traj_WTOBS.txt' in ' '.join(p.name for p in runs.glob('combined_*'))
         assert not (runs / 'combined_traj_noise_WTOBS.txt').exists()
+
+
+
+def test_the_output_noise_draws_a_negative_prediction_as_the_mean_zero():
+    """The sibling of the scoring fix: prob = r/(r + prediction) left (0, 1] for a prediction
+    below -r, and nbinom then drew an enormous count into the noise trajectory."""
+    from types import SimpleNamespace
+    import numpy as np
+    from pybnf.algorithms.samplers.adaptive_mcmc import Adaptive_MCMC
+    stub = SimpleNamespace(config=SimpleNamespace(config={'objfunc': 'neg_bin', 'neg_bin_r': 2.0}))
+    series = np.array([-1e6, -2.0, -1.0, 0.0, 4.0])
+    draws = Adaptive_MCMC.generateBinomialNoise(stub, series, [], np.random.default_rng(1))
+    clamped = Adaptive_MCMC.generateBinomialNoise(stub, np.maximum(series, 0.0), [],
+                                                  np.random.default_rng(1))
+    assert list(draws) == list(clamped)
+    assert list(draws[:4]) == [0, 0, 0, 0]

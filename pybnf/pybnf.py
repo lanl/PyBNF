@@ -11,6 +11,7 @@ from .printing import print0, print1, print2, PybnfError
 from .cluster import Cluster
 from .pset import Trajectory, set_sim_registry, reap_active_sims, clear_sim_registry
 from .registry import FIT_TYPE_REGISTRY
+from .run_directories import RUN_FILES, RUN_FOLDERS, SIMULATION_FOLDER
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
@@ -183,7 +184,13 @@ def _resolve_continue_file(config, cmdline_args):
     backup_file = output_dir / 'alg_backup.bp'
     finished_file = output_dir / 'alg_finished.bp'
     continue_file = None
+    # A method that continues some other way refuses -r, and is offered no pickled run.
+    entry = FIT_TYPE_REGISTRY.get(config.config.get('fit_type'))
+    refusal = getattr(entry.cls, 'resume_refusal', None) if entry is not None else None
     if cmdline_args.resume is not None:
+        if refusal:
+            message, hint = refusal
+            raise PybnfError(message, hint=hint)
         if backup_file.exists():
             continue_file = backup_file
         elif finished_file.exists():
@@ -194,7 +201,7 @@ def _resolve_continue_file(config, cmdline_args):
             continue_file = finished_file
         else:
             raise PybnfError(f'No algorithm found to resume in {output_dir}')
-    elif backup_file.exists() and not cmdline_args.overwrite:
+    elif backup_file.exists() and not cmdline_args.overwrite and not refusal:
         ans = 'x'
         while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
             ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
@@ -248,12 +255,12 @@ def _prepare_run_directories(config, cmdline_args):
     # Create output folders, checking for overwrites.
     output_dir = Path(config.config['output_dir'])
     sim_dir_cfg = config.config['simulation_dir']
-    subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
-    subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
+    subdirs = RUN_FOLDERS
+    subfiles = RUN_FILES
     will_overwrite = [subdir for subdir in subdirs + subfiles
                       if (output_dir / subdir).exists()]
     if sim_dir_cfg:
-        simdir = Path(sim_dir_cfg) / 'Simulations'
+        simdir = Path(sim_dir_cfg) / SIMULATION_FOLDER
         if simdir.exists():
             will_overwrite.append(str(simdir))
     if len(will_overwrite) > 0:
@@ -284,7 +291,7 @@ def _prepare_run_directories(config, cmdline_args):
             except OSError:
                 logger.debug('File %s does not already exist' % target)
         if sim_dir_cfg:
-            sim_simulations = Path(sim_dir_cfg) / 'Simulations'
+            sim_simulations = Path(sim_dir_cfg) / SIMULATION_FOLDER
             try:
                 shutil.rmtree(sim_simulations)
                 logger.info('Deleted old simulation directory %s' % sim_simulations)
@@ -298,6 +305,15 @@ def _prepare_run_directories(config, cmdline_args):
     else:
         (output_dir / 'Simulations').mkdir()
     shutil.copy(cmdline_args.conf_file, output_dir / 'Results')
+
+
+def _apply_cluster_flags(config, cmdline_args):
+    """Write the ``-t`` and ``-s`` flags over ``cluster_type`` and ``scheduler_file``, before a
+    fresh run's algorithm is built, so a method that cannot honour them refuses them."""
+    if cmdline_args.cluster_type:
+        config.config['cluster_type'] = cmdline_args.cluster_type
+    if cmdline_args.scheduler_file:
+        config.config['scheduler_file'] = cmdline_args.scheduler_file
 
 
 def _create_algorithm(config):
@@ -681,10 +697,12 @@ def main():
         if continue_file:
             # Restart the loaded algorithm
             alg, pending, config = _load_resumed_algorithm(continue_file, cmdline_args)
+            _apply_cluster_flags(config, cmdline_args)
         else:
             # Fresh run: prepare the output directory tree and build the algorithm.
             _prepare_run_directories(config, cmdline_args)
             pending = None
+            _apply_cluster_flags(config, cmdline_args)
             alg = _create_algorithm(config)
 
         # The fit's total wall-clock budget (wall_time_fit, #529/ADR-0093), or None when
@@ -712,12 +730,6 @@ def main():
                           config.config['wall_time_refine_frac'],
                           format_duration(alg.budget.limit - alg.budget.reserve)))
 
-        # Override configuration values if provided on command line
-        if cmdline_args.cluster_type:
-            config.config['cluster_type'] = cmdline_args.cluster_type
-        if cmdline_args.scheduler_file:
-            config.config['scheduler_file'] = cmdline_args.scheduler_file
-
         # Everything inside this branch is Algorithm surface. ``ModelCheck``
         # (``job_type = check``) deliberately does not subclass Algorithm -- it has no
         # res_dir, no trajectory, no completed_simulations and no stop_reason -- so a
@@ -730,11 +742,17 @@ def main():
             # complete on disk even if a later phase raises.
             alg.method_chain = method_chain.chain_for_run(alg.res_dir, config.config,
                                                           budget=alg.budget, version=__version__)
-            # Set up cluster
-            cluster = Cluster(config, log_prefix, debug, cmdline_args.log_level)
+            # Set up cluster, unless the method submits no work to one
+            if alg.needs_cluster:
+                cluster = Cluster(config, log_prefix, debug, cmdline_args.log_level)
+                client = cluster.client
+            else:
+                logger.info('job_type %s runs in this process and hands no work to workers, so '
+                            'no dask cluster is started' % config.config['fit_type'])
+                client = None
             # Run the algorithm!
             logger.debug('Algorithm initialization')
-            alg.run(cluster.client, resume=pending, debug=debug)
+            alg.run(client, resume=pending, debug=debug)
 
             fit_status, fit_reason = _phase_status(alg)
             _record_phase(alg, 'fit', config.config['fit_type'], fit_status, reason=fit_reason,

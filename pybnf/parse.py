@@ -49,6 +49,8 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition',
                # HMC (job_type = hmc, ADR-0059): per-chain warmup/draw counts.
                'num_warmup', 'num_samples',
+               # Liu–West filter (job_type = lwf).
+               'lwf_particles', 'lwf_forecast_intervals', 'lwf_independent_runs', 'lwf_continue',
                # profile likelihood (job_type = profile_likelihood, #446/#466): the polish
                # budget, the per-direction grid-point cap, the per-point re-opt cap, and the
                # cross-parameter parallel-track cap (#467).
@@ -164,6 +166,8 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  # level the report's predicted intervals are quoted at, and how far past the
                  # last measurement a recommendation may reach.
                  'design_confidence', 'design_t_end',
+                 # Liu–West filter (job_type = lwf).
+                 'lwf_jitter', 'lwf_resample_threshold',
                  # CVODE tolerances for the bngsim SBML/Antimony backend (#546). Unset
                  # leaves rtol at the backend default and DERIVES atol from the model's
                  # own state scale; stating either pins it.
@@ -204,7 +208,9 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               # optimal experimental design (#574): what makes one design better than
               # another -- a (average parameter variance) | d (confidence region volume) |
               # e (worst-determined direction).
-              'design_criterion']
+              'design_criterion',
+              # Liu–West filter (job_type = lwf).
+              'lwf_bounds', 'lwf_state_file']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
                # profile likelihood (#446/#466): the subset of free parameters to profile
                # (a list of parameter ids; absent -> profile every free parameter).
@@ -786,8 +792,12 @@ def parse(s):
     start_point_key = pp.CaselessLiteral('start_point')
     start_point_gram = start_point_key - equals - bng_parameter - num - comment
 
+    # lwf_parameter_jitter = <parameter> <h>: one free parameter's Liu–West jitter (job_type = lwf)
+    lwf_jitter_key = pp.CaselessLiteral('lwf_parameter_jitter')
+    lwf_jitter_gram = lwf_jitter_key - equals - bng_parameter - num - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | start_point_gram | sbml_atol_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | start_point_gram | lwf_jitter_gram | sbml_atol_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -1061,6 +1071,17 @@ def ploop(ls):  # parse loop
                                      f"The config file sets 'start_point = {spid} ...' more than once. "
                                      f"A parameter has exactly one start point; delete the duplicate line.")
                 d[skey] = sval
+            elif l[0] == 'lwf_parameter_jitter':
+                # Accumulated as (id, h) pairs; a parameter given twice is refused here.
+                jid, jval = l[1], float(l[2])
+                given = d.setdefault('lwf_parameter_jitter', [])
+                earlier = [h for name, h in given if name == jid]
+                if earlier:
+                    raise PybnfError(
+                        f"lwf_parameter_jitter for '{jid}' is specified multiple times",
+                        f"The config file gives lwf_parameter_jitter for '{jid}' twice, as "
+                        f"{earlier[0]!r} and as {jval!r}. Give each parameter one line.")
+                given.append((jid, jval))
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -1287,6 +1308,9 @@ def ploop(ls):  # parse loop
                       "whether or not the variable should be bounded ('u' is unbounded, 'b' or left blank is bounded)"
             elif key in var_def_keys_1or2nums:
                 fmt = f"'{key}=v x' or '{key}=v x y' where v is a variable name, and x and y are decimal numbers"
+            elif key == 'lwf_parameter_jitter':
+                fmt = ("'lwf_parameter_jitter = v h' where v is the name of one free parameter and h "
+                       "is its jitter, a number strictly between 0 and 1. One line per parameter")
             elif key == 'start_point':
                 fmt = ("'start_point = v x' where v is the name of one declared free parameter and x is "
                        "a decimal number, in that parameter's own units (not log space) whatever its "

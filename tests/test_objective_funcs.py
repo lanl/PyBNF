@@ -473,6 +473,30 @@ class TestNegBinMedianCentering:
         assert noise.NegBinomial(location=noise.MEDIAN).data_fit(8.0, -1, self.r) == 0
 
 
+class TestNegBinNegativePrediction:
+    """Under MEAN a negative prediction is scored as the mean 0. -2.0 is -r, where
+    ``prob = r/(r + mean)`` divided by zero. Oracle: scipy.stats.nbinom at the clipped prob."""
+
+    r = 2.0
+
+    @staticmethod
+    def _scipy(observation, r, mean):
+        p = np.clip(r / (r + mean), 1e-10, 1 - 1e-10)
+        return -stats.nbinom.logpmf(observation, r, p)
+
+    @pytest.mark.parametrize('observation', [0, 3])
+    @pytest.mark.parametrize('prediction', [-1e6, -2.0, -1.0])
+    def test_a_negative_prediction_is_scored_as_the_mean_zero(self, prediction, observation):
+        assert noise.NegBinomial(location=noise.MEAN).data_fit(prediction, observation, self.r) \
+            == pytest.approx(self._scipy(observation, self.r, 0.0), rel=1e-12)
+
+    @pytest.mark.parametrize('observation', [0, 3])
+    @pytest.mark.parametrize('prediction', [-1.0, 0.0, 4.0])
+    def test_a_prediction_above_minus_r_scores_as_it_did(self, prediction, observation):
+        assert noise.NegBinomial(location=noise.MEAN).data_fit(prediction, observation, self.r) \
+            == pytest.approx(self._scipy(observation, self.r, prediction), rel=1e-12)
+
+
 class TestLogScaleNonPositivePrediction:
     """The log additive scales (lognormal/log-normal noise) must not turn a
     non-positive value into a NaN. An ODE solver can undershoot to a tiny negative
