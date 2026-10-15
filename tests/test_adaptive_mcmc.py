@@ -1327,6 +1327,8 @@ class TestCombiningChainsWithAFileTheRunNeverWrote:
                            max_iterations=10, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
+        # A buffer key is an experiment suffix followed by its column, matched exactly (#986).
+        am.time = {k[:-len(w)]: 2 for k in keys for w in wanted if k.endswith(w)}
         am.output_columns = list(wanted)
         am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in keys}
         if noise:
@@ -1475,3 +1477,299 @@ def test_an_edition_2_noise_trajectory_holds_counts_around_the_predicted_increme
         predicted += increments[recorded].sum()
     assert predicted > 1000
     assert abs(drawn / predicted - 1.0) < 0.1, (drawn, predicted)
+
+
+# --------------------------------------------------------------------------------------------
+# output_noise_trajectory: the conf's noise model reaches the draw, column by column (#986 review)
+# --------------------------------------------------------------------------------------------
+
+def _edition_2_noise_am(tmp_path, monkeypatch, noise_lines, noise_columns, columns=('cases',)):
+    """An edition-2 ``am`` over the Liu-West SIR model, built from its conf text by
+    ``load_config`` (no simulation). ``columns`` are model functions, all ``rho*CumInf``, each
+    a data column of ``cases.exp``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    extra = ''.join('  %s() rho*CumInf\n' % c for c in columns if c != 'cases')
+    (tmp_path / 'sir.bngl').write_text(
+        L.MODEL.replace('  cases() rho*CumInf\n', '  cases() rho*CumInf\n' + extra))
+    with open(tmp_path / 'cases.exp', 'w') as f:
+        f.write('# time %s\n' % ' '.join(columns))
+        for t, c in enumerate(L.COUNTS, 1):
+            f.write('%d %s\n' % (t, ' '.join([str(c)] * len(columns))))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'edition = 2', 'model: sir.bngl', 'bngl_backend = bngsim', 'job_type = am',
+        'output_dir = out', 'experiment: epi, data: cases.exp',
+        'uniform_var = beta 0.3 1.2', 'uniform_var = gamma 0.1 0.5',
+        'population_size = 1', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        'sample_every = 1', 'output_noise_trajectory = %s' % ', '.join(noise_columns),
+        *noise_lines]) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
+
+
+def _median_mean(prediction, r):
+    """The mean of NB(mean, r) whose continuous median I_p(r, x+1) = 1/2 sits at the prediction,
+    solved here by bisection on scipy's regularized incomplete beta."""
+    from scipy.special import betainc
+    target = max(prediction, 0.0)
+    lo, hi = 0.0, max(target, 1.0)
+    while betainc(r, target + 1.0, r / (r + hi)) > 0.5:
+        hi *= 2.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if betainc(r, target + 1.0, r / (r + mid)) > 0.5 else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+_NOISE_LINES = [
+    (line, dispersion, location, cumulative)
+    for line in ('per_observable', 'whole_fit')
+    for dispersion in ('fix_at 3', 'fit r')
+    for location in ('mean', 'median', None)
+    for cumulative in (False, True)
+    if not (line == 'whole_fit' and cumulative)]    # a whole-fit line cannot be cumulative
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('line, dispersion, location, cumulative', _NOISE_LINES)
+def test_an_edition_2_noise_draw_matches_scipy_at_the_declared_dispersion_and_location(
+        tmp_path, monkeypatch, line, dispersion, location, cumulative):
+    """From the conf text to the draw: the per-observable line wins over a whole-fit Gaussian,
+    a whole-fit neg_bin line covers the column, ``fix_at`` is the constant and ``fit r`` the
+    chain's current r, the location (edition 2 defaults to the median, ADR-0031) sets the
+    mean, and ``cumulative`` decides the differencing. Oracle: scipy.stats.nbinom on a copy of
+    the chain's Generator, at r / (r + mean), with the median's mean solved by bisection on
+    scipy.special.betainc rather than by _mean_for_median."""
+    from scipy import stats
+    from pybnf.noise import MEAN, MEDIAN
+    fields = 'neg_bin, dispersion = %s%s' % (
+        dispersion, '' if location is None else ', location = %s' % location)
+    lines = ['loguniform_var = r 1 100'] if dispersion == 'fit r' else []
+    if line == 'per_observable':
+        lines += ['noise_model = gaussian, sigma = fix_at 5, location = mean',
+                  'noise_model cases = %s%s' % (fields, ', cumulative' if cumulative else '')]
+    else:
+        lines += ['noise_model = %s' % fields]
+    am = _edition_2_noise_am(tmp_path, monkeypatch, lines, ['cases'])
+    family, _source, differenced = am.output_noise_specs['cases']
+    assert differenced is cumulative
+    assert family.location is (MEAN if location == 'mean' else MEDIAN)
+
+    r = 3.0 if dispersion == 'fix_at 3' else 7.5
+    current = pset.PSet([v.set_value(7.5 if v.name == 'r' else v.value or v.lower_bound)
+                         for v in am.variables])
+    series = np.array([-2.0, 0.0, 1.0, 6.5, 40.0, 250.0])
+    rng = np.random.default_rng(11)
+    oracle_rng = np.random.default_rng(11)
+    draws = am.generateBinomialNoise(series, current, rng, 'cases')
+    means = [max(x, 0.0) if location == 'mean' else _median_mean(x, r) for x in series]
+    expected = [stats.nbinom.rvs(n=r, p=np.clip(r / (r + m), 1e-10, 1 - 1e-10), size=1,
+                                 random_state=oracle_rng)[0] for m in means]
+    np.testing.assert_array_equal(draws, expected)
+
+
+@pytest.mark.bngsim
+def test_a_noise_column_whose_name_is_inside_another_key_is_drawn_with_its_own_model(
+        tmp_path, monkeypatch):
+    """`cases` is a substring of the buffer key `epicases2`, and the draw loop matches a column
+    to a key with `if l in i`. Listing `cases2` before `cases` used to draw `epicases2` twice,
+    the second time with `cases`'s noise model, which is the one that stuck. Oracle: each
+    column's draw is tagged with the column it was drawn for."""
+    am = _edition_2_noise_am(
+        tmp_path, monkeypatch,
+        ['noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+         'noise_model cases = neg_bin, dispersion = fix_at 0.5, location = mean',
+         'noise_model cases2 = neg_bin, dispersion = fix_at 10000, location = mean'],
+        ['cases2', 'cases'], columns=('cases', 'cases2'))
+    assert am.output_noise_specs['cases2'][1].const == 10000.0
+    am.start_run()
+    tag = {'cases': 1.0, 'cases2': 2.0}
+    monkeypatch.setattr(am, 'generateBinomialNoise',
+                        lambda timeseries, pset, rng, column: np.full(len(timeseries), tag[column]))
+    am.current_pset[0] = pset.PSet([v.set_value(0.5 * (v.lower_bound + v.upper_bound))
+                                    for v in am.variables])
+    am.current_pset[0].name = 'iter0run0'
+    am.ln_current_P[0] = 0.0
+    am.iteration[0] = am.valid_range
+    am._record_iteration(0)
+    row = am.factor[0]
+    assert set(am.output_run_noise_all['epicases'][0][row]) == {1.0}
+    assert set(am.output_run_noise_all['epicases2'][0][row]) == {2.0}
+
+
+@pytest.mark.bngsim
+def test_a_neg_bin_noise_trajectory_whose_dispersion_follows_the_data_is_refused(
+        tmp_path, monkeypatch):
+    """A `relative` dispersion is a multiple of each observed count, so a simulated trajectory
+    between and beyond the data rows has no dispersion to be drawn with. The refusal comes when
+    the algorithm is built, and names the column and the source."""
+    with pytest.raises(PybnfError) as info:
+        _edition_2_noise_am(
+            tmp_path, monkeypatch,
+            ['noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+             'noise_model cases = neg_bin, dispersion = relative 0.5, location = mean, cumulative'],
+            ['cases'])
+    assert info.value.log_message == (
+        'output_noise_trajectory names cases, whose neg_bin dispersion is RelativeSigma')
+    assert ("draws cases's counts with a dispersion fixed (fix_at), fitted (fit <parameter>) "
+            "or a formula of parameters" in info.value.message)
+    assert "cases's is a RelativeSigma" in info.value.message
+
+
+def test_a_run_resumed_from_a_backup_made_before_986_still_draws_its_noise(tmp_path):
+    """`-r` unpickles the algorithm without running __init__, so a backup written before #986
+    has no `output_noise_specs`; it must still record and draw, from the same legacy spec
+    (objfunc = neg_bin, neg_bin_r = 20), not stop at its first result with an AttributeError.
+    Oracle: scipy.stats.nbinom at r = 20, p = 20 / (20 + prediction), on a copy of the
+    chain's Generator."""
+    import copy
+    import pickle
+    from scipy import stats
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_noise_trajectory=['y'],
+                       objfunc='neg_bin', neg_bin_r=20.0)
+    am = algorithms.Adaptive_MCMC(cfg)
+    am.start_run()
+    key = next(iter(am.output_run_noise_current))    # 'par1y'
+    n = am.output_run_noise_current[key].shape[-1]
+
+    def result(name, prediction, score):
+        res = algorithms.Result(_uniform_pset(name), None, name)
+        res.out = {'parabola': {'par1': _data('y', list(enumerate(prediction)))}}
+        res.score = score
+        return res
+
+    # One generation before the backup, as the run loop backs up once per generation.
+    am.got_result(result('iter0run0', np.zeros(n), 5.0))
+    del am.output_noise_specs                      # as a backup made before #986 holds it
+    am = pickle.loads(pickle.dumps(am))
+    assert 'output_noise_specs' not in vars(am)
+
+    prediction = np.linspace(0.5, 40.0, n)
+    am.got_result(result('iter1run0', prediction, 0.0))   # a better score: accepted, recorded
+    assert am.accept is True
+    np.testing.assert_array_equal(am.output_run_noise_current[key][0][0], prediction)
+
+    am.iteration[0] = am.valid_range
+    oracle_rng = copy.deepcopy(am.chain_rngs[0])
+    am._record_iteration(0)
+    expected = [stats.nbinom.rvs(n=20.0, p=20.0 / (20.0 + x), size=1, random_state=oracle_rng)[0]
+                for x in prediction]
+    np.testing.assert_array_equal(am.output_run_noise_all[key][0][am.factor[0]], expected)
+
+
+_E1_SIR = """begin model
+begin parameters
+  beta__FREE   0.6
+  gamma__FREE  0.25
+  N      10000
+  I0     10
+  rho    0.5
+  beta_N beta__FREE/N
+end parameters
+begin molecule types
+  S()
+  I()
+  R()
+  C()
+end molecule types
+begin seed species
+  S() N-I0
+  I() I0
+  R() 0
+  C() 0
+end seed species
+begin observables
+  Molecules Inf I()
+  Molecules CumInf C()
+end observables
+begin functions
+  cases() rho*CumInf
+  cases_Cum() rho*CumInf
+end functions
+begin reaction rules
+  S() + I() -> I() + I() + C()  beta_N
+  I() -> R()  gamma__FREE
+end reaction rules
+end model
+generate_network({overwrite=>1})
+simulate({method=>"ode",suffix=>"epi",t_end=>12,n_steps=>12,print_functions=>1})
+"""
+
+
+def _edition_1_noise_am(tmp_path, monkeypatch, lines, model_parameters=()):
+    """An edition-1 ``am`` over an SIR model with `cases` and `cases_Cum` columns."""
+    from . import lwf_harness as L
+    from pybnf.parse import load_config
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR.replace(
+        '  N      10000\n', '  N      10000\n' + ''.join('  %s 1\n' % p for p in model_parameters)))
+    (tmp_path / 'epi.exp').write_text('# time cases cases_Cum\n' + ''.join(
+        '%d %d %d\n' % (t, c, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'fit_type = am', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'population_size = 1', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        'output_noise_trajectory = cases_Cum', *lines]) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
+
+
+def test_the_cum_name_differences_the_draw_only_under_the_legacy_objfuncs_own_spec(
+        tmp_path, monkeypatch):
+    """The legacy objfuncs have always drawn a `_Cum` column differenced, and still do, byte for
+    byte; any other noise model is differenced as the scoring is, by its cumulative flag: a
+    per-observable neg_bin on `cases_Cum` under chi_sq_dynamic is scored undifferenced, so it is
+    drawn undifferenced."""
+    am = _edition_1_noise_am(tmp_path / 'legacy', monkeypatch, ['objfunc = neg_bin', 'neg_bin_r = 20'])
+    assert am.output_noise_specs['cases_Cum'][2] is True
+    am = _edition_1_noise_am(tmp_path / 'override', monkeypatch, [
+        'objfunc = chi_sq_dynamic', 'uniform_var = sigma__FREE 0.1 10',
+        'noise_model cases_Cum = neg_bin, dispersion = fix_at 20, location = mean'],
+        model_parameters=['sigma__FREE'])
+    assert am.objective._is_cumulative('cases_Cum') is False
+    assert am.output_noise_specs['cases_Cum'][2] is False
+
+
+@pytest.mark.bngsim
+def test_a_formula_dispersion_draws_at_its_value_at_the_chains_point(tmp_path, monkeypatch):
+    """`dispersion = formula 2*r` has one value per parameter set. Oracle: scipy.stats.nbinom on
+    the same seed at r = 2 * 7.5."""
+    from scipy import stats
+    am = _edition_2_noise_am(tmp_path, monkeypatch, [
+        'loguniform_var = r 1 100',
+        'noise_model = neg_bin, dispersion = formula 2*r, location = mean'], ['cases'])
+    current = pset.PSet([v.set_value(7.5 if v.name == 'r' else v.value or v.lower_bound)
+                         for v in am.variables])
+    series = np.array([0.0, 3.0, 40.0])
+    draws = am.generateBinomialNoise(series, current, np.random.default_rng(3), 'cases')
+    rng = np.random.default_rng(3)
+    expected = [stats.nbinom.rvs(n=15.0, p=np.clip(15.0 / (15.0 + x), 1e-10, 1 - 1e-10), size=1,
+                                 random_state=rng)[0] for x in series]
+    np.testing.assert_array_equal(draws, expected)
+
+
+@pytest.mark.bngsim
+def test_a_noise_trajectory_under_a_time_error_is_refused(tmp_path, monkeypatch):
+    """The scoring marginalizes a timing error that the draw at the simulated times would
+    ignore: one path honouring the option and the other not."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    (tmp_path / 'sir.bngl').write_text(L.MODEL)
+    L.write_data(tmp_path / 'cases.exp')
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'edition = 2', 'model: sir.bngl', 'bngl_backend = bngsim', 'job_type = am',
+        'output_dir = out', 'population_size = 1', 'max_iterations = 40',
+        'experiment: epi, data: cases.exp, t_end: 14, n_steps: 140',
+        'uniform_var = beta 0.3 1.2', 'uniform_var = gamma 0.1 0.5',
+        'noise_model = neg_bin, dispersion = fix_at 20, location = mean, '
+        'time_error = truncated_normal, sigma_t = fix_at 0.3',
+        'output_noise_trajectory = cases']) + '\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
+    assert info.value.log_message == ('output_noise_trajectory names cases, but the fit has a '
+                                      'time_error')
