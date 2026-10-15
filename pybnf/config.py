@@ -1099,9 +1099,11 @@ class Configuration:
         ``bngl_backend = bionetgen``, and every model under ``job_type = check``). Where
         ``bngl_backend = auto`` sends a model depends on whether bngsim is installed here, so
         that is refused as the fit sets its models up (``Algorithm._initialize_models``, before
-        any network generation), and a configuration still loads for a reader that simulates
-        nothing, such as a PEtab export. Hand-written actions are read the same way, since
-        BNG2.pl refuses them alike."""
+        any network generation): the configuration is not wrong, and it still loads, on a
+        machine without bngsim, for a reader that simulates nothing (``from_pybnf`` reloads a
+        finished run's configuration to read its parameter scales). Hand-written actions are
+        read the same way (a trailing ``;`` or comment, ``simulate_nf``), since BNG2.pl refuses
+        them alike."""
         from .algorithms.base import bng2pl_by_configuration, refuse_what_bng2pl_cannot_run
         plan = bng2pl_by_configuration(self.config['fit_type'], self.config['bngl_backend'])
         if plan is None:
@@ -3327,30 +3329,50 @@ class Configuration:
             return
         columns = sorted({column for cols in analytic_scale.values() for column in cols})
         names = ', '.join(columns)
+        # scale profiles one factor per series: each experiment's column (analytic_scale is
+        # keyed by data key), so the free parameters that replace it are one per series too.
+        series = [(column, self.experiment_label(data_key))
+                  for data_key in sorted(analytic_scale)
+                  for column in sorted(analytic_scale[data_key])]
+        listed = '; '.join('%s in experiment %s' % pair for pair in series)
         fit_type = self.config['fit_type']
-        if edition.is_modern(edition.resolve_edition(self.config.get('edition'))):
-            free_scale = (f"multiply the model output by a free parameter in the measurement "
-                          f"layer: an 'observable:' line whose formula is c * {columns[0]}, with "
-                          f"c declared free (e.g. 'loguniform_var = c 1e-3 1e3')")
+        column = series[0][0]
+        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
+        if len(series) == 1:
+            free = (f"Sample the scale as a free parameter instead: remove scale from the "
+                    f"normalization of {column}, and multiply the model output by a free "
+                    f"parameter, ")
+            free += (f"in the measurement layer: an 'observable:' line whose formula is c * "
+                     f"{column}, with c declared free (e.g. 'loguniform_var = c 1e-3 1e3')."
+                     if modern else
+                     f"in the model: a function c__FREE * {column}, with c__FREE declared free "
+                     f"(e.g. 'loguniform_var = c__FREE 1e-3 1e3'), measured instead.")
         else:
-            free_scale = (f"multiply the model output by a free parameter in the model: a "
-                          f"function c__FREE * {columns[0]}, with c__FREE declared free (e.g. "
-                          f"'loguniform_var = c__FREE 1e-3 1e3'), measured instead")
+            free = (f"Sample the scales as free parameters instead, one for each series scale "
+                    f"profiles: {len(series)} here ({listed}). One parameter shared by them "
+                    f"would be a different model, in which every series has the same scale. "
+                    f"Remove scale from their normalization, and give each series its own "
+                    f"parameter, ")
+            free += (f"in the measurement layer: one 'observable:' line per series, whose "
+                     f"formula multiplies the model output by that series' parameter, with the "
+                     f"series' data column named after the line (e.g. 'observable: "
+                     f"{column}_1, formula: c_1 * {column}' and 'loguniform_var = c_1 1e-3 "
+                     f"1e3', for a column {column}_1 in the data of the first)."
+                     if modern else
+                     "in the model: one function per series that multiplies the observable by "
+                     "that series' __FREE parameter, measured in that series' data.")
         raise PybnfError(
             f"normalization scales {names} analytically (scale), which is not available for a "
             f"Bayesian sampler",
-            f"normalization scales {names} analytically (scale): at every evaluation it replaces "
-            f"the series' multiplicative scale by its best fit to the data. That is a PROFILE, "
-            f"not a marginal: it maximizes the nuisance out where a posterior integrates it over "
-            f"its prior, and for a Gaussian series the two differ by a factor that depends on "
-            f"the model parameters. Draws from '{fit_type}' ({entry.display_name}) would "
-            f"therefore not be posterior "
-            f"draws. noise_profiling and linear_profiling are refused for every sampler for the "
-            f"same reason.",
-            hint=[f"Sample the scale as a free parameter instead: remove scale from the "
-                  f"normalization of {names}, and {free_scale}.",
-                  "Or keep scale and fit with an optimizer (for example job_type = de, or "
-                  "lbfgs)."])
+            f"normalization scales {listed} analytically (scale): at every evaluation it "
+            f"replaces each series' multiplicative scale by its best fit to the data. That is a "
+            f"PROFILE, not a marginal: it maximizes the nuisance out where a posterior "
+            f"integrates it over its prior, and for a Gaussian series the two differ by a "
+            f"factor that depends on the model parameters. Draws from '{fit_type}' "
+            f"({entry.display_name}) would therefore not be posterior draws. noise_profiling "
+            f"and linear_profiling are refused for every sampler for the same reason.",
+            hint=[free, "Or keep scale and fit with an optimizer (for example job_type = de, "
+                        "or lbfgs)."])
 
     def _require_additive_scale(self, analytic_scale):
         """Refuse ``scale`` on a column whose noise family has no additive scale (#990).

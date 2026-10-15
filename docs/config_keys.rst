@@ -802,18 +802,22 @@ Other Path Keys
   ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the option.
 
   **Network-free experiments need BNGsim.** BNG2.pl's NFsim takes an output grid only as
-  ``t_end`` with ``n_steps``, and BNG2.pl has no RuleMonkey. An edition-2 ``method: nf``
-  experiment writes its data's times as ``sample_times`` (a dose-response, a ``parameter_scan``
-  with no ``n_steps``), and ``method: rm`` names RuleMonkey, so BNG2.pl cannot run either. A model
-  with such an action (or a hand-written one like it) is refused, naming the experiment and
-  BNG2.pl's message, wherever it would be simulated with BNG2.pl: under ``bngl_backend =
+  ``t_end`` with ``n_steps`` of 1 or more, and BNG2.pl has no RuleMonkey. An edition-2
+  ``method: nf`` experiment writes its data's times as ``sample_times`` (a dose-response, a
+  ``parameter_scan`` with no ``n_steps``), and ``method: rm`` names RuleMonkey, so BNG2.pl cannot
+  run either. A model with such an action is refused, naming the experiment and BNG2.pl's
+  message, and so is a hand-written network-free action BNG2.pl stops: one with ``sample_times``
+  or no ``n_steps`` (a ``simulate_nf`` too), ``n_steps`` below 1, no ``t_end``, ``continue``, or
+  a method other than ``nf`` in lower case (``NF`` included). The refusal applies wherever the
+  model would be simulated with BNG2.pl: under ``bngl_backend =
   bionetgen`` and under ``job_type = check`` (which simulates with BNG2.pl whatever this key
   says) when the configuration loads; under ``auto`` -- when BNGsim is not available (or
   ``PYBNF_NO_BNGSIM`` is set), its bridge cannot take the model's actions, or the installed build
   lacks the engine -- when the fit sets its models up, before any simulation; and the same when
   a BNGsim set-up step fails and ``auto`` would otherwise fall back to BNG2.pl. (A configuration
-  under ``auto`` still loads on a machine without BNGsim, for a reader that simulates nothing,
-  such as a PEtab export.) Such a model used to be accepted, and every simulation of it failed.
+  under ``auto`` is not wrong, and still loads on a machine without BNGsim for a reader that
+  simulates nothing, such as ``pybnf.inference_data.from_pybnf`` reloading a finished run's
+  configuration.) Such a model used to be accepted, and every simulation of it failed.
   (`#999 <https://github.com/lanl/PyBNF/issues/999>`_)
 
   One difference remains (`#872 <https://github.com/lanl/PyBNF/issues/872>`_): when an action's

@@ -1152,7 +1152,9 @@ See the `model-checking tutorial lesson
 <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/46_model_checking>`__
 for a worked example. A check simulates its BNGL models with BNG2.pl, whatever
 :ref:`bngl_backend <bngl_backend>` says, so a network-free experiment, which BNG2.pl cannot run
-as PyBNF writes it, is refused when the configuration loads.
+as PyBNF writes it, is refused when the configuration loads. To score such a model, run a
+one-generation fit with no free parameters under BNGsim instead (``job_type = de``,
+``population_size = 4``, ``max_iterations = 1``, ``bngl_backend = bngsim``).
 
 
 .. _model_selection:

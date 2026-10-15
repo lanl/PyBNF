@@ -87,14 +87,17 @@ def bng2pl_by_configuration(fit_type, bngl_backend):
     * ``bngl_backend = bionetgen``.
 
     The configuration refuses these when it loads. Where ``bngl_backend = auto`` sends a model
-    depends on the machine (:func:`bng2pl_plan`), so that is refused when the fit sets its
-    models up, and a configuration still loads for a reader that runs nothing (a PEtab export)
-    on a machine without bngsim."""
+    depends on the machine it runs on (:func:`bng2pl_plan`), so that is refused when the fit
+    sets its models up: the configuration is not wrong, and it still loads, on a machine
+    without bngsim, for a reader that simulates nothing (``from_pybnf`` reloads a finished
+    run's configuration to read its parameter scales)."""
     if fit_type == 'check':
         return ('job_type = check simulates every BNGL model with BNG2.pl, whatever '
                 'bngl_backend says',
-                'Run it as a fit under bngl_backend = bngsim instead, which runs network-free '
-                'experiments on its own NFsim and RuleMonkey.')
+                'To score the model on bngsim, which runs network-free experiments on its own '
+                'NFsim and RuleMonkey, make the job a one-generation fit with no free '
+                'parameters: job_type = de, population_size = 4, max_iterations = 1, and '
+                'bngl_backend = bngsim. It reports the objective of the model as written.')
     if bngl_backend == BNGL_BACKEND_BIONETGEN:
         return ('bngl_backend = bionetgen simulates it with BNG2.pl',
                 'Set bngl_backend = bngsim, which runs network-free experiments on its own NFsim '
@@ -154,13 +157,18 @@ def refuse_what_bng2pl_cannot_run(model_name, action_lines, why, remedy, experim
         return
     named = ['%s (%s)' % ("experiment '%s'" % suffix if suffix in experiments
                           else '%s action with suffix "%s"' % (kind, suffix), message)
-             for kind, suffix, message in refusals]
+             for kind, suffix, message, _cause in refusals]
+    causes = '; and '.join(dict.fromkeys(cause for _kind, _suffix, _message, cause in refusals))
+    hints = [remedy]
+    if any(suffix not in experiments for _kind, suffix, _message, _cause in refusals):
+        hints.append('Or write each action the way BNG2.pl runs it: method=>"nf", t_end, and '
+                     'n_steps of 1 or more, with no continue.')
     raise PybnfError(
         'Model %s: BNG2.pl cannot run %s' % (model_name, '; '.join(named)),
-        'Model %s: %s, and BNG2.pl cannot run %s. BNG2.pl stops each with the message in '
-        'parentheses: its NFsim takes a grid only as t_end and n_steps, and it has no RuleMonkey. '
-        'So every simulation of the model would fail.' % (model_name, why, '; '.join(named)),
-        hint=remedy)
+        'Model %s: %s, and BNG2.pl cannot run %s. BNG2.pl stops %s with the message in '
+        'parentheses, because %s, so every simulation of the model would fail.'
+        % (model_name, why, '; '.join(named), 'it' if len(named) == 1 else 'each', causes),
+        hint=hints)
 
 
 def unusable_score(score):

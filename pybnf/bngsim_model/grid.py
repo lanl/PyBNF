@@ -51,6 +51,7 @@ import logging
 from ..printing import PybnfError
 from .parsing import (
     _collapse_action_line_continuations,
+    _parse_action_dict,
     _parse_bifurcate_action,
     _parse_parameter_scan_action,
     _parse_simulate_action,
@@ -204,34 +205,103 @@ def scan_t_end(ps_params, where, sample_times, evaluate=None):
     return evaluate(ps_params['t_end'])
 
 
-#: The one network-free ``method`` BNG2.pl has: its ``simulate`` dispatches ``nf`` to
-#: ``simulate_nf`` (NFsim) and rejects every other network-free token in
-#: :data:`NETWORK_FREE_METHODS` -- RuleMonkey (``rm``, ``rulemonkey``, ``nf_exact``) and bngsim's
-#: other spellings of NFsim (``nfsim``, ``nf_reject``) -- as "not a valid option".
+#: The one network-free ``method`` BNG2.pl has: its ``simulate`` dispatches ``nf`` -- exactly
+#: that, in lower case -- to ``simulate_nf`` (NFsim), and rejects every other spelling of a
+#: network-free method in :data:`NETWORK_FREE_METHODS`, in any case, as "not a valid option":
+#: RuleMonkey (``rm``, ``rulemonkey``, ``nf_exact``), bngsim's other spellings of NFsim
+#: (``nfsim``, ``nf_reject``), and ``NF``.
 BNG2PL_NETWORK_FREE_METHOD = 'nf'
+
+#: Why BNG2.pl refuses each kind of network-free action: a message states each cause once.
+BNG2PL_NF_GRID = ("BNG2.pl's NFsim takes its output grid only as t_end with n_steps of 1 or "
+                  "more, never as sample_times")
+BNG2PL_NF_METHOD = ("BNG2.pl's one network-free method is 'nf', in lower case: it has no "
+                    "RuleMonkey, and none of bngsim's other spellings of NFsim")
+BNG2PL_NF_CONTINUE = "BNG2.pl's NFsim cannot continue an earlier run"
+
+
+def _statement(action_line):
+    """An action line as BNG2.pl runs it: continuations joined, and a trailing comment and
+    ``;`` dropped. BNGLModel keeps both on a hand-written action
+    (``simulate({...});  # equilibrate``), which the bngsim parsers do not read."""
+    line = _collapse_action_line_continuations(action_line)
+    quote = None
+    for i, ch in enumerate(line):
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '#':
+            line = line[:i]
+            break
+    return line.strip().rstrip(';').rstrip()
+
+
+def _number(value):
+    """``value`` as a float, or ``None`` for an expression BNG2.pl evaluates in the model."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bng2pl_nfsim_refusal(params):
+    """``(BNG2.pl's message, cause)`` when ``simulate_nf`` (BNGAction.pm 793-937) stops an NFsim
+    action with ``params``, checked in its order, or ``None``. A value that is an expression is
+    not judged; nor is an action whose ``argfile`` supplies its grid at run time."""
+    if 'argfile' in params:
+        return None
+    resume = params.get('continue')
+    if resume is not None and str(resume) not in ('', '0') and _number(resume) != 0:
+        return "NFsim does not support 'continue' option.", BNG2PL_NF_CONTINUE
+    if 'n_steps' in params:
+        n_steps = _number(params['n_steps'])
+        if n_steps is not None and n_steps < 1:
+            return 'No simulation output requested: set n_steps>0', BNG2PL_NF_GRID
+        if 't_end' not in params:
+            return 'Parameter t_end must be defined', BNG2PL_NF_GRID
+        # Without t_start, simulate_nf starts at the model's current time, which is >= 0.
+        t_end, t_start = _number(params['t_end']), _number(params.get('t_start', 0))
+        if t_end is not None and t_start is not None and not t_end > t_start:
+            return 't_end must be greater than t_start.', BNG2PL_NF_GRID
+        return None
+    if 'sample_times' in params:
+        return 'sample_times not supported in this version of NFsim', BNG2PL_NF_GRID
+    return 'No simulation output requested: set n_steps>0', BNG2PL_NF_GRID
 
 
 def bng2pl_network_free_refusals(action_lines):
-    """``[(kind, suffix, BNG2.pl's message)]`` for each network-free ``simulate`` /
-    ``parameter_scan`` / ``bifurcate`` among ``action_lines`` that BNG2.pl refuses to run
-    (BNG2.pl 2.9.3, ``Perl2/BNGAction.pm``; #999).
+    """``[(kind, suffix, BNG2.pl's message, cause)]`` for each network-free action among
+    ``action_lines`` that BNG2.pl refuses to run (BNG2.pl 2.9.3, ``Perl2/BNGAction.pm``; #999).
+    ``cause`` is one of :data:`BNG2PL_NF_GRID`, :data:`BNG2PL_NF_METHOD`,
+    :data:`BNG2PL_NF_CONTINUE`.
 
-    * A method BNG2.pl does not have (see :data:`BNG2PL_NETWORK_FREE_METHOD`).
-    * ``method=>"nf"`` without ``n_steps``. ``simulate_nf`` reads ``n_steps`` and nothing else
-      for its grid: with ``sample_times`` instead it aborts ("sample_times not supported in this
-      version of NFsim"), and with neither ("No simulation output requested: set n_steps>0").
-      A ``parameter_scan`` / ``bifurcate`` runs ``simulate`` at each point with its own
-      options, so the same holds for each point. The edition-2 experiments write exactly these
-      lines -- ``sample_times`` for a time course, a scan with no ``n_steps`` -- which bngsim's
-      NFsim runs.
+    The actions read are ``simulate``, ``parameter_scan`` and ``bifurcate`` with a network-free
+    ``method``, and ``simulate_nf``, each as BNG2.pl runs it (:func:`_statement`). Refused:
+
+    * a network-free method BNG2.pl does not have (:data:`BNG2PL_NETWORK_FREE_METHOD`);
+    * an NFsim action ``simulate_nf`` stops (:func:`_bng2pl_nfsim_refusal`): ``continue``; no
+      ``n_steps`` -- with ``sample_times`` instead ("sample_times not supported in this version
+      of NFsim") or with neither; ``n_steps`` below 1; no ``t_end``; ``t_end`` not after
+      ``t_start``. A ``parameter_scan`` / ``bifurcate`` runs ``simulate`` at each point with
+      its own options, so the same holds for each point. The edition-2 experiments write
+      ``sample_times`` for a time course and a scan with no ``n_steps``, which bngsim's NFsim
+      runs and BNG2.pl's does not.
 
     Every other action, network-free or not, is left to :func:`check_output_grids` and BNG2.pl.
     Pure: reads only the action text, so the configuration can call it before any model is
     set up."""
     found = []
     for action_line in action_lines:
-        line = _collapse_action_line_continuations(action_line).strip()
-        if not line or line.startswith('#'):
+        line = _statement(action_line)
+        if not line:
+            continue
+        nfsim = _parse_action_dict(line, 'simulate_nf')
+        if nfsim is not None:
+            refusal = _bng2pl_nfsim_refusal(nfsim)
+            if refusal is not None:
+                found.append(('simulate_nf', nfsim.get('suffix', 'time_course')) + refusal)
             continue
         for kind, parse in (('simulate', _parse_simulate_action),
                             ('parameter_scan', _parse_parameter_scan_action),
@@ -239,15 +309,20 @@ def bng2pl_network_free_refusals(action_lines):
             params = parse(line)
             if params is None:
                 continue
-            method = str(params.get('method', 'ode')).strip().lower()
             suffix = params.get('suffix', 'time_course' if kind == 'simulate' else 'param_scan')
-            if method in NETWORK_FREE_METHODS and method != BNG2PL_NETWORK_FREE_METHOD:
-                found.append((kind, suffix, "Simulation method '%s' is not a valid option."
-                              % method))
-            elif method == BNG2PL_NETWORK_FREE_METHOD and 'n_steps' not in params:
-                found.append((kind, suffix, 'sample_times not supported in this version of NFsim'
-                              if 'sample_times' in params
-                              else 'No simulation output requested: set n_steps>0'))
+            # BNG2.pl compares the method as written (case and all); 'poplevel' makes it psa.
+            method = str(params.get('method', ''))
+            if 'poplevel' in params:
+                refusal = None
+            elif method == BNG2PL_NETWORK_FREE_METHOD:
+                refusal = _bng2pl_nfsim_refusal(params)
+            elif method.strip().lower() in NETWORK_FREE_METHODS:
+                refusal = ("Simulation method '%s' is not a valid option." % method,
+                           BNG2PL_NF_METHOD)
+            else:
+                refusal = None
+            if refusal is not None:
+                found.append((kind, suffix) + refusal)
             break
     return found
 

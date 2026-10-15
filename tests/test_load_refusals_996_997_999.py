@@ -16,6 +16,7 @@ written out with ``scipy.special`` (#997), and BNG2.pl itself, run on each actio
 """
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -91,19 +92,69 @@ def test_scale_is_refused_for_every_sampler(tmp_path, monkeypatch, job_type):
     assert 'fit with an optimizer' in error.message
 
 
-@pytest.mark.parametrize('form, lines, named', [
-    ('edition 2', _E2 + ['job_type = dream', 'objective = chi_sq', 'normalization = scale'],
-     'x, y'),
-    ('edition 2', _E2 + ['job_type = dream', 'objective = chi_sq',
-                         'normalization par1.y = floor 0.1, scale'], 'y'),
-    ('edition 1', _E1 + ['fit_type = dream', 'objfunc = chi_sq', 'normalization = scale'],
-     'x, y'),
+@pytest.mark.parametrize('lines, named, remedy', [
+    (_E2 + ['job_type = dream', 'objective = chi_sq', 'normalization = scale'], 'x, y',
+     "in the measurement layer: one 'observable:' line per series"),
+    (_E2 + ['job_type = dream', 'objective = chi_sq', 'normalization par1.y = floor 0.1, scale'],
+     'y', "an 'observable:' line whose formula is c * y"),
+    (_E1 + ['fit_type = dream', 'objfunc = chi_sq', 'normalization = scale'], 'x, y',
+     # Edition 1 has no measurement layer: the free scales go in the model.
+     'in the model: one function per series'),
 ], ids=['edition 2 whole fit', 'edition 2 one experiment in a chain', 'edition 1 whole fit'])
-def test_every_form_that_declares_scale_is_refused(tmp_path, monkeypatch, form, lines, named):
+def test_every_form_that_declares_scale_is_refused(tmp_path, monkeypatch, lines, named, remedy):
     error = _refusal(tmp_path, monkeypatch, lines + _SAMPLER_KEYS[:2])
     assert error.log_message.startswith('normalization scales %s analytically (scale)' % named)
-    # Edition 1 has no measurement layer: the free scale goes in the model.
-    assert ('function c__FREE * x' in error.message) == (form == 'edition 1')
+    assert remedy in error.message
+
+
+def test_one_free_scale_per_series_replaces_scale_and_one_shared_scale_does_not(tmp_path,
+                                                                              monkeypatch):
+    """scale profiles one factor per series -- each experiment's column -- so the refusal lists
+    every series and asks for one free parameter each. Here par2 measures three times par1.
+
+    Oracle: at the true parabola, the remedy it names (a formula observable per series, each
+    with its own scale) scores exactly 0 with the scales 1 and 3, as scale does; a single scale
+    shared by both cannot fit both, by least squares on the y residuals, at any value."""
+    par1 = (DEMO / 'par1.exp').read_text()
+    rows = [line.split() for line in par1.splitlines()[1:] if line.strip()]
+
+    def exp(column, factor):
+        return '# time x %s x_SD %s_SD\n' % (column, column) + ''.join(
+            '%s %s %r %s %s\n' % (t, x, factor * float(y), xs, ys) for t, x, y, xs, ys in rows)
+
+    common = [line for line in _E2 if not line.startswith('experiment:')] + [
+        'experiment: par1, data: par1.exp', 'experiment: par2, data: par2.exp',
+        'job_type = dream', 'objective = chi_sq', *_SAMPLER_KEYS[:2]]
+    error = _refusal(tmp_path, monkeypatch, common + ['normalization y = scale'],
+                     [('par1.exp', exp('y', 1.0)), ('par2.exp', exp('y', 3.0))])
+    assert error.message.startswith('normalization scales y in experiment par1; y in experiment '
+                                    'par2 analytically (scale)')
+    assert 'one for each series scale profiles: 2 here' in error.message
+
+    conf = _load(tmp_path, monkeypatch, common + [
+        'observable: y_1, formula: c_1 * y', 'observable: y_2, formula: c_2 * y',
+        'loguniform_var = c_1 1e-3 1e3', 'loguniform_var = c_2 1e-3 1e3'],
+        [('par1.exp', exp('y_1', 1.0)), ('par2.exp', exp('y_2', 3.0))])
+    t = np.array([float(row[0]) for row in rows])
+    x = t - 10
+    truth = 0.5 * x ** 2 + x + 3
+
+    def simulated():
+        d = Data()
+        d.data = d._read_file_lines(['# time x y\n'] + ['%r %r %r\n' % tuple(map(float, r))
+                                                         for r in zip(t, x, truth)], r'\s+')
+        return d
+
+    values = {'v1': 0.5, 'v2': 1.0, 'v3': 3.0, 'c_1': 1.0, 'c_2': 3.0}
+    point = pset.PSet([pset.FreeParameter(v.name, v.type, v.p1, v.p2, values[v.name])
+                       for v in conf.variables])
+    score = conf.obj.evaluate_multiple({'parabola_v2': {'par1': simulated(), 'par2': simulated()}},
+                                       conf.exp_data, point, conf.constraints)
+    assert score == 0.0
+    observed = np.concatenate([truth * 1.0, truth * 3.0])        # y of par1, then par2
+    predicted = np.concatenate([truth, truth])
+    shared = observed @ predicted / (predicted @ predicted)     # the best single scale
+    assert np.sum((shared * predicted - observed) ** 2) > 1.0
 
 
 @pytest.mark.parametrize('job_type', ['de', 'lbfgs'])
@@ -372,6 +423,15 @@ def test_check_refuses_it_whatever_the_backend(tmp_path, monkeypatch):
     assert error.message.startswith('Model m: job_type = check simulates every BNGL model with '
                                     'BNG2.pl, whatever bngl_backend says, and BNG2.pl cannot run '
                                     "experiment 'tc'")
+    assert ('job_type = de, population_size = 4, max_iterations = 1, and bngl_backend = bngsim'
+            in error.message)
+    # The job the remedy describes: the same check, as a one-generation fit with no free
+    # parameters on bngsim. It loads (and, run, scores the model as written).
+    remedy = [line for line in _nf_job('bngsim', job_type='check')
+              if not line.startswith('job_type')]
+    conf = _load(tmp_path, monkeypatch, remedy + ['job_type = de', 'population_size = 4',
+                                                  'max_iterations = 1'], _NF_FILES)
+    assert conf.variables == []
     ode = _load(tmp_path, monkeypatch, _nf_job('bngsim', 'experiment: tc, data: tc.exp',
                                                job_type='check'), _NF_FILES)
     checker = algorithms.ModelCheck(ode)
@@ -391,7 +451,8 @@ def test_the_nearest_runnable_jobs_load(tmp_path, monkeypatch, backend, experime
 
 def test_auto_loads_without_bngsim_since_where_it_runs_depends_on_the_machine(tmp_path,
                                                                               monkeypatch):
-    """A reader that simulates nothing (a PEtab export) still loads it; set-up refuses it."""
+    """The configuration is not wrong, so a reader that simulates nothing (``from_pybnf``
+    reloading a finished run's configuration) still loads it; set-up refuses it."""
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
     _load(tmp_path, monkeypatch, _nf_job('auto'), _NF_FILES)
 
@@ -583,6 +644,29 @@ def test_resume_loads_the_configuration_first_so_it_is_refused(tmp_path, monkeyp
 
 # BNG2.pl itself is the oracle for which network-free actions it cannot run.
 
+#: Hand-written network-free actions, as BNGLModel keeps them (a trailing ';' and comment
+#: included): the ones BNG2.pl runs and the ones it stops, each beside its nearest neighbour.
+_HAND_WRITTEN = [
+    'simulate({method=>"nf",t_start=>0,t_end=>2,n_steps=>2,suffix=>"a"})',
+    'simulate({method=>"nf",t_start=>0,t_end=>2,n_steps=>2,suffix=>"a2"});',
+    'simulate({method=>"nf",t_end=>2,n_steps=>2,suffix=>"a3"});  # equilibrate, then #2',
+    'simulate({method=>"nf",t_end=>2,n_steps=>2,continue=>0,suffix=>"a4"})',
+    'simulate_nf({t_end=>2,n_steps=>2,suffix=>"a5"});',
+    'parameter_scan({parameter=>"kA",method=>"nf",t_start=>0,t_end=>2,n_steps=>1,'
+    'par_scan_vals=>[1,2,4],suffix=>"b"})',
+    'simulate({method=>"nf_exact",t_start=>0,t_end=>2,n_steps=>2,suffix=>"c"})',
+    'simulate({method=>"NF",t_end=>2,n_steps=>2,suffix=>"c2"})',
+    'simulate({method=>"nf",t_start=>0,t_end=>2,suffix=>"d"})',
+    'simulate({method=>"nf",t_end=>2,sample_times=>[0,1,2],suffix=>"d2"});',
+    'simulate({method=>"nf",t_end=>2,sample_times=>[0,1,2],suffix=>"d3"}) # comment',
+    'simulate_nf({t_end=>2,sample_times=>[0,1,2],suffix=>"d4"})',
+    'simulate_nf({t_end=>2,suffix=>"d5"})',
+    'simulate({method=>"nf",t_end=>2,n_steps=>0,suffix=>"e"})',
+    'simulate({method=>"nf",t_end=>2,n_steps=>2,continue=>1,suffix=>"f"})',
+    'simulate({method=>"nf",n_steps=>2,suffix=>"g"})',
+    'simulate({method=>"nf",t_start=>3,t_end=>2,n_steps=>2,suffix=>"h"})',
+]
+
 def _actions_written_for(tmp_path, monkeypatch, experiment):
     conf = _load(tmp_path, monkeypatch, _nf_job('bngsim', experiment), _NF_FILES)
     return [line for line in conf.models['m'].actions
@@ -602,14 +686,9 @@ def test_bng2pl_refuses_exactly_the_network_free_actions_the_predicate_lists(tmp
         (tmp_path / str(i)).mkdir()
         written += _actions_written_for(tmp_path / str(i), monkeypatch, experiment)
     assert len(written) == 3                                     # what PyBNF writes for each
-    by_hand = ['simulate({method=>"nf",t_start=>0,t_end=>2,n_steps=>2,suffix=>"a"})',
-               'parameter_scan({parameter=>"kA",method=>"nf",t_start=>0,t_end=>2,n_steps=>1,'
-               'par_scan_vals=>[1,2,4],suffix=>"b"})',
-               'simulate({method=>"nf_exact",t_start=>0,t_end=>2,n_steps=>2,suffix=>"c"})',
-               'simulate({method=>"nf",t_start=>0,t_end=>2,suffix=>"d"})']
     run_dir = tmp_path / 'bng'
     run_dir.mkdir()
-    for i, action in enumerate(written + by_hand):
+    for i, action in enumerate(written + _HAND_WRITTEN):
         path = run_dir / ('a%d.bngl' % i)
         path.write_text(_NF_MODEL + action + '\n')
         done = subprocess.run([bng, path.name], cwd=run_dir, capture_output=True, text=True,
@@ -620,3 +699,44 @@ def test_bng2pl_refuses_exactly_the_network_free_actions_the_predicate_lists(tmp
             assert listed[0][2] in done.stdout + done.stderr, action
         else:
             assert done.returncode == 0, (action, done.stdout[-2000:])
+    refused = {suffix for kind, suffix, message, cause
+               in bng2pl_network_free_refusals(_HAND_WRITTEN)}
+    assert refused == {'c', 'c2', 'd', 'd2', 'd3', 'd4', 'd5', 'e', 'f', 'g', 'h'}
+
+
+def _legacy_nf_job(action, backend='bionetgen'):
+    """An edition-1 job whose model carries ``action`` in its own actions block."""
+    model = _NF_MODEL.replace('kA 2', 'kA kA__FREE\nkA__FREE 2') + (
+        'begin actions\n%s\nend actions\n' % action)
+    lines = ['model = m.bngl : %s.exp' % re.search(r'suffix=>"(\w+)"', action).group(1),
+             'bngl_backend = %s' % backend, 'fit_type = de', 'objfunc = sos',
+             'uniform_var = kA__FREE 0 10', 'population_size = 4', 'max_iterations = 2',
+             'verbosity = 0']
+    files = [('m.bngl', model),
+             ('%s.exp' % re.search(r'suffix=>"(\w+)"', action).group(1), _NF_FILES[1][1])]
+    return lines, files
+
+
+@pytest.mark.parametrize('action', [a for a in _HAND_WRITTEN if '"a' in a])
+def test_a_hand_written_nf_action_bng2pl_runs_loads_on_bionetgen(tmp_path, monkeypatch, action):
+    """With or without a trailing ';' or comment, and as simulate_nf."""
+    _load(tmp_path, monkeypatch, *_legacy_nf_job(action))
+
+
+@pytest.mark.parametrize('action, cause, other', [
+    (_HAND_WRITTEN[9], "BNG2.pl's NFsim takes its output grid only as t_end with n_steps",
+     'RuleMonkey'),
+    (_HAND_WRITTEN[7], "BNG2.pl's one network-free method is 'nf', in lower case", 'n_steps'),
+    (_HAND_WRITTEN[14], "BNG2.pl's NFsim cannot continue an earlier run", 'RuleMonkey'),
+], ids=['sample_times', 'NF', 'continue'])
+def test_a_hand_written_nf_action_bng2pl_stops_is_refused_for_its_own_cause(
+        tmp_path, monkeypatch, action, cause, other):
+    """The message gives the cause of the refusal at hand, not every cause there is, and asks
+    for the action to be written BNG2.pl's way (it names no experiment)."""
+    error = _refusal(tmp_path, monkeypatch, *_legacy_nf_job(action))
+    suffix = re.search(r'suffix=>"(\w+)"', action).group(1)
+    assert error.log_message.startswith('Model m: BNG2.pl cannot run simulate action with '
+                                        'suffix "%s" (' % suffix)
+    assert cause in error.message and other not in error.message.split('->')[0]
+    assert error.message.endswith('Or write each action the way BNG2.pl runs it: method=>"nf", '
+                                  't_end, and n_steps of 1 or more, with no continue.')
