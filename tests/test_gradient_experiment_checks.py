@@ -48,7 +48,7 @@ def _exp_from(sim, columns, sigma, indvar='time'):
 
 
 def _gradient_and_fd(tmp_path, build, keys, free, truth, columns, sigma, indvar='time',
-                     conditions=None, h=1e-6):
+                     conditions=None, h=1e-6, indvar_by_key=None):
     """(assembled gradient, central differences) of the loss summed over ``keys``."""
     conditions = conditions or {}
     names = [p.name for p in free]
@@ -61,7 +61,8 @@ def _gradient_and_fd(tmp_path, build, keys, free, truth, columns, sigma, indvar=
         return model.execute(str(tmp_path), 'experiment_checks', 60)
 
     truth_ds = run(truth)
-    exps = {key: _exp_from(truth_ds[key], columns, sigma, indvar) for key in keys}
+    exps = {key: _exp_from(truth_ds[key], columns, sigma,
+                           (indvar_by_key or {}).get(key, indvar)) for key in keys}
     theta = {p.name: p.value for p in free}
 
     def loss(values):
@@ -75,6 +76,7 @@ def _gradient_and_fd(tmp_path, build, keys, free, truth, columns, sigma, indvar=
         dn[p.name] -= h
         fd[j] = (loss(up) - loss(dn)) / (2.0 * h)
     base = build(theta)
+    base.set_scored_suffixes(set(keys))     # as the fitting job does, before it routes
     routes = {key: route_for_model(base, names, conditions.get(key)) for key in keys}
     ds = run(theta, routes)
     grad = assemble_gaussian_gradient(
@@ -114,8 +116,9 @@ def _sbml_model(tmp_path, text, values, actions=(TimeCourse({'time': '10', 'step
 
 def test_experiment_columns_reads_the_running_conditions_route():
     """The request is the union over the experiments; a run is compared only on the columns its
-    own condition's route reads. Without a record, or for a condition it does not name, the
-    whole request is compared -- the side that refuses more."""
+    own condition's route reads. Without a record (a request enabled directly) the whole
+    request is compared -- the side that refuses more. A condition the record does not name runs
+    no scored experiment (every scored one is routed before the fit), so nothing is compared."""
     request = SimpleNamespace(params=['k1', 'k2', 'kb'], ic=['A', 'B'])
     columns = {'': (frozenset({'kb'}), frozenset()),
                'c2': (frozenset({'k1'}), frozenset({'B'})),
@@ -123,7 +126,7 @@ def test_experiment_columns_reads_the_running_conditions_route():
     assert seeding.experiment_columns(request, columns, 'c2') == (['k1'], ['B'])
     assert seeding.experiment_columns(request, columns, 'c3') == ([], [])
     assert seeding.experiment_columns(request, columns, '') == (['kb'], [])
-    assert seeding.experiment_columns(request, columns, 'c9') == (['k1', 'k2', 'kb'], ['A', 'B'])
+    assert seeding.experiment_columns(request, columns, 'c9') == ([], [])
     assert seeding.experiment_columns(request, None, 'c2') == (['k1', 'k2', 'kb'], ['A', 'B'])
 
 
@@ -353,8 +356,9 @@ def test_sbml_write_an_initial_assignment_overwrites_is_refused(tmp_path, how):
         model = _sbml_model(tmp_path, _SPECIES_IA_SBML, {'k1': 0.35}, actions=(scan,))
         free, condition, target, feeder = ['k1'], None, 'k2', 'k1'
     with pytest.raises(GradientNotSupported,
-                       match=r"defines '%s' by an initialAssignment, .* writes it; the "
-                             r"evaluation also changes .*'%s'" % (target, feeder)):
+                       match=r"defines '%s' by an initialAssignment, .* writes it; in "
+                             r"experiment '.*' the evaluation also changes .*'%s'"
+                             % (target, feeder)):
         route_for_model(model, free, condition)
 
 
@@ -421,3 +425,170 @@ def test_net_segment_backend_writes_only_the_parameters_its_model_declares(tmp_p
     backend = NetSegmentBackend(model, _parse_simulate_action(action), MutationSet(), 'tc')
     data = backend.simulate(model.param_set, np.linspace(0.0, 3.0, 4), None)
     assert np.all(np.isfinite(data.data))
+
+
+# ========================================= round 4: the record survives, and per-experiment ===
+
+# k2 = 2*k1 converts A to B; k1 also degrades B (the P4 shape, for multiple shooting).
+_P4_SBML = _SPECIES_IA_SBML
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+def test_multiple_shooting_keeps_each_conditions_columns_and_adds_every_state(tmp_path):
+    """Multiple shooting widens the request to every carried state after the routings are
+    applied. The per-condition record survives that widening, with each state's
+    initial-condition column added to every condition: the ``c3`` segment, which pins
+    ``k2 = 0.8`` and reads no parameter column, runs instead of being refused, and its
+    ``dB/dB(t0)`` column from a knot is the closed form ``exp(-k1 (t - t0))`` and matches
+    central differences in the knot's ``B``."""
+    from pybnf.algorithms.optimizers.multiple_shooting import MultipleShootingAlgorithm
+    from pybnf.shooting import BngsimSegmentBackend
+    c2 = MutationSet([Mutation('k1', '=', 'x', is_param_ref=True)], 'c2')
+    c3 = MutationSet([Mutation('k2', '=', 0.8)], 'c3')
+    action = TimeCourse({'time': '4', 'step': '1'})
+    model = _sbml_model(tmp_path, _P4_SBML, {'x': 0.35}, actions=(action,), mutants=(c2, c3))
+    apply_routings(model, [route_for_model(model, ['x'], None),
+                           route_for_model(model, ['x'], c2),
+                           route_for_model(model, ['x'], c3)])
+    MultipleShootingAlgorithm._request_state_sensitivities(None, model)
+    states = frozenset(model.species_names)
+    assert model._experiment_columns == {'': (frozenset(), states),
+                                         'c2': (frozenset({'k1'}), states),
+                                         'c3': (frozenset(), states)}
+    seg = BngsimSegmentBackend(model, action, c3, 'time_coursec3')
+    times = np.linspace(1.0, 3.0, 3)
+    knot = {'S': 50.0, 'A': 4.0, 'B': 2.0}
+    data = seg.simulate(model.param_set, times, dict(knot))
+    sens = data.output_sensitivities
+    column = sens.d_ic[:, sens.selectors.index('species:B'), sens.ic_species.index('B')]
+    h = 1e-6
+
+    def b_at(b0):
+        return seg.simulate(model.param_set, times, dict(knot, B=b0)).data[:, data.cols['B']]
+
+    # dB/dt = k2*A - k1*B is linear in B, and A does not depend on B: dB(t)/dB(t0) is
+    # exp(-k1 (t - t0)) with k1 = 0.3 here; central differences agree to their own noise.
+    np.testing.assert_allclose(column, np.exp(-0.3 * (times - times[0])), rtol=1e-6)
+    np.testing.assert_allclose(column, (b_at(2.0 + h) - b_at(2.0 - h)) / (2.0 * h),
+                               rtol=1e-4, atol=1e-8)
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+def test_sbml_assignment_write_is_decided_in_its_own_experiment(tmp_path):
+    """A plain scan of ``k2`` (``= 2*k1`` by an initialAssignment) in the wildtype, beside a
+    condition ``c`` that sets ``k1 = x`` for a time course: the scan's writes stand in the
+    wildtype, where nothing moves ``k1``, so the fit runs and matches central differences.
+    The same scan scored under ``c`` is overwritten there (``x`` moves ``k1`` in the same
+    evaluation) and is refused, naming that experiment."""
+    cond = MutationSet([Mutation('k1', '=', 'x', is_param_ref=True)], 'c')
+    tc = TimeCourse({'time': '4', 'step': '1', 'suffix': 'tc'})
+    scan = ParamScan({'param': 'k2', 'min': '0.2', 'max': '1', 'step': '0.4', 'time': '4',
+                      'suffix': 'dr'})
+
+    def build(values):
+        return _sbml_model(tmp_path, _SPECIES_IA_SBML, values, actions=(tc, scan),
+                           mutants=(cond,))
+
+    grad, fd, _ = _gradient_and_fd(tmp_path, build, ['dr', 'tcc'], [_free('x', 0.35)],
+                                   {'x': 0.3}, ['B'], 0.05, conditions={'tcc': cond}, h=1e-5,
+                                   indvar_by_key={'dr': 'k2'})
+    np.testing.assert_allclose(grad, fd, rtol=1e-4)
+    model = build({'x': 0.35})
+    model.set_scored_suffixes({'drc'})
+    with pytest.raises(GradientNotSupported, match=r"in experiment 'drc' the evaluation also "
+                                                   r"changes 'k1'"):
+        route_for_model(model, ['x'], cond)
+
+
+_EXCH_NET = """begin parameters
+    1 A0    10    # Constant
+    2 kf    1     # Constant
+    3 kr    0.5   # Constant
+end parameters
+begin species
+    1 A() A0
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Aobs                 1
+    2 Bobs                 2
+end groups
+"""
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+def test_net_carried_scan_of_a_parameter_another_condition_binds(tmp_path):
+    """The wildtype runs a time course and then scans ``kf`` with no reset (a carried scan);
+    condition ``c`` binds ``kf = x`` for a time course of its own. bngsim cannot scan a
+    parameter it is differentiating, and the wildtype reads no ``kf`` column, so each condition
+    now requests only its own route's columns: the wildtype's scan carries ``kr`` alone, and the
+    gradient matches central differences. It used to be refused."""
+    net = Path(tmp_path) / 'exch.net'
+    net.write_text(_EXCH_NET)
+    cond = MutationSet([Mutation('kf', '=', 'x', is_param_ref=True)], 'c')
+    actions = [_SIM % (4, 'tc'),
+               'parameter_scan({parameter=>"kf",par_scan_vals=>[0.5,1,2],t_start=>0,t_end=>3,'
+               'method=>"ode",suffix=>"dr"})']
+    build = _net_builder(net, actions, [('simulate', 'tc'), ('parameter_scan', 'dr')],
+                         mutants=[cond])
+    grad, fd, ds = _gradient_and_fd(tmp_path, build, ['tcc', 'dr'],
+                                    [_free('x', 1.2), _free('kr', 0.6)],
+                                    {'x': 1.0, 'kr': 0.5}, ['Bobs'], 0.1,
+                                    conditions={'tcc': cond}, h=1e-5,
+                                    indvar_by_key={'dr': 'kf'})
+    np.testing.assert_allclose(grad, fd, rtol=1e-4)
+    assert ds['dr'].output_sensitivities.param_names == ['kr']
+    assert set(ds['tcc'].output_sensitivities.param_names) == {'kf', 'kr'}
+
+
+_VOLUME_NET = """begin parameters
+    1 f     1     # Constant
+    2 V     2*f   # ConstantExpression
+    3 dose  1     # Constant
+    4 kf    1     # Constant
+    5 kr    0.5   # Constant
+end parameters
+begin species
+    1 A() 0
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Aobs                 1
+    2 Bobs                 2
+end groups
+"""
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+@pytest.mark.parametrize('pin', ['V', 'dose'])
+def test_net_intervention_reading_a_conditions_constant(tmp_path, pin):
+    """``setConcentration("A()","V*dose")`` under a condition that sets ``V`` or ``dose`` to a
+    constant. A condition's constant is not a fitted parameter, so the amount is not refused
+    for reading one. With ``V = 30`` the amount no longer moves with the fitted ``f``, so its
+    gradient is exactly 0 (and its central difference is too); with ``dose = 3``, ``A(0) =
+    6*f`` moves with ``f``. Both match central differences."""
+    net = Path(tmp_path) / 'volume.net'
+    net.write_text(_VOLUME_NET)
+    cond = MutationSet([Mutation(pin, '=', 30.0 if pin == 'V' else 3.0)], 'p')
+    build = _net_builder(net, ['setConcentration("A()","V*dose")', _SIM % (3, 'tc')],
+                         [('simulate', 'tc')], mutants=[cond])
+    grad, fd, _ = _gradient_and_fd(tmp_path, build, ['tcp'],
+                                   [_free('f', 1.2), _free('kr', 0.6)], {'f': 1.0, 'kr': 0.5},
+                                   ['Bobs'], 0.1, conditions={'tcp': cond}, h=1e-5)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-6)
+    if pin == 'V':
+        assert grad[0] == 0.0
+    else:
+        assert abs(grad[0]) > 1.0

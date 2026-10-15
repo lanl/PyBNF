@@ -238,12 +238,20 @@ def experiment_columns(request, columns, condition):
     ``{condition suffix: (params, ic)}`` map :func:`pybnf.gradient.routing.apply_routings`
     records, and ``condition`` the running condition's suffix (``''`` for the wildtype). A
     column the experiment does not read is computed only because another experiment does, so
-    a run-time check has nothing to compare it against here. Without a map, or for a condition
-    it does not name, the whole request is compared -- the side that refuses more."""
+    a run-time check has nothing to compare it against here.
+
+    Without a map -- a request enabled directly rather than through ``apply_routings``, which no
+    fitting job does -- the whole request is compared, the side that refuses more. A map that
+    does not name the running condition means no scored experiment runs under it: the fitting
+    job routes every scored experiment's condition (and the wildtype) before the fit starts, so
+    such a run is one whose outputs no route reads -- an unscored condition still runs its ODE
+    actions with the request -- and there is no column to compare."""
     params = list(getattr(request, 'params', None) or ())
     ic = list(getattr(request, 'ic', None) or ())
-    if columns is None or condition not in columns:
+    if columns is None:
         return params, ic
+    if condition not in columns:
+        return [], []
     read_params, read_ic = columns[condition]
     return [p for p in params if p in read_params], [s for s in ic if s in read_ic]
 

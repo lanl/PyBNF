@@ -2063,46 +2063,54 @@ class BngsimSbmlModelNoTimeout(Model):
 
         A value written to a parameter or species this model's own ``initialAssignment``
         defines lasts only until the evaluation re-derives the initial values
-        (:meth:`_recompute_initial_assignments`). The writes are a free parameter bound to it, a
-        condition that sets it (absolute or relative), a parameter scan of it, and a
-        pre-equilibration's equilibration condition -- each is applied to the document before
-        the initial values are derived. (The measurement condition is written onto the
-        equilibrated model afterwards, so it stands.) The values are derived again when
-        anything the evaluation changes feeds an ``initialAssignment`` -- a free parameter, a
-        condition target, a scanned parameter or a pre-equilibration condition -- and always on
-        the reload path. Otherwise the written value stands, and fitting the target is a fit of
-        an ordinary parameter. ``names`` is empty when nothing is overwritten; ``cause`` names
-        what re-derives the values. The scalar path's own handling of such a write is #865."""
+        (:meth:`_recompute_initial_assignments`), which it does when the same evaluation changes
+        something an ``initialAssignment`` reads, and always on the reload path. Decided per
+        scored ``(action, condition)`` pair, because each is its own evaluation
+        (:meth:`_engine_model_for_action`): it writes the free parameters, the condition's
+        targets (absolute or relative) and the action's own baked-in writes -- a plain scan's
+        parameter at each dose, a pre-equilibration's equilibration condition -- and re-derives
+        if any of those feeds an assignment. A pre-equilibrated scan's dose and a measurement
+        condition are written onto the equilibrated model afterwards, so they stand. A write in
+        one experiment is therefore not refused for what another experiment changes. ``names``
+        is empty when nothing is overwritten; ``cause`` names the experiment and what re-derives
+        the values. The scalar path's own handling of such a write is #865."""
         defined = self._assignment_targets()
         targets = [mut.name for mut in (condition or ())]
-        written = list(free_params) + targets
+        offset = getattr(condition, 'suffix', '') if condition is not None else ''
+        scored = getattr(self, '_scored_suffixes', None)
+        deps = set(self._initial_dep_names or ())
+        reload = self._needs_structural_reload()
+        ids = set(self.param_names or ()) | set(self._species_name_set)
+        changed_by_fit = {name for name in free_params if name in ids} | set(targets)
+        writes, causes = set(), []
         for act in getattr(self, 'actions', ()):
-            if isinstance(act, ParamScan):
-                written.append(act.param)
-            written.extend(name for _kind, name, _value
-                           in (getattr(act, 'equil_perturbations', None) or ()))
-        writes = sorted({name for name in written if name in defined})
+            suffix = getattr(act, 'suffix', '') + offset
+            if scored is not None and suffix not in scored:
+                continue
+            baked = set()
+            if getattr(act, 'preequilibrate', False):
+                baked.update(name for _kind, name, _value
+                             in (getattr(act, 'equil_perturbations', None) or ()))
+            elif isinstance(act, ParamScan):
+                baked.add(act.param)
+            here = (changed_by_fit | baked) & defined
+            if not here:
+                continue
+            if reload:
+                writes |= here
+                causes.append("experiment '%s' reads this model again from SBML, which "
+                              "evaluates its initialAssignments over any written value" % suffix)
+                continue
+            feeders = sorted((changed_by_fit | baked) & deps)
+            if feeders:
+                writes |= here
+                causes.append("in experiment '%s' the evaluation also changes %s, which an "
+                              "initialAssignment reads, so the initial values are derived again "
+                              "over the written value"
+                              % (suffix, ', '.join("'%s'" % name for name in feeders)))
         if not writes:
             return [], ''
-        if self._needs_structural_reload():
-            return writes, ('this model is read again from SBML at every evaluation, which '
-                            'evaluates its initialAssignments over any written value')
-        ids = set(self.param_names or ()) | set(self._species_name_set)
-        feeding = {name for name in free_params if name in ids}
-        feeding.update(targets)
-        for act in getattr(self, 'actions', ()):
-            if isinstance(act, ParamScan):
-                feeding.add(act.param)
-            for _kind, name, _value in (list(getattr(act, 'equil_perturbations', None) or ())
-                                        + list(getattr(act, 'measure_perturbations', None)
-                                               or ())):
-                feeding.add(name)
-        feeders = sorted(feeding & set(self._initial_dep_names or ()))
-        if not feeders:
-            return [], ''
-        return writes, ('the evaluation also changes %s, which an initialAssignment reads, so '
-                        'the initial values are derived again over the written value'
-                        % ', '.join("'%s'" % name for name in feeders))
+        return sorted(writes), '; '.join(causes)
 
     def _check_run_model_matches_route(self, engine_model, literal_species=(),
                                        condition=None):

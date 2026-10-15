@@ -2,9 +2,9 @@
 
 ## Status
 
-Implemented (2026-10-14); amended 2026-10-15 after a first and a second independent review
-(the sections "After review" and "After the second review" below); review of the second
-amendment pending. It changes the router
+Implemented (2026-10-14); amended 2026-10-15 after three independent reviews (the sections
+"After review", "After the second review" and "After the third review" below); review of the
+third amendment pending. It changes the router
 (`pybnf/gradient/routing.py`), the SBML/Antimony backend (`pybnf/bngsim_sbml_model.py`), the
 bngsim `.net` backend (`pybnf/bngsim_model/net_model.py`), both multiple-shooting segment
 backends (`pybnf/shooting/`), and adds `pybnf/_bngsim_seeding.py`. It amends ADR-0094 (a
@@ -187,6 +187,41 @@ vector: it writes the parameters its model declares and lets anything else propa
 A derived parameter read only through another derived parameter, a rate-law function or a
 printed function is still refused on 0.16.0 when overridden, though 0.16.0 differentiates it
 correctly. That direction is safe, and it is left as is.
+
+## After the third review
+
+The third review found no wrong gradient. It found four valid configurations refused.
+
+14. **Multiple shooting keeps the record.** It widens the request to every carried state
+    after the routings are applied, through ``enable_output_sensitivities``, which clears the
+    per-condition record; every segment was then compared with the whole request, and the
+    edition-2 P4 configuration with ``job_type = ms`` stopped on both builds for SBML and on
+    0.16.0 for ``.net`` while ``lbfgs`` converged. The widening now restores the record with
+    each state's initial-condition column added to every condition, since every segment
+    reads them. No other caller re-enables the request after ``apply_routings``: design and
+    profile likelihood go through the same set-up, and pickling and condition copies keep
+    the record. Without a record -- a request enabled directly, which no fitting job does --
+    the whole request is still compared. A record that does not name the running condition
+    means no scored experiment runs under it (every scored one and the wildtype are routed
+    before the fit), so nothing is compared.
+15. **An ``initialAssignment`` write is decided in its own experiment.** Each scored
+    ``(action, condition)`` pair is one evaluation: it writes the free parameters, the
+    condition's targets, and the action's own baked-in writes (a plain scan's dose, an
+    equilibration condition), and it re-derives the initial values if any of those feeds an
+    assignment. A scan of ``k2 = 2*k1`` in the wildtype beside a condition that sets
+    ``k1 = x`` elsewhere is honoured (3535.0129 against 3535.0134) and is no longer refused.
+16. **A ``.net`` run requests its own condition's columns.** bngsim cannot scan a parameter
+    it differentiates, and a carried scan must request exactly the columns the state it
+    starts from carries, so narrowing only the check was not enough: the wildtype's
+    time course had already carried ``kf``, which another condition binds. Every run of a
+    condition now asks for the parameter columns its route reads (the whole request where
+    that is none, since the assembly expects a tensor for every scored experiment), and the
+    carried-scan guard reads the same list. The SBML backend still requests the union; it has
+    no carried scan of this kind.
+17. **A condition's constant is not a fitted parameter.** The check that refuses an
+    intervention reading a fitted parameter no column carries read the condition copy's
+    parameter set, which includes the condition's own targets; ``V*dose`` under ``V = 30``
+    was refused. A condition copy now keeps its parent's free-parameter names.
 
 ## Consequences
 

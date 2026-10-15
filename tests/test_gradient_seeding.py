@@ -1073,8 +1073,8 @@ def test_sbml_assignment_target_written_while_its_input_moves_is_refused(tmp_pat
                      MutationSet([Mutation('k_used', '*', 2.0)], 'c')}[how]
     free = ['k_src', 'k_used'] if condition is None else ['k_src']
     with pytest.raises(GradientNotSupported,
-                       match=r"defines 'k_used' by an initialAssignment, and .* writes it; the "
-                             r"evaluation also changes 'k_src'"):
+                       match=r"defines 'k_used' by an initialAssignment, and .* writes it; in "
+                             r"experiment 'time_course.*' the evaluation also changes 'k_src'"):
         route_for_model(model, free, condition)
 
 

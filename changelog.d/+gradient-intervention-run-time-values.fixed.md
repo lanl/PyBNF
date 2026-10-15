@@ -7,4 +7,5 @@
   have been refused. Only derived parameters that still follow their expression are
   expanded now, and the row is evaluated at the run's own values: the scanned dose, an
   earlier `setParameter`, the fitted values. A seed that is zero at one dose is kept, so the
-  steady-state refusal does not depend on it.
+  steady-state refusal does not depend on it. An amount reading a parameter that a condition
+  sets to a constant is no longer refused as reading a fitted parameter.

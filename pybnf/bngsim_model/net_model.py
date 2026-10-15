@@ -329,6 +329,9 @@ class BngsimModel(NetModel):
     _scored_suffixes = None
     _sensitivity_offset = ''
     _current_action_suffix = None
+    # A condition copy's free-parameter names (:meth:`_fitted_parameter_names`); ``None`` on the
+    # base model, whose ``param_set`` is the fit vector itself.
+    _free_parameter_names = None
     # ``{condition suffix: (params, ic)}``: the columns each condition's route reads
     # (:meth:`set_experiment_columns`). ``None`` compares a run on the whole request.
     _experiment_columns = None
@@ -825,11 +828,31 @@ class BngsimModel(NetModel):
             # so build a plain Simulator and let it run on the ordinary path.
             return {}
         kwargs = {}
-        if req.params:
-            kwargs['sensitivity_params'] = list(req.params)
+        params = self._run_sensitivity_params()
+        if params:
+            kwargs['sensitivity_params'] = params
         if req.ic:
             kwargs['sensitivity_ic'] = list(req.ic)
         return kwargs
+
+    def _run_sensitivity_params(self):
+        """The parameter columns this instance's runs request.
+
+        The request is the union over every experiment; a run asks only for the columns its own
+        condition's route reads (:meth:`set_experiment_columns`), so that a column another
+        condition binds -- a parameter this run scans, say, which bngsim cannot also
+        differentiate -- is not requested where nothing reads it. Every run of one condition
+        asks for the same columns, so a state carried from one action to the next carries
+        exactly the columns the next one requests. Where the condition's route reads no
+        parameter column, or no route record exists, the whole request is used, as before: the
+        assembly expects a tensor for every scored experiment."""
+        req = self._sensitivity_request
+        params = list(req.params or ()) if req is not None else []
+        columns = self._experiment_columns
+        own = columns.get(self._sensitivity_offset) if columns else None
+        if own and own[0]:
+            return [p for p in params if p in own[0]]
+        return params
 
     # --- carried forward-sensitivity seed across a mid-protocol species write (#532) --- #
     #
@@ -1016,6 +1039,18 @@ class BngsimModel(NetModel):
                 "intervention amount as arithmetic over model parameters, or run a "
                 "gradient-free fit." % (self.name, species_name, expr, exc)) from exc
 
+    def _fitted_parameter_names(self):
+        """The configuration's free parameters, by name.
+
+        The base model's ``param_set`` is exactly the fit vector. A condition copy's also holds
+        the condition's targets (:func:`_build_mutant_param_set`) -- a constant one is no more
+        fitted than any other constant -- so the copy keeps its parent's answer
+        (:meth:`_get_mutant_model_bngsim`)."""
+        names = getattr(self, '_free_parameter_names', None)
+        if names is not None:
+            return set(names)
+        return set(self.param_set.keys()) if self.param_set is not None else set()
+
     def _refuse_unrouted_intervention_reads(self, species_name, expr, targets):
         """Refuse an intervention amount that reads a fitted parameter no column carries (#538).
 
@@ -1024,7 +1059,7 @@ class BngsimModel(NetModel):
         from a parameter the trajectory genuinely does not depend on. It is the one wrong answer
         this whole seam exists to avoid, so name the parameter and stop instead.
         """
-        fitted = set(self.param_set.keys()) if self.param_set is not None else set()
+        fitted = self._fitted_parameter_names()
         unrouted = sorted((_intervention_expression_reads(expr, self._net_param_definitions)
                            & fitted) - set(targets))
         if not unrouted:
@@ -1647,7 +1682,8 @@ class BngsimModel(NetModel):
         # carried across a stable steady state -- ∂x*/∂x(0) = 0 -- and the backend refuses it),
         # so the parameter axis is what gates the flag; an IC-only request never reaches here.
         req = self._sensitivity_request
-        if req is not None and req.params and method == 'ode' and state.carried_state:
+        if (req is not None and self._run_sensitivity_params() and method == 'ode'
+                and state.carried_state):
             run_kwargs['carry_sensitivities'] = True
 
         if stop_if:
@@ -2221,7 +2257,10 @@ class BngsimModel(NetModel):
                 "d(output)/d(initial condition) has no meaning across that boundary. Bind the "
                 "free parameter to a model parameter id, or run a gradient-free fit."
                 % (self.name, ', '.join(req.ic)))
-        if s.param_name in req.params:
+        # Decided on the columns this run requests (:meth:`_run_sensitivity_params`): another
+        # condition can bind the scanned parameter to a fitted one for a run of its own, and
+        # this run then neither reads nor requests its column.
+        if s.param_name in self._run_sensitivity_params():
             raise PybnfError(
                 "Model %s: a scored parameter_scan following a pre-equilibration cannot scan "
                 "'%s', which is also a fitted parameter this run differentiates. The carried "
@@ -2372,7 +2411,7 @@ class BngsimModel(NetModel):
         scan_timeout = s.scan_timeout
         scan_eval_timeout = s.scan_eval_timeout
         # Gradient path: ask KINSOL for dY_ss/dp against the fitted params.
-        sens_params = list(self._sensitivity_request.params) if collect_sens else None
+        sens_params = self._run_sensitivity_params() if collect_sens else None
         if collect_sens:
             self._require_steady_state_ic_axis(model)
         obs_names = []
@@ -3012,6 +3051,9 @@ class BngsimModel(NetModel):
         # when keying the scored set for the #475 gate (the shallow copy already
         # shares the base model's _scored_suffixes / _sensitivity_request).
         mut_model._sensitivity_offset = mut.suffix
+        # The copy's param_set also holds the condition's own targets (a constant ``V = 30``),
+        # which are not fitted; keep the configuration's free parameters beside it.
+        mut_model._free_parameter_names = self._fitted_parameter_names()
         return mut_model
 
     def __copy__(self):

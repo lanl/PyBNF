@@ -8,5 +8,5 @@
   run model that disagrees with its experiment's routing stops the fit with the parameter
   named. A write to a parameter or species the model's own `initialAssignment` defines (a
   free parameter, a condition, a scan or an equilibration condition) is refused on the
-  gradient path when the evaluation also changes something an `initialAssignment` reads,
-  since the assignment then overwrites the write.
+  gradient path when the same experiment also changes something an `initialAssignment`
+  reads, since the assignment then overwrites the write.
