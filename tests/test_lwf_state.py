@@ -166,7 +166,7 @@ def test_a_wall_time_stop_then_a_continuation_writes_what_the_uninterrupted_run_
 def test_a_wall_time_stop_before_row_1_continues_when_the_prior_has_an_infinite_draw(tmp_path):
     """beta is truncated below where 1 - F = 1e-15 and open above, so its inverse CDF is infinite
     on the top 5% of quantiles: about one draw in twenty. (The dispersion cannot carry this prior:
-    the filter refuses one that reaches above 1e6.)"""
+    the filter refuses one that reaches above 1e12.)"""
     kw = dict(particles=100, replace={'loguniform_var = beta': (
         'parameter: beta, prior: normal, mean: 0.3, sd: 0.05, lower: 0.697067, upper: inf')})
     whole = _run(tmp_path / 'whole', **kw)

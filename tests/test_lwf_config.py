@@ -253,19 +253,19 @@ def _fixed_dispersion(value):
             'loguniform_var = r': None}
 
 
-@pytest.mark.parametrize('value', ['0', '-5', 'inf', 'nan', '1e7', '1e12', '1e308', '1e-7',
+@pytest.mark.parametrize('value', ['0', '-5', 'inf', 'nan', '1e13', '1e308', '1e-7',
                                    '1e-300', '5e-324'])
 def test_a_fixed_dispersion_outside_the_range_the_filter_honours_is_refused(tmp_path, value):
     """0, -5 and inf loaded and every particle was then counted as failing to integrate; nan was
-    refused as differing from itself; 1e12 was scored as the clip's floor, not the particles'
-    means (lanl/PyBNF#987); 1e-300 crashed the forecast draw after every row was assimilated."""
+    refused as differing from itself; 1e-300 crashed the forecast draw after every row was
+    assimilated; numpy's draw is biased from r = 1e15."""
     message = _load_refusal(tmp_path, replace=_fixed_dispersion(value))
     assert 'the dispersion fix_at %s on cases' % lw._exact(float(value)) in message
-    assert 'between 1e-06 and 1e+06' in message
+    assert 'between 1e-06 and 1e+12' in message
 
 
 @pytest.mark.bngsim
-@pytest.mark.parametrize('value', ['1e-6', '1e6'])
+@pytest.mark.parametrize('value', ['1e-6', '1e8', '1e12'])
 def test_a_fixed_dispersion_at_either_end_of_the_range_loads(tmp_path, value):
     H.require_bng2pl()
     alg = C.build(C.write_job(tmp_path, replace=_fixed_dispersion(value)))
@@ -275,12 +275,12 @@ def test_a_fixed_dispersion_at_either_end_of_the_range_loads(tmp_path, value):
 @pytest.mark.parametrize('line, phrase', [
     ('uniform_var = r -10 100', 'whose prior reaches below 0 (lower bound -10)'),
     ('normal_var = r 20 30', 'whose prior reaches below 0 (lower bound -inf)'),
-    ('loguniform_var = r 1 1e7', 'whose prior reaches above 1e+06 (upper bound 10000000)'),
-    ('lognormal_var = r 1 1', 'whose prior reaches above 1e+06 (upper bound inf)'),
-], ids=['below_0', 'unbounded_normal', 'above_1e6', 'unbounded_lognormal'])
+    ('loguniform_var = r 1 1e13', 'whose prior reaches above 1e+12 (upper bound 10000000000000)'),
+    ('lognormal_var = r 1 1', 'whose prior reaches above 1e+12 (upper bound inf)'),
+], ids=['below_0', 'unbounded_normal', 'above_1e12', 'unbounded_lognormal'])
 def test_a_fitted_dispersion_whose_prior_leaves_the_range_is_refused(tmp_path, line, phrase):
-    """Every particle drawn or moved below 0 was counted as failing to integrate, and one above
-    1e6 risks a score for the wrong mean (lanl/PyBNF#987)."""
+    """Every particle drawn or moved below 0 was counted as failing to integrate, and above 1e12
+    the forecast draw nears where numpy's is biased."""
     message = _load_refusal(tmp_path, replace={'loguniform_var = r': line})
     assert 'the dispersion r, ' + phrase in message
 

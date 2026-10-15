@@ -268,7 +268,7 @@ def _format_bngl_number(x):
 
     ``repr`` gives the shortest string that round-trips back to the same float, so a
     data point like ``0.0065`` stays ``0.0065`` (not ``0.006500000000001``) when it is
-    re-parsed by BNG2.pl, bngsim, or ``find_t_length``. BioNetGen and bngsim both accept
+    re-parsed by BNG2.pl or bngsim. BioNetGen and bngsim both accept
     decimal and scientific notation.
     """
     return repr(float(x))
@@ -1155,49 +1155,6 @@ class BNGLModel(Model):
             if match is not None:
                 return act_type, match.group(1)
         return None
-
-    def find_t_length(self):
-        """
-        Builds a dict mapping each simulate action's suffix to the number of output
-        time points minus one, which is used to size the trajectory-output arrays
-        (an array of length ``time + 1`` holds one entry per output row).
-
-        The number of output rows depends on how the simulation length is specified:
-
-        * ``n_steps=>N`` produces ``N + 1`` rows (including ``t_start``), so ``time = N``.
-        * ``sample_times=>[t0,...,tM]`` produces one row per listed time, so
-          ``time = len(sample_times) - 1``.
-
-        :return: dict keyed on suffix string with integer values
-        """
-        # Join line continuations so each action occupies a single line.
-        lines = self.bngl_file_text.replace('\\\n', '').split('\n')
-        timeDict = {}
-        for line in lines:
-            # Skip commented-out lines (including any possible commented-out
-            # actions with n_steps/sample_times in them).
-            if '#' in line or 'simulate' not in line:
-                continue
-            suffix_match = re.search(r"suffix\s*=>\s*['\"](.*?)['\"]", line)
-            if suffix_match is None:
-                continue
-            suffix = suffix_match.group(1)
-
-            sample_match = re.search(r"sample_times\s*=>\s*\[(.*?)\]", line)
-            n_steps_match = re.search(r"n_steps\s*=>\s*(\d+)", line)
-            if sample_match is not None:
-                # One output row per listed sample time.
-                n_times = len([t for t in sample_match.group(1).split(',') if t.strip() != ''])
-                timeDict[suffix] = n_times - 1
-            elif n_steps_match is not None:
-                timeDict[suffix] = int(n_steps_match.group(1))
-            else:
-                raise PybnfError(
-                    "Could not determine the simulation length for the simulate action with "
-                    f"suffix '{suffix}' in model {self.file_path}: the action specifies neither n_steps nor "
-                    "sample_times.")
-
-        return timeDict
 
     def copy_with_param_set(self, pset):
         """
@@ -2172,8 +2129,9 @@ class Action:
         One row per explicit output point when the grid is data-derived (ADR-0028
         ``explicit_points``, which always includes the forced ``t=0`` for a time course),
         else the uniform ``n_steps`` grid's row count (``stepnumber + 1``, including
-        ``t_start``). Used to size the per-experiment output arrays
-        (``config.py::_load_experiments`` -> ``_load_t_length`` -> adaptive_mcmc)."""
+        ``t_start``). Each backend's output for the action has this many rows; nothing in
+        PyBNF sizes an array from it any more (``am`` allocates from the output itself, #990),
+        and the tests hold every backend to it."""
         if getattr(self, 'explicit_points', None) is not None:
             return len(self.explicit_points)
         return self.stepnumber + 1

@@ -706,6 +706,19 @@ class TestChainRecordIsADropInForTheList:
         assert len(back) == 65 and np.array_equal(back[:], rec[:])
         assert len(pickle.dumps(rec)) < len(pickle.dumps(algorithms.ChainRecord(range(200))))
 
+    @pytest.mark.parametrize('item', [np.array([1.0, 2.0, 3.0]), 4.5])
+    def test_an_empty_record_takes_appends_after_a_pickle_round_trip(self, item):
+        """An empty record pickled as a (0,) array, which has lost the item shape and whose
+        capacity doubles to 0, so its first append after the round trip raised IndexError
+        (#990). It comes back as a new record does, and grows as one does."""
+        back = pickle.loads(pickle.dumps(algorithms.ChainRecord()))
+        assert len(back) == 0 and back == []
+        for i in range(algorithms.ChainRecord._INITIAL_CAPACITY + 1):
+            back.append(np.asarray(item) + i)
+        assert len(back) == algorithms.ChainRecord._INITIAL_CAPACITY + 1
+        assert np.array_equal(back[0], np.asarray(item, dtype=float))
+        assert np.array_equal(back[-1], np.asarray(item) + algorithms.ChainRecord._INITIAL_CAPACITY)
+
     def test_pickle_is_much_smaller_than_the_list_of_arrays_it_replaced(self):
         """The regression guard. A list of per-step arrays is millions of small
         objects; one array per chain is a buffer."""

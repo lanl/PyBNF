@@ -179,3 +179,16 @@ ADR-0011 (the noise engine that will feed `log_likelihood`), ADR-0019 (core stay
 dependency-free; optional extras gate the import), ADR-0028 (the new-era `edition`/config the
 `output_inference_data` key joins), ADR-0048/0054 (the end-of-run artifact precedent the
 auto-emit hook mirrors).
+
+## Amendment (2026-10-15, #990 review): no natural-space fallback
+
+The standalone path no longer falls back to natural space. When neither `variables` nor `config`
+is given and `Results/` holds no `.conf` that loads, or the configuration does not declare every
+parameter the run sampled, `from_pybnf` raises a `PybnfError` that names the cause and says to
+pass `config=` or `variables=`. The fallback produced a plausible object in the wrong
+parameterization: a log parameter came back in natural units under its bare name, and the only
+trace was a log line. That surfaced when a refusal added to configuration loading (`output_trajectory`
+under a job type other than `am`) made the archived `.conf` of runs that were valid when they were
+made stop loading, and their log parameters silently changed space. That refusal now applies when a
+run starts, not when a configuration loads, so such archives read back as before; and a `.conf`
+that fails to load for any other reason is an error, not a degraded result.

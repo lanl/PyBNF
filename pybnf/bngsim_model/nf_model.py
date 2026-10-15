@@ -40,6 +40,7 @@ from .expressions import (
     _parse_bngl_param_block,
 )
 from .scan import _resolve_sample_times, _resolve_scan_points
+from .grid import describe_action, scan_t_end, simulate_output_grid
 from .output import _write_saved_action_outputs
 from .classification import (
     _normalize_nf_action_method,
@@ -185,7 +186,11 @@ class BngsimNfModel(Model):
 
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
-        t_end = float(ps_params.get('t_end', 100))
+        # BNG2.pl runs simulate at each scan point, which requires t_end without sample_times
+        # (grid.py); it used to default to 100 here. The step count only spaces the samples
+        # before the final state each point records, and keeps its default.
+        t_end = scan_t_end(ps_params, describe_action(self._grid_label(), ps_params, 'parameter_scan'),
+                           sample_times, evaluate=float)
         n_steps = int(ps_params.get('n_steps', 1))
         if sample_times is not None:
             t_start = sample_times[0]
@@ -414,6 +419,11 @@ class BngsimNfModel(Model):
         sim.initialize(seed_value)
         return sim
 
+    def _grid_label(self):
+        """The model name a grid refusal gives (grid.py); a test double built without
+        ``__init__`` has none, and is named by its class."""
+        return getattr(self, 'name', type(self).__name__)
+
     def _nf_simulate_action(self, sim_params, sess, current_param_overrides, ds,
                             action_index, timeout):
         """Run one simulate() action, starting or switching the NF session as needed.
@@ -429,11 +439,13 @@ class BngsimNfModel(Model):
         # PyBNF #427 / bngsim #184): the new-era experiment: surface outputs at exactly the
         # data's independent-variable points, which the objective matches by ivar. When
         # present, sample_times overrides the uniform t_start/t_end/n_steps grid.
-        sample_times = _resolve_sample_times(sim_params)
-
         t_start = float(sim_params.get('t_start', 0))
-        t_end = float(sim_params.get('t_end', 100))
-        n_steps = int(sim_params.get('n_steps', 100))
+        # The output grid by BNG2.pl's NFsim rules (grid.py): n_steps and t_end > t_start are
+        # required unless sample_times (a bngsim extension) gives the grid. These used to
+        # default to 100 steps and t_end = 100.
+        sample_times, t_end, n_steps = simulate_output_grid(
+            sim_params, describe_action(self._grid_label(), sim_params), method,
+            t_start=t_start, evaluate=float)
         print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
         suffix = sim_params.get('suffix', 'time_course')
         gml = sim_params.get('gml')
