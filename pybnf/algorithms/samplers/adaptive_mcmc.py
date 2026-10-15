@@ -11,6 +11,10 @@ from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
+from ...noise import ConstantSigma, FreeParameterSigma, NegBinomial
+from ...noise.source import FormulaSigma
+from ...objective import NegBinLikelihood, NegBinLikelihood_Dynamic
+from types import SimpleNamespace
 
 from typing import Any
 
@@ -29,6 +33,14 @@ class AdaptiveMCMCConfig(MCMCFamilyConfig):
     calculate_covari: Any = None
 
 
+def _noise_spec(alg, column):
+    """``column``'s noise draw spec, resolved first if ``alg`` came from a backup made before
+    the specs existed (#986: ``-r`` unpickles without running ``__init__``)."""
+    if alg.output_noise_specs is None:
+        alg.output_noise_specs = {c: alg._noise_draw_spec(c) for c in alg.output_noise_columns}
+    return alg.output_noise_specs[column]
+
+
 @register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
                    schema=AdaptiveMCMCConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
@@ -36,6 +48,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
     #: a class attribute, so that a run resumed from a backup made before the counter
     #: existed reads it as 0 rather than failing at its first wall.
     boundary_rejections = 0
+    #: Each output_noise_trajectory column's draw (#986), resolved on first use. Also a class
+    #: attribute, so a run resumed from a backup made before it existed resolves them then.
+    output_noise_specs = None
 
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super().__init__(config)
@@ -113,6 +128,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
         if self.config.config['output_noise_trajectory']:
             # Same as above: the separator is the parser's business now (#751).
             self.output_noise_columns = list(self.config.config['output_noise_trajectory'])
+            # Each column's counts are drawn from the noise model that scores it (#986).
+            self.output_noise_specs = {c: self._noise_draw_spec(c) for c in self.output_noise_columns}
             self.output_run_noise_current = {}
             self.output_run_noise_all = {}
             for i in self.output_noise_columns:
@@ -256,7 +273,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     for z in res.out[i][j].data:
                                         self.list_trajactory.append(z.data[column])      
                                     if '_Cum' in l:
-                                        getFirstValue = np.concatenate((self.list_trajactory[0],np.diff(self.list_trajactory)))
+                                        getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
                                         self.output_run_current[j+l][index]= getFirstValue
                                     else:
                                         self.output_run_current[j+l][index]= self.list_trajactory
@@ -281,7 +298,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     self.list_trajactory = []
                                     for z in res.out[ib][js].data:
                                         self.list_trajactory.append(z.data[column])      
-                                    if '_Cum' in la:
+                                    if _noise_spec(self, la)[2]:
                                         getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
                                         self.output_run_noise_current[js+la][index]= getFirstValue
                                     else:
@@ -311,17 +328,16 @@ class Adaptive_MCMC(BayesianAlgorithm):
         
         # record the trajactorys for the graphs
         if self.iteration[index] >= self.valid_range and self.iteration[index] % self.config.config['sample_every'] == 0:
-            # if the objective function is negbin then add the negbin noise to the traj output else record accepted sim vals as is
-            if (self.config.config['objfunc'] == 'neg_bin' and self.config.config['output_noise_trajectory']) or (self.config.config['objfunc'] == 'neg_bin_dynamic' and self.config.config['output_noise_trajectory']):
-                for l in self.output_noise_columns:     
-                    for i in self.output_run_noise_current.keys():
-                        if l in i:
-                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index], self.chain_rngs[index])
+            # Draw each noise column's counts around the recorded prediction. _noise_draw_spec
+            # refused, at load, a column whose noise model is not a negative binomial (#986).
+            if self.config.config['output_noise_trajectory']:
+                for l in self.output_noise_columns:
+                    for i in self._keys_of(l, self.output_run_noise_current):
+                        self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index], self.chain_rngs[index], l)
             if self.config.config['output_trajectory']:
                 for l in self.output_columns:
-                    for i in self.output_run_current.keys():
-                        if l in i:
-                            self.output_run_all[i][index][self.factor[index]] = self.output_run_current[i][index][0]
+                    for i in self._keys_of(l, self.output_run_current):
+                        self.output_run_all[i][index][self.factor[index]] = self.output_run_current[i][index][0]
 
         # Record that this individual is complete
         self.scores[index][self.factor[index]] = self.ln_current_P[index]
@@ -507,19 +523,72 @@ class Adaptive_MCMC(BayesianAlgorithm):
                       'is not a column' if one else 'are not columns',
                       'it' if one else 'them', ', '.join(sorted(available))))
 
-    def generateBinomialNoise(self, timeseries, pset, rng):
-        # Generate the binomial noise for the results (rng = the chain's own Generator)
+    def _keys_of(self, column, buffers):
+        """The buffer keys of ``column``: one per experiment suffix, matched exactly. A test of
+        ``column in key`` also matched a column whose name is inside another's key (``cases``
+        in ``epicases2``), which wrote that key's rows twice and, once each column had a noise
+        model of its own, drew it with the wrong one (#986)."""
+        return [k + column for k in self.time if k + column in buffers]
+
+    def _noise_draw_spec(self, column):
+        """``(family, dispersion source, cumulative)`` for one ``output_noise_trajectory``
+        column: the noise model that scores it, which must be a negative binomial with a fixed,
+        fitted or parameter-formula dispersion. The draw used to be gated on the legacy
+        ``objfunc``, which edition 2 does not have, so an edition-2 run wrote files of zeros
+        (#986); a legacy ``neg_bin`` / ``neg_bin_dynamic`` resolves to the same spec. A column
+        no data scores takes the whole-fit noise model.
+
+        The draw is differenced as the scoring is (the column's ``cumulative`` declaration),
+        with one exception kept for the legacy objfuncs' own default spec: a ``_Cum`` column
+        has always been drawn differenced there, and still is, byte for byte, even under
+        ``neg_bin``, whose scoring does not difference it."""
+        from ...measurement.time_error import MarginalizedTimeObjective
+        if isinstance(self.objective, MarginalizedTimeObjective):
+            raise PybnfError(
+                "output_noise_trajectory names %s, but the fit has a time_error" % column,
+                "output_noise_trajectory draws %s's counts at the simulated times, and this fit "
+                "scores each point with a timing error the draw would ignore. Remove "
+                "output_noise_trajectory, or the time_error." % column)
+        spec_for = getattr(self.objective, '_spec_for', None)
+        family, sources = spec_for(column) if spec_for is not None else (None, {})
+        if not isinstance(family, NegBinomial):
+            what = type(family).__name__ if family is not None else type(self.objective).__name__
+            raise PybnfError(
+                "output_noise_trajectory names %s, whose noise model is %s, not neg_bin"
+                % (column, what),
+                "output_noise_trajectory draws negative binomial counts around %s's prediction "
+                "from the noise model that scores it, and %s's is %s. Declare it with a neg_bin "
+                "noise model, or list it under output_trajectory instead." % (column, column, what))
+        source = sources.get('dispersion')
+        if not isinstance(source, (ConstantSigma, FreeParameterSigma, FormulaSigma)):
+            kind = type(source).__name__
+            raise PybnfError(
+                "output_noise_trajectory names %s, whose neg_bin dispersion is %s" % (column, kind),
+                "output_noise_trajectory draws %s's counts with a dispersion fixed (fix_at), "
+                "fitted (fit <parameter>) or a formula of parameters; %s's is a %s, which takes "
+                "a value from the data and has none between or beyond the data rows."
+                % (column, column, kind))
+        legacy_default = (isinstance(self.objective, (NegBinLikelihood, NegBinLikelihood_Dynamic))
+                          and column not in self.objective.overrides)
+        cumulative = self.objective._is_cumulative(column) or (legacy_default and '_Cum' in column)
+        return family, source, cumulative
+
+    def generateBinomialNoise(self, timeseries, pset, rng, column):
+        """Counts drawn around ``timeseries``, the predictions of ``column``, from its noise
+        model (:meth:`_noise_draw_spec`) under the chain's own Generator ``rng``."""
+        family, source, _ = _noise_spec(self, column)
         self.output = np.copy(timeseries)
-        self.pset = pset
-        if self.config.config['objfunc'] == 'neg_bin_dynamic':
-            for p in self.pset:
-                if p.name == 'r__FREE':
-                    self.r = p.value
-        else:
-            self.r = self.config.config['neg_bin_r']
+        if isinstance(source, ConstantSigma):
+            self.r = source.const
+        elif isinstance(source, FreeParameterSigma):
+            self.r = pset.get_param(source.name).value
+        else:   # a formula of parameters, read from this chain's point
+            self.r = source.value(SimpleNamespace(_pset_values={p.name: p.value for p in pset}),
+                                  None, None, None, None, column)
         for i in range(len(timeseries)):
-            # A negative prediction is the mean 0, as the noise model scores it.
-            mean = max(float(timeseries[i]), 0.0)
+            # The distribution mean the noise model scores: a negative prediction is 0, and
+            # a median-located prediction is inverted to its mean.
+            mean = family._mean(float(timeseries[i]), float(self.r))
             self.prob = np.clip(self.r / (self.r + mean), 1e-10, 1 - 1e-10)
             self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1,
                                                random_state=rng)[0]
@@ -572,16 +641,16 @@ class Adaptive_MCMC(BayesianAlgorithm):
         # observable happened to be switched on (#758). `write_out_scores` never filtered.
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         for l in self.output_columns:
-            for i in self.output_run_current.keys():
-                if l in i and (i, idx) in self.output_run_recorded:
+            for i in self._keys_of(l, self.output_run_current):
+                if (i, idx) in self.output_run_recorded:
                     with open(runs_dir / f'traj_{i}_chain_{idx}.txt', 'a') as f:
                         np.savetxt(f, self.output_run_all[i][idx])
     def write_out_trajactorys_noise(self, idx):
         # Basically this IO on every iter is to expensice timewise
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         for l in self.output_noise_columns:
-            for i in self.output_run_noise_current.keys():
-                if l in i and (i, idx) in self.output_run_noise_recorded:   # (#758, as above)
+            for i in self._keys_of(l, self.output_run_noise_current):
+                if (i, idx) in self.output_run_noise_recorded:   # (#758, as above)
                     with open(runs_dir / f'traj_noise_{i}_chain_{idx}.txt', 'a') as f:
                         np.savetxt(f, self.output_run_noise_all[i][idx])
     def combine_chains_params(self):
@@ -612,9 +681,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
         with no source files leaves no empty file behind either."""
         for j in range(self.num_parallel):
             for l in columns:
-                for i in buffers:
-                    if l not in i:
-                        continue
+                for i in self._keys_of(l, buffers):
                     source = runs_dir / per_chain.format(key=i, chain=j)
                     if not source.is_file():
                         missing.append((i, j))
