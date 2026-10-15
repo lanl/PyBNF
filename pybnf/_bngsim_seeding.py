@@ -231,6 +231,23 @@ def check_live_parameters(engine, expected_live, names, *, model_name, where):
              "model and configuration; a gradient-free job_type is unaffected.")
 
 
+def experiment_columns(request, columns, condition):
+    """``(params, ic)``: the requested columns the running experiment's route reads.
+
+    ``request`` is the model's union sensitivity request, ``columns`` the
+    ``{condition suffix: (params, ic)}`` map :func:`pybnf.gradient.routing.apply_routings`
+    records, and ``condition`` the running condition's suffix (``''`` for the wildtype). A
+    column the experiment does not read is computed only because another experiment does, so
+    a run-time check has nothing to compare it against here. Without a map, or for a condition
+    it does not name, the whole request is compared -- the side that refuses more."""
+    params = list(getattr(request, 'params', None) or ())
+    ic = list(getattr(request, 'ic', None) or ())
+    if columns is None or condition not in columns:
+        return params, ic
+    read_params, read_ic = columns[condition]
+    return [p for p in params if p in read_params], [s for s in ic if s in read_ic]
+
+
 def derived_parameter_inputs(engine):
     """``{derived parameter: every parameter it reads, transitively}`` for the derived
     parameters ``engine`` holds live, or ``None`` when the build cannot say.

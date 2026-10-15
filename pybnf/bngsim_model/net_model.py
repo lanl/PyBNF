@@ -25,6 +25,7 @@ from .._bngsim_seeding import (
     check_seeding,
     declare_rows,
     derived_parameter_inputs,
+    experiment_columns,
     live_parameters,
     seed_rows,
 )
@@ -328,6 +329,9 @@ class BngsimModel(NetModel):
     _scored_suffixes = None
     _sensitivity_offset = ''
     _current_action_suffix = None
+    # ``{condition suffix: (params, ic)}``: the columns each condition's route reads
+    # (:meth:`set_experiment_columns`). ``None`` compares a run on the whole request.
+    _experiment_columns = None
 
     # Transient per-scan sensitivity accumulator (#476): a gradient-supporting scan
     # strategy (reset-to-seed parity steady-state or independent dose-response) fills
@@ -425,9 +429,27 @@ class BngsimModel(NetModel):
                 "with the 'output_sensitivities' feature, or run a gradient-free "
                 "fit." % (reason or 'feature unavailable')
             )
+        too_old = _runtime.gradient_floor_problem()
+        if too_old:
+            raise PybnfError(
+                "Gradient-based fitting is not supported here: %s. Upgrade bngsim, or run a "
+                "gradient-free fit." % too_old)
         self._sensitivity_request = _SensitivityRequest(
             params=list(params or []), ic=list(ic or []),
         )
+        self._experiment_columns = None
+
+    def set_experiment_columns(self, columns):
+        """Record ``{condition suffix: (params, ic)}``, the columns each condition's route reads
+        (:func:`pybnf.gradient.routing.apply_routings`). The run-time checks compare a run with
+        its route on the running condition's columns only (:meth:`_experiment_request`)."""
+        self._experiment_columns = dict(columns)
+
+    def _experiment_request(self):
+        """``(params, ic)``: the requested columns this instance's condition reads -- its mutant
+        suffix is :attr:`_sensitivity_offset` (:func:`pybnf._bngsim_seeding.experiment_columns`)."""
+        return experiment_columns(self._sensitivity_request, self._experiment_columns,
+                                  self._sensitivity_offset)
 
     def analytic_sens_rhs_status(self):
         """What this model's forward sensitivities will actually run on (#606).
@@ -647,14 +669,13 @@ class BngsimModel(NetModel):
             twin.set_param(name, model.get_param(name))
         return seed_rows(twin)
 
-    def _route_seed_pairs(self):
+    def _route_seed_pairs(self, params):
         """The ``(species, param)`` initial-condition seeds the router decided on for the
-        requested parameter columns: the pairs this model's seed map lists for them
+        parameter columns ``params``: the pairs this model's seed map lists for them
         (:func:`pybnf.gradient.routing.classify_bound_id`). Only these are compared at run time,
         since a derived parameter an action overrides legitimately changes which other species
         bngsim chains through it."""
-        req = self._sensitivity_request
-        params = tuple(req.params or ()) if req is not None else ()
+        params = tuple(params or ())
         memo = self._seed_template_memo()
         key = ('route pairs', params)
         if memo is not None and key in memo:
@@ -678,11 +699,14 @@ class BngsimModel(NetModel):
         value of its own since the state the run starts from."""
         if not self._seed_rows_matter():
             return
+        params, _ = self._experiment_request()
+        if not params:
+            return
         expected = self.backend_ic_sensitivity()
         if expected is None:
             return
-        check_seeding(model, expected, self._sensitivity_request.params,
-                      model_name=self.name, where=where, pairs=self._route_seed_pairs(),
+        check_seeding(model, expected, params,
+                      model_name=self.name, where=where, pairs=self._route_seed_pairs(params),
                       exempt_species=assigned)
 
     def derived_parameter_inputs(self):
@@ -702,9 +726,12 @@ class BngsimModel(NetModel):
         enough."""
         if not self._seed_rows_matter() or _runtime.sensitivity_follows_derived_overrides():
             return
+        params, _ = self._experiment_request()
+        if not params:
+            return
         check_overridden_derived(model, self.backend_live_parameters(),
                                  self.derived_parameter_inputs(),
-                                 self._sensitivity_request.params, model_name=self.name,
+                                 params, model_name=self.name,
                                  where=where, also_overridden=also_overridden,
                                  rhs_symbols=self.ode_rhs_symbols())
 
@@ -747,6 +774,20 @@ class BngsimModel(NetModel):
         reactions/functions blocks at build time -- no simulation.
         """
         return self._net_rhs_symbols
+
+    def scanned_parameters(self):
+        """``[(suffix, parameter)]`` for each ``parameter_scan``/``bifurcate`` action, for the
+        router, which refuses a scored scan of a differentiated parameter
+        (:func:`pybnf.gradient.routing.route_for_model`). Read off the action lines -- no
+        simulation."""
+        scans = []
+        for action_line in self.actions:
+            line = _collapse_action_line_continuations(action_line).strip()
+            params = _parse_parameter_scan_action(line) or _parse_bifurcate_action(line)
+            if params is not None:
+                scans.append((params.get('suffix', 'param_scan'),
+                              str(params.get('parameter', ''))))
+        return scans
 
     def _sensitivity_request_kwargs(self, method):
         """Simulator kwargs requesting forward sensitivities on the gradient path.
@@ -891,8 +932,7 @@ class BngsimModel(NetModel):
                     "engine does not name, so its forward-sensitivity seed row cannot be placed. "
                     "Run a gradient-free fit for this protocol."
                     % (self.name, species_name)) from None
-            seed[index, :] = self._intervention_row(species_name, expr, names,
-                                                    _model_param_values(model))
+            seed[index, :] = self._intervention_row(species_name, expr, names, model)
         core = model._core
         core.set_pending_sensitivity_seed(seed, names)
         # The state the next phase starts from is a θ-dependent snapshot, not a fresh initial
@@ -923,11 +963,12 @@ class BngsimModel(NetModel):
         targets = list(self._sensitivity_request.params or ())
         if expr is None:
             row = {name: value for name, value in own_row.items() if name in targets}
+            if not any(row.values()):
+                return None
         else:
-            row = dict(zip(targets, self._intervention_row(
-                species_name, expr, targets, _model_param_values(model))))
-        if not any(row.values()):
-            return None
+            row = self._intervention_seed(species_name, expr, targets, model)
+            if not row:
+                return None
         try:
             model.declare_ic_sensitivity({species_name: row})
         except Exception as exc:
@@ -939,17 +980,34 @@ class BngsimModel(NetModel):
                 % (self.name, species_name, expr, exc)) from exc
         return row
 
-    def _intervention_row(self, species_name, expr, targets, param_values):
+    def _intervention_seed(self, species_name, expr, targets, model):
+        """``{target: d(expr)/d(target)}`` for the targets the amount reaches, zeros included.
+
+        A target the amount reads (directly or through a derived parameter that still tracks
+        its expression) is kept even where its derivative is zero at this point: the seed
+        exists, and whether the steady-state refusal applies (:meth:`_require_steady_state_seeding`)
+        must not depend on the value one dose happens to give it. A target the amount cannot
+        reach is left out, so a wash or a dose in fixed constants declares nothing."""
+        row = self._intervention_row(species_name, expr, targets, model)
+        reached = _intervention_expression_reads(
+            expr, self._net_param_definitions, live_parameters(model)) & set(targets)
+        return {p: d for p, d in zip(targets, row) if p in reached}
+
+    def _intervention_row(self, species_name, expr, targets, model):
         """``[d(expr)/d(target)]`` for one intervention amount, refusing rather than guessing.
 
-        Wraps :func:`_intervention_seed_row` with the two refusals a guessed row would hide: an
-        amount outside the arithmetic grammar, and an amount that reads a parameter this fit
-        varies which no requested sensitivity column carries (#538).
+        Evaluated at ``model``'s parameter values where the intervention runs -- a scanned dose,
+        an earlier ``setParameter``, the fitted values -- and through the derived parameters
+        ``model`` still holds live (:func:`_intervention_seed_row`). Wraps it with the two
+        refusals a guessed row would hide: an amount outside the arithmetic grammar, and an
+        amount that reads a parameter this fit varies which no requested sensitivity column
+        carries (#538).
         """
         self._refuse_unrouted_intervention_reads(species_name, expr, targets)
         try:
             return _intervention_seed_row(expr, targets, self._net_param_definitions,
-                                          param_values)
+                                          _model_param_values(model),
+                                          derived=live_parameters(model))
         except NotDifferentiable as exc:
             raise PybnfError(
                 "Model %s: the intervention setConcentration(%r, %r) between the "
@@ -1760,10 +1818,9 @@ class BngsimModel(NetModel):
             # is -- except where an active setConcentration() replaced a species' value, whose
             # seeding is then that expression's own derivative (#538's row).
             targets = list(self._sensitivity_request.params)
-            values = _model_param_values(point_model)
             for species_name, expr in active_overrides.items():
-                row = self._intervention_row(species_name, expr, targets, values)
-                seed[species_name] = {p: d for p, d in zip(targets, row) if d != 0.0}
+                seed[species_name] = self._intervention_seed(species_name, expr, targets,
+                                                             point_model)
             where = 'a parameter_scan point (%s = %s)' % (param_name, value)
             declare_rows(point_model, seed, model_name=self.name, where=where)
             self._check_run_seeding(point_model, set(active_overrides), where=where)
@@ -2212,8 +2269,7 @@ class BngsimModel(NetModel):
         species in no conservation law and wrong for one in a law. The request is the union over
         the model's experiments, so a column another experiment reads is refused here too; the
         integrate-to-steady-state default reads bngsim's own axis and is not affected."""
-        requested = list((self._sensitivity_request.ic if self._sensitivity_request else ())
-                         or ())
+        _, requested = self._experiment_request()
         if not requested:
             return
         hit = sorted(set(requested) & self._conserved_species(model))
@@ -2245,7 +2301,7 @@ class BngsimModel(NetModel):
         (``setConcentration("A()","Atot")`` seeds ``A`` from ``Atot`` as surely as
         ``A() Atot`` does).
         """
-        if _runtime.steady_state_sensitivity_carries_ic_seeding():
+        if not params or _runtime.steady_state_sensitivity_carries_ic_seeding():
             return
         rows = seed_rows(point_model, params) or {}
         seeded = {(species, p) for species, row in rows.items() for p in row if p in params}
@@ -2355,7 +2411,8 @@ class BngsimModel(NetModel):
                 )
                 if sens_params and index == 0:
                     # Every point is prepared alike, so the first one's seeding answers for all.
-                    self._require_steady_state_seeding(point_model, sens_params)
+                    self._require_steady_state_seeding(point_model,
+                                                       self._experiment_request()[0])
                 point_sim = self._make_scan_simulator(
                     point_model,
                     method,

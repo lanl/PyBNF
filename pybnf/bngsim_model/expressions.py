@@ -270,19 +270,23 @@ def _net_param_definitions(net_lines):
     return definitions
 
 
-def _intervention_expression_reads(expr, definitions):
+def _intervention_expression_reads(expr, definitions, derived=None):
     """The parameter ids an intervention expression reads, transitively through ``definitions``.
 
     A cheap over-approximation (bare token matching, as :func:`_parse_net_rhs_symbols` uses):
     its only job is to answer "can a differentiated parameter possibly reach this value?".
     When the answer is no -- the overwhelmingly common case for a wash to ``0`` or a dose
     written in fixed constants -- the intervention's ``∂x(0)/∂θ`` row is exactly zero and no
-    expression has to be parsed at all.
+    expression has to be parsed at all. ``derived``, when given, limits the expansion to the
+    derived parameters that still track their expression at this point (an overridden one is a
+    number, which reads nothing).
     """
     names = set(_TOKEN.findall(str(expr)))
     worklist = list(names)
     while worklist:
         name = worklist.pop()
+        if derived is not None and name not in derived:
+            continue
         for ref in _TOKEN.findall(definitions.get(name, '')):
             if ref not in names:
                 names.add(ref)
@@ -290,7 +294,16 @@ def _intervention_expression_reads(expr, definitions):
     return names
 
 
-def _intervention_seed_row(expr, targets, definitions, param_values):
+def _is_number(text):
+    """Whether a ``.net`` parameter definition is a plain number (a constant, not derived)."""
+    try:
+        float(str(text).strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _intervention_seed_row(expr, targets, definitions, param_values, derived=None):
     """``[d(expr)/d(target)]`` for a mid-protocol species assignment, one entry per target.
 
     The row a ``setConcentration`` intervention contributes to the carried forward-sensitivity
@@ -299,17 +312,26 @@ def _intervention_seed_row(expr, targets, definitions, param_values):
     accumulated. Derived parameters are inlined first (:func:`derivative.substitute`), so a
     dose written over a derived volume differentiates through it.
 
+    Only *derived* parameters are inlined -- ``derived``, the ones that track their expression
+    at this point, or, when not given, those whose ``.net`` definition is not a plain number.
+    Every other id stays a symbol and is read from ``param_values``, the values at the point the
+    intervention runs: a scanned dose, a ``setParameter`` before it, the fitted values. Inlining
+    a constant's ``.net`` number instead differentiated ``Atot*dose`` at the file's ``dose``
+    whatever the scan or the protocol had set it to.
+
     Raises :class:`~pybnf.gradient.derivative.NotDifferentiable` when the expression -- or a
     definition on the path from it to a target -- lies outside the arithmetic grammar, or when
     the derivative reads a symbol ``param_values`` does not define. The caller turns that into
     a refusal; a guessed row would be a silently wrong gradient.
     """
     targets = list(targets)
-    if not _intervention_expression_reads(expr, definitions) & set(targets):
+    if derived is None:
+        derived = {name for name, text in definitions.items() if not _is_number(text)}
+    if not _intervention_expression_reads(expr, definitions, derived) & set(targets):
         return [0.0] * len(targets)
 
     def resolve(name):
-        if name in targets or name not in definitions:
+        if name in targets or name not in derived or name not in definitions:
             return None
         return derivative.from_python_expression(definitions[name])
 

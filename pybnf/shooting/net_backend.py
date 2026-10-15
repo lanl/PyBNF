@@ -214,13 +214,13 @@ class NetSegmentBackend(SegmentBackend):
             # This backend never runs the model's actions, so its engine is the unrun one.
             prepared = self.model._get_mutant_model_bngsim(self.mutant, self.model._engine_model)
             engine = prepared._engine_model
+            # A free parameter this model does not declare belongs to another model of a
+            # multi-model fit (load time refuses one no model binds); any other failure to
+            # write a value is the run's to report, not to skip.
+            declared = set(engine.param_names)
             for name in (prepared.param_set or {}).keys():
-                try:
+                if name in declared:
                     engine.set_param(name, prepared.param_set[name])
-                except Exception:
-                    # A free parameter of another model in a multi-model fit; the ordinary
-                    # execute path warns and carries on, and so does this one.
-                    pass
             own_seed = prepared._sync_species_initial_concentrations(engine)
             engine.reset()
             declare_rows(engine, own_seed, model_name=getattr(self.model, 'name', '?'),

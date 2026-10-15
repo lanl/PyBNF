@@ -2,8 +2,9 @@
 
 ## Status
 
-Implemented (2026-10-14); amended 2026-10-15 after a first independent review (the
-section "After review" below); review of the amendment pending. It changes the router
+Implemented (2026-10-14); amended 2026-10-15 after a first and a second independent review
+(the sections "After review" and "After the second review" below); review of the second
+amendment pending. It changes the router
 (`pybnf/gradient/routing.py`), the SBML/Antimony backend (`pybnf/bngsim_sbml_model.py`), the
 bngsim `.net` backend (`pybnf/bngsim_model/net_model.py`), both multiple-shooting segment
 backends (`pybnf/shooting/`), and adds `pybnf/_bngsim_seeding.py`. It amends ADR-0094 (a
@@ -132,6 +133,60 @@ The bngsim floor is now 0.16.0, in `pyproject.toml` and the CI install. The runt
 `pybnf/_bngsim_caps.py` stays at 0.5.0, the API it checks for. A gradient result is guarded
 by the witnesses and feature keys, not a version string (ADR-0119), and a higher gate would
 turn bngsim off for every scalar fit on an older install.
+
+## After the second review
+
+The second review found one more false refusal, two silently wrong results this change
+owned, three writes the `initialAssignment` refusal missed, and a floor nothing enforced at
+run time.
+
+9. **Compare each run with its own experiment's route.** The request is the union over the
+   experiments, so a column one experiment reads is computed in another that never reads it,
+   where a condition can legitimately pin what that column follows: one condition sets
+   `k1 = x` (a parameter reference), another pins `k2 = 0.8` with `k2 = 2*k1`. The SBML check
+   refused this on both builds and the `.net` one on 0.16.0; the right answers were 25686.10
+   and 784.83. `apply_routings` now records each condition's columns beside the union, and
+   every run-time check (live derived parameters, seeding, overridden derived parameters,
+   the Newton initial-condition axis and seeding) compares only the running condition's.
+   Without a record, the whole request is compared. The species exemption of item 4 stays
+   the only exemption list; a derived parameter needs none, because an override a requested
+   column can reach is a write to an `initialAssignment` target while its input moves, which
+   item 12 refuses at load.
+10. **Differentiate an intervention at its run-time values.** The seed row of a
+    `setConcentration` amount (#538) inlined every parameter's `.net` value, constants
+    included, so `Atot*dose` after `setParameter("dose",3)` gave a column a third of the
+    truth (445.90 against 1337.70), and the same amount before a scan over `dose` used the
+    file's `dose` at every point (156.25 against 260.42). Now only a derived parameter the
+    run model holds live is inlined, every other one is read at its value there, and a
+    reached seed whose value is zero at one point is kept rather than dropped, so the #704
+    refusal no longer depends on it (`Atot*(dose-1)` at `dose = 1` had let a Newton scan
+    run on 0.16.0). The action loop, scan points and carried scans all build the row the same
+    way; multiple-shooting lanes run no actions, so they have no intervention.
+11. **Refuse a scored scan of a differentiated parameter.** A scan writes its own value to the
+    swept parameter at every dose, so a central difference of the loss in that parameter is
+    0, while its column is the derivative at the dose (`kr` fitted and scanned: -472.32; a
+    fitted seed `A0` scanned: -85.49 and -91.15). Refused at load, `.net` and SBML, for a
+    parameter fitted by id or bound by a condition, naming the scan and the parameter. An
+    unscored scan bears no sensitivities and is left alone.
+12. **Every write an `initialAssignment` overwrites.** The narrowed rule of the first review
+    read only the parameters an assignment defines and only free-parameter and condition
+    writes. It now covers species (`S := S0` fitted beside `S0`: 3.68 against a central
+    difference of 0), relative conditions (`S * 2`), scans of an assignment target and a
+    pre-equilibration's equilibration condition. A measurement condition is written onto
+    the equilibrated model after the initial values are derived, so it stands. The scalar
+    path's handling of these writes is #865.
+13. **Enforce the floor where the gradient path starts.** `enable_output_sensitivities`
+    refuses a bngsim older than 0.16.0, or one whose version does not parse, naming the
+    installed version and the minimum. The resolver alone does not stop a 0.15.x build
+    installed from source, and the first review's 0.15.x findings still hold there. A scalar
+    fit keeps the 0.5.0 API minimum.
+
+A multiple-shooting `.net` lane also stopped swallowing every exception from writing the fit
+vector: it writes the parameters its model declares and lets anything else propagate.
+
+A derived parameter read only through another derived parameter, a rate-law function or a
+printed function is still refused on 0.16.0 when overridden, though 0.16.0 differentiates it
+correctly. That direction is safe, and it is left as is.
 
 ## Consequences
 

@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 # timeout= kwarg on every Simulator/Session entry point.
 _BNGSIM_MIN_VERSION = (0, 5, 0)
 _BNGSIM_MAX_MAJOR = 1
+# The gradient path's own floor, above the install floor. The router and its run-time checks
+# are written against the answers bngsim 0.16.0 and later give about derived parameters and
+# initial-condition seeding; a 0.15.x build gives different ones (a derived parameter's
+# override and the save that retires a seed behave differently), and a from-source install
+# can bring one in whatever ``pyproject.toml`` says. A scalar fit only needs the API above.
+_BNGSIM_GRADIENT_MIN_VERSION = (0, 16, 0)
 
 
 def _parse_version(version):
@@ -63,6 +69,22 @@ def _detect_version(module):
 
 def _min_version_str():
     return '%d.%d.%d' % _BNGSIM_MIN_VERSION
+
+
+def gradient_floor_problem():
+    """``''`` when the installed bngsim is new enough for the gradient path, else why not.
+
+    Read at call time, so the version a test installs is the one checked. A version string
+    that does not parse is not assumed new enough: the gradient path's answers depend on it."""
+    floor = '%d.%d.%d' % _BNGSIM_GRADIENT_MIN_VERSION
+    parsed = _parse_version(BNGSIM_VERSION)
+    if parsed is None:
+        return ('the installed bngsim reports version %r, which does not parse, and the '
+                'gradient path needs bngsim %s or later' % (BNGSIM_VERSION, floor))
+    if parsed < _BNGSIM_GRADIENT_MIN_VERSION:
+        return ('the installed bngsim is %s, and the gradient path needs bngsim %s or later'
+                % (BNGSIM_VERSION, floor))
+    return ''
 
 
 def _empty_capabilities():

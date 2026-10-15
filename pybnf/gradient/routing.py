@@ -811,12 +811,50 @@ def route_for_model(model, free_params, condition=None):
             "column counts it twice; once it does not, that column is the only place the chain "
             "is. Upgrade bngsim, or use a gradient-free optimizer or sampler for this fit.")
     condition = _resolve_condition(model, condition)
-    _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition)
+    _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition,
+                                           species_initializers)
     routing = route_experiment(free_params, param_values, species_initializers, condition,
                                ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
                                backend_ic_seeds=backend_ic_seeds, live_params=live_params)
     _refuse_relative_condition_on_a_derived_parameter(model, condition, routing)
+    _refuse_scan_of_a_differentiated_parameter(model, free_params, param_values, condition,
+                                               routing)
     return routing
+
+
+def _refuse_scan_of_a_differentiated_parameter(model, free_params, param_values, condition,
+                                               routing):
+    """Refuse a scored parameter scan whose swept parameter is fitted or requested.
+
+    The scan writes its own value to the parameter at every dose, over whatever the fit or a
+    condition gave it, so the objective does not depend on that parameter through the scan:
+    a central difference of the loss is zero. Its sensitivity column is not -- it is the
+    derivative at the dose value -- and the scan point's seeding is read off a model holding
+    the dose as well, so the assembled gradient would be a nonzero number for a flat
+    direction. A scan whose output is not scored is left alone (it bears no sensitivities);
+    one whose scored status is not yet known is treated as scored."""
+    reader = getattr(model, 'scanned_parameters', None)
+    if reader is None:
+        return
+    differentiated = ({name for name in free_params if name in param_values}
+                      | set(routing.sensitivity_params))
+    scored = getattr(model, '_scored_suffixes', None)
+    offset = getattr(condition, 'suffix', '') if condition is not None else ''
+    for suffix, param in reader():
+        if param not in differentiated:
+            continue
+        if scored is not None and (suffix + offset) not in scored:
+            continue
+        raise GradientNotSupported(
+            "Model '%s': the parameter_scan with suffix '%s' sweeps '%s', which this fit "
+            "differentiates%s. The scan writes its own value to '%s' at every dose, so the "
+            "objective does not move with the fitted value, but the gradient column for it is "
+            "the derivative at the dose and would come back nonzero."
+            % (getattr(model, 'name', '?'), suffix + offset, param,
+               ' (a fitted parameter)' if param in free_params else
+               ' (a condition binds a fitted parameter to it)', param),
+            hint=["Do not fit the scanned parameter; scan a parameter the fit does not vary.",
+                  "Or use a gradient-free job_type (e.g. job_type = de)."])
 
 
 def _refuse_relative_condition_on_a_derived_parameter(model, condition, routing):
@@ -875,7 +913,8 @@ def _seeds_any_parameter(ic_seed_map):
     return False
 
 
-def _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition):
+def _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition,
+                                           species_initializers=()):
     """Refuse a free parameter, or a condition, that writes a parameter the model's own
     ``initialAssignment`` defines -- when the evaluation overwrites the write.
 
@@ -892,16 +931,22 @@ def _refuse_writes_an_assignment_overrides(model, free_params, param_values, con
     decide = getattr(model, 'initial_assignment_writes_overwritten', None)
     if decide is None:
         return
-    bound = [name for name in free_params if name in param_values]
+    species = {name for name, _ in (species_initializers or ())}
+    bound = [name for name in free_params if name in param_values or name in species]
     hits, cause = decide(bound, condition)
     if not hits:
         return
     by_condition = {mut.name for mut in (condition or ())}
+    if set(hits) <= set(bound):
+        who = 'a free parameter of the same name'
+    elif set(hits) <= by_condition:
+        who = 'a condition'
+    else:
+        who = 'a parameter scan or a pre-equilibration condition'
     raise GradientNotSupported(
         "Model '%s' defines %s by an initialAssignment, and %s writes %s; %s. The written "
         "value never reaches the model, so the gradient has no column that describes it."
-        % (getattr(model, 'name', '?'), ', '.join("'%s'" % n for n in hits),
-           'a condition' if set(hits) <= by_condition else 'a free parameter of the same name',
+        % (getattr(model, 'name', '?'), ', '.join("'%s'" % n for n in hits), who,
            'it' if len(hits) == 1 else 'them', cause),
         hint=["Fit the parameters the assignment reads instead, or remove the "
               "initialAssignment from the model.",
@@ -931,7 +976,31 @@ def apply_routing(model, routing):
     """
     model.enable_output_sensitivities(
         params=routing.sensitivity_params, ic=routing.sensitivity_ic)
+    _record_experiment_columns(model, [routing])
     return routing
+
+
+def _record_experiment_columns(model, routings):
+    """Tell ``model`` which columns each condition's route reads, keyed by condition suffix
+    (``''`` for the wildtype).
+
+    The request is the union over every experiment, so a column one experiment reads is also
+    computed in another that never reads it -- where a condition can legitimately pin what the
+    column follows (``k2 = 0.8`` beside another condition's ``k1 = x``). The run-time checks
+    compare a run model with its route only on the columns the running experiment's route
+    reads (:func:`pybnf._bngsim_seeding.experiment_columns`). A model without the method (a
+    test double) keeps comparing on the whole request."""
+    record = getattr(model, 'set_experiment_columns', None)
+    if record is None:
+        return
+    columns = {}
+    for routing in routings:
+        condition = routing.condition
+        key = getattr(condition, 'suffix', '') if condition is not None else ''
+        params, ic = columns.setdefault(key, (set(), set()))
+        params.update(routing.sensitivity_params)
+        ic.update(routing.sensitivity_ic)
+    record({key: (frozenset(params), frozenset(ic)) for key, (params, ic) in columns.items()})
 
 
 def apply_routings(model, routings):
@@ -953,6 +1022,7 @@ def apply_routings(model, routings):
             if key not in ic:
                 ic.append(key)
     model.enable_output_sensitivities(params=params, ic=ic)
+    _record_experiment_columns(model, routings)
     return params, ic
 
 
