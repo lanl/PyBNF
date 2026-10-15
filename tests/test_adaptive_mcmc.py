@@ -1895,10 +1895,19 @@ def test_the_scored_series_is_recorded_as_it_was_scored_not_normalized_again(tmp
 @pytest.mark.parametrize('key', ['output_trajectory', 'output_noise_trajectory'])
 def test_a_trajectory_of_an_analytically_scaled_column_is_refused(tmp_path, key):
     """``scale`` is profiled against the data inside the objective, so the simulated series
-    the file would hold is off the data's scale by the factor the fit applied."""
+    the file would hold is off the data's scale by the factor the fit applied.
+
+    Since #996 the configuration refuses ``scale`` for every sampler first (a profile is not a
+    marginal), so an ``am`` job never reaches this refusal. It stays for a sampler that takes
+    ``scale`` with its marginal, and is exercised by attaching the scale after loading."""
     with pytest.raises(PybnfError) as info:
-        algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, normalization='scale',
-                                              **{key: ['y']}))
+        _make_config(tmp_path, 1, UNIFORM_VARS, normalization='scale', **{key: ['y']})
+    assert info.value.log_message == ('normalization scales x, y analytically (scale), which is '
+                                      'not available for a Bayesian sampler')
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **{key: ['y']})
+    cfg.config['analytic_scale'] = {'par1': frozenset({'y'})}
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
     assert info.value.log_message == f'{key} names y, which normalization scales analytically'
     assert 'normalization scales y analytically (scale) in experiment par1.' in info.value.message
 
@@ -1907,10 +1916,24 @@ def test_a_noise_trajectory_of_a_normalized_column_is_refused(tmp_path, monkeypa
     """The issue's edition-1 case, ``objfunc = neg_bin`` with ``normalization = init``, which
     stopped at the first accepted result with ``ValueError``. A count drawn around a normalized
     prediction is no count of anything, so the combination is refused when the configuration
-    loads."""
+    loads -- since #997 by the configuration itself, which refuses any normalization of a
+    column a count noise model scores, before ``am`` is built."""
     with pytest.raises(PybnfError) as info:
         _edition_1_noise_am(tmp_path, monkeypatch,
                             ['objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init'])
+    assert info.value.log_message == ('normalization init transforms cases, which the count '
+                                      'noise model neg_bin scores')
+    assert 'The same holds for cases_Cum (init in experiment epi' in info.value.message
+
+
+def test_a_noise_trajectory_of_a_normalized_continuous_column_is_refused(tmp_path,
+                                                                         monkeypatch):
+    """am's own refusal, still reached by a normalized column a continuous noise model scores:
+    no negative binomial count can be drawn around it either."""
+    with pytest.raises(PybnfError) as info:
+        _edition_1_noise_am(tmp_path, monkeypatch, [
+            'objfunc = chi_sq_dynamic', 'uniform_var = sigma__FREE 0.1 10',
+            'normalization = init'], model_parameters=['sigma__FREE'])
     assert info.value.log_message == ('output_noise_trajectory names cases_Cum, which '
                                       'normalization transforms')
     assert 'a normalized value in experiment epi, not an expected count' in info.value.message
@@ -1972,7 +1995,7 @@ def test_a_dream_run_naming_a_trajectory_is_refused_before_its_output_directory_
     assert not (tmp_path / 'out').exists()
 
 
-def _edition_2_config(tmp_path, monkeypatch, lines):
+def _edition_2_config(tmp_path, monkeypatch, lines, job_type='am'):
     """``load_config`` of an edition-2 job over the Liu-West SIR model (``cases`` is
     ``rho*CumInf``), with an unconditioned experiment ``epi`` and ``epi2`` under ``hi``."""
     from . import lwf_harness as L
@@ -1982,7 +2005,7 @@ def _edition_2_config(tmp_path, monkeypatch, lines):
     (tmp_path / 'sir.bngl').write_text(L.MODEL)
     L.write_data(tmp_path / 'cases.exp')
     (tmp_path / 'job.conf').write_text('\n'.join([
-        'edition = 2', 'model: sir.bngl', 'job_type = am', 'output_dir = out',
+        'edition = 2', 'model: sir.bngl', 'job_type = %s' % job_type, 'output_dir = out',
         'experiment: epi, data: cases.exp', 'condition: hi, perturbations: rho = 0.6',
         'experiment: epi2, condition: hi, data: cases.exp',
         'uniform_var = beta 0.3 1.2', 'uniform_var = gamma 0.1 0.5',
@@ -2020,16 +2043,17 @@ def test_scale_is_refused_on_a_noise_family_with_no_additive_scale(tmp_path, mon
     """``scale`` is profiled in the space the noise family adds its error in, which
     ``_scale_mode`` reads off the family's ``additive_on``. neg_bin has none, and every
     evaluation raised ``AttributeError`` in the objective, which the scoring turned into a
-    failed simulation. Every other family loads, and its profile space resolves."""
+    failed simulation. Every other family loads, and its profile space resolves. Under an
+    optimizer: a sampler refuses ``scale`` whatever the family (#996)."""
     line, space = _FAMILY_LINES[family]
     lines = ['noise_model = gaussian, sigma = fix_at 5, location = mean',
              'noise_model cases = %s' % line, 'normalization cases = scale']
     if space is not None:
-        cfg = _edition_2_config(tmp_path, monkeypatch, lines)
+        cfg = _edition_2_config(tmp_path, monkeypatch, lines, job_type='de')
         assert cfg.obj._scale_mode('cases') == space
         return
     with pytest.raises(PybnfError) as info:
-        _edition_2_config(tmp_path, monkeypatch, lines)
+        _edition_2_config(tmp_path, monkeypatch, lines, job_type='de')
     assert info.value.log_message == ('normalization scales cases analytically, but its noise '
                                       'model NegBinomial has no additive scale')
     assert 'cases (experiment epi, epi2hi) is scored by NegBinomial' in info.value.message
@@ -2256,9 +2280,13 @@ def _data_columns(names, array):
 
 
 def test_a_noise_column_normalized_in_one_experiment_names_it(tmp_path, monkeypatch):
-    """The refusal names the experiment, not a data file: ``b``, where ``Inf`` is normalized."""
+    """The refusal names the experiment, not a data file: ``b``, where ``Inf`` is normalized.
+    Both normalized columns are scored as Gaussians, so the configuration loads (#997 refuses a
+    normalized count column) and the refusal is am's, which comes before its check that the
+    column's noise model is a negative binomial."""
     cfg = _edition_1_two_experiments(tmp_path, monkeypatch, [
-        'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'noise_model cases = normal, sigma = fix_at 5',
+        'noise_model Inf = normal, sigma = fix_at 5', 'normalization = init: a.exp',
         'normalization = peak: b.exp', 'output_noise_trajectory = Inf'])
     with pytest.raises(PybnfError) as info:
         algorithms.Adaptive_MCMC(cfg)
@@ -2267,9 +2295,33 @@ def test_a_noise_column_normalized_in_one_experiment_names_it(tmp_path, monkeypa
     assert 'a normalized value in experiment b, not an expected count' in info.value.message
 
 
+def test_a_normalized_count_column_is_refused_naming_the_experiment_not_the_file(
+        tmp_path, monkeypatch):
+    """#997's refusal, on the legacy per-file form: each count column by the experiment
+    (data key) that normalizes it, never by the ``.exp`` name the form also keeps."""
+    with pytest.raises(PybnfError) as info:
+        _edition_1_two_experiments(tmp_path, monkeypatch, [
+            'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
+            'normalization = peak: b.exp'])
+    assert info.value.log_message == ('normalization peak transforms Inf, which the count '
+                                      'noise model neg_bin scores')
+    assert info.value.message.startswith('normalization transforms Inf (peak in experiment b, '
+                                         'scored by neg_bin)')
+    assert 'The same holds for cases (init in experiment a, scored by neg_bin).' \
+        in info.value.message
+    assert '.exp' not in info.value.message
+
+
 def test_an_edition_2_refusal_names_the_experiment_and_its_condition(tmp_path, monkeypatch):
+    """am's labels and #997's refusal name an experiment the same way."""
+    with pytest.raises(PybnfError) as info:
+        _edition_2_config(tmp_path, monkeypatch, [
+            'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+            'normalization epi2.cases = init'])
+    assert info.value.message.startswith('normalization transforms cases (init in experiment '
+                                         'epi2 (condition hi), scored by neg_bin)')
     cfg = _edition_2_config(tmp_path, monkeypatch, [
-        'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+        'noise_model = gaussian, sigma = fix_at 5, location = mean',
         'normalization epi2.cases = init'])
     stub = type('Stub', (), {})()
     stub.config = cfg
