@@ -284,6 +284,265 @@ def test_edition_1_mutant_names_that_spell_distinct_outputs_load(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
+# Only a key something reads is refused; a read key really is overwritten (#1004 review)
+# --------------------------------------------------------------------------------------------
+
+def _edition_2_lines(tmp_path, experiments, conditions, extra=()):
+    (tmp_path / 'm.bngl').write_text(_BNGL)
+    lines = ['edition = 2', 'model: %s' % (tmp_path / 'm.bngl'), 'bngl_backend = bngsim',
+             'job_type = de', 'objective = chi_sq', 'uniform_var = k1 0.05 2',
+             'population_size = 4', 'max_iterations = 2',
+             'output_dir = %s' % (tmp_path / 'out')] + list(extra)
+    lines += ['condition: %s' % c for c in conditions]
+    lines += ['experiment: %s' % e for e in experiments]
+    return '\n'.join(lines) + '\n'
+
+
+def _outputs(tmp_path, conf, k1):
+    """The model's outputs at ``k1`` through the runtime model a fit builds, emit-set pruning
+    included."""
+    H.require_bng2pl()
+    alg = H.build(conf, 'de')
+    model = alg.model_list[0]
+    run = model.copy_with_param_set(PSet([v.set_value(k1) for v in alg.variables]))
+    sims = tmp_path / 'sims'
+    sims.mkdir()
+    return run.execute(str(sims), 'p', 60)
+
+
+_EGF = (['Egf, condition: Inh, data: %(e)s', 'EgfTnf, condition: TnfInh, data: %(e)s'],
+        ['Inh, perturbations: k1 = 0.5', 'TnfInh, perturbations: k1 = 0.7'])
+
+
+@pytest.mark.bngsim
+def test_an_unread_collision_loads_and_neither_pair_is_run(tmp_path):
+    """``Egf`` under ``TnfInh`` and ``EgfTnf`` under ``Inh`` both spell ``EgfTnfInh``, which
+    nothing reads: it is no data key and not in the emit set, so neither pair runs and nothing
+    is overwritten. Each scored output is its own closed form."""
+    exp = _write_exp(tmp_path / 'e.exp', 'Bobs', _b_closed_form(0.3))
+    experiments, conditions = _EGF
+    conf = _load(_edition_2_lines(tmp_path, [e % {'e': exp} for e in experiments], conditions))
+    assert sorted(conf.exp_data['m']) == ['EgfInh', 'EgfTnfTnfInh']
+    assert conf.emit_suffixes['m'] == {'EgfInh', 'EgfTnfTnfInh'}
+    sims = _outputs(tmp_path, conf, 0.3)
+    assert 'EgfTnfInh' not in sims
+    for key, k1 in (('EgfInh', 0.5), ('EgfTnfTnfInh', 0.7)):
+        t = sims[key].data[:, sims[key].cols['time']]
+        np.testing.assert_allclose(sims[key].data[:, sims[key].cols['Bobs']],
+                                   _b_closed_form(k1, t=t), atol=1e-4)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('consumer', ['postprocessing target', 'constraint cross-reference'])
+def test_an_unread_collision_is_refused_once_something_reads_it(tmp_path, consumer):
+    """The same two pairs, once a postprocessing script or a constraint reads ``EgfTnfInh``:
+    the emit set would then run both, so the key is refused, naming both."""
+    exp = _write_exp(tmp_path / 'e.exp', 'Bobs', _b_closed_form(0.3))
+    experiments, conditions = _EGF
+    experiments = [e % {'e': exp} for e in experiments]
+    extra = []
+    if consumer == 'postprocessing target':
+        script = tmp_path / 'noop.py'
+        script.write_text('def postprocess(data):\n    return data\n')
+        extra.append('postprocess = %s EgfTnfInh' % script)
+    else:
+        prop = tmp_path / 'facts.prop'
+        prop.write_text('EgfTnfInh.Bobs at time=2 > Bobs at time=1 weight 1\n')
+        experiments.append('check, data: %s, t_end: 2' % prop)
+    with pytest.raises(PybnfError) as err:
+        _load(_edition_2_lines(tmp_path, experiments, conditions, extra))
+    message = err.value.message
+    assert "experiment 'Egf' run under condition 'TnfInh'" in message
+    assert "experiment 'EgfTnf' run under condition 'Inh'" in message
+    assert "'EgfTnfInh'" in message
+
+
+@pytest.mark.bngsim
+def test_an_unasked_pairing_is_explained(tmp_path):
+    """``a`` is declared and no experiment uses it, yet ``dat`` under ``a`` spells the scored
+    ``data``. The refusal says why a pairing the user never asked for runs at all."""
+    exp = _write_exp(tmp_path / 'e.exp', 'Bobs', _b_closed_form(0.3))
+    with pytest.raises(PybnfError) as err:
+        _load(_edition_2_lines(tmp_path, ['data, data: %s' % exp, 'dat, data: %s' % exp],
+                               ['a, perturbations: k1 = 0.9']))
+    message = err.value.message
+    assert "experiment 'dat' run under condition 'a'" in message
+    assert 'Every experiment of a model is simulated under every condition' in message
+    assert "Experiment 'dat' names no condition, but it also runs under condition 'a'" in message
+
+
+def _preequil_phase_case(tmp_path, order):
+    exp = _write_exp(tmp_path / 'e.exp', 'Bobs', _b_closed_form(0.3))
+    ss = tmp_path / 'ss.exp'
+    ss.write_text('# time\tBobs\tBobs_SD\ninf\t%.12g\t0.05\n' % (1.0 / 0.3))
+    experiments = ['x_preequil, data: %s' % ss, 'x, preequilibrate: p, data: %s' % exp]
+    if order == 'phase first':
+        experiments.reverse()
+    return _edition_2_lines(tmp_path, experiments, ['p, perturbations: k1 = 0.9'])
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('order', ['experiment first', 'phase first'])
+def test_an_experiment_named_after_a_preequilibration_phase_is_refused(tmp_path, order):
+    """A pre-equilibrated ``x`` stores its unmeasured phase under ``x_preequil``, so an
+    experiment named ``x_preequil`` has its output replaced (in one order) by the phase's
+    steady state under ``p``. Refused, naming the phase, in either order."""
+    with pytest.raises(PybnfError) as err:
+        _load(_preequil_phase_case(tmp_path, order))
+    message = err.value.message
+    assert "experiment 'x_preequil' run with no condition" in message
+    assert "the unmeasured pre-equilibration phase of experiment 'x'" in message
+    assert "followed by '_preequil'" in message
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('case', ['unused condition', 'pre-equilibration phase'])
+def test_a_refused_collision_is_a_real_overwrite(tmp_path, monkeypatch, case):
+    """What the refusal prevents, with the check switched off: both producers of the read key
+    run and the second replaces the first. ``data`` comes back as the closed form at
+    ``k1 = 0.9`` (``dat`` under ``a``), not 0.3; ``x_preequil``'s steady state comes back as
+    the phase's ``B* = kb/k1 = 1/0.9`` under ``p``, not ``1/0.3``."""
+    import pybnf.config
+    monkeypatch.setattr(pybnf.config, 'refuse_ambiguous_output_keys', lambda *a, **k: None)
+    if case == 'unused condition':
+        exp = _write_exp(tmp_path / 'e.exp', 'Bobs', _b_closed_form(0.3))
+        conf = _load(_edition_2_lines(
+            tmp_path, ['data, data: %s' % exp, 'dat, data: %s' % exp],
+            ['a, perturbations: k1 = 0.9']))
+        data = _outputs(tmp_path, conf, 0.3)['data']
+        t = data.data[:, data.cols['time']]
+        np.testing.assert_allclose(data.data[:, data.cols['Bobs']], _b_closed_form(0.9, t=t),
+                                   atol=1e-4)
+    else:
+        conf = _load(_preequil_phase_case(tmp_path, 'experiment first'))
+        data = _outputs(tmp_path, conf, 0.3)['x_preequil']
+        assert data.data[-1, data.cols['Bobs']] == pytest.approx(1.0 / 0.9, rel=1e-3)
+
+
+# --------------------------------------------------------------------------------------------
+# Edition-1 mutant data files are resolved, not pattern-matched (#1004 review)
+# --------------------------------------------------------------------------------------------
+
+_BNGL_XBC = _BNGL.replace('kb  1.0', 'kb  kb__FREE') + """
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10,suffix=>"x"})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10,suffix=>"xbc"})
+end actions
+"""
+
+
+def _legacy_mutant(tmp_path, data_stem):
+    (tmp_path / 'm.bngl').write_text(_BNGL_XBC)
+    for name in ('x', data_stem):
+        _write_exp(tmp_path / ('%s.exp' % name), 'Bobs', _b_closed_form(0.3))
+    return '\n'.join([
+        'model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'x.exp'),
+        'mutant = m b k1=0.5 : %s' % (tmp_path / ('%s.exp' % data_stem)),
+        'fit_type = de', 'objfunc = chi_sq', 'loguniform_var = kb__FREE 0.1 10',
+        'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')]) + '\n'
+
+
+def test_a_legacy_mutant_file_that_is_another_actions_output_is_refused(tmp_path):
+    """``xbc.exp`` listed under mutant ``b``: the old pattern ``.*(?=b)`` read it as ``x`` +
+    ``b`` (+ ``c``) and accepted it, and the data was scored against the unmutated action
+    ``xbc``. The stem is the output of ``xbc`` with no mutant, so it is refused."""
+    with pytest.raises(PybnfError) as err:
+        _load(_legacy_mutant(tmp_path, 'xbc'))
+    message = err.value.message
+    assert 'xbc.exp is listed under mutant b' in message
+    assert "the output of action 'xbc' with no mutant" in message
+
+
+@pytest.mark.parametrize('stem, key', [('xb', 'xb'), ('xbcb', 'xbcb')])
+def test_a_legacy_mutant_file_named_for_its_mutant_loads(tmp_path, stem, key):
+    conf = _load(_legacy_mutant(tmp_path, stem))
+    assert sorted(conf.exp_data['m']) == sorted(['x', key])
+
+
+# --------------------------------------------------------------------------------------------
+# Two actions that register one output suffix (#1004 review)
+# --------------------------------------------------------------------------------------------
+
+def _legacy_actions(tmp_path, second, extra=()):
+    bngl = _BNGL.replace('kb  1.0', 'kb  kb__FREE') + """
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"x"})
+%s
+end actions
+""" % second
+    (tmp_path / 'm.bngl').write_text(bngl)
+    _write_exp(tmp_path / 'x.exp', 'Bobs', _b_closed_form(0.3))
+    return '\n'.join([
+        'model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'x.exp'),
+        'fit_type = de', 'objfunc = chi_sq', 'loguniform_var = kb__FREE 0.1 10',
+        'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')] + list(extra)) + '\n'
+
+
+def test_a_legacy_continue_action_may_share_its_suffix(tmp_path):
+    """``continue=>1`` resumes the run before it under the same suffix, which BNG2.pl appends
+    to that output: a legitimate repeat, which loads."""
+    conf = _load(_legacy_actions(
+        tmp_path, 'simulate({method=>"ode",t_start=>5,t_end=>10,n_steps=>5,suffix=>"x",'
+                  'continue=>1})'))
+    assert sorted(conf.exp_data['m']) == ['x']
+
+
+@pytest.mark.bngsim
+def test_two_model_file_simulations_with_one_suffix_keep_the_last(tmp_path):
+    """Two ``simulate`` lines in the model file with one suffix and no ``continue``: BNG2.pl
+    writes the second over the first, and that is a model file BNG2.pl runs as written (the
+    Miller 2025 MEK isoform models do it). It loads; the output is the second run's grid
+    (t = 0..10, not 0..5), and multiple shooting resolves the same, last, action."""
+    conf = _load(_legacy_actions(
+        tmp_path, 'simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10,suffix=>"x"})'))
+    H.require_bng2pl()
+    alg = H.build(conf, 'de')
+    model = alg.model_list[0]
+    run = model.copy_with_param_set(PSet([v.set_value(1.0) for v in alg.variables]))
+    sims = tmp_path / 'sims'
+    sims.mkdir()
+    out = run.execute(str(sims), 'p', 60)['x']
+    np.testing.assert_allclose(out.data[:, out.cols['time']], np.arange(11.0))
+    params, _mutant = MS._resolve_net_action(None, model, 'x')
+    assert str(params['t_end']) == '10'
+
+
+@pytest.mark.parametrize('second, extra', [
+    # A model-file simulate and parameter_scan under one suffix: two kinds of output, one key.
+    ('parameter_scan({parameter=>"k1",par_min=>0.1,par_max=>1,n_scan_pts=>3,t_end=>10,'
+     'suffix=>"x"})', ()),
+    # A time_course key reusing a suffix the model file writes.
+    ('', ('time_course = model:m, suffix:x, time:10, step:1',)),
+])
+def test_a_repeated_suffix_that_is_not_the_model_files_own_is_refused(tmp_path, second, extra):
+    with pytest.raises(PybnfError, match="has 2 actions that write the output 'x'"):
+        _load(_legacy_actions(tmp_path, second, extra))
+
+
+@pytest.mark.bngsim_sbml
+def test_a_time_course_key_that_reuses_an_experiments_name_is_refused(tmp_path):
+    """A legacy ``time_course`` key with ``suffix:e1`` beside ``experiment: e1``: two
+    ``('simulate', 'e1')`` actions. ``execute`` keeps the last and multiple shooting segments
+    the first."""
+    (tmp_path / 'm.xml').write_text(_SBML)
+    exp = _write_exp(tmp_path / 'e1.exp', 'B', _b_closed_form(0.3))
+    text = '\n'.join([
+        'edition = 2', 'sbml_backend = bngsim', 'job_type = de', 'objective = chi_sq',
+        'uniform_var = k1 0.05 2', 'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out'), 'model: %s' % (tmp_path / 'm.xml'),
+        'time_course = model:m, suffix:e1, time:3, step:1',
+        'experiment: e1, data: %s' % exp]) + '\n'
+    with pytest.raises(PybnfError) as err:
+        _load(text)
+    assert "has 2 actions that write the output 'e1'" in err.value.message
+    assert "must not reuse an experiment's name" in err.value.message
+
+
+# --------------------------------------------------------------------------------------------
 # End to end: the fit does not depend on the experiment's name
 # --------------------------------------------------------------------------------------------
 
