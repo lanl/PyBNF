@@ -3,8 +3,9 @@
 ## Status
 
 Implemented (2026-10-14); amended 2026-10-15 after three independent reviews (the sections
-"After review", "After the second review" and "After the third review" below); review of the
-third amendment pending. It changes the router
+"After review", "After the second review" and "After the third review" below), and again for
+lanl/PyBNF#850 and #1002 ("Which condition a run belongs to", below); review of the third
+amendment and of the last section pending. It changes the router
 (`pybnf/gradient/routing.py`), the SBML/Antimony backend (`pybnf/bngsim_sbml_model.py`), the
 bngsim `.net` backend (`pybnf/bngsim_model/net_model.py`), both multiple-shooting segment
 backends (`pybnf/shooting/`), and adds `pybnf/_bngsim_seeding.py`. It amends ADR-0094 (a
@@ -222,6 +223,34 @@ The third review found no wrong gradient. It found four valid configurations ref
     intervention reading a fitted parameter no column carries read the condition copy's
     parameter set, which includes the condition's own targets; ``V*dose`` under ``V = 30``
     was refused. A condition copy now keeps its parent's free-parameter names.
+
+## Which condition a run belongs to
+
+Two follow-ups changed what the per-condition record of items 9 and 16 is built from and what
+a run requests from it. Its keying is unchanged: condition suffix, ``''`` for the wildtype.
+
+18. **The record is filled from the pair that produced each output (#850).** The routing of a
+    scored output, and through it the record, took its condition from the output's name: the
+    longest condition suffix the name ended with. A wildtype experiment ``data`` beside a
+    condition ``a`` was routed and recorded as ``dat`` under ``a``; on SBML the gradient was
+    then silently wrong (534.43 against a central difference of 1004.80), and ``lbfgs`` stopped
+    at x = 0.29399 instead of the truth 0.3. Each output is now resolved from the model's own
+    ``(action, condition)`` pairs (``pybnf/output_keys.py``), as multiple shooting already did,
+    and multiple shooting goes through the same resolver. Two pairs that spell one output
+    (``data`` as written and ``dat`` under ``a``) cannot be told apart by any lookup, and the
+    model's ``execute`` writes one over the other, so such a configuration is refused when it
+    loads, for edition-2 experiments and conditions and for edition-1 actions and mutants.
+19. **A condition whose route reads nothing requests nothing (#1002).** Item 16 kept the whole
+    request for such a condition because the assembly expected a tensor for every scored
+    experiment. That refused a carried scan of ``kf`` in a control condition beside another
+    that binds ``kf = y``. The run now requests no parameter column, and no initial-condition
+    column its route does not read, so the carried-scan guard is decided on what the run
+    actually carries. The assembly reads a missing tensor as a zero contribution only for a
+    route that reads no column; anywhere else a missing tensor is still refused. The analytic
+    sensitivity right-hand-side probe asks for the whole request, so a wildtype that reads
+    nothing still has something to probe. A condition the record does not name, and a model
+    with no record, keep the whole request, as before. The SBML backend still requests the
+    union.
 
 ## Consequences
 

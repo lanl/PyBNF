@@ -465,17 +465,24 @@ class BngsimModel(NetModel):
         The Simulator built here is the same one an ODE action builds
         (:meth:`_execute_actions`' opening construction, with no action suffix resolved
         yet, which is the sensitivity-bearing case), so the artifact read is about the
-        artifact this fit installs.
+        artifact this fit installs. It asks for the whole request rather than the wildtype's
+        own columns: one sensitivity right-hand side serves every column, and a wildtype
+        whose route reads none requests none (#1002), which would leave nothing to probe.
         """
         if self._sensitivity_request is None:
             return _runtime.SensRhsStatus(
                 None, 'this model has no sensitivity request', [], 0)
         req = self._sensitivity_request
         self._current_action_suffix = None
+        whole = {}
+        if req.params:
+            whole['sensitivity_params'] = list(req.params)
+        if req.ic:
+            whole['sensitivity_ic'] = list(req.ic)
         return _runtime.probe_sens_rhs(
             lambda: _runtime.bngsim.Simulator(
                 self._engine_model, method='ode',
-                **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')),
+                **self._codegen_kwargs(sensitivities=bool(whole)), **whole),
             columns=len(req.params or ()) + len(req.ic or ()))
 
     def set_scored_suffixes(self, suffixes):
@@ -831,8 +838,9 @@ class BngsimModel(NetModel):
         params = self._run_sensitivity_params()
         if params:
             kwargs['sensitivity_params'] = params
-        if req.ic:
-            kwargs['sensitivity_ic'] = list(req.ic)
+        ic = self._run_sensitivity_ic()
+        if ic:
+            kwargs['sensitivity_ic'] = ic
         return kwargs
 
     def _run_sensitivity_params(self):
@@ -843,16 +851,31 @@ class BngsimModel(NetModel):
         condition binds -- a parameter this run scans, say, which bngsim cannot also
         differentiate -- is not requested where nothing reads it. Every run of one condition
         asks for the same columns, so a state carried from one action to the next carries
-        exactly the columns the next one requests. Where the condition's route reads no
-        parameter column, or no route record exists, the whole request is used, as before: the
-        assembly expects a tensor for every scored experiment."""
+        exactly the columns the next one requests.
+
+        A condition whose route reads no parameter column requests none (#1002): nothing it
+        scores moves with a fitted parameter through the model, and the assembly reads no
+        tensor for such a route (:func:`pybnf.gradient.assembly._experiment_tensor`). Where
+        no record exists, or the record does not name this condition (no scored experiment
+        runs under it), the whole request is used, as before."""
+        return self._run_columns('params', 0)
+
+    def _run_sensitivity_ic(self):
+        """The initial-condition columns this instance's runs request: the peer of
+        :meth:`_run_sensitivity_params` on the ``ic`` axis. A condition whose route reads none
+        requests none, so a carried scan in it is not refused for an axis another condition
+        reads (#1002). Multiple shooting adds every carried state to each condition's record,
+        so its segments still request them all."""
+        return self._run_columns('ic', 1)
+
+    def _run_columns(self, axis, slot):
         req = self._sensitivity_request
-        params = list(req.params or ()) if req is not None else []
+        requested = list(getattr(req, axis, None) or ()) if req is not None else []
         columns = self._experiment_columns
         own = columns.get(self._sensitivity_offset) if columns else None
-        if own and own[0]:
-            return [p for p in params if p in own[0]]
-        return params
+        if own is not None:
+            return [c for c in requested if c in own[slot]]
+        return requested
 
     # --- carried forward-sensitivity seed across a mid-protocol species write (#532) --- #
     #
@@ -2165,9 +2188,12 @@ class BngsimModel(NetModel):
         if method == 'psa':
             sim = _runtime.bngsim.Simulator(model, method='psa', poplevel=s.poplevel)
         else:
+            # A scored scan whose condition requests no column (#1002) runs plain.
+            sens_kwargs = self._sensitivity_request_kwargs(method) if bears else {}
             sim = _runtime.bngsim.Simulator(
-                model, method=method, **self._codegen_kwargs(method, sensitivities=bears),
-                **(self._sensitivity_request_kwargs(method) if bears else {}))
+                model, method=method,
+                **self._codegen_kwargs(method, sensitivities=bool(sens_kwargs)),
+                **sens_kwargs)
 
         overrides = s.concentration_overrides or {}
 
@@ -2256,16 +2282,21 @@ class BngsimModel(NetModel):
                 "pre-equilibrated dose-response experiment."
                 % (self.name, _runtime.BNGSIM_VERSION or 'unknown'))
         # Non-ODE refuses with the message the simulate() path already gives.
-        self._sensitivity_request_kwargs(s.method)
-        req = self._sensitivity_request
-        if req.ic:
+        if not self._sensitivity_request_kwargs(s.method):
+            # This run requests no column at all: its condition's route reads none (#1002), so
+            # nothing is carried into the scan and nothing it scans is differentiated. It runs
+            # plain, and the assembly reads no tensor for that route.
+            return
+        # The axis this run requests (:meth:`_run_sensitivity_ic`), which is what it carries.
+        ic = self._run_sensitivity_ic()
+        if ic:
             raise PybnfError(
                 "Model %s: a scored parameter_scan following a pre-equilibration cannot carry "
                 "an initial-condition sensitivity axis (%s): each dose starts from the carried "
                 "post-intervention snapshot, not from the model's initial conditions, so "
                 "d(output)/d(initial condition) has no meaning across that boundary. Bind the "
                 "free parameter to a model parameter id, or run a gradient-free fit."
-                % (self.name, ', '.join(req.ic)))
+                % (self.name, ', '.join(ic)))
         # Decided on the columns this run requests (:meth:`_run_sensitivity_params`): another
         # condition can bind the scanned parameter to a fitted one for a run of its own, and
         # this run then neither reads nor requests its column.
@@ -3006,8 +3037,9 @@ class BngsimModel(NetModel):
                 ss_result.output_sensitivities(selectors, axis='parameter'),
                 dtype=float,
             )[np.newaxis, ...]
-        req = self._sensitivity_request
-        ic_species = list(req.ic) if req is not None else []
+        # The axis the scan point requested (:meth:`_run_sensitivity_ic`); bngsim does not
+        # report it on a steady-state result, so it is read off the request.
+        ic_species = self._run_sensitivity_ic()
         d_ic = None
         if ic_species:
             d_ic = np.zeros((1, len(selectors), len(ic_species)), dtype=float)

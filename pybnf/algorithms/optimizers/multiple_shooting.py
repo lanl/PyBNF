@@ -64,6 +64,7 @@ from pydantic import Field
 from .gradient_base import GradientOptimizer
 from ..multistart_report import NOT_STARTED, StartRecord
 from ...config_schema import PyBNFConfigModel
+from ...output_keys import resolve_output_key
 from ...printing import PybnfError, print0, print1, print2
 from ...registry import register_fit_type
 from ...shooting import (
@@ -524,17 +525,20 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         The same pairing :meth:`~pybnf.bngsim_sbml_model.BngsimSbmlModelNoTimeout.execute`
         makes -- a mutant simulation's output suffix is ``action.suffix + mutant.suffix`` --
         read back so a segment is simulated under exactly the condition the experiment was
-        measured under.
+        measured under. Resolved by :func:`pybnf.output_keys.resolve_output_key`, which refuses
+        a suffix that two pairs spell rather than take the first (#850). The model as written
+        is the backend's own empty ``MutationSet``.
         """
-        for mutant in getattr(model, 'mutants', []) or []:
-            for action in getattr(model, 'actions', []) or []:
-                if getattr(action, 'suffix', None) is None:
-                    continue
-                if action.suffix + mutant.suffix == suffix:
-                    return action, mutant
-        raise PybnfError(
-            "Multiple shooting could not resolve which simulation of model '%s' produces "
-            "the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
+        actions = [(a.suffix, a) for a in getattr(model, 'actions', []) or []
+                   if getattr(a, 'suffix', None) is not None]
+        try:
+            action, mutant = resolve_output_key(model, suffix, actions)
+        except PybnfError as exc:
+            raise PybnfError(
+                "Multiple shooting could not resolve which simulation of model '%s' produces "
+                "the scored output '%s': %s" % (getattr(model, 'name', '?'), suffix,
+                                                exc.message)) from exc
+        return action, mutant if mutant is not None else _model_as_written(model)
 
     def _resolve_net_action(self, model, suffix):
         """The ``(parsed simulate action, condition)`` pair scored under ``suffix``.
@@ -544,26 +548,25 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         ``_execute_actions`` parses it and matched on the same
         ``action suffix + mutant suffix`` key.
 
-        The wildtype is appended rather than assumed present: ``BngsimModel.execute`` runs
-        the base actions *before* its mutant loop rather than as an empty-suffix member of
-        it (which is where the SBML path puts it), so a model with conditions declared still
-        scores its unperturbed run under the bare action suffix.
+        The wildtype is an empty ``MutationSet`` rather than a member of the mutant list:
+        ``BngsimModel.execute`` runs the base actions *before* its mutant loop rather than as
+        an empty-suffix member of it (which is where the SBML path puts it), so a model with
+        conditions declared still scores its unperturbed run under the bare action suffix.
         """
         from ...bngsim_model.parsing import _parse_simulate_action
-        from ...pset import MutationSet
-        conditions = list(getattr(model, 'mutants', []) or [])
-        if not any(getattr(m, 'suffix', '') == '' for m in conditions):
-            conditions.append(MutationSet())
-        for mutant in conditions:
-            for line in getattr(model, 'actions', []) or []:
-                sim_params = _parse_simulate_action(str(line).strip())
-                if sim_params is None:
-                    continue
-                if sim_params.get('suffix', 'time_course') + mutant.suffix == suffix:
-                    return sim_params, mutant
-        raise PybnfError(
-            "Multiple shooting could not resolve which simulate() action of model '%s' "
-            "produces the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
+        actions = []
+        for line in getattr(model, 'actions', []) or []:
+            sim_params = _parse_simulate_action(str(line).strip())
+            if sim_params is not None:
+                actions.append((sim_params.get('suffix', 'time_course'), sim_params))
+        try:
+            sim_params, mutant = resolve_output_key(model, suffix, actions)
+        except PybnfError as exc:
+            raise PybnfError(
+                "Multiple shooting could not resolve which simulate() action of model '%s' "
+                "produces the scored output '%s': %s" % (getattr(model, 'name', '?'), suffix,
+                                                         exc.message)) from exc
+        return sim_params, mutant if mutant is not None else _model_as_written(model)
 
     # --- gates ------------------------------------------------------------- #
     def _require_carryable_state(self, model):
@@ -777,3 +780,13 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         del res
         raise PybnfError('job_type = ms drives its own search and does not use the '
                          'propose/score loop. This is an internal wiring error.')
+
+
+def _model_as_written(model):
+    """The empty ``MutationSet`` a segment of the wildtype runs under: the model's own (the
+    SBML backends list it among their mutants), or a fresh one."""
+    from ...pset import MutationSet
+    for mutant in getattr(model, 'mutants', []) or []:
+        if getattr(mutant, 'suffix', '') == '' and not list(mutant.mutations or ()):
+            return mutant
+    return MutationSet()
