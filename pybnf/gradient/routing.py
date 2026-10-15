@@ -594,13 +594,15 @@ def _seed_terms(target, ic_seed_map):
         return ()
     seeds = ic_seed_map[target]
     if seeds is None:
+        # Reached both for a free parameter bound to ``target`` by id and for a condition that
+        # sets it, so the message names neither: it says what ``target`` does.
         raise GradientNotSupported(
-            f"Condition sets '{target}', which seeds another entity's initial value through an "
-            f"expression the gradient path cannot differentiate -- one outside its arithmetic "
-            f"grammar (a function call, a piecewise), or one reaching the initial value through "
-            f"an assignmentRule or a second initialAssignment. Routing this per-condition "
-            f"estimated initial condition (ADR-0076) would need a chain rule PyBNF does not "
-            f"compose (#530). Use a gradient-free optimizer or sampler for this fit.")
+            f"'{target}' seeds another entity's initial value through an expression the "
+            f"gradient path cannot differentiate -- one outside its arithmetic grammar (a "
+            f"function call, a piecewise), or one reaching the initial value through an "
+            f"assignmentRule or a second initialAssignment. A gradient column for '{target}', "
+            f"whether it is fitted or set by a condition, would need a chain rule PyBNF does "
+            f"not compose (#530). Use a gradient-free optimizer or sampler for this fit.")
     if isinstance(seeds, str):
         # Backward-compatible shorthand: the bare ``{param -> species}`` seed map of #511.
         return (SeedTerm(IC, seeds, derivative.ONE),)
@@ -810,9 +812,59 @@ def route_for_model(model, free_params, condition=None):
             "is. Upgrade bngsim, or use a gradient-free optimizer or sampler for this fit.")
     condition = _resolve_condition(model, condition)
     _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition)
-    return route_experiment(free_params, param_values, species_initializers, condition,
-                            ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
-                            backend_ic_seeds=backend_ic_seeds, live_params=live_params)
+    routing = route_experiment(free_params, param_values, species_initializers, condition,
+                               ic_seed_map=ic_seed_map, rhs_symbols=rhs_symbols,
+                               backend_ic_seeds=backend_ic_seeds, live_params=live_params)
+    _refuse_relative_condition_on_a_derived_parameter(model, condition, routing)
+    return routing
+
+
+def _refuse_relative_condition_on_a_derived_parameter(model, condition, routing):
+    """Refuse a relative condition (``* / + -``) on a derived parameter whose inputs the
+    route differentiates.
+
+    The condition's value is computed from the derived parameter's value at the fit point --
+    ``Btot * 2`` with ``Btot = 2*A0`` writes ``4*A0`` -- and then written as a number, which
+    overrides the expression. The experiment therefore still moves with ``A0``, but no
+    sensitivity column carries that: ``A0``'s column follows the overridden ``Btot``, which no
+    longer reads it. An absolute ``=`` is a different case (the value really is independent of
+    the inputs) and is not refused here."""
+    if condition is None or not routing.sensitivity_params:
+        return
+    reader = getattr(model, 'derived_parameter_inputs', None)
+    if reader is None:
+        return      # a backend with no derived parameters to report
+    inputs = reader()
+    requested = set(routing.sensitivity_params)
+    for mut in condition:
+        if mut.operation == '=' or getattr(mut, 'is_species', False):
+            continue
+        if inputs is None:
+            live = getattr(model, 'backend_live_parameters', lambda: None)()
+            if live is not None and mut.name not in live:
+                continue
+            raise GradientNotSupported(
+                "Condition '%s' applies '%s %s %s' to '%s' of model '%s', which may be a derived "
+                "parameter, and this bngsim build cannot report what a derived parameter reads, "
+                "so whether a gradient column misses the condition's dependence on it cannot be "
+                "decided." % (getattr(condition, 'suffix', '') or '?', mut.name, mut.operation,
+                              mut.value, mut.name, getattr(model, 'name', '?')),
+                hint=["Give the condition an absolute '=' value, or use a gradient-free "
+                      "job_type (e.g. job_type = de)."])
+        reached = sorted(inputs.get(mut.name, frozenset()) & requested)
+        if not reached:
+            continue
+        raise GradientNotSupported(
+            "Condition '%s' applies '%s %s %s' to '%s', a derived parameter of model '%s' that "
+            "reads %s. The condition's value is computed from those inputs at each evaluation "
+            "and then written as a number, which overrides the expression: the experiment "
+            "still moves with %s, but no gradient column carries that dependence."
+            % (getattr(condition, 'suffix', '') or '?', mut.name, mut.operation, mut.value,
+               mut.name, getattr(model, 'name', '?'), ', '.join(reached), ', '.join(reached)),
+            hint=["Write the condition on an input of '%s' instead (it then moves '%s' through "
+                  "its expression), or give the condition an absolute '=' value." % (
+                      mut.name, mut.name),
+                  "Or use a gradient-free job_type (e.g. job_type = de)."])
 
 
 def _seeds_any_parameter(ic_seed_map):
@@ -824,34 +876,33 @@ def _seeds_any_parameter(ic_seed_map):
 
 
 def _refuse_writes_an_assignment_overrides(model, free_params, param_values, condition):
-    """Refuse a free parameter, or a condition's parameter reference, that writes a parameter
-    the model's own ``initialAssignment`` defines.
+    """Refuse a free parameter, or a condition, that writes a parameter the model's own
+    ``initialAssignment`` defines -- when the evaluation overwrites the write.
 
     On the SBML/Antimony backend the assignment wins over a written value whenever an
-    evaluation re-derives the model's initial values, which is whenever it changes anything an
-    assignment reads -- and always on the reload path. So whether the written value reaches the
-    model at all depends on what else the fit varies, and a gradient column for it describes a
-    write the objective may never see. A model that defines no parameter by assignment (every
-    ``.net`` model: a written ``ConstantExpression`` overrides its expression, which bngsim
-    differentiates) is unaffected.
+    evaluation re-derives the model's initial values: whenever it changes anything an
+    assignment reads (a free parameter, a condition target, a scanned parameter, a
+    pre-equilibration condition), and always on the reload path. Then the written value never
+    reaches the model, and a gradient column for it describes a write the objective does not
+    see. When nothing re-derives the values the write stands, and fitting the target is an
+    ordinary fit; that is not refused. The backend decides
+    (:meth:`initial_assignment_writes_overwritten`); a model with no such method (every
+    ``.net`` model: a written ``ConstantExpression`` overrides its expression) is unaffected.
     """
-    defined = getattr(model, 'initial_assignment_parameters', lambda: frozenset())()
-    if not defined:
+    decide = getattr(model, 'initial_assignment_writes_overwritten', None)
+    if decide is None:
         return
-    bound = [name for name in free_params if name in param_values and name in defined]
-    targets = [mut.name for mut in (condition or ())
-               if getattr(mut, 'is_param_ref', False) and mut.name in defined]
-    hits = sorted(set(bound) | set(targets))
+    bound = [name for name in free_params if name in param_values]
+    hits, cause = decide(bound, condition)
     if not hits:
         return
+    by_condition = {mut.name for mut in (condition or ())}
     raise GradientNotSupported(
-        "Model '%s' defines %s by an initialAssignment, and %s writes %s. SBML evaluates "
-        "the assignment over any written value whenever the model's initial values are "
-        "re-derived, so whether the write reaches the model depends on what else the fit "
-        "varies, and the gradient has no column that describes it."
+        "Model '%s' defines %s by an initialAssignment, and %s writes %s; %s. The written "
+        "value never reaches the model, so the gradient has no column that describes it."
         % (getattr(model, 'name', '?'), ', '.join("'%s'" % n for n in hits),
-           'a free parameter of the same name' if bound else 'a condition',
-           'it' if len(hits) == 1 else 'them'),
+           'a condition' if set(hits) <= by_condition else 'a free parameter of the same name',
+           'it' if len(hits) == 1 else 'them', cause),
         hint=["Fit the parameters the assignment reads instead, or remove the "
               "initialAssignment from the model.",
               "Or use a gradient-free job_type (e.g. job_type = de)."])

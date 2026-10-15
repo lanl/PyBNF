@@ -230,6 +230,10 @@ class NetSegmentBackend(SegmentBackend):
                 **prepared._sensitivity_request_kwargs('ode'))
             prepared._check_run_seeding(
                 engine, (), where="segment '%s' of multiple shooting" % self.suffix)
+            # A fitted value or a condition that overrides a derived parameter leaves a stale
+            # chain on a bngsim build without the derived-override fix, segments alike.
+            prepared._check_overridden_derived(
+                engine, "segment '%s' of multiple shooting" % self.suffix)
         except PybnfError:
             self._point = None
             raise

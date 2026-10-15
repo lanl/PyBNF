@@ -50,8 +50,11 @@ backend does not write a value bngsim already holds on either path.
 """
 
 import math
+import re
 
 from .printing import PybnfError
+
+_IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
 
 # A value bngsim already holds is left alone when it agrees with the one PyBNF computed to
 # this relative tolerance. The two are evaluated by different code -- libSBML or Python on
@@ -226,6 +229,102 @@ def check_live_parameters(engine, expected_live, names, *, model_name, where):
         hint="A derived parameter is overridden when a value written to it differs from what "
              "its expression gives (lanl/bngsim#188). Please report this on lanl/PyBNF with the "
              "model and configuration; a gradient-free job_type is unaffected.")
+
+
+def derived_parameter_inputs(engine):
+    """``{derived parameter: every parameter it reads, transitively}`` for the derived
+    parameters ``engine`` holds live, or ``None`` when the build cannot say.
+
+    Read off bngsim's own defining expressions (which it keeps for a parameter whose expression
+    a write has overridden, too), so the answer is the dependence bngsim would differentiate
+    through, not PyBNF's reading of the model file."""
+    live = live_parameters(engine)
+    names = getattr(engine, 'param_names', None)
+    expressions = getattr(getattr(engine, '_core', None), 'param_expressions', None)
+    if live is None or names is None or expressions is None:
+        return None
+    names = list(names)
+    known = set(names)
+    direct = {name: frozenset(token for token in _IDENTIFIER.findall(str(text))
+                              if token in known and token != name)
+              for name, text in zip(names, expressions) if name in live}
+    inputs = {}
+    for name in direct:
+        seen, stack = set(), list(direct[name])
+        while stack:
+            token = stack.pop()
+            if token in seen:
+                continue
+            seen.add(token)
+            stack.extend(direct.get(token, ()))
+        inputs[name] = frozenset(seen)
+    return inputs
+
+
+def check_overridden_derived(engine, expected_live, inputs, params, *, model_name, where,
+                             also_overridden=(), rhs_symbols=None):
+    """Raise when a requested parameter feeds a derived parameter this run has overridden.
+
+    For a bngsim build that keeps differentiating through an overridden derived parameter's
+    expression (:func:`pybnf._bngsim_caps.sensitivity_follows_derived_overrides` says which):
+    once a write pins ``k2 = 2*k1`` to a number, ``k1`` no longer moves ``k2``, but such a build
+    still puts ``2 * d/dk2`` into ``k1``'s column. ``expected_live`` and ``inputs`` describe the
+    unconfigured model; a derived parameter live there and not live in ``engine`` is overridden
+    -- a fitted value, a condition, a mid-protocol ``setParameter`` or a pre-equilibration
+    measurement condition. ``also_overridden`` names derived parameters the run is about to
+    override where ``engine`` cannot show it yet (a scan writes its parameter per dose point).
+
+    Only a derived parameter the right-hand side reads carries the stale chain: ``rhs_symbols``
+    (the backend's over-inclusive ``ode_rhs_symbols``), widened by what each live derived
+    parameter in it reads. One that only seeds an initial value reaches a column through the
+    seeding, which PyBNF declares itself and :func:`check_seeding` checks, so an override of it
+    is not refused here (bngsim 0.16.0 differentiates ``Btot = 2*A0`` fitted beside ``A0``
+    correctly when ``Btot`` only seeds ``B()``). ``None`` treats every derived parameter as read.
+
+    Silent for an engine that cannot say which parameters it holds live (a test double; the
+    router already refuses a model with derived parameters on such a build). A build that can
+    say that but not what an expression reads (``inputs`` is ``None``) is refused for any
+    override, since which columns it reaches cannot be decided."""
+    if not params or expected_live is None:
+        return
+    run_live = live_parameters(engine)
+    if run_live is None:
+        return
+    requested = set(params)
+    overridden = (expected_live - run_live) | (set(also_overridden) & expected_live)
+    if rhs_symbols is not None and inputs is not None:
+        reach = set(rhs_symbols)
+        for name in list(reach):
+            reach |= inputs.get(name, frozenset())
+        overridden &= reach
+    if inputs is None:
+        if not overridden:
+            return
+        raise PybnfError(
+            "Model %s: %s overrides derived parameter(s) %s. This bngsim build keeps "
+            "differentiating through an overridden derived parameter's expression and cannot "
+            "report what that expression reads, so whether a fitted parameter's column carries "
+            "a chain the run does not have cannot be decided."
+            % (model_name, where, ', '.join("'%s'" % name for name in sorted(overridden))),
+            hint=["Upgrade bngsim to a build whose sensitivities follow an overridden derived "
+                  "parameter (the release 0.16.0 does not; later development builds do).",
+                  "Or use a gradient-free job_type (e.g. job_type = de)."])
+    hits = sorted((name, sorted(inputs.get(name, ()) & requested))
+                  for name in overridden
+                  if inputs.get(name, frozenset()) & requested)
+    if not hits:
+        return
+    raise PybnfError(
+        "Model %s: %s overrides derived parameter(s) %s, which the fitted parameter(s) %s "
+        "feed, and this bngsim build keeps differentiating through an overridden derived "
+        "parameter's expression, so their gradient columns would carry a chain the run does "
+        "not have." % (model_name, where,
+                       ', '.join("'%s'" % name for name, _ in hits),
+                       ', '.join(sorted({p for _, ps in hits for p in ps}))),
+        hint=["Upgrade bngsim to a build whose sensitivities follow an overridden derived "
+              "parameter (the release 0.16.0 does not; later development builds do).",
+              "Or fit the derived parameter's inputs rather than overriding it, or use a "
+              "gradient-free job_type (e.g. job_type = de)."])
 
 
 def _describe_difference(want, have):

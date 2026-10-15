@@ -659,9 +659,10 @@ class _DerivingModel:
     name = 'm'
     mutants = ()
 
-    def __init__(self, live, defined=frozenset()):
+    def __init__(self, live, overwritten=()):
         self._live = live
-        self._defined = frozenset(defined)
+        self._overwritten = list(overwritten)
+        self.asked = []
 
     def sensitivity_entity_namespace(self):
         return ({'k_src': 0.3, 'k_used': 0.3}, [('S', 'S')],
@@ -676,8 +677,12 @@ class _DerivingModel:
     def backend_live_parameters(self):
         return self._live
 
-    def initial_assignment_parameters(self):
-        return self._defined
+    def initial_assignment_writes_overwritten(self, free_params, condition):
+        """The backend's answer, canned: which writes an initialAssignment overwrites."""
+        self.asked.append((list(free_params), condition))
+        if not self._overwritten:
+            return [], ''
+        return list(self._overwritten), 'the evaluation derives the initial values again'
 
 
 def test_route_for_model_drops_a_derived_parameter_the_backend_holds_live():
@@ -706,20 +711,34 @@ def test_route_for_model_refuses_when_the_backend_cannot_report_liveness():
 @pytest.mark.parametrize('how', ['free parameter', 'condition'])
 def test_route_for_model_refuses_writing_a_parameter_an_assignment_defines(how):
     """A free parameter (or a condition's parameter reference) that writes ``k_used``, which
-    the model's own initialAssignment defines, has no gradient column: SBML evaluates the
-    assignment over the written value whenever the initial values are re-derived."""
+    the model's own initialAssignment defines, has no gradient column when the evaluation
+    derives the initial values again over the write. The backend decides whether it does
+    (:meth:`initial_assignment_writes_overwritten`); the router refuses on its answer, says who
+    writes and why the write is lost, and passes the backend only names that bind to a model
+    parameter."""
     from pybnf.gradient import GradientNotSupported
-    model = _DerivingModel({'k_used'}, defined={'k_used'})
+    model = _DerivingModel({'k_used'}, overwritten=['k_used'])
     if how == 'free parameter':
-        call = (['k_used'], None)
+        call, who = (['k_used', 'not_a_model_parameter'], None), 'a free parameter of the same name'
     else:
-        call = (['k_free'], MutationSet([Mutation('k_used', '=', 'k_free',
-                                                  is_param_ref=True)], 'c'))
-    with pytest.raises(GradientNotSupported, match="defines 'k_used' by an initialAssignment"):
+        condition = MutationSet([Mutation('k_used', '=', 'k_free', is_param_ref=True)], 'c')
+        call, who = (['k_free'], condition), 'a condition'
+    with pytest.raises(GradientNotSupported,
+                       match="defines 'k_used' by an initialAssignment, and %s writes it; the "
+                             "evaluation derives the initial values again" % who):
         R.route_for_model(model, *call)
-    # Fitting the input the assignment reads is fine.
-    assert R.route_for_model(model, ['k_src']).routes['k_src'].contributions == (
-        RouteContribution(PARAM, 'k_src', 1.0),)
+    bound, condition = model.asked[-1]
+    assert 'not_a_model_parameter' not in bound
+    assert condition is call[1]
+
+
+def test_route_for_model_lets_a_write_the_evaluation_keeps_through():
+    """When the backend reports no write overwritten -- nothing the evaluation changes feeds an
+    initialAssignment -- fitting the target is an ordinary fit and is routed, not refused."""
+    model = _DerivingModel({'k_used'}, overwritten=())
+    routing = R.route_for_model(model, ['k_used'])
+    assert routing.routes['k_used'].contributions == (RouteContribution(PARAM, 'k_used', 1.0),)
+    assert model.asked == [(['k_used'], None)]
 
 
 class _CapturingModel:
@@ -890,3 +909,21 @@ def test_apply_routing_honors_capability_gate(decay_model, monkeypatch):
         R.apply_routing(decay_model, routing)
     assert 'output sensitivities' in str(exc.value).lower()
     assert decay_model._sensitivity_request is None   # request stays inactive
+
+
+def test_relative_condition_refusal_fails_closed_when_inputs_are_unknown():
+    """A backend that reports derived parameters but not what they read cannot tell whether a
+    relative condition on one reaches a requested column, so the condition is refused rather
+    than routed; a relative condition on a primary parameter is unaffected."""
+    from pybnf.gradient import GradientNotSupported
+
+    class _Unknown(_DerivingModel):
+        def derived_parameter_inputs(self):
+            return None
+
+    model = _Unknown({'k_used'})
+    relative = MutationSet([Mutation('k_used', '*', 2.0)], 'dbl')
+    with pytest.raises(GradientNotSupported, match=r"Condition 'dbl' applies 'k_used \* 2.0' to "
+                                                   r"'k_used' of model 'm', which may be a derived"):
+        R.route_for_model(model, ['k_src'], relative)
+    R.route_for_model(model, ['k_src'], MutationSet([Mutation('k_src', '*', 2.0)], 'p'))

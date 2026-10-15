@@ -203,7 +203,7 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
 #    a real one. It was named here before it existed, on the reasoning that doing so
 #    cost nothing and would start the flag reading the real answer, in BOTH directions,
 #    on the first build that grew one. bngsim 0.15.0 is that build, and the floor is now
-#    0.15.0, so this route fires for every install resolved from PyPI. It publishes the
+#    0.16.0, so this route fires for every install resolved from PyPI. It publishes the
 #    key on every build, so a ``False`` here is an answer rather than a silence.
 #
 #    Routes 2 and 3 are not dead. A floor binds what a resolver installs, not what a
@@ -379,6 +379,69 @@ def _probe_steady_state_ic_seeding():
                 return False
             column = result.output_sensitivities(['observable:Bobs'], axis='parameter')
             return abs(float(column[0][0]) - 0.5) < 1e-6
+    except Exception:
+        return False
+
+
+# Whether a forward-sensitivity column stops differentiating through a derived parameter once
+# a write has overridden it. ``A -> 0`` at ``k2 = 2*k1``, with ``k2`` written to 0.8: ``A`` no
+# longer depends on ``k1``, so ``dA/dk1 = 0``. bngsim 0.16.0 still returns the chain through
+# ``k2``'s expression (``-2 t A``); later development builds return 0. As with the #704 witness,
+# no feature key or version identifies it, so the model is run once, on first use, both as the
+# SBML backend builds a sensitivity Simulator and as the ``.net`` backend does (which asks for
+# ``codegen=True`` outright). ``False`` when the probe cannot run.
+_OVERRIDE_CHAIN_NET = """begin parameters
+    1 k1    0.3    # Constant
+    2 k2    2*k1   # ConstantExpression
+end parameters
+begin species
+    1 A() 10
+end species
+begin reactions
+    1 1 0 k2 #_R1
+end reactions
+begin groups
+    1 Aobs                 1
+end groups
+"""
+_OVERRIDE_CHAIN = None
+
+
+def sensitivity_follows_derived_overrides():
+    """Whether a parameter's column drops the chain through a derived parameter overridden.
+
+    Decided once per process on a one-reaction model (``k2 = 2*k1`` pinned to a number, ``k1``
+    requested), with and without codegen, since a build can differ between the two. bngsim
+    0.16.0 fails it and bngsim ``main`` passes it. A probe that cannot run counts as a failure:
+    the answer only decides whether :func:`pybnf._bngsim_seeding.check_overridden_derived`
+    refuses, and refusing is the safe side."""
+    global _OVERRIDE_CHAIN
+    if _OVERRIDE_CHAIN is None:
+        _OVERRIDE_CHAIN = _probe_derived_override_chain()
+    return _OVERRIDE_CHAIN
+
+
+def _probe_derived_override_chain():
+    if not (BNGSIM_AVAILABLE and BNGSIM_HAS_OUTPUT_SENS):
+        return False
+    import os
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 'override_chain_probe.net')
+            with open(path, 'w') as handle:
+                handle.write(_OVERRIDE_CHAIN_NET)
+            for extra in ({}, {'codegen': True}):
+                model = bngsim.Model.from_net(path)
+                model.set_param('k2', 0.8)
+                result = bngsim.Simulator(
+                    model, method='ode', sensitivity_params=['k1'],
+                    **extra).run(t_span=(0.0, 1.0), n_points=2)
+                column = result.output_sensitivities(['observable:Aobs'], axis='parameter')
+                # The stale chain is -2 t A = -2*1*10*exp(-0.8), about -9.
+                if abs(float(column[-1][0][0])) > 1e-6:
+                    return False
+            return True
     except Exception:
         return False
 

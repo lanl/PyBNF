@@ -7,4 +7,5 @@
   where bngsim already holds it (a write one ulp off had overridden the expression), and a
   run model that disagrees with the routing stops the fit with the parameter named. A free
   parameter or condition that writes a parameter the model's own `initialAssignment` defines
-  is refused on the gradient path, since the assignment overwrites it.
+  is refused on the gradient path when the evaluation also changes something an
+  `initialAssignment` reads, since the assignment then overwrites the write.

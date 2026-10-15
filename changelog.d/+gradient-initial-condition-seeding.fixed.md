@@ -7,6 +7,5 @@
   zero for its initial-value term. PyBNF now reads the seeding before each such save and
   declares it again after every reset back to it, a multiple-shooting knot is declared as
   depending on no parameter (bngsim releases before #982 had seeded it), and a run whose
-  seeding differs from the routing's stops with the species and parameter named. A scored
-  `ss_method=>"newton"` scan whose fitted parameter seeds a conserved species is refused on
-  a bngsim build whose Newton solve drops that term (lanl/bngsim#704).
+  seeding differs from the routing's stops with the species and parameter named; a species
+  the evaluation itself set, such as by a condition, is left out of that comparison.

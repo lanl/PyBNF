@@ -21,8 +21,10 @@ from ..pset import NetModel
 from ..printing import PybnfError
 from .._seed import resolve_action_seed
 from .._bngsim_seeding import (
+    check_overridden_derived,
     check_seeding,
     declare_rows,
+    derived_parameter_inputs,
     live_parameters,
     seed_rows,
 )
@@ -658,8 +660,14 @@ class BngsimModel(NetModel):
         if memo is not None and key in memo:
             return memo[key]
         _, _, seed_map = self.sensitivity_entity_namespace()
-        pairs = frozenset((s.key, p) for p in params for s in (seed_map.get(p) or ())
-                          if s.target == IC)
+        pairs = set()
+        for p in params:
+            seeds = seed_map.get(p)
+            if isinstance(seeds, str):
+                pairs.add((seeds, p))      # the #511 shorthand: one bare species seed
+            elif seeds:
+                pairs.update((s.key, p) for s in seeds if s.target == IC)
+        pairs = frozenset(pairs)
         if memo is not None:
             memo[key] = pairs
         return pairs
@@ -676,6 +684,29 @@ class BngsimModel(NetModel):
         check_seeding(model, expected, self._sensitivity_request.params,
                       model_name=self.name, where=where, pairs=self._route_seed_pairs(),
                       exempt_species=assigned)
+
+    def derived_parameter_inputs(self):
+        """``{derived parameter: every parameter it reads}``, off the same pristine engine as
+        :meth:`backend_ic_sensitivity` (:func:`pybnf._bngsim_seeding.derived_parameter_inputs`)."""
+        model = self._seed_template_engine()
+        if model is None:
+            model = self._engine_model
+        return derived_parameter_inputs(model)
+
+    def _check_overridden_derived(self, model, where, also_overridden=()):
+        """On a bngsim build that differentiates through an overridden derived parameter,
+        refuse a run that overrides one a requested parameter feeds -- a fitted value, a
+        condition, a mid-protocol ``setParameter``, or a scan of one
+        (:func:`pybnf._bngsim_seeding.check_overridden_derived`). Checked before every
+        sensitivity-bearing run, carried or not, because a ``setParameter`` between two runs is
+        enough."""
+        if not self._seed_rows_matter() or _runtime.sensitivity_follows_derived_overrides():
+            return
+        check_overridden_derived(model, self.backend_live_parameters(),
+                                 self.derived_parameter_inputs(),
+                                 self._sensitivity_request.params, model_name=self.name,
+                                 where=where, also_overridden=also_overridden,
+                                 rhs_symbols=self.ode_rhs_symbols())
 
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
@@ -1078,9 +1109,13 @@ class BngsimModel(NetModel):
         :meth:`_sync_species_initial_concentrations` read it (``None`` off the gradient path).
         Every reset back to a fresh (not carried) snapshot drops bngsim's declarations, and a
         snapshot of a fresh state is seeded from nothing on bngsim >= lanl/bngsim#982, so the
-        loop keeps each snapshot's seeding beside it and declares it again on the way back
-        (:mod:`pybnf._bngsim_seeding`). A carried snapshot needs nothing: bngsim hands its
-        ``dx/dθ`` on itself (lanl/bngsim#81).
+        loop keeps the default snapshot's seeding beside it and declares it again on the way
+        back (:mod:`pybnf._bngsim_seeding`). A carried snapshot needs nothing: bngsim hands its
+        ``dx/dθ`` on itself (lanl/bngsim#81). A *labelled* snapshot of a fresh state needs
+        nothing either, for a different reason: ``restore_concentrations(label)`` leaves a state
+        bngsim treats as carried over, so it refuses a sensitivity run from it ("Output
+        sensitivities were requested on a carried-over species state") on every supported build
+        -- no gradient run ever starts from one.
         """
         ds = {}
         # No action's suffix is resolved yet, so the initial ODE Simulator is
@@ -1093,9 +1128,6 @@ class BngsimModel(NetModel):
                 model, method='ode',
                 **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')),
             baseline_seed=seed)
-        # A labelled snapshot's seeding and assigned species, kept like its carried flag.
-        labelled_seed = {}
-        labelled_assigned = {}
 
         # Parameter snapshots by label (None: the default slot), for saveParameters /
         # resetParameters. The default slot starts as the parameters this run was given, so a
@@ -1136,11 +1168,12 @@ class BngsimModel(NetModel):
                     state, sim_params, model, action_index, timeout,
                     seed_suffix_prefix='', null_nf_sample_times=True,
                 )
-                if (plan.method == 'ode' and not state.carried_state
-                        and self._action_bears_sensitivities()):
-                    self._check_run_seeding(
-                        model, state.assigned,
-                        where="the simulate action with suffix '%s'" % plan.suffix)
+                if plan.method == 'ode' and self._action_bears_sensitivities():
+                    where = "the simulate action with suffix '%s'" % plan.suffix
+                    if not state.carried_state:
+                        self._check_run_seeding(model, state.assigned, where=where)
+                    # Carried or not: a setParameter between two runs is enough to override.
+                    self._check_overridden_derived(model, where)
                 self._pybnf_current_action_info.update({
                     'method': plan.method,
                     'suffix': plan.suffix,
@@ -1187,10 +1220,6 @@ class BngsimModel(NetModel):
                             "before it." % (self.name, line, label, label))
                     model.restore_concentrations(label)
                     state.carried_state = labelled_carried[label]
-                    if not state.carried_state:
-                        declare_rows(model, labelled_seed.get(label), model_name=self.name,
-                                     where='the action %s' % line)
-                    state.assigned = set(labelled_assigned.get(label, ()))
                 concentration_overrides.clear()
                 continue
 
@@ -1217,8 +1246,8 @@ class BngsimModel(NetModel):
                 # A snapshot of a fresh state is a function of the parameters, because each
                 # evaluation re-runs these actions from scratch; read what it is seeded with
                 # before the save, which (unlabelled, bngsim >= lanl/bngsim#982) retires it.
-                held = (None if state.carried_state or not self._seed_rows_matter()
-                        else seed_rows(model))
+                held = (None if label is not None or state.carried_state
+                        or not self._seed_rows_matter() else seed_rows(model))
                 if label is None:
                     model.save_concentrations()
                     # ...and it becomes the reset target, carried iff the live state is.
@@ -1231,8 +1260,6 @@ class BngsimModel(NetModel):
                     # A labelled snapshot leaves the default reset target alone (#830).
                     model.save_concentrations(label)
                     labelled_carried[label] = state.carried_state
-                    labelled_seed[label] = held
-                    labelled_assigned[label] = set(state.assigned)
                 continue
 
             if _is_save_parameters(line):
@@ -1740,6 +1767,7 @@ class BngsimModel(NetModel):
             where = 'a parameter_scan point (%s = %s)' % (param_name, value)
             declare_rows(point_model, seed, model_name=self.name, where=where)
             self._check_run_seeding(point_model, set(active_overrides), where=where)
+            self._check_overridden_derived(point_model, where)
         return point_model
 
     def _run_ss_scan_threaded(
@@ -2026,6 +2054,11 @@ class BngsimModel(NetModel):
         bears = self._action_bears_sensitivities()
         if bears:
             self._require_carried_scan_sensitivities(model, s)
+            # bngsim writes the scanned parameter itself at each point, so a scan of a derived
+            # parameter overrides it where the model cannot show it yet.
+            self._check_overridden_derived(
+                model, "the parameter_scan with suffix '%s'" % s.suffix,
+                also_overridden=(s.param_name,))
         method = s.method
         if method == 'psa':
             sim = _runtime.bngsim.Simulator(model, method='psa', poplevel=s.poplevel)
@@ -2147,7 +2180,55 @@ class BngsimModel(NetModel):
                 "The equilibration phase must run on the gradient path with no "
                 "resetConcentrations() between it and the scan." % self.name)
 
-    def _require_steady_state_seeding(self, model, params):
+    _NEWTON_SCAN_HINT = (
+        "In a BNGL parameter_scan, omit ss_method: the BNG2.pl-parity integrate-to-steady-state "
+        "default differentiates this correctly. An edition-2 dose-response with no t_end: field "
+        "asks for the Newton solve.")
+
+    @staticmethod
+    def _conserved_species(model):
+        """The species some conservation law of ``model`` holds, by name.
+
+        A coefficient that is rounding beside its law's largest is no member: bngsim's row
+        reduction leaves 1e-17..1e-34 on species it touched in passing."""
+        laws = getattr(model, 'conservation_laws', None) or {}
+        names = list(model.species_names)
+        held = set()
+        for row in laws.get('coefficients', ()) or ():
+            row = [float(c) for c in row]
+            scale = max((abs(c) for c in row), default=0.0)
+            held.update(names[j] for j, c in enumerate(row) if abs(c) > 1e-10 * scale)
+        return held
+
+    def _require_steady_state_ic_axis(self, model):
+        """Refuse a scored Newton scan whose request names an initial-condition column for a
+        species a conservation law holds, on every bngsim build (#992).
+
+        A stable steady state forgets its initial conditions except through the conserved
+        totals: for ``A <-> B``, ``B* = (A(0) + B(0)) kf/(kf + kr)``, so ``dB*/dB(0)`` is
+        ``kf/(kf + kr)``, not 0. bngsim does not compute the initial-condition axis on a
+        steady-state result (``SteadyStateResult.output_sensitivities(axis='ic')`` raises), and
+        :meth:`_extract_ss_output_sensitivities` can only supply zeros, which are right for a
+        species in no conservation law and wrong for one in a law. The request is the union over
+        the model's experiments, so a column another experiment reads is refused here too; the
+        integrate-to-steady-state default reads bngsim's own axis and is not affected."""
+        requested = list((self._sensitivity_request.ic if self._sensitivity_request else ())
+                         or ())
+        if not requested:
+            return
+        hit = sorted(set(requested) & self._conserved_species(model))
+        if not hit:
+            return
+        raise PybnfError(
+            "Model %s: a scored parameter_scan with ss_method=>\"newton\" would read the "
+            "initial-condition sensitivity of %s, which a conservation law holds. Its steady "
+            "state moves with that initial amount through the conserved total, and bngsim does "
+            "not compute the initial-condition axis on a Newton steady state, so the column "
+            "would be zero where it is not (lanl/PyBNF#992)." % (self.name, ', '.join(hit)),
+            hint=[self._NEWTON_SCAN_HINT,
+                  "Or run a gradient-free fit."])
+
+    def _require_steady_state_seeding(self, point_model, params):
         """Refuse a scored Newton steady-state scan this bngsim build differentiates wrongly.
 
         A steady state forgets its initial conditions except through a conserved total: for
@@ -2158,22 +2239,19 @@ class BngsimModel(NetModel):
         sensitivities, gets it right. Refused only where it can matter -- a requested parameter
         that seeds a species some conservation law holds -- and only on a build that fails the
         witness (:func:`pybnf._bngsim_caps.steady_state_sensitivity_carries_ic_seeding`).
+
+        Decided on the prepared dose point, whose seeding includes every row PyBNF declared:
+        the ``.net`` initializers' and an active ``setConcentration`` intervention's alike
+        (``setConcentration("A()","Atot")`` seeds ``A`` from ``Atot`` as surely as
+        ``A() Atot`` does).
         """
         if _runtime.steady_state_sensitivity_carries_ic_seeding():
             return
-        rows = self.backend_ic_sensitivity() or {}
+        rows = seed_rows(point_model, params) or {}
         seeded = {(species, p) for species, row in rows.items() for p in row if p in params}
         if not seeded:
             return
-        laws = getattr(model, 'conservation_laws', None) or {}
-        names = list(model.species_names)
-        held = set()
-        for row in laws.get('coefficients', ()) or ():
-            row = [float(c) for c in row]
-            scale = max((abs(c) for c in row), default=0.0)
-            # A coefficient that is rounding beside the law's largest is no member (bngsim
-            # leaves 1e-17..1e-34 on species a row reduction touched in passing).
-            held.update(names[j] for j, c in enumerate(row) if abs(c) > 1e-10 * scale)
+        held = self._conserved_species(point_model)
         hit = sorted((species, p) for species, p in seeded if species in held)
         if not hit:
             return
@@ -2186,8 +2264,7 @@ class BngsimModel(NetModel):
             % (self.name, ', '.join(sorted({p for _, p in hit})),
                's' if len({p for _, p in hit}) == 1 else '',
                ', '.join(sorted({species for species, _ in hit}))),
-            hint=["Omit ss_method (the BNG2.pl-parity integrate-to-steady-state default "
-                  "differentiates this correctly).",
+            hint=[self._NEWTON_SCAN_HINT,
                   "Or upgrade bngsim to a build with lanl/bngsim#704.",
                   "Or run a gradient-free fit."])
 
@@ -2240,8 +2317,8 @@ class BngsimModel(NetModel):
         scan_eval_timeout = s.scan_eval_timeout
         # Gradient path: ask KINSOL for dY_ss/dp against the fitted params.
         sens_params = list(self._sensitivity_request.params) if collect_sens else None
-        if sens_params:
-            self._require_steady_state_seeding(model, sens_params)
+        if collect_sens:
+            self._require_steady_state_ic_axis(model)
         obs_names = []
         expr_names = []
         rows = []
@@ -2269,13 +2346,16 @@ class BngsimModel(NetModel):
             # Per-dose-point forward-sensitivity slices (#478); None on the scalar
             # path, so the accumulator below is left untouched there.
             sens_slices = []
-            for value in points:
+            for index, value in enumerate(points):
                 point_model = self._prepare_scan_point_model(
                     model,
                     param_name,
                     value,
                     concentration_overrides=concentration_overrides,
                 )
+                if sens_params and index == 0:
+                    # Every point is prepared alike, so the first one's seeding answers for all.
+                    self._require_steady_state_seeding(point_model, sens_params)
                 point_sim = self._make_scan_simulator(
                     point_model,
                     method,
@@ -2799,13 +2879,14 @@ class BngsimModel(NetModel):
           :func:`~pybnf.data.stack_scan_sensitivities` pick the final row
           (``[-1]``) identically for a converged Newton point and a CVODE
           fallback point.
-        * The IC axis is identically zero: a stable steady state forgets its
-          initial conditions (``∂x*/∂x(0)=0``, #457), so an IC-seed fit parameter
-          contributes no gradient at equilibrium. bngsim declines the ``ic`` axis
-          on a ``SteadyStateResult`` for exactly this reason, so we report it as an
-          explicit zero tensor (parity with the integrate-to-steady-state path,
-          whose IC sensitivities have decayed to ~0) when IC sensitivities were
-          requested, and ``None`` otherwise.
+        * The IC axis is reported as zero, which is right only for a species in no
+          conservation law: a stable steady state forgets its initial conditions
+          (``∂x*/∂x(0)=0``, #457) except through the conserved totals, which move with
+          the initial amounts of the species they hold (``A <-> B``:
+          ``dB*/dB(0) = kf/(kf + kr)``). bngsim does not compute the ``ic`` axis on a
+          ``SteadyStateResult``, so a request that names one for a conserved species is
+          refused before the scan runs (:meth:`_require_steady_state_ic_axis`, #992);
+          every column that reaches here is one whose zero is the true value.
         """
         selectors = ['observable:%s' % name for name in ss_result.observable_names]
         if print_functions and getattr(ss_result, 'expression_names', None):
@@ -2838,10 +2919,15 @@ class BngsimModel(NetModel):
         :class:`~pybnf.data.OutputSensitivities` (all integrated rows), whose final row
         the scan stacks down the dose axis (:func:`pybnf.data.stack_scan_sensitivities`).
         Reuses :meth:`_extract_output_sensitivities` so the scan tensor's selectors /
-        axis labels are byte-identical to the time-course path's."""
-        if self._sensitivity_request is None or not getattr(
-                result, 'has_sensitivities', False) or getattr(
-                result, 'has_sensitivities_ic', False):
+        axis labels are byte-identical to the time-course path's.
+
+        A point carrying only, or also, an initial-condition axis is kept. The condition used to
+        read ``not has_sensitivities or has_sensitivities_ic``, which dropped exactly the
+        tensors #530 meant to admit; a scan whose route read that axis then lost its whole
+        tensor, and the assembly reported "no forward-sensitivity tensor" (#992)."""
+        if self._sensitivity_request is None or not (
+                getattr(result, 'has_sensitivities', False)
+                or getattr(result, 'has_sensitivities_ic', False)):
             return None
         return self._extract_output_sensitivities(result, print_functions)
 

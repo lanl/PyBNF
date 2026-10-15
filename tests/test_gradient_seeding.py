@@ -419,6 +419,301 @@ def test_net_run_model_whose_seeding_differs_from_the_route_is_refused(tmp_path,
         model.execute(str(tmp_path), 'seed_refuse', 60)
 
 
+# A <-> B with B() seeded by the derived parameter Btot = 2*b0 (lanl/PyBNF#992). Fitting Btot
+# overrides it, and the steady state moves with Btot through the conserved total:
+# B* = (A0 + Btot) kf/(kf + kr), so dB*/dBtot = kf/(kf + kr).
+_EXCHANGE_DERIVED_NET = """begin parameters
+    1 A0    10     # Constant
+    2 b0    1      # Constant
+    3 Btot  2*b0   # ConstantExpression
+    4 kf    1      # Constant
+    5 kr    0.5    # Constant
+end parameters
+begin species
+    1 A() A0
+    2 B() Btot
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Aobs                 1
+    2 Bobs                 2
+end groups
+"""
+
+# 0 -> S at ks, S -> 0 at k: no conservation law, so S* = ks/k forgets S(0) entirely. S() is
+# seeded by the derived S0x = 2*s0.
+_BIRTH_DEATH_DERIVED_NET = """begin parameters
+    1 s0    5      # Constant
+    2 S0x   2*s0   # ConstantExpression
+    3 ks    2      # Constant
+    4 k     0.5    # Constant
+end parameters
+begin species
+    1 S() S0x
+end species
+begin reactions
+    1 0 1 ks #_R1
+    2 1 0 k #_R2
+end reactions
+begin groups
+    1 Sobs                 1
+end groups
+"""
+
+
+def _route_through_the_ic_axis(monkeypatch, derived):
+    """Have the router see what bngsim 0.16.0 reports: no seeding row for a derived seed
+    parameter itself (its own row came with lanl/bngsim#715, on bngsim main only), so the route
+    for a fitted ``derived`` is its species' initial-condition axis on every build."""
+    import pybnf.bngsim_model as bngsim_model
+    real = bngsim_model.BngsimModel.backend_ic_sensitivity
+
+    def without(self):
+        return {species: {p: v for p, v in row.items() if p != derived}
+                for species, row in real(self).items()}
+
+    monkeypatch.setattr(bngsim_model.BngsimModel, 'backend_ic_sensitivity', without)
+
+
+def _scan_fit(tmp_path, net, scan, free, truth, column, sigma):
+    """(assembled gradient, central differences of the scalar loss, scan data)."""
+    def run(values, routed=False):
+        model = _net_model(net, [scan], [('parameter_scan', 'dr')], values)
+        routing = None
+        if routed:
+            routing = route_for_model(model, [p.name for p in free])
+            apply_routing(model, routing)
+            model.set_scored_suffixes({'dr'})
+        return model.execute(str(tmp_path), 'scan_fit', 60)['dr'], routing
+
+    indvar = scan.split('parameter=>"')[1].split('"')[0]
+    exp = _exp_from(run(truth)[0], [column], sigma, indvar=indvar)
+    grad_fd = _fd_gradient(lambda u: ChiSquareObjective().evaluate(
+        run(_theta(free, u))[0], exp), free)
+    sim, routing = run({p.name: p.value for p in free}, routed=True)
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+    return res.gradient, grad_fd, sim, routing
+
+
+_NEWTON = ('parameter_scan({parameter=>"%s",par_scan_vals=>[0.5,1,2],steady_state=>1,'
+           'ss_method=>"newton",t_end=>200,suffix=>"dr"})')
+_PARITY = ('parameter_scan({parameter=>"%s",par_scan_vals=>[0.5,1,2],steady_state=>1,'
+           't_end=>200,suffix=>"dr"})')
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+@pytest.mark.parametrize('route', ['as this build reports it', 'forced through the IC axis'])
+def test_net_newton_scan_refuses_an_initial_condition_column_of_a_conserved_species(
+        tmp_path, monkeypatch, route):
+    """lanl/PyBNF#992: bngsim does not compute the initial-condition axis on a Newton steady
+    state, and PyBNF filled it with zeros. For ``B()``, which the conservation law
+    ``A + B`` holds, the true column is ``kf/(kf + kr)``. On bngsim 0.16.0 the route for the
+    fitted ``Btot`` is ``B()``'s initial-condition axis, and the assembled gradient was exactly
+    0 against a central difference of 133.44. Now that route is refused on every build; on a
+    build whose router routes ``Btot`` onto its own parameter column (bngsim main) the scan runs
+    and matches central differences and the closed form."""
+    if route == 'forced through the IC axis':
+        _route_through_the_ic_axis(monkeypatch, 'Btot')
+    net = Path(tmp_path) / 'exchange_derived.net'
+    net.write_text(_EXCHANGE_DERIVED_NET)
+    free = [FreeParameter('Btot', 'uniform_var', 0.01, 100.0, value=3.0)]
+    probe = _net_model(net, [_NEWTON % 'kf'], [('parameter_scan', 'dr')], {'Btot': 3.0})
+    routed_ic = route_for_model(probe, ['Btot']).sensitivity_ic
+    if routed_ic:
+        assert routed_ic == ['B()']
+        with pytest.raises(PybnfError, match=r'initial-condition sensitivity of B\(\), which a '
+                                             r'conservation law holds.*lanl/PyBNF#992'):
+            _scan_fit(tmp_path, net, _NEWTON % 'kf', free, {'Btot': 2.0}, 'Bobs', 0.1)
+        return
+    grad, grad_fd, sim, _ = _scan_fit(tmp_path, net, _NEWTON % 'kf', free, {'Btot': 2.0},
+                                      'Bobs', 0.1)
+    np.testing.assert_allclose(grad, grad_fd, rtol=1e-4)
+    kf = sim.data[:, sim.cols['kf']]
+    sens = sim.output_sensitivities
+    np.testing.assert_allclose(
+        sens.d_param[:, sens.selectors.index('observable:Bobs'), sens.param_names.index('Btot')],
+        kf / (kf + 0.5), rtol=1e-4)
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+def test_net_newton_scan_keeps_the_zero_initial_condition_column_of_a_species_in_no_law(
+        tmp_path, monkeypatch):
+    """The other half of #992: a species no conservation law holds is forgotten by a stable
+    steady state, so its initial-condition column is zero and the Newton scan still runs.
+    Birth-death ``S* = ks/k``: the fitted seed ``S0x`` has no effect, and the assembled
+    gradient and the central differences of the scalar loss are both zero, while ``k``'s column
+    is the closed form ``-ks/k^2`` per dose."""
+    _route_through_the_ic_axis(monkeypatch, 'S0x')
+    net = Path(tmp_path) / 'birth_death.net'
+    net.write_text(_BIRTH_DEATH_DERIVED_NET)
+    free = [FreeParameter('S0x', 'uniform_var', 0.01, 100.0, value=12.0),
+            FreeParameter('k', 'uniform_var', 0.01, 10.0, value=0.6)]
+    grad, grad_fd, sim, routing = _scan_fit(tmp_path, net, _NEWTON % 'ks', free,
+                                            {'S0x': 10.0, 'k': 0.5}, 'Sobs', 0.1)
+    assert routing.sensitivity_ic == ['S()']
+    # The Newton solve starts from S(0) and stops at its own tolerance, so the central
+    # difference of a loss whose true slope in S0x is 0 comes back about 1e-3 beside k's 486.
+    np.testing.assert_allclose(grad, grad_fd, rtol=1e-4, atol=1e-2)
+    assert grad[0] == 0.0 and abs(grad_fd[0]) < 1e-2
+    ks = sim.data[:, sim.cols['ks']]
+    sens = sim.output_sensitivities
+    np.testing.assert_allclose(
+        sens.d_param[:, sens.selectors.index('observable:Sobs'), sens.param_names.index('k')],
+        -ks / 0.6 ** 2, rtol=1e-4)
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+def test_net_parity_scan_keeps_an_initial_condition_tensor(tmp_path, monkeypatch):
+    """The integrate-to-steady-state scan used to drop every point tensor that carried an
+    initial-condition axis (``not has_sensitivities or has_sensitivities_ic``), so a route
+    through that axis -- ``Btot`` on bngsim 0.16.0 -- was refused with the misleading "carries
+    no forward-sensitivity tensor". The tensor is now kept, and its ``B()`` column is the
+    closed form ``kf/(kf + kr)``; the gradient matches central differences."""
+    _route_through_the_ic_axis(monkeypatch, 'Btot')
+    net = Path(tmp_path) / 'exchange_derived.net'
+    net.write_text(_EXCHANGE_DERIVED_NET)
+    free = [FreeParameter('Btot', 'uniform_var', 0.01, 100.0, value=3.0)]
+    grad, grad_fd, sim, routing = _scan_fit(tmp_path, net, _PARITY % 'kf', free,
+                                            {'Btot': 2.0}, 'Bobs', 0.1)
+    assert routing.sensitivity_ic == ['B()']
+    np.testing.assert_allclose(grad, grad_fd, rtol=1e-4)
+    kf = sim.data[:, sim.cols['kf']]
+    sens = sim.output_sensitivities
+    np.testing.assert_allclose(
+        sens.d_ic[:, sens.selectors.index('observable:Bobs'), sens.ic_species.index('B()')],
+        kf / (kf + 0.5), rtol=1e-3)
+
+
+# k2 = 2*k1 converts A to B; k1 also degrades B. Overriding k2 cuts k1 out of the conversion.
+_OVERRIDE_NET = """begin parameters
+    1 k1    0.3   # Constant
+    2 k2    2*k1  # ConstantExpression
+    3 kb    1     # Constant
+end parameters
+begin species
+    1 A() 10
+    2 B() 0
+end species
+begin reactions
+    1 0 1 kb #_R1
+    2 1 2 k2 #_R2
+    3 2 0 k1 #_R3
+end reactions
+begin groups
+    1 Aobs                 1
+    2 Bobs                 2
+end groups
+"""
+_TC = 'simulate({method=>"ode",t_start=>0,t_end=>4,n_steps=>4,suffix=>"tc"})'
+_PIN_K2 = MutationSet([Mutation('k2', '=', 0.8)], 'pin')
+_OVERRIDES = {
+    # (actions, suffixes, scored key, mutants, condition, free values, truth)
+    'fitted': ([_TC], [('simulate', 'tc')], 'tc', (), None,
+               {'k1': 0.35, 'k2': 0.8}, {'k1': 0.3, 'k2': 0.6}),
+    'condition': ([_TC], [('simulate', 'tc')], 'tcpin', (_PIN_K2,), _PIN_K2,
+                  {'k1': 0.35}, {'k1': 0.3}),
+    'setParameter': (['setParameter("k2",0.8)', _TC], [('simulate', 'tc')], 'tc', (), None,
+                     {'k1': 0.35}, {'k1': 0.3}),
+    'scan of it': (['parameter_scan({parameter=>"k2",par_scan_vals=>[0.4,0.8,1.6],t_start=>0,'
+                    't_end=>3,method=>"ode",suffix=>"dr"})'], [('parameter_scan', 'dr')], 'dr',
+                   (), None, {'k1': 0.35}, {'k1': 0.3}),
+}
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+@pytest.mark.parametrize('witness', ['this build', 'forced to fail'])
+@pytest.mark.parametrize('how', list(_OVERRIDES))
+def test_net_an_overridden_derived_parameter_is_differentiated_or_refused(
+        tmp_path, monkeypatch, how, witness):
+    """bngsim 0.16.0 keeps differentiating ``k1`` through ``k2 = 2*k1`` after a write has
+    pinned ``k2`` -- ``k1``'s column was about 20x too large when ``k2`` was fitted beside it.
+    Every way a ``.net`` run overrides a derived parameter is covered: fitting it, a condition,
+    a ``setParameter`` action, and a scan of it. On a build that fails the one-model witness
+    the run is refused naming ``k2``; on one that passes, the gradient matches central
+    differences of the scalar loss."""
+    import pybnf.bngsim_model._runtime as runtime
+    if witness == 'forced to fail':
+        monkeypatch.setattr(runtime, 'sensitivity_follows_derived_overrides', lambda: False)
+    follows = runtime.sensitivity_follows_derived_overrides()
+    net = Path(tmp_path) / 'override.net'
+    net.write_text(_OVERRIDE_NET)
+    actions, suffixes, key, mutants, condition, values, truth = _OVERRIDES[how]
+    free = [FreeParameter(n, 'uniform_var', 0.01, 10.0, value=v) for n, v in values.items()]
+    indvar = 'k2' if key == 'dr' else 'time'
+
+    def run(vals, routed=False):
+        model = _net_model(net, actions, suffixes, vals, mutants=mutants)
+        routing = None
+        if routed:
+            routing = route_for_model(model, [p.name for p in free], condition)
+            apply_routings(model, [routing])
+            model.set_scored_suffixes({key})
+        return model.execute(str(tmp_path), 'override', 60)[key], routing
+
+    if not follows:
+        with pytest.raises(PybnfError, match=r"overrides derived parameter\(s\) 'k2', which "
+                                             r"the fitted parameter\(s\) k1 feed"):
+            run({p.name: p.value for p in free}, routed=True)
+        return
+    exp = _exp_from(run(truth)[0], ['Aobs', 'Bobs'], 0.2, indvar=indvar)
+    grad_fd = _fd_gradient(lambda u: ChiSquareObjective().evaluate(
+        run(_theta(free, u))[0], exp), free)
+    sim, routing = run({p.name: p.value for p in free}, routed=True)
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+@_needs_output_sens
+def test_net_segment_backend_refuses_an_overridden_derived_parameter(monkeypatch):
+    """Multiple shooting's ``.net`` lanes are prepared apart from the action loop, so they
+    carry the same check: a lane whose fitted values override ``k2`` is refused on a build
+    that fails the witness, before any segment runs."""
+    import pybnf.bngsim_model._runtime as runtime
+    from pybnf.bngsim_model.parsing import _parse_simulate_action
+    from pybnf.shooting import NetSegmentBackend
+    monkeypatch.setattr(runtime, 'sensitivity_follows_derived_overrides', lambda: False)
+    import tempfile
+    with tempfile.TemporaryDirectory() as folder:
+        net = Path(folder) / 'override.net'
+        net.write_text(_OVERRIDE_NET)
+        model = _net_model(net, [_TC], [('simulate', 'tc')], {'k1': 0.35, 'k2': 0.8})
+        apply_routing(model, route_for_model(model, ['k1', 'k2']))
+        backend = NetSegmentBackend(model, _parse_simulate_action(_TC), MutationSet(), 'tc')
+        with pytest.raises(PybnfError, match=r"segment 'tc' of multiple shooting overrides "
+                                             r"derived parameter\(s\) 'k2'"):
+            backend.simulate(model.param_set, np.linspace(0.0, 2.0, 3), None)
+
+
+@pytest.mark.bngsim
+def test_net_relative_condition_on_a_derived_parameter_is_refused_only_when_it_matters(
+        tmp_path):
+    """A condition ``Btot * 2`` on ``Btot = 2*A0`` writes ``4*A0`` as a constant each
+    evaluation, so the conditioned run still moves with ``A0`` but no column carries it. The
+    router refuses it at load, naming the condition and the parameter, when a requested
+    parameter feeds ``Btot``. Fitting only ``k`` is not affected, and neither is an absolute
+    ``Btot = 7`` (an override, which the run-time check governs)."""
+    from pybnf.gradient import GradientNotSupported
+    net = Path(tmp_path) / 'seeded.net'
+    net.write_text(_SEEDED_NET)
+    double = MutationSet([Mutation('Btot', '*', 2.0)], 'dbl')
+    model = _net_model(net, [_TC], [('simulate', 'tc')], {'k': 0.3, 'A0': 5.0},
+                       mutants=[double])
+    with pytest.raises(GradientNotSupported, match=r"Condition 'dbl' applies 'Btot \* 2.0' to "
+                                                   r"'Btot', a derived parameter .* reads A0"):
+        route_for_model(model, ['k', 'A0'], double)
+    assert route_for_model(model, ['k'], double).sensitivity_params == ['k']
+    absolute = MutationSet([Mutation('Btot', '=', 7.0)], 'abs')
+    route_for_model(model, ['k', 'A0'], absolute)
+
+
 # =============================================================================== SBML ===
 
 # S's initial value is the bare initialAssignment S = S0; X is a plain species a free
@@ -682,6 +977,209 @@ def test_antimony_fd_oracle_derived_parameter_and_seeded_species(tmp_path):
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=2e-4, atol=2e-4)
 
 
+# k_used = k_src by an initialAssignment, read by one decay; k_other drives a second decay of
+# the same species and feeds no assignment.
+_FIT_TARGET_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="fit_target">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_src" value="0.3" constant="true"/>
+      <parameter id="k_used" value="0" constant="true"/>
+      <parameter id="k_other" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="k_used"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k_src</ci></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>c</ci><ci>k_used</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="deg2" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>c</ci><ci>k_other</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+def _sbml_fd_case(tmp_path, text, free, truth, column, sigma, condition=None, actions=(_ACTION,),
+                  key='time_course', h=1e-5):
+    """(assembled gradient, central differences of the scalar loss, routing)."""
+    def run(values, routed=False):
+        model = _sbml_model(tmp_path, text, values, actions=actions)
+        if condition is not None:
+            model.add_mutant(condition)
+        routing = None
+        if routed:
+            routing = route_for_model(model, [p.name for p in free], condition)
+            apply_routings(model, [routing])
+        suffix = key + (condition.suffix if condition is not None else '')
+        return model.execute(str(tmp_path), 'sbml_fd', 0)[suffix], routing
+
+    exp = _exp_from(run(truth)[0], [column], sigma)
+    grad_fd = _fd_gradient(lambda u: ChiSquareObjective().evaluate(
+        run(_theta(free, u))[0], exp), free, h=h)
+    sim, routing = run({p.name: p.value for p in free}, routed=True)
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+    return res.gradient, grad_fd, routing
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+@pytest.mark.parametrize('fitted', [('k_used',), ('k_used', 'k_other')],
+                         ids=['k_used alone', 'k_used and k_other'])
+def test_sbml_fd_oracle_fitting_an_assignment_target_nothing_rederives(tmp_path, fitted):
+    """Fitting ``k_used`` -- which the model's initialAssignment ``k_used = k_src`` defines --
+    is an ordinary fit when nothing the evaluation changes feeds that assignment: the written
+    value stands, so it was refused for no reason. Against central differences of the scalar
+    loss (and the closed form ``S = 100 exp(-(k_used + k_other) t)``)."""
+    values = {'k_used': 0.45, 'k_other': 0.12}
+    free = [FreeParameter(n, 'uniform_var', 0.01, 10.0, value=values[n]) for n in fitted]
+    truth = {'k_used': 0.3, 'k_other': 0.1}
+    grad, grad_fd, routing = _sbml_fd_case(tmp_path, _FIT_TARGET_SBML, free,
+                                           {n: truth[n] for n in fitted}, 'S', 2.0)
+    assert routing.routes['k_used'].contributions == (RouteContribution(PARAM, 'k_used', 1.0),)
+    np.testing.assert_allclose(grad, grad_fd, rtol=1e-5)
+    # Closed form at the fitted point, for chi_sq = sum r_i^2 / (2 sigma^2), r = S - S_exp:
+    # dL/dk = sum r_i (-t_i S_i) / sigma^2 (699.8855 for k_used alone).
+    t = np.arange(0.0, 11.0)
+    k_tot = values['k_used'] + (values['k_other'] if 'k_other' in fitted else 0.1)
+    s_fit = 100.0 * np.exp(-k_tot * t)
+    s_exp = 100.0 * np.exp(-0.4 * t)
+    closed = np.sum((s_fit - s_exp) * (-t * s_fit)) / 2.0 ** 2
+    np.testing.assert_allclose(grad, closed, rtol=1e-5)
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+@pytest.mark.parametrize('how', ['fitted beside its input', 'condition beside its input',
+                                 'relative condition beside its input'])
+def test_sbml_assignment_target_written_while_its_input_moves_is_refused(tmp_path, how):
+    """When the evaluation also changes ``k_src``, the initial values are derived again and
+    ``k_used = k_src`` overwrites what was written to ``k_used`` -- by a free parameter, an
+    absolute condition or a relative one (the SBML counterpart of a relative condition on a
+    ``.net`` derived parameter). Refused at load, naming ``k_used`` and the input."""
+    from pybnf.gradient import GradientNotSupported
+    model = _sbml_model(tmp_path, _FIT_TARGET_SBML, {'k_src': 0.3, 'k_used': 0.45})
+    condition = {'fitted beside its input': None,
+                 'condition beside its input': MutationSet([Mutation('k_used', '=', 0.5)], 'c'),
+                 'relative condition beside its input':
+                     MutationSet([Mutation('k_used', '*', 2.0)], 'c')}[how]
+    free = ['k_src', 'k_used'] if condition is None else ['k_src']
+    with pytest.raises(GradientNotSupported,
+                       match=r"defines 'k_used' by an initialAssignment, and .* writes it; the "
+                             r"evaluation also changes 'k_src'"):
+        route_for_model(model, free, condition)
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+def test_sbml_nested_assignment_chain_refusal_names_a_fitted_parameter(tmp_path):
+    """``k2 = 2*k1`` and ``k3 = k2 + k1``: ``k1`` reaches ``k3`` through a second
+    initialAssignment, a chain the router does not compose. The refusal used to say
+    "Condition sets 'k1'" for a parameter that is simply fitted; it now names the parameter
+    without guessing how it is written."""
+    from pybnf.gradient import GradientNotSupported
+    text = _FIT_TARGET_SBML.replace(
+        '<parameter id="k_other" value="0.1" constant="true"/>',
+        '<parameter id="k_other" value="0.1" constant="true"/>'
+        '<parameter id="k3" value="0" constant="true"/>').replace(
+        '</listOfInitialAssignments>',
+        '<initialAssignment symbol="k3"><math xmlns="http://www.w3.org/1998/Math/MathML">'
+        '<apply><plus/><ci>k_used</ci><ci>k_src</ci></apply></math></initialAssignment>'
+        '</listOfInitialAssignments>').replace(
+        '<ci>k_other</ci><ci>S</ci>', '<ci>k3</ci><ci>S</ci>')
+    model = _sbml_model(tmp_path, text, {'k_src': 0.3})
+    with pytest.raises(GradientNotSupported) as info:
+        route_for_model(model, ['k_src'])
+    message = str(info.value)
+    assert "'k_src'" in message and 'cannot differentiate' in message
+    assert 'Condition sets' not in message
+    assert 'whether it is fitted or set by a condition' in message
+
+
+_PREEQ_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="preeq_override">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="c" initialConcentration="10" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k1" value="0.3" constant="true"/>
+      <parameter id="k2" value="0" constant="true"/>
+      <parameter id="kb" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="k2"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><cn>2</cn><ci>k1</ci></apply></math></initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="syn" reversible="false" fast="false">
+        <listOfProducts><speciesReference species="A" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>c</ci><ci>kb</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="conv" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>c</ci><ci>k2</ci><ci>A</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="degB" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="B" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>c</ci><ci>k1</ci><ci>B</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+@pytest.mark.parametrize('witness', ['this build', 'forced to fail'])
+def test_sbml_measurement_condition_overriding_a_derived_parameter(tmp_path, monkeypatch,
+                                                                    witness):
+    """A pre-equilibration whose measurement condition sets ``k2`` (``= 2*k1`` by an
+    initialAssignment) overrides it on the carried model, after the equilibration's run-time
+    check. bngsim 0.16.0 keeps differentiating ``k1`` through ``k2`` there (assembled 436.92
+    against a central difference of 409.09); on a build that fails the witness the run is
+    refused naming ``k2``, on one that passes it matches central differences."""
+    if witness == 'forced to fail':
+        monkeypatch.setattr(bngsim_sbml_model, 'sensitivity_follows_derived_overrides',
+                            lambda: False)
+    action = TimeCourse({'time': '4', 'step': '1', 'suffix': 'tc'})
+    action.set_preequilibration([], [('setParameter', 'k2', 1.5)])
+    free = [FreeParameter('k1', 'uniform_var', 0.01, 10.0, value=0.35)]
+    if not bngsim_sbml_model.sensitivity_follows_derived_overrides():
+        model = _sbml_model(tmp_path, _PREEQ_SBML, {'k1': 0.35}, actions=(action,))
+        apply_routing(model, route_for_model(model, ['k1']))
+        with pytest.raises(PybnfError, match=r"measurement condition of experiment 'tc' "
+                                             r"overrides derived parameter\(s\) 'k2'"):
+            model.execute(str(tmp_path), 'preeq_override', 0)
+        return
+    grad, grad_fd, _ = _sbml_fd_case(tmp_path, _PREEQ_SBML, free, {'k1': 0.3}, 'A', 0.5,
+                                     actions=(action,), key='tc')
+    np.testing.assert_allclose(grad, grad_fd, rtol=1e-4)
+
+
+@pytest.mark.bngsim_sbml
+@_needs_output_sens
+def test_sbml_run_check_reads_a_bare_string_seed_entry(tmp_path, monkeypatch):
+    """The #511 shorthand maps a parameter to one species name, a bare string. The SBML
+    run-time check used to read every seed-map entry as a tuple of terms and would have raised
+    ``AttributeError`` on one; no SBML preparation writes the shorthand today, so this pins the
+    check rather than a reachable failure."""
+    model = _sbml_model(tmp_path, _SEEDED_SBML, {'k': 0.4, 'S0': 120.0})
+    apply_routing(model, route_for_model(model, ['k', 'S0']))
+    monkeypatch.setattr(model, '_ic_seed_map', {'S0': 'S'})
+    model._make_simulator(model._engine_model_for_action(), 'ode')
+
+
 # ============================================================ helpers, no bngsim needed ===
 
 class _FakeEngine:
@@ -738,3 +1236,51 @@ def test_check_seeding_names_each_pair_and_honours_its_limits():
                           pairs={('S', 'S0')})
     seeding.check_seeding(engine, expected, ['S0', 'A0'], model_name='m', where='here',
                           exempt_species={'A'})
+
+
+class _ParamEngine:
+    """Answers ``param_is_expression`` and, optionally, bngsim's defining expressions."""
+
+    class _Core:
+        def __init__(self, expressions):
+            self.param_expressions = expressions
+
+    def __init__(self, live, expressions=None):
+        self.param_names = ['k1', 'k2', 'k3', 'j']
+        self.param_is_expression = [name in live for name in self.param_names]
+        if expressions is not None:
+            self._core = self._Core(expressions)
+
+
+def test_derived_parameter_inputs_are_transitive_and_read_off_bngsim():
+    """``k3 = k2 + j`` with ``k2 = 2*k1``: ``k3`` reads ``k1`` through ``k2``."""
+    engine = _ParamEngine({'k2', 'k3'}, ['0.3', '2*k1', 'k2 + j', '1'])
+    assert seeding.derived_parameter_inputs(engine) == {
+        'k2': frozenset({'k1'}), 'k3': frozenset({'k1', 'k2', 'j'})}
+    assert seeding.derived_parameter_inputs(_ParamEngine({'k2'})) is None
+
+
+def test_check_overridden_derived_refuses_only_an_override_a_requested_parameter_feeds():
+    inputs = {'k2': frozenset({'k1'}), 'k3': frozenset({'k1', 'k2', 'j'})}
+    template = frozenset({'k2', 'k3'})
+    kwargs = {'model_name': 'm', 'where': 'here'}
+    run = _ParamEngine({'k3'})                      # k2 overridden in the run
+    with pytest.raises(PybnfError, match=r"here overrides derived parameter\(s\) 'k2', which "
+                                         r"the fitted parameter\(s\) k1 feed"):
+        seeding.check_overridden_derived(run, template, inputs, ['k1'], **kwargs)
+    seeding.check_overridden_derived(run, template, inputs, ['j'], **kwargs)   # j feeds k3 only
+    # Only a derived parameter the right-hand side reaches carries the chain: k2 reached through
+    # the live k3 the rate law reads is refused, k2 that only seeds an initial value is not.
+    with pytest.raises(PybnfError, match=r"'k2', which the fitted parameter\(s\) k1 feed"):
+        seeding.check_overridden_derived(run, template, inputs, ['k1'], rhs_symbols={'k3'},
+                                         **kwargs)
+    seeding.check_overridden_derived(run, template, inputs, ['k1'], rhs_symbols={'j'}, **kwargs)
+    # A scan writes its parameter per dose, which the engine cannot show yet.
+    with pytest.raises(PybnfError, match=r"'k3', which the fitted parameter\(s\) j feed"):
+        seeding.check_overridden_derived(_ParamEngine({'k2', 'k3'}), template, inputs, ['j'],
+                                         also_overridden=('k3',), **kwargs)
+    # A build that cannot say what an expression reads is refused for any override, and not
+    # refused when nothing is overridden.
+    with pytest.raises(PybnfError, match=r"cannot report what that expression reads"):
+        seeding.check_overridden_derived(run, template, None, ['j'], **kwargs)
+    seeding.check_overridden_derived(_ParamEngine(template), template, None, ['j'], **kwargs)

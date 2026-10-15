@@ -30,11 +30,16 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     # question. It also carries the codegen-cache decline reason PyBNF reads (#647), and, on
     # the refusal side, a RuleMonkey re-vendor that declines a TotalRate rule where RuleMonkey
     # and NFsim genuinely disagree rather than picking a reading.
+    # 0.16.0 is the floor since lanl/PyBNF#991: the gradient router asks bngsim which derived
+    # parameters it holds live and what each fresh run is seeded with, and only from 0.16.0 on
+    # do the answers it gets from a released build and from bngsim main describe the same
+    # columns closely enough that one set of refusals and witnesses covers both; 0.15.x is no
+    # longer a build PyBNF has to keep a gradient path right on.
     # (0.12.2/0.12.0 bought the carried-state parameter_scan/bifurcate sensitivities of
     # lanl/bngsim#81 and #111 for #532; 0.11.35 the steady-state
     # SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the native
     # carried-state parameter_scan + named saved states of lanl/bngsim#11 for #474.)
-    assert 'bngsim>=0.15.0,<1' in project['dependencies']
+    assert 'bngsim>=0.16.0,<1' in project['dependencies']
 
 
 def _canonical_name(name):
@@ -457,5 +462,5 @@ def test_the_floor_check_reads_a_requirement_and_orders_versions():
 
     floors = _declared_floors()
     assert floors['petab'] == '0.9'                            # read out of pyproject, not typed
-    assert floors['bngsim'] == '0.15.0'                        # extras stripped
+    assert floors['bngsim'] == '0.16.0'                        # extras stripped
     assert 'h5py' not in floors                                # declared with no lower bound
