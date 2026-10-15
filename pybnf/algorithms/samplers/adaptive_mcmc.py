@@ -8,7 +8,7 @@ execution seam from Algorithm.
 
 from ..core import FailedSimulation
 from .base import BayesianAlgorithm, MCMCFamilyConfig
-from ...pset import PSet, OutOfBoundsException
+from ...pset import PSet, OutOfBoundsException, BNGLModel
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 from ...noise import ConstantSigma, FreeParameterSigma, NegBinomial
@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import re
 import shutil
 from pathlib import Path
 
@@ -41,6 +42,73 @@ def _noise_spec(alg, column):
     return alg.output_noise_specs[column]
 
 
+def _experiment_suffixes(config):
+    """``{model name: [output suffix, ...]}``: the simulation outputs whose trajectories am
+    records, which is every experiment of the fit, conditions and mutants included (#990).
+
+    An output suffix is an action suffix followed by a condition's or a mutant's suffix (none
+    for the model as written), and ``Model.get_suffixes`` lists every one a model produces.
+    These used to be the keys of ``time_length``, which holds the action suffixes alone, so an
+    experiment under a condition (``epi2`` + ``hi``) or an edition-1 mutant had no trajectory
+    buffer, and its rows were dropped without a message.
+
+    Under edition 2 a model runs each experiment's action under every condition the model
+    declares, but an experiment is the one pair its ``experiment:`` line names -- its data key.
+    The other pairs are nobody's experiment (nothing scores them, and the emit-set pruning of
+    #484 does not simulate them where it can tell), so they are left out."""
+    named = {}
+    for name, (base, data_key) in config._experiment_data_keys.items():
+        named.setdefault(base, {})[name] = data_key
+    suffixes = {}
+    for model_name, model in config.models.items():
+        experiments = named.get(model_name, {})
+        conditions = [''] + [m.suffix for m in getattr(model, 'mutants', ())]
+        unpaired = ({action + c for action in experiments for c in conditions}
+                    - set(experiments.values()))
+        suffixes[model_name] = [s for s in dict.fromkeys(model.get_suffixes())
+                                if s not in unpaired]
+    return suffixes
+
+
+def _model_names(config):
+    """``(listed, known)``: the names the fit's simulations can give a column, read from the
+    model files before anything runs, or ``None`` when they cannot be known in advance (#990).
+
+    ``listed`` are the ones to offer a user who misspelled one: the observables and functions of
+    a BNGL model, the species of an SBML or Antimony model, and the observables the measurement
+    layer defines. ``known`` is what a name is accepted against, and is wider on purpose: every
+    identifier the model files contain, so that a column the parse above does not list (the swept
+    parameter of a scan, a species of a backend that writes them) is never refused here. A name
+    this lets through but no simulation produces is still refused, at the first simulation
+    (:meth:`Adaptive_MCMC._check_trajectory_names`).
+
+    ``None`` for a fit with a ``postprocess`` script, which may add columns of its own, and for a
+    model that is neither BNGL nor SBML (an analytical target), whose outputs no file lists."""
+    from ...petab._bngl import parse_model as parse_bngl
+    from ...petab._sbml import parse_model as parse_sbml
+    if config.postprocessing:
+        return None
+    listed, known = set(), {'time'}
+    for model in config.models.values():
+        if isinstance(model, BNGLModel):
+            entities = parse_bngl(model.bngl_file_text)
+            listed |= entities.observable_names | entities.function_names
+            text = re.sub(r'#[^\n]*', '', model.bngl_file_text)   # a word in a comment is no name
+        else:
+            # bngsim's SBML and Antimony models keep the SBML text they loaded (an Antimony
+            # model's converted); RoadRunner's SBML model keeps only the path.
+            text = getattr(model, '_base_sbml_text', None)
+            path = getattr(model, 'abs_file_path', None)
+            if text is None and path is not None and str(path).endswith('.xml'):
+                text = Path(path).read_text(encoding='utf-8', errors='replace')
+            if text is None:
+                return None
+            listed |= parse_sbml(text).species_names
+        known |= set(re.findall(r'[A-Za-z_]\w*', text))
+    listed |= {k[1] for k in config.config if isinstance(k, tuple) and k[0] == 'measurement'}
+    return listed, known | listed
+
+
 @register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
                    schema=AdaptiveMCMCConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
@@ -51,17 +119,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
     #: Each output_noise_trajectory column's draw (#986), resolved on first use. Also a class
     #: attribute, so a run resumed from a backup made before it existed resolves them then.
     output_noise_specs = None
+    #: ``{model: [output suffix]}`` whose trajectories are recorded (:func:`_experiment_suffixes`,
+    #: #990), resolved on first use for a run resumed from a backup made before it existed.
+    trajectory_suffixes = None
 
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super().__init__(config)
-        # set the params decleared in the configuaration file
-        if self.config.config['normalization']:
-            self.norm = self.config.config['normalization']
-        else:
-            self.norm = None
-           
-        self.time = self.config.config['time_length'] 
-       
         self.adaptive = self.config.config['adaptive']
         # The iteration number that the adaptive starts at
         self.valid_range = self.burn_in + self.adaptive
@@ -90,11 +153,20 @@ class Adaptive_MCMC(BayesianAlgorithm):
         (out / 'Results' / 'A_MCMC' / 'Runs').mkdir(parents=True, exist_ok=True)
         (out / 'Results' / 'Histograms').mkdir(parents=True, exist_ok=True)
         
-        # Defined whether or not either key is set, so the names can be checked against a
-        # completed simulation in one place (_check_trajectory_names, #755).
-        self.output_columns = []
-        self.output_noise_columns = []
+        # The comma is a list separator that the parser removes (#751). This used to strip
+        # one out of each name here, which fixed `A, B` and silently joined `A,B` -- a single
+        # token to the parser -- into one name `AB`.
+        self.output_columns = list(self.config.config['output_trajectory'] or [])
+        self.output_noise_columns = list(self.config.config['output_noise_trajectory'] or [])
         self._trajectory_names_checked = False
+        # One buffer per (experiment, column), keyed by the experiment's output suffix followed
+        # by the column, and allocated when a result first supplies it, at the length that
+        # result has (#990). Sizing them in advance from `time_length` keyed them by action
+        # suffix, which an experiment under a condition or a mutant does not have.
+        self.output_run_current = {}
+        self.output_run_all = {}
+        self.output_run_noise_current = {}
+        self.output_run_noise_all = {}
 
         # Which (buffer key, chain) slots a real result column has ever supplied. The write
         # step used to infer this from the values, treating an all-zero row as "nothing was
@@ -108,38 +180,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
         # guarantee -- and it costs one flag to stop relying on it.
         self.parameter_index_recorded = [False] * self.num_parallel
 
-        if self.config.config['output_trajectory']:
-            # The comma is a list separator that the parser removes (#751). This used to
-            # strip one out of each name here, which fixed `A, B` and silently joined
-            # `A,B` -- a single token to the parser -- into one name `AB`.
-            self.output_columns = list(self.config.config['output_trajectory'])
-            self.output_run_current = {}
-            self.output_run_all = {}
-            for i in self.output_columns:
-                for k in self.time.keys():
-                    if '_Cum' in i:
-                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                    else:
-                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                     
-        
-        if self.config.config['output_noise_trajectory']:
-            # Same as above: the separator is the parser's business now (#751).
-            self.output_noise_columns = list(self.config.config['output_noise_trajectory'])
+        if self.output_columns or self.output_noise_columns:
+            self.trajectory_suffixes = _experiment_suffixes(self.config)
+            self._check_trajectory_outputs()
+        if self.output_noise_columns:
             # Each column's counts are drawn from the noise model that scores it (#986).
             self.output_noise_specs = {c: self._noise_draw_spec(c) for c in self.output_noise_columns}
-            self.output_run_noise_current = {}
-            self.output_run_noise_all = {}
-            for i in self.output_noise_columns:
-                for k in self.time.keys():
-                    if '_Cum' in i:
-                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                    else:
-                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
         if self.config.config['continue_run'] == 1:
             required = ['diff.txt', 'MLE_params.txt', 'diffMatrix.txt']
             missing = [f for f in required if not (adaptive_dir / f).exists()]
@@ -229,7 +275,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.acceptances += 1
             self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
-            self.list_trajactory = []
             self.cp = []
             for i in self.current_pset[index]:
                 self.cp.append(i.value)
@@ -244,70 +289,88 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.diffMatrix_best = np.eye(len(self.variables))
                 self.diff_best = self.diff[index]
 
-            # The order of varible reassignment is very important here    
-            self.ln_current_P[index] = lnposterior    
-            if self.config.config['parallelize_models'] != 1:
-                res.out = res.simdata
-            if isinstance(res.out, FailedSimulation):
-                pass
-            else:
-                self._check_trajectory_names(res.out)
-                if self.config.config['output_trajectory']:
-                    for l in self.output_columns:
-                        for i in res.out:
-                            for j in res.out[i]:
-                                if (j + l) not in self.output_run_current:
-                                    # Off-diagonal <action><condition> cross-product suffix.
-                                    # Now defensive: edition-2 pruning (#484, ADR-0069) no longer
-                                    # produces off-diagonal suffixes -- res.out carries only the
-                                    # scored diagonal (WT, KOko, ...), which is exactly what
-                                    # output_run_current allocates. This guard remains so a stray
-                                    # unallocated suffix skips rather than KeyError'ing, as it did
-                                    # load-bearingly before pruning (lanl/PyBNF#483).
-                                    continue
-                                if l in res.out[i][j].cols:
-                                    if self.norm:
-                                        res.out[i][j].normalize(self.norm)
-                                    column = res.out[i][j].cols[l]
-                                    self.list_trajactory = []
-                                    for z in res.out[i][j].data:
-                                        self.list_trajactory.append(z.data[column])      
-                                    if '_Cum' in l:
-                                        getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
-                                        self.output_run_current[j+l][index]= getFirstValue
-                                    else:
-                                        self.output_run_current[j+l][index]= self.list_trajactory
-                                    self.list_trajactory = []
-                                    # A real result column supplied this slot, which is what
-                                    # the write step needs to know -- not whether the values
-                                    # happen to be zero (#758).
-                                    self.output_run_recorded.add((j + l, index))
-                if self.config.config['output_noise_trajectory']:
-                    for la in self.output_noise_columns:
-                        for ib in res.out:
-                            for js in res.out[ib]:
-                                if (js + la) not in self.output_run_noise_current:
-                                    # Defensive after edition-2 pruning (#484, ADR-0069): only the
-                                    # scored diagonal keys are produced and allocated. Skip a stray
-                                    # unallocated suffix rather than KeyError (lanl/PyBNF#483).
-                                    continue
-                                if la in res.out[ib][js].cols:
-                                    if self.norm:
-                                        res.out[ib][js].normalize(self.norm)
-                                    column = res.out[ib][js].cols[la]
-                                    self.list_trajactory = []
-                                    for z in res.out[ib][js].data:
-                                        self.list_trajactory.append(z.data[column])      
-                                    if _noise_spec(self, la)[2]:
-                                        getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
-                                        self.output_run_noise_current[js+la][index]= getFirstValue
-                                    else:
-                                        self.output_run_noise_current[js+la][index]= self.list_trajactory
-                                    self.list_trajactory = []
-                                    self.output_run_noise_recorded.add((js + la, index))   # (#758)
+            # The order of varible reassignment is very important here
+            self.ln_current_P[index] = lnposterior
+            self._record_trajectories(res, index)
 
         self._record_iteration(index)
         return self._run_barrier(index)
+
+    def _record_trajectories(self, res, index):
+        """Put the accepted result's trajectories in chain ``index``'s slots.
+
+        The simulation data is read wherever the objective was scored
+        (:meth:`_result_simdata`): ``res.out`` on the worker-scoring path, ``res.simdata`` on
+        the master-scoring one. This used to read ``res.out`` alone, which only the worker path
+        and ``parallelize_models > 1`` set, so ``local_objective_eval = 1`` and ``smoothing > 1``
+        stopped at the first accepted result, and so did a chain whose first simulation failed:
+        a first result is always accepted, and a :class:`FailedSimulation` carries no ``out``
+        (#990). A failed simulation has no trajectory, so nothing is recorded for it.
+
+        Either way the data has been normalized and post-processed already, once, by whichever
+        side scored it, and what is recorded is the series the objective read its predictions
+        from. It used to be normalized a second time here, with the whole-fit normalization map
+        passed where one experiment's transforms belong, which raised (``ValueError: too many
+        values to unpack``) at the first accepted result of any fit with both a normalization and
+        a trajectory output (#990).
+
+        Only the experiments' outputs are recorded (:func:`_experiment_suffixes`). An edition-2
+        action under a condition its experiment does not name is not one; when the emit-set
+        pruning cannot skip it (#484, ADR-0069) it still reaches here, and is passed over
+        (#483)."""
+        simdata = self._result_simdata(res)
+        if isinstance(res, FailedSimulation) or simdata is None:
+            return
+        if not self.output_columns and not self.output_noise_columns:
+            return
+        self._check_trajectory_names(simdata)
+        for model, outputs in simdata.items():
+            for suffix in self._trajectory_suffixes().get(model, ()):
+                data = outputs.get(suffix)
+                if data is None:
+                    continue
+                for column in self.output_columns:
+                    if column in data.cols:
+                        self._record_column(
+                            self.output_run_current, self.output_run_all,
+                            self.output_run_recorded, suffix, column, data, index,
+                            differenced='_Cum' in column)
+                for column in self.output_noise_columns:
+                    if column in data.cols:
+                        self._record_column(
+                            self.output_run_noise_current, self.output_run_noise_all,
+                            self.output_run_noise_recorded, suffix, column, data, index,
+                            differenced=_noise_spec(self, column)[2])
+
+    def _record_column(self, current, everything, recorded, suffix, column, data, index,
+                       differenced):
+        """Copy ``column`` of one experiment's output into chain ``index``'s slot of its buffer,
+        allocating the buffer at that output's length the first time it is supplied."""
+        values = np.asarray(data.data[:, data.cols[column]], dtype=float)
+        if differenced:
+            values = np.concatenate((values[:1], np.diff(values)))
+        key = suffix + column
+        if key not in current:
+            current[key] = np.zeros((self.num_parallel, 1, len(values)))
+            everything[key] = np.zeros((self.num_parallel, self.arr_length, len(values)))
+        elif current[key].shape[-1] != len(values):
+            raise PybnfError(
+                "Experiment %s's simulation gave %d rows of %s, where an earlier one gave %d"
+                % (suffix, len(values), column, current[key].shape[-1]),
+                "A trajectory file holds one row per sample, each of one length, and the "
+                "simulation of experiment %s has changed how many output times it has from one "
+                "parameter set to the next." % suffix)
+        current[key][index] = values
+        # A real result column supplied this slot, which is what the write step needs to
+        # know -- not whether the values happen to be zero (#758).
+        recorded.add((key, index))
+
+    def _trajectory_suffixes(self):
+        """``{model: [output suffix]}`` whose trajectories are recorded, resolved from the
+        configuration for a run resumed from a backup made before it was stored (#990)."""
+        if self.trajectory_suffixes is None:
+            self.trajectory_suffixes = _experiment_suffixes(self.config)
+        return self.trajectory_suffixes
 
     def _record_iteration(self, index):
         """Record chain ``index``'s current point for the iteration that just ended, and
@@ -478,57 +541,144 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 return next_generation
         return []
 
-    def _check_trajectory_names(self, out):
-        """Warn once for an ``output_trajectory`` / ``output_noise_trajectory`` name that
-        no simulation produced a column for (#755).
+    def _check_trajectory_outputs(self):
+        """Refuse, when the configuration loads, an ``output_trajectory`` or
+        ``output_noise_trajectory`` that would be missing or wrong (#990).
 
-        Neither key was validated against anything. A name that matches no column is
-        filled by nothing (the accumulate loop below runs only ``if l in cols``), so its
-        array stays as allocated -- all zeros -- and the write step skips it, because it
-        writes only the rows that are not all zero. The result was a `Runs/` directory
-        with fewer ``traj_*.txt`` files than the conf asked for and nothing saying which
-        name was dropped or why, so a typo looked exactly like a fit that never asked.
+        * A name no model file or measurement formula defines. It used to be reported only at
+          the first simulation, at ``verbosity >= 1``, and the run went on to exit 0 without
+          the file (#755). Where the columns cannot be known before a simulation runs
+          (:func:`_model_names` says when), the first simulation refuses it instead
+          (:meth:`_check_trajectory_names`).
+        * A column ``normalization`` scales analytically (``scale``). The factor is profiled
+          against the data inside the objective at each evaluation and is not part of the
+          simulated series, so the file would hold the prediction off the data's scale by the
+          factor the fit applied.
+        * An ``output_noise_trajectory`` column any experiment normalizes. Its counts are drawn
+          from the negative binomial whose mean is the prediction, and a normalized prediction
+          (a ratio to the first or peak value, a z-score, a floored value) is not an expected
+          count, so integer counts drawn around it describe nothing that was or could be
+          measured. ``output_trajectory`` records the normalized series, which is what the
+          objective compares with the data."""
+        names = _model_names(self.config)
+        for key, wanted in (('output_trajectory', self.output_columns),
+                            ('output_noise_trajectory', self.output_noise_columns)):
+            if names is not None:
+                listed, known = names
+                missing = [name for name in wanted if name not in known]
+                if missing:
+                    one = len(missing) == 1
+                    raise PybnfError(
+                        "%s names %s, which %s not a column any simulation in this fit produces"
+                        % (key, ', '.join(missing), 'is' if one else 'are'),
+                        "%s names %s, which %s not an observable or function of a BNGL model, "
+                        "a species of an SBML model, or an observable a measurement formula "
+                        "defines. The names it could match are: %s."
+                        % (key, ', '.join(missing), 'is' if one else 'are',
+                           ', '.join(sorted(listed))))
+            scaled = self.config.config.get('analytic_scale') or {}
+            for column in wanted:
+                where = sorted(dk for dk, columns in scaled.items() if column in columns)
+                if where:
+                    raise PybnfError(
+                        "%s names %s, which normalization scales analytically" % (key, column),
+                        "normalization scales %s analytically (scale) in experiment %s. That "
+                        "factor is profiled against the data inside the objective, so it is not "
+                        "part of the simulated trajectory %s records, and the file would hold "
+                        "the prediction off the data's scale by it. Remove scale from %s's "
+                        "normalization, or %s from %s."
+                        % (column, ', '.join(where), key, column, column, key))
+        for column in self.output_noise_columns:
+            where = self._normalizing_experiments(column)
+            if where:
+                raise PybnfError(
+                    "output_noise_trajectory names %s, which normalization transforms"
+                    % column,
+                    "output_noise_trajectory draws counts from the negative binomial whose mean "
+                    "is %s's prediction, and normalization makes that prediction a normalized "
+                    "value in experiment %s, not an expected count, so counts drawn around it "
+                    "mean nothing. Remove %s's normalization, or list it under output_trajectory "
+                    "instead, which records the normalized trajectory the objective scores."
+                    % (column, ', '.join(where), column))
 
-        Checked here rather than at config load, where the rest of the codebase refuses an
-        undeclared name (``_resolve_profile_idxs``, ``design.greedy.resolve_targets``), for
-        two reasons: no model class exposes its observable names -- ``BNGLModel`` records
-        only the boolean ``has_observables`` -- and a column need not come from the model
-        file at all, since the measurement layer contributes its own. A completed result
-        carries the authoritative list, and carries it for every model in the fit at once
-        (``res.out`` is the whole multi-model dict on both the worker-scoring and the
-        master-scoring path), so a name valid for one model is not reported against
-        another.
+    def _normalizing_experiments(self, column):
+        """The data keys whose ``normalization`` transforms ``column`` before it is scored."""
+        settings = self.config.config['normalization']
+        if not settings:
+            return []
+        if isinstance(settings, str):
+            return ['every experiment']   # a whole-fit setting applies to every column
+        where = []
+        for data_key, transforms in settings.items():
+            if isinstance(transforms, str) or any(column in columns
+                                                   for _transform, columns in transforms):
+                where.append(data_key)
+        return sorted(where)
 
-        A warning rather than an error: the fit itself is sound, only an output file is
-        missing, and by the time this can be known simulations are already running.
-        """
+    def _check_trajectory_names(self, simdata):
+        """Refuse, at the first completed simulation, an ``output_trajectory`` /
+        ``output_noise_trajectory`` name that no experiment's output has a column for, and two
+        experiments whose trajectories would be written to one file (#755, #990).
+
+        Most names are refused when the configuration loads (:meth:`_check_trajectory_outputs`).
+        This catches the rest: a name some model file mentions without its being an output
+        column, and every name of a fit whose columns cannot be listed in advance (a
+        ``postprocess`` script, an analytical target). A completed result carries the
+        authoritative list, for every model in the fit at once, so a name valid for one model
+        is not refused against another. It used to be a warning, printed at ``verbosity >= 1``,
+        and the run went on to exit 0 with no file for the name.
+
+        A trajectory file is named by the experiment's output suffix followed by the column,
+        with neither the model nor a separator in it, so two models that share an experiment
+        suffix and a column, or two splits of one name (``epi`` + ``cases2`` and ``epic`` +
+        ``ases2``), would write their rows into one file."""
         if self._trajectory_names_checked:
             return
-        self._trajectory_names_checked = True
-        if not self.output_columns and not self.output_noise_columns:
-            return
+        suffixes = self._trajectory_suffixes()
         available = set()
-        for model in out:
-            for suffix in out[model]:
-                available.update(out[model][suffix].cols)
+        for model, outputs in simdata.items():
+            for suffix in suffixes.get(model, ()):
+                if suffix in outputs:
+                    available.update(outputs[suffix].cols)
         for key, wanted in (('output_trajectory', self.output_columns),
                             ('output_noise_trajectory', self.output_noise_columns)):
             missing = [name for name in wanted if name not in available]
-            if not missing:
-                continue
-            one = len(missing) == 1
-            print1("Warning: %s names %s, which %s of any simulation in this fit, so no "
-                   "trajectory will be written for %s. The simulations produce: %s."
-                   % (key, ', '.join(missing),
-                      'is not a column' if one else 'are not columns',
-                      'it' if one else 'them', ', '.join(sorted(available))))
+            if missing:
+                one = len(missing) == 1
+                raise PybnfError(
+                    "%s names %s, which %s not a column of any experiment's simulation"
+                    % (key, ', '.join(missing), 'is' if one else 'are'),
+                    "%s names %s, which %s not a column of any experiment's simulation in this "
+                    "fit, so no trajectory could be written for %s. The simulations produce: %s."
+                    % (key, ', '.join(missing), 'is' if one else 'are', 'it' if one else 'them',
+                       ', '.join(sorted(available))))
+            files = {}
+            for model, outputs in simdata.items():
+                for suffix in suffixes.get(model, ()):
+                    for column in wanted:
+                        if suffix not in outputs or column not in outputs[suffix].cols:
+                            continue
+                        source = (model, suffix, column)
+                        first = files.setdefault(suffix + column, source)
+                        if first != source:
+                            raise PybnfError(
+                                "%s would write two trajectories to one file, %s"
+                                % (key, suffix + column),
+                                "%s names its files by experiment and column, and %s of model %s "
+                                "in experiment %s and %s of model %s in experiment %s both come "
+                                "to %s. Rename a column or an experiment so the two differ."
+                                % (key, first[2], first[0], first[1], column, model, suffix,
+                                   suffix + column))
+        self._trajectory_names_checked = True
 
     def _keys_of(self, column, buffers):
-        """The buffer keys of ``column``: one per experiment suffix, matched exactly. A test of
-        ``column in key`` also matched a column whose name is inside another's key (``cases``
-        in ``epicases2``), which wrote that key's rows twice and, once each column had a noise
-        model of its own, drew it with the wrong one (#986)."""
-        return [k + column for k in self.time if k + column in buffers]
+        """The buffer keys of ``column``: one per experiment's output suffix, matched exactly.
+        A test of ``column in key`` also matched a column whose name is inside another's key
+        (``cases`` in ``epicases2``), which wrote that key's rows twice and, once each column
+        had a noise model of its own, drew it with the wrong one (#986)."""
+        keys = dict.fromkeys(suffix + column for suffixes in self._trajectory_suffixes().values()
+                             for suffix in suffixes)
+        return [k for k in keys if k in buffers]
 
     def _noise_draw_spec(self, column):
         """``(family, dispersion source, cumulative)`` for one ``output_noise_trajectory``

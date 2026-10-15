@@ -288,6 +288,7 @@ class Configuration:
         self._check_wall_time_fit()
         self._check_wall_time_refine_frac()
         self._check_edition()
+        self._check_trajectory_output_job_type()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
@@ -655,6 +656,22 @@ class Configuration:
         value = self.config['edition']
         if value is not None:
             edition.validate_edition(value)
+
+    def _check_trajectory_output_job_type(self):
+        """Refuse ``output_trajectory`` / ``output_noise_trajectory`` outside ``job_type = am``,
+        the one job type that writes them (#990). Both are global keys, so every other job type
+        accepted them, warned about nothing, and wrote no file."""
+        named = [k for k in ('output_trajectory', 'output_noise_trajectory') if self.config[k]]
+        job_type = self.config['fit_type']
+        if not named or job_type == 'am':
+            return
+        raise PybnfError(
+            f"{' and '.join(named)} {'is' if len(named) == 1 else 'are'} written only by "
+            f"job_type = am, and this is job_type = {job_type}",
+            f"{' and '.join(named)} {'is' if len(named) == 1 else 'are'} written only by "
+            f"job_type = am (Adaptive MCMC); job_type = {job_type} would ignore "
+            f"{'it' if len(named) == 1 else 'them'} and write no trajectory file.",
+            hint=f"Remove {' and '.join(named)}, or run job_type = am.")
 
     @staticmethod
     def _valid_config_keys(conf_dict):
@@ -1811,8 +1828,9 @@ class Configuration:
                              f"'{base}': t_end={action.time}, n_steps={action.stepnumber}, "
                              f"data key '{data_key}', {len(constraint_files)} constraint file(s)")
 
-            # time_length is keyed by the bare action suffix (the experiment name); the
-            # condition/mutant combinations are formed downstream (adaptive_mcmc). The output is
+            # time_length is keyed by the bare action suffix (the experiment name), not by the
+            # data key, so it says nothing about a conditioned experiment's output; am no longer
+            # sizes its trajectory buffers from it (#990). The output is
             # one row per explicit point for a data-driven action (a time course: one per sample
             # time including the forced t=0; a scan: one per dose), or n_steps+... for a uniform
             # grid -- ``Action.output_length`` gives the row count either way.
@@ -3193,7 +3211,43 @@ class Configuration:
                 f"per data point at scoring time, which the column-joint objective "
                 f"'{type(self.obj).__name__}' (kl / wasserstein) does not have. Declare 'scale' "
                 f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
+        self._require_additive_scale(analytic_scale)
         self.obj._analytic_scale = analytic_scale
+
+    def _require_additive_scale(self, analytic_scale):
+        """Refuse ``scale`` on a column whose noise family has no additive scale (#990).
+
+        The profile is taken in the space the family adds its error in: least squares on a
+        linear scale, the geometric-mean ratio on a log scale (``_scale_mode``, which reads the
+        family's ``additive_on``). A family without one -- ``neg_bin``, whose counts are scored
+        by a probability mass function -- has no such space. It used to be accepted here, and
+        every evaluation then raised ``AttributeError`` inside the objective, which the scoring
+        turned into a failed simulation, so every parameter set was scored as a failure. A
+        least-squares objective has no noise family and profiles linearly, as ``_scale_mode``
+        says."""
+        spec_for = getattr(self.obj, '_spec_for', None)
+        if spec_for is None:
+            return
+        refused = {}
+        for data_key, columns in analytic_scale.items():
+            for column in columns:
+                family, _sources = spec_for(column)
+                if getattr(family, 'additive_on', None) is None:
+                    refused.setdefault((column, type(family).__name__), []).append(data_key)
+        if not refused:
+            return
+        (column, family), data_keys = sorted(refused.items())[0]
+        with_scale = sorted(token for token, make in objective._NOISE_FAMILIES.items()
+                            if getattr(make(), 'additive_on', None) is not None)
+        raise PybnfError(
+            f"normalization scales {column} analytically, but its noise model {family} has no "
+            f"additive scale",
+            f"'scale' profiles a per-series factor in the space the noise model adds its error "
+            f"in: by least squares on a linear scale, by the geometric-mean ratio on a log scale. "
+            f"{column} (experiment {', '.join(sorted(data_keys))}) is scored by {family}, which "
+            f"has no such space, so there is no profile to take.",
+            hint=f"Remove scale from {column}'s normalization, or score it with a noise model "
+                 f"that has an additive scale: {', '.join(with_scale)}.")
 
     def _apply_noise_profiling(self):
         """Resolve ``noise_profiling = 1`` and partition the free parameters (ADR-0108, #562).

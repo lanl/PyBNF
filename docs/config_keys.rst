@@ -1446,7 +1446,7 @@ Algorithm Options
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
    - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1).
    - ``floor <rho>`` - add a measurement-noise **floor** ``x' = x + rho*max(x)`` (``rho`` a small fraction, default ``0.03``), so a log / relative objective stays finite where a series legitimately touches zero. Applied **identically to the simulated and the experimental** column.
-   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise.
+   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise. Refused when the configuration loads for a column whose noise model has no additive scale to profile in (``neg_bin``).
 
   Normalization is a per-observable *prediction* transform -- a sibling of the per-observable
   :ref:`noise_model <noise_model_key>` / ``cumulative`` surface -- so under a modern
@@ -2749,8 +2749,11 @@ For Adaptive MCMC
   ``cumulative``. The legacy ``objfunc = neg_bin`` / ``neg_bin_dynamic`` are such noise models, and
   under them a column whose name contains ``_Cum`` is drawn differenced, as it always has been.
   Refused when the configuration loads: a column with any other noise model, a dispersion read
-  from the data, and a fit with a ``time_error``, which the draw would ignore.
-  
+  from the data, and a fit with a ``time_error``, which the draw would ignore. Also refused: a
+  column any experiment normalizes (its prediction is then a normalized value, not an expected
+  count, so counts drawn around it mean nothing -- list it under ``output_trajectory`` instead),
+  and every name and experiment rule of ``output_trajectory`` below applies here too.
+
   Default: None (multiple values can be defined separated by a comma)
   
   Note: output_trajectory and output_noise_trajectory can both be declared in the same configuration file but may       result in slower performance
@@ -2762,8 +2765,17 @@ For Adaptive MCMC
     
 
 **output_trajectory**
-  Save the output of the user defined observable or function from the simulation output to a .txt file.
-  
+  Save the output of the user defined observable or function from the simulation output to a .txt file
+  (``job_type = am`` only; any other job type refuses the key). One file per chain is written for
+  every experiment whose simulation has the column, an experiment under a ``condition:`` or an
+  edition-1 mutant included, named ``traj_<experiment suffix><column>_chain_<n>.txt``. The
+  trajectory is the series the objective scores: after the experiment's ``normalization`` and any
+  ``postprocess`` script. A column normalized with ``scale`` is refused, because that factor is
+  profiled against the data inside the objective and is not part of the simulated series. A name
+  that no model observable, function or species, and no measurement formula, defines is refused
+  when the configuration loads, with the names it could match; one that no experiment's
+  simulation turns out to produce stops the run at its first simulation.
+
   Default: None (multiple values can be defined separated by a comma)
   
   Example:
