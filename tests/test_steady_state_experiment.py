@@ -118,7 +118,7 @@ class TestActionShaping:
         assert action.explicit_points is None
         # The data is bound and scored under the experiment name, as for any experiment.
         assert c.exp_data['birth_death']['ss'].indvar == 'time'
-        assert c.config['time_length']['ss'] == 1
+        assert action.output_length() == 2     # the baseline and the equilibrium
 
     def test_t_end_bounds_the_relaxation(self, tmp_path, monkeypatch):
         """``t_end:`` on a steady-state experiment is the max-time bound of the relaxation

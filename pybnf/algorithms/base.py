@@ -1288,6 +1288,13 @@ class Algorithm(ABC):
         """
         self.max_iterations += n
 
+    def prepare_resume(self):
+        """Called once on an algorithm reloaded from a backup by ``-r``, before it runs again.
+
+        A no-op here. An algorithm whose backups from an earlier PyBNF hold less than its own
+        do overrides it to fill the gap and to say what the resumed run will do differently
+        (``Adaptive_MCMC.prepare_resume``, #990)."""
+
     def _fold_group_result(self, res):
         """Accumulate one completed sub-result into its JobGroup (smoothing /
         model-level parallelism). Returns the combined Result once every sub-job

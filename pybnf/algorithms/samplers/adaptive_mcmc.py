@@ -9,7 +9,7 @@ execution seam from Algorithm.
 from ..core import FailedSimulation
 from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException, BNGLModel
-from ...printing import print1, print2, PybnfError
+from ...printing import print0, print1, print2, PybnfError
 from ...registry import register_fit_type
 from ...noise import ConstantSigma, FreeParameterSigma, NegBinomial
 from ...noise.negative_binomial import draw_count
@@ -19,10 +19,14 @@ from types import SimpleNamespace
 
 from typing import Any
 
+import logging
 import numpy as np
 import re
 import shutil
 from pathlib import Path
+
+# The samplers' module logger name (samplers/base.py), so these records keep that channel.
+logger = logging.getLogger('pybnf.algorithms')
 
 
 class AdaptiveMCMCConfig(MCMCFamilyConfig):
@@ -48,9 +52,9 @@ def _experiment_suffixes(config):
 
     An output suffix is an action suffix followed by a condition's or a mutant's suffix (none
     for the model as written), and ``Model.get_suffixes`` lists every one a model produces.
-    These used to be the keys of ``time_length``, which holds the action suffixes alone, so an
-    experiment under a condition (``epi2`` + ``hi``) or an edition-1 mutant had no trajectory
-    buffer, and its rows were dropped without a message.
+    These used to be the keys of ``time_length`` (since removed, #998), which held the action
+    suffixes alone, so an experiment under a condition (``epi2`` + ``hi``) or an edition-1
+    mutant had no trajectory buffer, and its rows were dropped without a message.
 
     Under edition 2 a model runs each experiment's action under every condition the model
     declares, but an experiment is the one pair its ``experiment:`` line names -- its data key.
@@ -70,30 +74,80 @@ def _experiment_suffixes(config):
     return suffixes
 
 
-def _model_names(config):
-    """``(listed, known)``: the names the fit's simulations can give a column, read from the
+def _prints_functions(action):
+    """Whether a BNGL action's output carries the model's functions: ``True`` or ``False`` when
+    the action says so, ``None`` when its text cannot be read.
+
+    BNG2.pl and bngsim write a function column only under ``print_functions=>1``, and every
+    action PyBNF synthesizes for an edition-2 experiment asks for it (``BNGLModel.add_action``).
+    A hand-written action is read with the bngsim bridge's own action parser."""
+    from ...bngsim_model.parsing import _parse_action_dict
+    if not isinstance(action, str):
+        return True
+    action = action.strip().rstrip(';')       # BNG2.pl reads `simulate({...});` the same way
+    name = re.match(r'\s*(\w+)\s*\(', action)
+    params = _parse_action_dict(action, name.group(1)) if name else None
+    if params is None:
+        return None
+    value = str(params.get('print_functions', '0')).strip()
+    if value in ('0', ''):
+        return False
+    try:
+        return float(value) != 0.0
+    except ValueError:
+        return None           # an expression: what it comes to is BNG2.pl's business
+
+
+def _model_columns(config, suffixes):
+    """``(listed, known, certain)``: the columns the fit's simulations can produce, read from the
     model files before anything runs, or ``None`` when they cannot be known in advance (#990).
 
-    ``listed`` are the ones to offer a user who misspelled one: the observables and functions of
-    a BNGL model, the species of an SBML or Antimony model, and the observables the measurement
-    layer defines. ``known`` is what a name is accepted against, and is wider on purpose: every
-    identifier the model files contain, so that a column the parse above does not list (the swept
-    parameter of a scan, a species of a backend that writes them) is never refused here. A name
-    this lets through but no simulation produces is still refused, at the first simulation
-    (:meth:`Adaptive_MCMC._check_trajectory_names`).
+    * ``listed`` are the names to offer a user who misspelled one: the observables and functions
+      of a BNGL model, the species of an SBML or Antimony model, and the observables the
+      measurement layer defines.
+    * ``known`` is what a name is accepted against, and is wider on purpose: every identifier
+      the model files contain, so that a column the parse does not list (the swept parameter of
+      a scan, a species of a backend that writes them) is never refused here. A name this lets
+      through but no simulation produces is refused at the first simulation instead
+      (:meth:`Adaptive_MCMC._check_trajectory_names`).
+    * ``certain`` is ``{model: {output suffix: columns}}``, the columns each experiment of
+      ``suffixes`` is sure to have: a BNGL model's observables, its functions when the action
+      prints them (:func:`_prints_functions`), an SBML model's species, and the measurement
+      layer's observables, which it adds to every output. Two experiments that would write one
+      file are refused from it when the configuration loads.
 
-    ``None`` for a fit with a ``postprocess`` script, which may add columns of its own, and for a
+    ``None`` for a fit with a ``postprocess`` script, which may add or remove columns, and for a
     model that is neither BNGL nor SBML (an analytical target), whose outputs no file lists."""
     from ...petab._bngl import parse_model as parse_bngl
     from ...petab._sbml import parse_model as parse_sbml
     if config.postprocessing:
         return None
-    listed, known = set(), {'time'}
-    for model in config.models.values():
+    measured = {k[1] for k in config.config if isinstance(k, tuple) and k[0] == 'measurement'}
+    # Of those, the ones the measurement layer writes into every output as a column; a
+    # row-varying one is bound per data point instead (ADR-0045) and is no column.
+    layer = config.obj.measurement
+    materialized = {m.observable_id for m in layer.models} if layer else set()
+    listed, known, certain = set(measured), {'time'} | measured, {}
+    for model_name, model in config.models.items():
+        outputs = suffixes.get(model_name, ())
         if isinstance(model, BNGLModel):
             entities = parse_bngl(model.bngl_file_text)
             listed |= entities.observable_names | entities.function_names
             text = re.sub(r'#[^\n]*', '', model.bngl_file_text)   # a word in a comment is no name
+            prints = {}
+            for action in model.actions:
+                tag = (action.suffix if not isinstance(action, str)
+                       else (BNGLModel._get_action_suffix(action) or (None, None))[1])
+                if tag is not None:
+                    prints.setdefault(tag, set()).add(_prints_functions(action))
+            conditions = [''] + [m.suffix for m in model.mutants]
+            certain[model_name] = {}
+            for output in outputs:
+                flags = set().union(*(prints[a] for a in prints
+                                      if any(output == a + c for c in conditions)))
+                certain[model_name][output] = (
+                    entities.observable_names | materialized
+                    | (entities.function_names if flags == {True} else set()))
         else:
             # bngsim's SBML and Antimony models keep the SBML text they loaded (an Antimony
             # model's converted); RoadRunner's SBML model keeps only the path.
@@ -103,10 +157,36 @@ def _model_names(config):
                 text = Path(path).read_text(encoding='utf-8', errors='replace')
             if text is None:
                 return None
-            listed |= parse_sbml(text).species_names
+            species = parse_sbml(text).species_names
+            listed |= species
+            certain[model_name] = {output: species | materialized for output in outputs}
         known |= set(re.findall(r'[A-Za-z_]\w*', text))
-    listed |= {k[1] for k in config.config if isinstance(k, tuple) and k[0] == 'measurement'}
-    return listed, known | listed
+    return listed, known | listed, certain
+
+
+def _shared_file(key, outputs, wanted):
+    """Refuse two (model, experiment, column) sources of ``key`` whose files are one name.
+
+    ``outputs`` is ``{model: {output suffix: columns}}``. A trajectory file is named by the
+    output suffix followed by the column, with neither the model nor a separator in it, so two
+    models that share an experiment suffix and a column, or two splits of one name (``epi`` +
+    ``cases2`` and ``epic`` + ``ases2``), would write their rows into one file."""
+    files = {}
+    for model, experiments in sorted(outputs.items()):        # a stable message
+        for suffix, columns in experiments.items():
+            for column in wanted:
+                if column not in columns:
+                    continue
+                source = (model, suffix, column)
+                first = files.setdefault(suffix + column, source)
+                if first != source:
+                    raise PybnfError(
+                        "%s would write two trajectories to one file, %s" % (key, suffix + column),
+                        "%s names its files by experiment and column, and %s of model %s in "
+                        "experiment %s and %s of model %s in experiment %s both come to %s. "
+                        "Rename a column or an experiment so the two differ."
+                        % (key, first[2], first[0], first[1], column, model, suffix,
+                           suffix + column))
 
 
 @register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
@@ -317,9 +397,15 @@ class Adaptive_MCMC(BayesianAlgorithm):
         Only the experiments' outputs are recorded (:func:`_experiment_suffixes`). An edition-2
         action under a condition its experiment does not name is not one; when the emit-set
         pruning cannot skip it (#484, ADR-0069) it still reaches here, and is passed over
-        (#483)."""
+        (#483).
+
+        Nor is anything recorded for a result without a finite score: a chain's first result is
+        accepted whatever its score, and one the scoring penalized (a ``postprocess`` script that
+        failed, an objective that could not be evaluated) may carry data it never finished with.
+        The worker path drops that data, the master path keeps it, and the first-simulation name
+        check read such data as the fit's columns, so the two paths ended differently (#990)."""
         simdata = self._result_simdata(res)
-        if isinstance(res, FailedSimulation) or simdata is None:
+        if isinstance(res, FailedSimulation) or simdata is None or not np.isfinite(res.score):
             return
         if not self.output_columns and not self.output_noise_columns:
             return
@@ -371,6 +457,51 @@ class Adaptive_MCMC(BayesianAlgorithm):
         if self.trajectory_suffixes is None:
             self.trajectory_suffixes = _experiment_suffixes(self.config)
         return self.trajectory_suffixes
+
+    def prepare_resume(self):
+        """Report experiments whose trajectories a resumed run records for the first time (#990).
+
+        A backup made before #990 recorded trajectories only for the action suffixes of
+        ``time_length``, which it kept as ``self.time``: an experiment under a condition or an
+        edition-1 mutant had none. Resumed, such a run records them from here on. The backup
+        holds no simulation of a chain's current point for them, so a chain's files for them
+        begin with the first move it accepts after the resume, while the other experiments'
+        files already hold rows: they are shorter, and do not line up row for row. That is said
+        here rather than left for a reader to find in the row counts."""
+        super().prepare_resume()
+        if self.trajectory_suffixes is not None or not (self.output_columns
+                                                        or self.output_noise_columns):
+            return
+        before = vars(self).get('time')      # what a backup made before #990 recorded
+        suffixes = self._trajectory_suffixes()
+        if before is None:
+            return
+        new = [s for outputs in suffixes.values() for s in outputs if s not in before]
+        runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+
+        def rows(name):
+            path = runs_dir / name
+            return len(path.read_text().splitlines()) if path.is_file() else 0
+
+        written = {chain: max((rows('%s%s%s_chain_%d.txt' % (prefix, s, column, chain))
+                               for prefix, columns in (('traj_', self.output_columns),
+                                                       ('traj_noise_', self.output_noise_columns))
+                               for column in columns for s in before), default=0)
+                   for chain in range(self.num_parallel)}
+        if not new or not any(written.values()):
+            return
+        counts = set(written.values())
+        already = ('%d rows in every chain' % counts.pop() if len(counts) == 1 else
+                   ', '.join('%d rows in chain %d' % (n, c) for c, n in sorted(written.items())))
+        message = ("Note: this run was backed up before PyBNF recorded the trajectories of "
+                   "experiment%s %s. A chain's traj_* files for %s begin with the first move it "
+                   "accepts after iteration %d, where the run resumes, so they are shorter than "
+                   "the other experiments' files, which already hold %s, and do not line up "
+                   "with them row for row."
+                   % ('' if len(new) == 1 else 's', ', '.join(new),
+                      'it' if len(new) == 1 else 'them', min(self.iteration), already))
+        logger.warning(message)
+        print0(message)
 
     def _record_iteration(self, index):
         """Record chain ``index``'s current point for the iteration that just ended, and
@@ -547,24 +678,28 @@ class Adaptive_MCMC(BayesianAlgorithm):
 
         * A name no model file or measurement formula defines. It used to be reported only at
           the first simulation, at ``verbosity >= 1``, and the run went on to exit 0 without
-          the file (#755). Where the columns cannot be known before a simulation runs
-          (:func:`_model_names` says when), the first simulation refuses it instead
-          (:meth:`_check_trajectory_names`).
+          the file (#755).
+        * Two experiments whose trajectories would be written to one file
+          (:func:`_shared_file`), from the columns each is sure to have.
         * A column ``normalization`` scales analytically (``scale``). The factor is profiled
           against the data inside the objective at each evaluation and is not part of the
           simulated series, so the file would hold the prediction off the data's scale by the
           factor the fit applied.
-        * An ``output_noise_trajectory`` column any experiment normalizes. Its counts are drawn
+        * An ``output_noise_trajectory`` column an experiment normalizes. Its counts are drawn
           from the negative binomial whose mean is the prediction, and a normalized prediction
           (a ratio to the first or peak value, a z-score, a floored value) is not an expected
           count, so integer counts drawn around it describe nothing that was or could be
           measured. ``output_trajectory`` records the normalized series, which is what the
-          objective compares with the data."""
-        names = _model_names(self.config)
+          objective compares with the data.
+
+        Where the columns cannot be known before a simulation runs (:func:`_model_columns` says
+        when), the first two are refused at the first simulation instead
+        (:meth:`_check_trajectory_names`)."""
+        model_columns = _model_columns(self.config, self.trajectory_suffixes)
         for key, wanted in (('output_trajectory', self.output_columns),
                             ('output_noise_trajectory', self.output_noise_columns)):
-            if names is not None:
-                listed, known = names
+            if model_columns is not None:
+                listed, known, certain = model_columns
                 missing = [name for name in wanted if name not in known]
                 if missing:
                     one = len(missing) == 1
@@ -576,9 +711,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         "defines. The names it could match are: %s."
                         % (key, ', '.join(missing), 'is' if one else 'are',
                            ', '.join(sorted(listed))))
+                _shared_file(key, certain, wanted)
             scaled = self.config.config.get('analytic_scale') or {}
             for column in wanted:
-                where = sorted(dk for dk, columns in scaled.items() if column in columns)
+                where = sorted(dk for dk, scaled_columns in scaled.items()
+                               if column in scaled_columns)
                 if where:
                     raise PybnfError(
                         "%s names %s, which normalization scales analytically" % (key, column),
@@ -587,7 +724,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         "part of the simulated trajectory %s records, and the file would hold "
                         "the prediction off the data's scale by it. Remove scale from %s's "
                         "normalization, or %s from %s."
-                        % (column, ', '.join(where), key, column, column, key))
+                        % (column, ', '.join(self._experiment_label(dk) for dk in where), key,
+                           column, column, key))
         for column in self.output_noise_columns:
             where = self._normalizing_experiments(column)
             if where:
@@ -599,47 +737,59 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     "value in experiment %s, not an expected count, so counts drawn around it "
                     "mean nothing. Remove %s's normalization, or list it under output_trajectory "
                     "instead, which records the normalized trajectory the objective scores."
-                    % (column, ', '.join(where), column))
+                    % (column, ', '.join(self._experiment_label(dk) for dk in where), column))
+
+    def _experiment_label(self, data_key):
+        """How a message names the experiment of ``data_key``: an edition-2 experiment by its
+        name and condition (``epi2 (condition hi)`` for ``epi2hi``), any other by its data key,
+        which in edition 1 is the data file's name without ``.exp``."""
+        for name, (_base, key) in self.config._experiment_data_keys.items():
+            if key == data_key and key != name and key.startswith(name):
+                return '%s (condition %s)' % (name, key[len(name):])
+        return data_key
 
     def _normalizing_experiments(self, column):
-        """The data keys whose ``normalization`` transforms ``column`` before it is scored."""
+        """The experiments, by output suffix, whose ``normalization`` transforms ``column``
+        before it is scored -- read as ``Result.normalize`` applies it: each output suffix
+        normalized by the transforms of the key it equals.
+
+        The compiled setting is ``{data key: [(transform, [columns])]}``. The legacy per-file
+        form also keeps each ``.exp`` file name it was written with as a key, holding the
+        transform as written (``{'a.exp': 'init', 'a': [('init', ['cases'])]}``). No output
+        suffix is a file name, so those keys normalize nothing; reading one as an experiment
+        refused a column that file does not even measure (#990)."""
         settings = self.config.config['normalization']
         if not settings:
             return []
+        recorded = sorted({s for outputs in self._trajectory_suffixes().values() for s in outputs})
         if isinstance(settings, str):
-            return ['every experiment']   # a whole-fit setting applies to every column
-        where = []
-        for data_key, transforms in settings.items():
-            if isinstance(transforms, str) or any(column in columns
-                                                   for _transform, columns in transforms):
-                where.append(data_key)
-        return sorted(where)
+            return recorded          # one whole-fit transform of every column of every output
+        return [s for s in recorded if s in settings and (
+            isinstance(settings[s], str)
+            or any(column in columns for _transform, columns in settings[s]))]
 
     def _check_trajectory_names(self, simdata):
         """Refuse, at the first completed simulation, an ``output_trajectory`` /
         ``output_noise_trajectory`` name that no experiment's output has a column for, and two
         experiments whose trajectories would be written to one file (#755, #990).
 
-        Most names are refused when the configuration loads (:meth:`_check_trajectory_outputs`).
+        Most of both are refused when the configuration loads (:meth:`_check_trajectory_outputs`).
         This catches the rest: a name some model file mentions without its being an output
-        column, and every name of a fit whose columns cannot be listed in advance (a
-        ``postprocess`` script, an analytical target). A completed result carries the
+        column; two experiments sharing a file through a column that is not sure to be written
+        (a function whose action's ``print_functions`` cannot be read); and everything about a
+        fit whose columns cannot be listed in advance, because a ``postprocess`` script may add
+        or remove columns, or a model is an analytical target. A completed result carries the
         authoritative list, for every model in the fit at once, so a name valid for one model
-        is not refused against another. It used to be a warning, printed at ``verbosity >= 1``,
-        and the run went on to exit 0 with no file for the name.
-
-        A trajectory file is named by the experiment's output suffix followed by the column,
-        with neither the model nor a separator in it, so two models that share an experiment
-        suffix and a column, or two splits of one name (``epi`` + ``cases2`` and ``epic`` +
-        ``ases2``), would write their rows into one file."""
+        is not refused against another. It used to be a warning, printed at
+        ``verbosity >= 1``, and the run went on to exit 0 with no file for the name."""
         if self._trajectory_names_checked:
             return
-        suffixes = self._trajectory_suffixes()
-        available = set()
-        for model, outputs in simdata.items():
-            for suffix in suffixes.get(model, ()):
-                if suffix in outputs:
-                    available.update(outputs[suffix].cols)
+        produced = {model: {suffix: set(outputs[suffix].cols)
+                            for suffix in self._trajectory_suffixes().get(model, ())
+                            if suffix in outputs}
+                    for model, outputs in simdata.items()}
+        available = set().union(*(columns for experiments in produced.values()
+                                  for columns in experiments.values()))
         for key, wanted in (('output_trajectory', self.output_columns),
                             ('output_noise_trajectory', self.output_noise_columns)):
             missing = [name for name in wanted if name not in available]
@@ -652,23 +802,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     "fit, so no trajectory could be written for %s. The simulations produce: %s."
                     % (key, ', '.join(missing), 'is' if one else 'are', 'it' if one else 'them',
                        ', '.join(sorted(available))))
-            files = {}
-            for model, outputs in simdata.items():
-                for suffix in suffixes.get(model, ()):
-                    for column in wanted:
-                        if suffix not in outputs or column not in outputs[suffix].cols:
-                            continue
-                        source = (model, suffix, column)
-                        first = files.setdefault(suffix + column, source)
-                        if first != source:
-                            raise PybnfError(
-                                "%s would write two trajectories to one file, %s"
-                                % (key, suffix + column),
-                                "%s names its files by experiment and column, and %s of model %s "
-                                "in experiment %s and %s of model %s in experiment %s both come "
-                                "to %s. Rename a column or an experiment so the two differ."
-                                % (key, first[2], first[0], first[1], column, model, suffix,
-                                   suffix + column))
+            _shared_file(key, produced, wanted)
         self._trajectory_names_checked = True
 
     def _keys_of(self, column, buffers):

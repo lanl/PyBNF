@@ -288,7 +288,6 @@ class Configuration:
         self._check_wall_time_fit()
         self._check_wall_time_refine_frac()
         self._check_edition()
-        self._check_trajectory_output_job_type()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
@@ -374,7 +373,6 @@ class Configuration:
         self._load_start_point()
         self._check_starting_params()
         self._load_postprocessing()
-        self.config['time_length'] = self._load_t_length()
         # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
         # constraints, and postprocessing are all populated: records per model the full
         # output suffixes any consumer reads, so the backend execute() can skip the
@@ -657,10 +655,16 @@ class Configuration:
         if value is not None:
             edition.validate_edition(value)
 
-    def _check_trajectory_output_job_type(self):
+    def check_trajectory_output_job_type(self):
         """Refuse ``output_trajectory`` / ``output_noise_trajectory`` outside ``job_type = am``,
         the one job type that writes them (#990). Both are global keys, so every other job type
-        accepted them, warned about nothing, and wrote no file."""
+        accepted them, warned about nothing, and wrote no file.
+
+        Called when a fresh run starts (``pybnf.main``), not when a configuration loads: a
+        configuration is also loaded to read a finished run back (``inference_data.from_pybnf``
+        reloads the run's archived ``.conf`` for its parameter scales), and a run made before
+        this refusal existed, which set the key under ``dream``, was valid when it was made. A
+        run resumed with ``-r`` is not refused either, for the same reason."""
         named = [k for k in ('output_trajectory', 'output_noise_trajectory') if self.config[k]]
         job_type = self.config['fit_type']
         if not named or job_type == 'am':
@@ -780,35 +784,6 @@ class Configuration:
             else:
                 return os.path.join(home_dir, directory)
         return '' if directory == '' else directory if directory[0] == '/' else str(Path(home_dir) / directory)
-
-    def _load_t_length(self):
-        # New-era BNGL models carry no ``__FREE`` markers (ADR-0034); suppress the
-        # legacy "no __FREE -> error" guard here too (as ``check`` already does), so
-        # measuring output lengths never trips it.
-        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
-        timeDict = {}
-        for mf in self.config['models']:
-            if re.search(r'\.bngl$', mf):
-                time = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern)).find_t_length()
-                for i,v in time.items():
-                    timeDict[i] = v
-            elif re.search(r'\.(xml|ant)$', mf):
-                for tc in self.config['time_course']:
-                    suffix = tc['suffix']
-                    try:
-                        step = float(tc['step'])
-                    except KeyError:
-                        step = 1.
-                    end_time = float(tc['time'])
-                    timeDict[suffix] = int(np.round(end_time / step))
-        # New-era experiments (ADR-0028) synthesize their actions outside both the model
-        # file and the legacy time_course list, so find_t_length / the xml branch above
-        # never see them. _load_experiments recorded each one's output length (n_points-1),
-        # keyed by the bare experiment suffix; merge it in.
-        timeDict.update(getattr(self, '_experiment_time_length', {}))
-        return timeDict
-        
-                
 
     def _resolve_model_tolerances(self):
         """The per-model CVODE tolerance records, checked and keyed by model file (#586).
@@ -1707,11 +1682,6 @@ class Configuration:
                 "'experiment:' lines too, or simulate this model with no 'experiment:' line."
                 if legacy else None))
 
-        # Output-row counts (suffix -> n_points - 1) for the synthesized actions, merged
-        # into time_length by _load_t_length (the actions live neither in the model file
-        # nor the legacy time_course list, so find_t_length / the xml branch miss them).
-        self._experiment_time_length = {}
-
         # Conditions a pre-equilibration experiment CONSUMES (applies inline as setParameter,
         # ADR-0052): base model -> set of condition suffixes. Removed from each model's mutant
         # list after the loop so they do not also run as redundant separate simulations.
@@ -1828,13 +1798,6 @@ class Configuration:
                              f"'{base}': t_end={action.time}, n_steps={action.stepnumber}, "
                              f"data key '{data_key}', {len(constraint_files)} constraint file(s)")
 
-            # time_length is keyed by the bare action suffix (the experiment name), not by the
-            # data key, so it says nothing about a conditioned experiment's output; am no longer
-            # sizes its trajectory buffers from it (#990). The output is
-            # one row per explicit point for a data-driven action (a time course: one per sample
-            # time including the forced t=0; a scan: one per dose), or n_steps+... for a uniform
-            # grid -- ``Action.output_length`` gives the row count either way.
-            self._experiment_time_length[name] = action.output_length() - 1
 
             # BPSL constraints (.con/.prop) ride along with this experiment's simulation
             # (ADR-0028 addendum): each binds to the experiment's own simulation output

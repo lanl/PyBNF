@@ -1282,7 +1282,7 @@ Output Options
 .. _output_inference_data:
 
 **output_inference_data**
-  Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. (Adaptive MCMC (``am``) records its draws per chain in ``Results/A_MCMC/Runs/params_*.txt`` rather than ``samples.txt``; the bridge reads those directly, and -- since ``am`` records draws only, not a per-draw log-posterior -- its object carries no ``sample_stats.lp`` group.) Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and (except for ``am``) ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. **For LOO/WAIC model comparison** (ADR-0056), when the fit uses a per-point likelihood objfunc (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ``neg_bin_dynamic``, or the ``objective`` / ``noise_model`` surface), the run also records ``Results/log_likelihood.txt`` and the InferenceData gains a ``log_likelihood`` group, so ``az.loo`` / ``az.waic`` / ``az.compare`` work directly on it. Its values are genuine, *unweighted* per-observation log-densities (not ``-score``). With a non-likelihood objfunc (least-squares, ``kl``, ``direct_pass``, ...) there is no normalized density, so no sidecar is written, the group is omitted, and a one-time note explains that LOO/WAIC needs a likelihood objfunc. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
+  Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. (Adaptive MCMC (``am``) records its draws per chain in ``Results/A_MCMC/Runs/params_*.txt`` rather than ``samples.txt``; the bridge reads those directly, and -- since ``am`` records draws only, not a per-draw log-posterior -- its object carries no ``sample_stats.lp`` group.) Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``, which reads each parameter's scale from the ``.conf`` the run copied into ``Results/``; if that does not load (its model or data paths are relative to the run's directory, or the files have moved), it raises, naming why, and ``config=`` or ``variables=`` supplies the scales instead. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and (except for ``am``) ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. **For LOO/WAIC model comparison** (ADR-0056), when the fit uses a per-point likelihood objfunc (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ``neg_bin_dynamic``, or the ``objective`` / ``noise_model`` surface), the run also records ``Results/log_likelihood.txt`` and the InferenceData gains a ``log_likelihood`` group, so ``az.loo`` / ``az.waic`` / ``az.compare`` work directly on it. Its values are genuine, *unweighted* per-observation log-densities (not ``-score``). With a non-likelihood objfunc (least-squares, ``kl``, ``direct_pass``, ...) there is no normalized density, so no sidecar is written, the group is omitted, and a one-time note explains that LOO/WAIC needs a likelihood objfunc. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
 
   Default: 0
 
@@ -2766,15 +2766,35 @@ For Adaptive MCMC
 
 **output_trajectory**
   Save the output of the user defined observable or function from the simulation output to a .txt file
-  (``job_type = am`` only; any other job type refuses the key). One file per chain is written for
-  every experiment whose simulation has the column, an experiment under a ``condition:`` or an
-  edition-1 mutant included, named ``traj_<experiment suffix><column>_chain_<n>.txt``. The
-  trajectory is the series the objective scores: after the experiment's ``normalization`` and any
-  ``postprocess`` script. A column normalized with ``scale`` is refused, because that factor is
-  profiled against the data inside the objective and is not part of the simulated series. A name
-  that no model observable, function or species, and no measurement formula, defines is refused
-  when the configuration loads, with the names it could match; one that no experiment's
-  simulation turns out to produce stops the run at its first simulation.
+  (``job_type = am`` only; any other job type refuses the key when the run starts). One file per
+  chain is written for every experiment whose simulation has the column, an experiment under a
+  ``condition:`` or an edition-1 mutant included, named
+  ``traj_<experiment suffix><column>_chain_<n>.txt``.
+
+  The trajectory is the simulated column as the objective receives it -- after the experiment's
+  ``normalization`` and any ``postprocess`` script -- with one rule of its own about cumulative
+  columns, which ignores how the objective treats them: a column whose name contains ``_Cum`` is
+  written as its increments (its first value, then the difference between successive rows), and
+  no other column is differenced. So a ``_Cum`` column that the objective scores as it is is
+  written differenced, and an edition-2 column declared ``cumulative`` under another name is
+  written as the cumulative series, not the increments the objective scores. A sample whose
+  scoring failed is not written.
+
+  Refused when the configuration loads: a column normalized with ``scale``, because that factor
+  is profiled against the data inside the objective and is not part of the simulated series; a
+  name that no model observable, function or species, and no measurement formula, defines (the
+  message lists the names it could match); and two experiments whose files would have one name
+  (the file name joins the experiment suffix and the column with nothing between them, and does
+  not name the model). Where the columns cannot be known before a simulation runs -- a
+  ``postprocess`` script, which may add or remove columns, an analytical model, or a function
+  column whose action's ``print_functions`` cannot be read -- the run refuses these at its first
+  simulation instead.
+
+  A run resumed with ``-r`` from a backup made before experiments under a ``condition:`` and
+  edition-1 mutants were recorded records them from then on: each chain's files for them begin
+  with the first move it accepts after the resume, so they are shorter than the other
+  experiments' files and do not line up with them row for row. The resumed run says so, naming
+  those experiments.
 
   Default: None (multiple values can be defined separated by a comma)
   

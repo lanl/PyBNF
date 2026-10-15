@@ -1932,15 +1932,44 @@ def test_a_run_resumed_from_a_backup_made_before_990_records_every_experiment(tm
 
 
 @pytest.mark.parametrize('fit_type', ['mh', 'pt', 'dream', 'p_dream', 'de', 'check'])
-def test_a_trajectory_output_outside_am_is_refused(tmp_path, fit_type):
+def test_a_trajectory_output_outside_am_is_refused_when_the_run_starts(tmp_path, fit_type):
     """Both keys are global, so every other job type accepted them and wrote nothing; the
-    repository's own dream and p_dream benchmark configurations asked for them."""
+    repository's own dream and p_dream benchmark configurations asked for them. The refusal
+    belongs to starting a run: the configuration itself still loads, because it is also loaded
+    to read a finished run back (#990 review)."""
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, fit_type=fit_type, output_trajectory=['y'],
+                       output_noise_trajectory=['y'])
     with pytest.raises(PybnfError) as info:
-        _make_config(tmp_path, 1, UNIFORM_VARS, fit_type=fit_type, output_trajectory=['y'],
-                     output_noise_trajectory=['y'])
+        cfg.check_trajectory_output_job_type()
     assert info.value.log_message == (
         'output_trajectory and output_noise_trajectory are written only by job_type = am, and '
         f'this is job_type = {fit_type}')
+
+
+def test_am_is_not_refused_its_trajectory_outputs(tmp_path):
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_trajectory=['y'])
+    cfg.check_trajectory_output_job_type()
+
+
+def test_a_dream_run_naming_a_trajectory_is_refused_before_its_output_directory_is_made(
+        tmp_path, monkeypatch, capsys):
+    """Through pybnf's main: the refusal ends a fresh run with an error on the console, before
+    the output directory is prepared."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR)
+    (tmp_path / 'epi.exp').write_text('# time cases\n' + ''.join(
+        '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'dream.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'fit_type = dream', 'output_dir = out',
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'loguniform_var = beta__FREE 0.3 1.2',
+        'uniform_var = gamma__FREE 0.1 0.5', 'output_trajectory = cases',
+        'population_size = 4', 'max_iterations = 30', 'burn_in = 5']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'dream.conf') == 1
+    assert ('output_trajectory is written only by job_type = am (Adaptive MCMC); job_type = '
+            'dream would ignore it' in capsys.readouterr().out)
+    assert not (tmp_path / 'out').exists()
 
 
 def _edition_2_config(tmp_path, monkeypatch, lines):
@@ -1972,7 +2001,6 @@ def test_the_recorded_experiments_are_the_configured_ones_conditions_included(
     cfg = _edition_2_config(tmp_path, monkeypatch,
                             ['noise_model = gaussian, sigma = fix_at 5, location = mean'])
     assert sorted(cfg.models['sir'].get_suffixes()) == ['epi', 'epi2', 'epi2hi', 'epihi']
-    assert sorted(cfg.config['time_length']) == ['epi', 'epi2']
     assert _experiment_suffixes(cfg) == {'sir': ['epi', 'epi2hi']}
 
 
@@ -2142,3 +2170,309 @@ def test_an_edition_1_mutant_gets_its_trajectories_normalized_as_scored(tmp_path
     np.testing.assert_allclose(cum_hi, cum, rtol=1e-9)
     np.testing.assert_allclose(cases, cum / cum.max(axis=1, keepdims=True), rtol=1e-9)
     np.testing.assert_allclose(cases_hi, 0.6 * cum_hi, rtol=1e-9)
+
+
+# --------------------------------------------------------------------------------------------
+# #990 review: normalization shapes, a penalized first result, resume, shared files, #998
+# --------------------------------------------------------------------------------------------
+
+_E1_SIR_TWO = _E1_SIR.replace(
+    'simulate({method=>"ode",suffix=>"epi",t_end=>12,n_steps=>12,print_functions=>1})\n',
+    'simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12,print_functions=>1})\n'
+    'resetConcentrations()\n'
+    'simulate({method=>"ode",suffix=>"b",t_end=>12,n_steps=>12,print_functions=>1})\n')
+
+
+def _edition_1_two_experiments(tmp_path, monkeypatch, lines):
+    """``load_config`` of an edition-1 am job: experiment ``a`` measures ``cases``, ``b``
+    measures ``Inf``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR_TWO)
+    for name, header in (('a.exp', 'cases'), ('b.exp', 'Inf')):
+        (tmp_path / name).write_text('# time %s\n' % header + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : a.exp, b.exp', 'fit_type = am', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'population_size = 1', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        *lines]) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return load_config(str(tmp_path / 'am.conf'))
+
+
+_NORMALIZATION_SHAPES = {
+    'e1_global': (1, ['normalization = init']),
+    'e1_per_file': (1, ['normalization = init: a.exp']),
+    'e1_per_file_columns': (1, ['normalization = init: (b.exp: Inf)']),
+    'e1_two_files': (1, ['normalization = init: a.exp', 'normalization = peak: b.exp']),
+    'e2_per_observable': (2, ['normalization cases = init']),
+    'e2_per_experiment': (2, ['normalization epi2.cases = init']),
+    'e2_whole_fit_and_override': (2, ['normalization = peak', 'normalization epi.cases = init']),
+}
+
+
+@pytest.mark.parametrize('shape', sorted(_NORMALIZATION_SHAPES))
+def test_the_experiments_a_noise_column_is_refused_for_are_the_ones_normalization_changes(
+        tmp_path, monkeypatch, shape):
+    """Every shape of the compiled ``normalization`` setting: a global string, per file,
+    per file and column, several files, per observable, per experiment, and a whole-fit rule
+    beside an override. The legacy per-file form keeps the file names beside the data keys
+    (``{'a.exp': 'init', 'a': [...]}``), and reading a file name as an experiment refused a
+    column no file normalizes (#990 review).
+
+    Oracle: ``Result.normalize`` -- what scoring applies -- run on a synthetic simulation of
+    every experiment; a column is normalized in exactly the experiments where it changed."""
+    from pybnf.algorithms.core import Result
+    from pybnf.algorithms.samplers.adaptive_mcmc import _experiment_suffixes
+    from types import SimpleNamespace
+    edition_number, lines = _NORMALIZATION_SHAPES[shape]
+    if edition_number == 1:
+        cfg = _edition_1_two_experiments(tmp_path, monkeypatch, ['objfunc = sos', *lines])
+    else:
+        cfg = _edition_2_config(tmp_path, monkeypatch, [
+            'noise_model = gaussian, sigma = fix_at 5, location = mean', *lines])
+    suffixes = _experiment_suffixes(cfg)
+    raw = np.column_stack([np.arange(4.0), 2.0 + np.arange(4.0), 3.0 + np.arange(4.0)])
+    sim = {model: {s: _data_columns(['cases', 'Inf'], raw) for s in outputs}
+           for model, outputs in suffixes.items()}
+    Result(None, sim, 'x').normalize(cfg.config['normalization'])
+    stub = SimpleNamespace(config=cfg, _trajectory_suffixes=lambda: suffixes)
+    for column, index in (('cases', 1), ('Inf', 2)):
+        changed = sorted(s for outputs in sim.values() for s, d in outputs.items()
+                         if not np.array_equal(d.data[:, index], raw[:, index]))
+        got = algorithms.Adaptive_MCMC._normalizing_experiments(stub, column)
+        assert got == changed, (shape, column, cfg.config['normalization'])
+
+
+def _data_columns(names, array):
+    d = data.Data()
+    d.data = d._read_file_lines(['# time %s\n' % ' '.join(names)] + [
+        ' '.join('%r' % float(v) for v in row) + '\n' for row in array], r'\s+')
+    return d
+
+
+def test_a_noise_column_normalized_in_one_experiment_names_it(tmp_path, monkeypatch):
+    """The refusal names the experiment, not a data file: ``b``, where ``Inf`` is normalized."""
+    cfg = _edition_1_two_experiments(tmp_path, monkeypatch, [
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
+        'normalization = peak: b.exp', 'output_noise_trajectory = Inf'])
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
+    assert info.value.log_message == ('output_noise_trajectory names Inf, which normalization '
+                                      'transforms')
+    assert 'a normalized value in experiment b, not an expected count' in info.value.message
+
+
+def test_an_edition_2_refusal_names_the_experiment_and_its_condition(tmp_path, monkeypatch):
+    cfg = _edition_2_config(tmp_path, monkeypatch, [
+        'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+        'normalization epi2.cases = init'])
+    stub = type('Stub', (), {})()
+    stub.config = cfg
+    assert algorithms.Adaptive_MCMC._experiment_label(stub, 'epi2hi') == 'epi2 (condition hi)'
+    assert algorithms.Adaptive_MCMC._experiment_label(stub, 'epi') == 'epi'
+
+
+@pytest.mark.parametrize('master', [False, True], ids=['worker', 'master'])
+def test_a_penalized_first_result_records_nothing_and_checks_nothing(tmp_path, master):
+    """A chain's first result is accepted whatever its score. One the scoring penalized
+    (score inf) may carry data it never finished with -- here, without the ``y`` the fit
+    asks for -- and the master path used to read that as the fit's columns and stop the run
+    on a name it called misspelled. Nothing is recorded or checked for it on either path; the
+    chain's next, finished, result is recorded."""
+    am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS,
+                                               output_trajectory=['y']))
+    am.start_run()
+    unfinished = {'parabola': {'par1': _data('x', [(0, 1), (1, 2)])}}
+    res = algorithms.Result(_uniform_pset('iter0run0'), unfinished if master else None,
+                            'iter0run0')
+    if not master:
+        res.out = unfinished
+    res.score = np.inf
+    am.got_result(res)
+    assert am.accept is True
+    assert am.output_run_current == {} and not am._trajectory_names_checked
+    am.got_result(_parabola_result('iter1run0', [1.0, 2.0], master=master))
+    np.testing.assert_array_equal(am.output_run_current['par1y'][0], [[1.0, 2.0]])
+
+
+def _edition_1_mutant_am(tmp_path, monkeypatch):
+    """An edition-1 am over the SIR model with a mutant ``hi``: experiments ``epi``, ``epihi``."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    (tmp_path / 'sir1.bngl').write_text(_E1_SIR)
+    for name in ('epi.exp', 'epihi.exp'):
+        (tmp_path / name).write_text('# time cases\n' + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = sir1.bngl : epi.exp', 'mutant = sir1 hi rho=0.6 : epihi.exp',
+        'fit_type = am', 'objfunc = sos', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'output_trajectory = cases', 'population_size = 2', 'max_iterations = 40',
+        'burn_in = 10', 'adaptive = 10']) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return algorithms.Adaptive_MCMC(load_config(str(tmp_path / 'am.conf')))
+
+
+@pytest.mark.parametrize('made', ['before_990', 'after_990'])
+def test_resuming_a_backup_made_before_990_says_which_files_start_late(tmp_path, monkeypatch,
+                                                                       capsys, made):
+    """A backup made before #990 recorded only the action suffixes of ``time_length`` (kept as
+    ``self.time``), so the mutant ``epihi`` had no file. ``-r`` records it from then on, so its
+    files are shorter than ``epi``'s and do not line up with them, and the resumed run says
+    so: which experiment, from which iteration, and how many rows the others already hold.
+    A backup made after #990 records every experiment from the start and says nothing.
+    Driven through ``pybnf._load_resumed_algorithm``, as ``-r`` does."""
+    import pickle
+    from types import SimpleNamespace
+    from pybnf.pybnf import _load_resumed_algorithm
+    am = _edition_1_mutant_am(tmp_path, monkeypatch)
+    am.start_run()
+    am.iteration = [9, 9]
+    runs = tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs'
+    for chain in (0, 1):
+        np.savetxt(runs / ('traj_epicases_chain_%d.txt' % chain), np.ones((7, 13)))
+    if made == 'before_990':
+        del am.trajectory_suffixes                 # what __init__ kept before #990 ...
+        am.time = {'epi': 12}                     # ... and what it kept instead
+    backup = tmp_path / 'out' / 'alg_backup.bp'
+    with open(backup, 'wb') as f:
+        pickle.dump((am, []), f)
+    capsys.readouterr()
+    resumed, _pending, _config = _load_resumed_algorithm(backup, SimpleNamespace(resume=0))
+    out = capsys.readouterr().out
+    assert resumed.trajectory_suffixes == {'sir1': ['epi', 'epihi']}
+    if made == 'after_990':
+        assert 'Note:' not in out
+        return
+    assert ("Note: this run was backed up before PyBNF recorded the trajectories of experiment "
+            "epihi. A chain's traj_* files for it begin with the first move it accepts after "
+            "iteration 9, where the run resumes, so they are shorter than the other experiments' "
+            "files, which already hold 7 rows in every chain, and do not line up with them row "
+            "for row.") in out
+
+
+def _two_models_sharing_a_suffix(tmp_path, monkeypatch, wanted, print_functions=True):
+    """Two edition-1 models, each with an action ``a`` (rho 0.5 and 0.25)."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    from pybnf.parse import load_config
+    R.require_bng2pl()
+    one = _E1_SIR.replace('suffix=>"epi"', 'suffix=>"a"')
+    if not print_functions:
+        one = one.replace(',print_functions=>1', '')
+    for sub, text in (('m1', one), ('m2', one.replace('rho    0.5', 'rho    0.25'))):
+        (tmp_path / sub).mkdir()
+        (tmp_path / sub / ('sir_%s.bngl' % sub)).write_text(text)
+        (tmp_path / sub / 'a.exp').write_text('# time Inf\n' + ''.join(
+            '%d %d\n' % (t, c) for t, c in enumerate(L.COUNTS, 1)))
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = m1/sir_m1.bngl : m1/a.exp', 'model = m2/sir_m2.bngl : m2/a.exp',
+        'fit_type = am', 'objfunc = sos', 'output_dir = out',
+        'uniform_var = beta__FREE 0.3 1.2', 'uniform_var = gamma__FREE 0.1 0.5',
+        'output_trajectory = %s' % wanted, 'population_size = 1', 'max_iterations = 40',
+        'burn_in = 10', 'adaptive = 10']) + '\n')
+    monkeypatch.chdir(tmp_path)
+    return load_config(str(tmp_path / 'am.conf'))
+
+
+@pytest.mark.parametrize('wanted', ['Inf', 'cases'])
+def test_two_models_sharing_a_suffix_and_a_column_are_refused_when_the_configuration_loads(
+        tmp_path, monkeypatch, wanted):
+    """Both models write a column ``Inf`` (an observable, always written) or ``cases`` (a
+    function their action prints) for experiment ``a``, and both would go to
+    ``traj_a<column>_chain_<n>.txt``. That is known from the model files, so it is refused
+    when the configuration loads, not at the first simulation."""
+    cfg = _two_models_sharing_a_suffix(tmp_path, monkeypatch, wanted)
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
+    assert info.value.log_message == ('output_trajectory would write two trajectories to one '
+                                      'file, a%s' % wanted)
+    assert ('%s of model sir_m1 in experiment a and %s of model sir_m2 in experiment a'
+            % (wanted, wanted)) in info.value.message
+
+
+def test_a_function_the_actions_do_not_print_cannot_share_a_file(tmp_path, monkeypatch):
+    """Without ``print_functions`` neither model writes ``cases``, so there is no file to share
+    and nothing to refuse at load; the name is then refused at the first simulation, as one
+    no experiment produces."""
+    cfg = _two_models_sharing_a_suffix(tmp_path, monkeypatch, 'cases', print_functions=False)
+    am = algorithms.Adaptive_MCMC(cfg)
+    assert am.trajectory_suffixes == {'sir_m1': ['a'], 'sir_m2': ['a']}
+
+
+@pytest.mark.parametrize('action, prints', [
+    ('simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12,print_functions=>1})', True),
+    ('simulate({method=>"ode",suffix=>"a",t_end=>12,n_steps=>12})', False),
+    ('simulate({method=>"ode",suffix=>"a",print_functions=>0})', False),
+    ('simulate({suffix=>"a",print_functions=>1});', True),
+    ('simulate_ode({suffix=>"a",print_functions=>"1"})', True),
+    ('parameter_scan({suffix=>"d",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>3,'
+     'print_functions=>1})', True),
+    ('simulate({suffix=>"a",print_functions=>$p})', None),
+    ('simulate {suffix=>"a"}', None),
+])
+def test_whether_an_action_prints_functions(action, prints):
+    from pybnf.algorithms.samplers.adaptive_mcmc import _prints_functions
+    assert _prints_functions(action) is prints
+
+
+_PARABOLA_TEXT = (Path(__file__).parent / 'bngl_files' / 'parabola.bngl').read_text()
+
+
+@pytest.mark.parametrize('steps', ['n_output_steps=>20', ''], ids=['n_output_steps', 'none'])
+@pytest.mark.parametrize('fit_type', ['de', 'am'])
+def test_a_simulate_with_n_output_steps_or_no_step_count_loads(tmp_path, steps, fit_type):
+    """``find_t_length`` refused both for every job type, to compute a length only am read
+    (#998). BNG2.pl takes ``n_output_steps`` for ``n_steps`` and defaults to one step. The
+    length is gone, and am sizes its buffers from the output it records."""
+    text = _PARABOLA_TEXT.replace('n_steps=>20,', steps + (',' if steps else ''))
+    assert ('n_output_steps=>20' in text) == bool(steps) and 'n_steps' not in text
+    model = tmp_path / 'parabola.bngl'
+    model.write_text(text)
+    exp = Path(__file__).parent / 'bngl_files' / 'par1.exp'
+    out = str(tmp_path) + '/'
+    base = {'population_size': 1, 'max_iterations': 100, 'step_size': 0.2,
+            'output_hist_every': 5, 'sample_every': 2, 'burn_in': 10, 'adaptive': 10,
+            'credible_intervals': [68, 95], 'output_dir': out, 'models': {str(model)},
+            'exp_data': {str(exp)}, 'initialization': 'lh', str(model): [str(exp)],
+            'fit_type': fit_type, **UNIFORM_VARS}
+    if fit_type == 'am':
+        base['output_trajectory'] = ['y']
+    cfg = config.Configuration(base)
+    assert 'time_length' not in cfg.config
+    if fit_type == 'am':
+        am = algorithms.Adaptive_MCMC(cfg)
+        assert am.trajectory_suffixes == {'parabola': ['par1']}
+
+
+def test_an_n_output_steps_run_writes_the_rows_bng2pl_writes(tmp_path, monkeypatch):
+    """End to end on BNG2.pl, which writes 21 rows for ``n_output_steps=>20`` over t = -10..10.
+    Oracle: the parabola model's observable ``x`` counts up from -10 at rate 1, so x(t) = t,
+    and every recorded row of ``x`` is the 21 times -10, -9, ..., 10, whatever the chain's
+    parameters."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'parabola.bngl').write_text(
+        _PARABOLA_TEXT.replace('n_steps=>20,', 'n_output_steps=>20,'))
+    (tmp_path / 'par1.exp').write_text(
+        (Path(__file__).parent / 'bngl_files' / 'par1.exp').read_text())
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'model = parabola.bngl : par1.exp', 'fit_type = am', 'objfunc = sos',
+        'bngl_backend = bionetgen', 'output_dir = out',
+        'uniform_var = v1__FREE 0 1', 'uniform_var = v2__FREE 0 2', 'uniform_var = v3__FREE 0 5',
+        'output_trajectory = x', 'population_size = 1', 'max_iterations = 8', 'burn_in = 2',
+        'adaptive = 2', 'sample_every = 1', 'step_size = 0.05', 'random_seed = 1',
+        'parallel_count = 1']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'am.conf') == 0
+    rows = _trajectories(tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs', 'traj_par1x_chain_0.txt')
+    assert rows.shape[0] >= 4
+    np.testing.assert_allclose(rows, np.tile(np.arange(-10.0, 11.0), (len(rows), 1)), atol=1e-9)
+
