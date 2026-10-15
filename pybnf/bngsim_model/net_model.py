@@ -62,13 +62,12 @@ from ..gradient.routing import IC
 from .scan import (
     _with_sim_timeout,
     _resolve_scan_points,
-    _resolve_sample_times,
     _SS_METHOD_PARITY,
     _SS_METHOD_NEWTON,
     _SS_SCAN_N_POINTS,
 )
 from .output import _write_saved_action_outputs
-from .grid import describe_action, grid_refusal, scan_t_end, simulate_output_grid
+from .grid import describe_action, grid_refusal, scan_output_grid, simulate_output_grid
 from .classification import (
     _normalize_action_method,
     _normalize_sim_timeout,
@@ -1277,6 +1276,8 @@ class BngsimModel(NetModel):
                     'n_steps': plan.n_steps,
                 })
                 result = self._run_prepared_simulate(plan, stop_log_label='stop_if triggered')
+                # BNG2.pl sets the model's clock to the time of the run's last row: the end of
+                # its grid, which for sample_times is t_end or the last listed time (#872).
                 state.current_time = plan.t_end
                 state.carried_state = True   # the simulator now holds an advanced state
                 ds[plan.suffix] = self._result_to_data(result, print_functions=plan.print_funcs)
@@ -1471,7 +1472,7 @@ class BngsimModel(NetModel):
                 )
                 last_result = self._run_prepared_simulate(
                     plan, stop_log_label='protocol stop_if triggered')
-                state.current_time = plan.t_end
+                state.current_time = plan.t_end     # the grid's end, as in _execute_actions
                 state.carried_state = True   # the simulator now holds an advanced state
                 continue
 
@@ -1594,6 +1595,8 @@ class BngsimModel(NetModel):
             t_start = _eval_numeric(str(sim_params.get('t_start', 0)))
         # The output grid by BNG2.pl's rules (grid.py): n_output_steps is n_steps, one step by
         # default, t_end required without sample_times. These used to default to 100 and 100.
+        # A sample_times grid starts at t_start and ends at t_end when the action gives one, as
+        # run_network's does; it used to start at the first listed time (#872).
         where = describe_action(self._grid_label(), sim_params)
         if null_nf_sample_times and method == 'nf' and 'sample_times' in sim_params \
                 and 'n_steps' not in sim_params:
@@ -2061,16 +2064,13 @@ class BngsimModel(NetModel):
         else:
             scan_seed = None
 
-        # Resolve sample_times for passthrough to each scan-point simulation
-        sample_times = _resolve_sample_times(ps_params)
         # BNG2.pl runs simulate at each scan point, which requires t_end without sample_times
-        # (grid.py); it used to default to 100 here.
-        t_end = scan_t_end(ps_params, describe_action(
+        # (grid.py); it used to default to 100 here. With sample_times, each point runs on
+        # BNG2.pl's times for them, from t_start (#872): it used to start at the first listed
+        # time, and to ignore a t_end before the last.
+        sample_times, t_end = scan_output_grid(ps_params, describe_action(
             self._grid_label(), ps_params, 'bifurcate' if is_bifurcate else 'parameter_scan'),
-            sample_times, evaluate=lambda value: _eval_numeric(str(value)))
-        if sample_times is not None:
-            t_start = sample_times[0]
-            t_end = sample_times[-1]
+            t_start=t_start, evaluate=lambda value: _eval_numeric(str(value)))
 
         # bifurcate forces reset_conc=False; parameter_scan defaults to True
         if is_bifurcate:

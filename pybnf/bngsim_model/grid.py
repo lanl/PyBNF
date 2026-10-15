@@ -14,36 +14,58 @@ The rules, for a ``simulate`` on a network method:
 * ``n_steps`` (or ``n_output_steps``) takes precedence over ``sample_times``, with a warning.
 * With neither, and no ``sample_times``, there is one step.
 * Without ``sample_times``, ``t_end`` is required.
-* ``sample_times`` needs 3 or more points; a ``t_end`` beyond the last is appended.
+* ``sample_times`` needs 3 or more points, as listed.
+
+The times of a ``sample_times`` grid are ``run_network``'s (``Network3/src/run_network.cpp``,
+lines 338-406), which BNG2.pl hands the sorted list, followed by the action's ``t_end`` when it
+gives one (:func:`sample_time_rows`). The run starts at ``t_start`` (0 unless the action says
+otherwise, or ``continue=>1`` starts it on the model's clock) and writes that row; then each
+listed time after ``t_start`` and before the end; then the end, which is the action's ``t_end``
+when it gives one, below the last listed time or above it, and the last listed time otherwise.
+So a listed time at or before ``t_start``, or at or after ``t_end``, is not written, and a time
+listed twice is written twice. The model's clock is then at the end, where a ``continue=>1``
+action starts. Edition-2 experiments list t = 0 first, with ``t_start=>0`` and no ``t_end``, so
+their rows are the listed times. This was lanl/PyBNF#872: the bridge integrated from the first
+listed time, reporting the initial state there, and ignored a ``t_end`` below the last one.
 
 On NFsim, BNG2.pl reads ``n_steps`` and nothing else for the grid (``n_output_steps`` is not
 read, and there is no default step count), requires ``t_end`` greater than ``t_start``, and
-refuses ``sample_times``. The bridge keeps one extension there: bngsim's NFsim sessions take
-``sample_times``, which the edition-2 experiments write (#427), so an NF action with
-``sample_times`` and no ``n_steps`` runs on those times.
+refuses ``sample_times`` and ``continue``. The bridge refuses ``continue`` too: its network-free
+runs keep no clock for a continued run to start on, and it used to ignore the option. It keeps
+one extension: bngsim's NFsim sessions take ``sample_times``, which the edition-2 experiments
+write (#427), so an NF action with two or more ``sample_times`` and no ``n_steps`` runs on them,
+at the times a network method's would have.
 
 A ``parameter_scan`` / ``bifurcate`` runs ``simulate`` at each point in BNG2.pl, so it needs
 ``t_end`` without ``sample_times`` and may not name both step keys. Its output is one row per
-scan point whatever its step count, so the bridge's step count for a scan is unchanged.
+scan point, the state at the end of that point's grid, whatever its step count, so the bridge's
+step count for a scan is unchanged. With ``sample_times``, that end is the one above, reached
+from ``t_start``.
+
+Two ``sample_times`` grids are refused on the bridge, because no grid of it writes what BNG2.pl
+does: a negative ``t_start`` (run_network stops: "Negative sample times are not allowed."), and
+an end that is not after ``t_start`` (BNG2.pl integrates nothing and writes the one row at
+``t_start``; the bridge's runs take two or more times).
+
+A ``continue=>1`` action writes no row at its start in BNG2.pl; the bridge writes it, and
+scoring, which matches by time, reads only the rows BNG2.pl also writes.
 
 Some options BNG2.pl reads decide an action's rows in a way these rules cannot see
 (:data:`UNREAD_GRID_OPTIONS`): an ``argfile`` supplies ``t_end``, ``n_steps`` or
-``sample_times`` from a file, and ``max_sim_steps``, ``output_step_interval`` and
-``print_on_stop=>0`` stop the run early, add rows, or drop the last one. The bridge reads none
-of them, so an action naming one is not the bridge's: ``classify_actions_for_bngsim`` reports the
-model unsupported, ``bngl_backend = auto`` runs it on BNG2.pl, and ``bngl_backend = bngsim``
-refuses it, naming the option.
-
-One difference is not covered, and is lanl/PyBNF#872, open and older than these rules: an action
-whose ``sample_times`` start after ``t_start`` is integrated from its first sample time on the
-bridge, where BNG2.pl integrates from ``t_start`` and writes that row; and with a ``t_end`` before
-its last sample time, BNG2.pl writes rows up to ``t_end`` and the bridge does not. So the grids
-agree for every action these rules accept except one with such ``sample_times``.
+``sample_times`` from a file, and ``max_sim_steps``, ``output_step_interval`` and, beside
+``stop_if``, ``print_on_stop`` other than 1 stop the run early, add rows, or drop the last one.
+The bridge reads none of them, so an action naming one is not the bridge's, whether it is in the
+actions block or in a protocol block: ``classify_actions_for_bngsim`` reports the model
+unsupported, ``bngl_backend = auto`` runs it on BNG2.pl, and ``bngl_backend = bngsim`` refuses
+it, naming the option. (``print_on_stop`` without ``stop_if`` changes nothing in BNG2.pl, which
+reads it only to pass beside the stop condition.)
 
 Every refusal is a :class:`~pybnf.printing.PybnfError` naming the model and the action. The
 same functions run when the bridge is chosen for a model (:func:`check_output_grids`, as the
 fit sets up its models, before any simulation) and when an action runs, so the two cannot
-disagree.
+disagree. When the models are set up, a value that is an expression, or a ``t_start`` taken
+from the clock by ``continue=>1``, is not known yet; such an action's times are checked when
+it runs.
 """
 
 import logging
@@ -56,7 +78,6 @@ from .parsing import (
     _parse_parameter_scan_action,
     _parse_simulate_action,
 )
-from .scan import _resolve_sample_times
 
 
 logger = logging.getLogger(__name__)
@@ -66,14 +87,16 @@ NETWORK_FREE_METHODS = frozenset(('nf', 'nfsim', 'nf_reject', 'nf_exact', 'rm', 
 
 #: Options BNG2.pl reads that change which rows a ``simulate`` / ``parameter_scan`` writes, and
 #: that the bridge does not read (the module docstring says how each does it). ``print_on_stop``
-#: is one only when it is not 1, its default.
+#: is one only beside ``stop_if`` and when it is not 1, its default: BNG2.pl passes it to
+#: run_network only with the stop condition (BNGAction.pm 424-432).
 UNREAD_GRID_OPTIONS = ('argfile', 'max_sim_steps', 'output_step_interval', 'print_on_stop')
 
 
 def unread_grid_options(params):
     """The :data:`UNREAD_GRID_OPTIONS` a parsed action names, in that order."""
     return [option for option in UNREAD_GRID_OPTIONS if option in params and not (
-        option == 'print_on_stop' and str(params[option]).strip() == '1')]
+        option == 'print_on_stop'
+        and ('stop_if' not in params or str(params[option]).strip() == '1'))]
 
 
 def unread_options_refusal(where, options):
@@ -111,14 +134,79 @@ def describe_action(model_name, params, kind='simulate'):
                                                      params.get('suffix', default))
 
 
+def sample_time_rows(where, listed, t_start, t_end=None, note=''):
+    """The times of the rows BNG2.pl writes for an action whose grid is ``sample_times``.
+
+    ``listed`` is the action's ``sample_times`` as numbers, sorted; ``t_start`` is where the
+    run starts; ``t_end`` is the action's own ``t_end``, or ``None`` when it gives none.
+    BNG2.pl hands run_network the sorted list followed by ``t_end`` (BNGAction.pm 532-546), and
+    run_network writes ``t_start``, then each listed time strictly after ``t_start`` and before
+    the end, then the end: ``t_end`` when the action gives one, whether it is below the last
+    listed time or above it, else the last listed time (run_network.cpp 338-406). A listed time
+    repeated is written each time. The last time returned is where the model's clock stands
+    after the run.
+
+    Refused, naming ``where`` (with ``note`` after the explanation): a negative ``t_start``,
+    which run_network stops on, and an end that is not after ``t_start``, for which BNG2.pl
+    integrates nothing and writes the one row at ``t_start``."""
+    end = listed[-1] if t_end is None else t_end
+    if t_start < 0:
+        raise grid_refusal(where, 'Negative sample times are not allowed.',
+                           ' run_network stops with that message: this action starts its '
+                           'sample_times grid at t_start = %g.%s' % (t_start, note),
+                           bng2pl_says_so=False)
+    if not end > t_start:
+        raise PybnfError(
+            '%s: its sample_times grid ends at t = %g, which is not after t_start = %g'
+            % (where, end, t_start),
+            "%s cannot run on the bngsim bridge: its sample_times grid starts at t_start = %g and "
+            "ends at t = %g (the action's t_end when it gives one, else its last sample time). "
+            "BNG2.pl integrates nothing for such an action and writes only the row at t_start, "
+            "and a run on the bngsim bridge needs a time after its start. Give the action sample "
+            "times, or a t_end, after t_start.%s"
+            % (where, t_start, end, note))
+    return [t_start] + [t for t in listed if t_start < t < end] + [end]
+
+
+def _listed_sample_times(params, evaluate):
+    """An action's ``sample_times`` as numbers, in BNG2.pl's numeric sort."""
+    return sorted(evaluate(value) for value in params['sample_times'])
+
+
+def _resumes(params):
+    """Whether ``continue`` is set on an action; ``None`` when it is an expression."""
+    resume = params.get('continue')
+    if resume is None or str(resume).strip() in ('', '0'):
+        return False
+    number = _number(resume)
+    return None if number is None else number != 0
+
+
+def _check_literal_sample_times(params, where):
+    """At set-up, before any simulation: refuse the ``sample_times`` grid of an action whose
+    times are all numbers as written (:func:`sample_time_rows`). An expression, or a
+    ``t_start`` that ``continue=>1`` takes from the model's clock, is known only when the
+    action runs, and is checked then."""
+    if 't_start' not in params and _resumes(params) is not False:
+        return
+    listed = [_number(value) for value in params['sample_times']]
+    t_start = _number(params.get('t_start', 0))
+    t_end = _number(params['t_end']) if 't_end' in params else None
+    if None in listed or t_start is None or ('t_end' in params and t_end is None):
+        return
+    sample_time_rows(where, sorted(listed), t_start, t_end)
+
+
 def simulate_output_grid(sim_params, where, method, t_start=None, evaluate=None):
     """``(sample_times, t_end, n_steps)`` of one ``simulate`` action, or ``None`` when no
-    ``evaluate`` is given (a check of which keys are present, as when the models are set up).
+    ``evaluate`` is given (a check of which keys are present, and of the times written as
+    numbers, as when the models are set up).
 
-    ``sample_times`` is a sorted list of floats or ``None``; with it, ``t_end`` is its last
-    point and ``n_steps`` is ``None``. ``evaluate`` turns an action value into a number, as
-    the caller's path always has (``_eval_numeric`` on the ``.net`` bridge, ``float`` on the
-    NFsim one); ``t_start`` is the run's start, needed only to check an NFsim ``t_end``."""
+    ``sample_times`` is ``None``, or the times of the action's rows by BNG2.pl's rules
+    (:func:`sample_time_rows`), ``t_start`` first; with it, ``t_end`` is its last time and
+    ``n_steps`` is ``None``. ``evaluate`` turns an action value into a number, as the caller's
+    path always has (``_eval_numeric`` on the ``.net`` bridge, ``float`` on the NFsim one);
+    ``t_start`` is the run's start, required with ``evaluate``."""
     unread = unread_grid_options(sim_params)
     if unread:
         raise unread_options_refusal(where, unread)
@@ -126,6 +214,12 @@ def simulate_output_grid(sim_params, where, method, t_start=None, evaluate=None)
     has_output_steps = 'n_output_steps' in sim_params
     has_sample_times = 'sample_times' in sim_params
     if method in NETWORK_FREE_METHODS:
+        if _resumes(sim_params) is not False:
+            # BNG2.pl refuses it (simulate_nf), and the network-free sessions keep no clock for
+            # it: the bridge ignored it, labelling a continued run's rows from t_start.
+            raise grid_refusal(where, "NFsim does not support 'continue' option.",
+                               " The bngsim bridge's network-free runs do not read continue "
+                               "either; they label a run's rows from its t_start.")
         if has_steps:
             if has_sample_times:
                 logger.warning('n_steps and sample_times both defined. n_steps takes precedence.')
@@ -141,12 +235,12 @@ def simulate_output_grid(sim_params, where, method, t_start=None, evaluate=None)
                 raise grid_refusal(where, 't_end must be greater than t_start.')
             return None, t_end, n_steps
         if has_sample_times and not has_output_steps:
-            sample_times = _resolve_sample_times(sim_params)
-            if sample_times is None:
+            raw = sim_params['sample_times']
+            if not isinstance(raw, list) or len(raw) < 2:
                 raise grid_refusal(where, "'sample_times' array must contain 2 or more points.",
                                " BNG2.pl's NFsim takes no sample_times at all; bngsim's takes two "
                                "or more.", bng2pl_says_so=False)
-            return (sample_times, sample_times[-1], None) if evaluate is not None else None
+            return _sample_time_grid(sim_params, where, t_start, evaluate)
         raise grid_refusal(where, 'No simulation output requested: set n_steps>0',
                        " NFsim's simulate in BNG2.pl reads n_steps, not n_output_steps."
                        if has_output_steps else '')
@@ -169,24 +263,38 @@ def simulate_output_grid(sim_params, where, method, t_start=None, evaluate=None)
     raw = sim_params['sample_times']
     if not isinstance(raw, list) or len(raw) < 3:
         raise grid_refusal(where, "'sample_times' array must contain 3 or more points.")
+    return _sample_time_grid(sim_params, where, t_start, evaluate)
+
+
+def _sample_time_grid(params, where, t_start, evaluate):
+    """:func:`simulate_output_grid` for an action whose grid is its ``sample_times``."""
     if evaluate is None:
+        _check_literal_sample_times(params, where)
         return None
-    sample_times = _resolve_sample_times(sim_params)
-    return sample_times, sample_times[-1], None
+    t_end = evaluate(params['t_end']) if 't_end' in params else None
+    note = (" Its t_start is the model's clock, where the previous simulate ended, because the "
+            "action sets continue=>1." if 't_start' not in params and _resumes(params) else '')
+    rows = sample_time_rows(where, _listed_sample_times(params, evaluate), t_start, t_end, note)
+    return rows, rows[-1], None
 
 
-def scan_t_end(ps_params, where, sample_times, evaluate=None):
-    """The ``t_end`` of a ``parameter_scan`` / ``bifurcate`` point (``None`` without
-    ``evaluate``, or for a protocol scan): BNG2.pl runs ``simulate`` at each point, which
-    requires ``t_end`` unless ``sample_times`` gives the grid and refuses both step keys. A
-    ``method=>"protocol"`` scan runs the protocol block at each point instead
-    (``simulate_protocol``), whose own ``simulate`` actions carry their grids."""
+def scan_output_grid(ps_params, where, t_start=None, evaluate=None):
+    """``(sample_times, t_end)`` of each point of a ``parameter_scan`` / ``bifurcate``:
+    BNG2.pl runs ``simulate`` at each point with the scan's own options, which requires
+    ``t_end`` unless ``sample_times`` gives the grid, and refuses both step keys. The point's
+    row is its state at ``t_end``, reached from ``t_start``.
+
+    ``sample_times`` is ``None``, or the point's times by :func:`sample_time_rows`
+    (``t_start`` first, and ``t_end`` the last of them). Both are ``None`` without
+    ``evaluate`` (a check at set-up), and for a ``method=>"protocol"`` scan, which runs the
+    protocol block at each point instead (``simulate_protocol``), whose own ``simulate``
+    actions carry their grids. ``t_start`` is the points' start, required with ``evaluate``."""
     method = str(ps_params.get('method', 'ode')).strip().lower()
     unread = unread_grid_options(ps_params)
     if unread:
         raise unread_options_refusal(where, unread)
     if method == 'protocol':
-        return None
+        return None, None
     if 'n_steps' in ps_params and 'n_output_steps' in ps_params:
         raise grid_refusal(where, _BOTH_STEP_KEYS)
     if 'sample_times' in ps_params and 'n_steps' not in ps_params \
@@ -198,11 +306,13 @@ def scan_t_end(ps_params, where, sample_times, evaluate=None):
         if not isinstance(raw, list) or len(raw) < minimum:
             raise grid_refusal(where, "'sample_times' array must contain %d or more points."
                                % minimum, bng2pl_says_so=minimum == 3)
-    if sample_times is None and 't_end' not in ps_params:
+        grid = _sample_time_grid(ps_params, where, t_start, evaluate)
+        return (None, None) if grid is None else grid[:2]
+    if 't_end' not in ps_params:
         raise grid_refusal(where, 'Parameter t_end must be defined.')
-    if evaluate is None or 't_end' not in ps_params:
-        return None
-    return evaluate(ps_params['t_end'])
+    if evaluate is None:
+        return None, None
+    return None, evaluate(ps_params['t_end'])
 
 
 #: The one network-free ``method`` BNG2.pl has: its ``simulate`` dispatches ``nf`` -- exactly
@@ -332,7 +442,8 @@ def check_output_grids(model_name, action_lines):
     among ``action_lines`` whose output grid BNG2.pl's rules do not define (the module
     docstring lists them). Called when the bngsim bridge is chosen for a model, so the refusal
     comes as the fit sets up its models rather than at the first simulation. It is not one
-    the set-up treats as a reason to fall back to BNG2.pl, which refuses the same actions."""
+    the set-up treats as a reason to fall back to BNG2.pl, which refuses the same actions, or,
+    for a ``sample_times`` grid that ends where it starts, integrates nothing."""
     for action_line in action_lines:
         line = _collapse_action_line_continuations(action_line).strip()
         if not line or line.startswith('#'):
@@ -346,6 +457,5 @@ def check_output_grids(model_name, action_lines):
                             ('bifurcate', _parse_bifurcate_action)):
             ps_params = parse(line)
             if ps_params is not None:
-                scan_t_end(ps_params, describe_action(model_name, ps_params, kind),
-                           _resolve_sample_times(ps_params))
+                scan_output_grid(ps_params, describe_action(model_name, ps_params, kind))
                 break

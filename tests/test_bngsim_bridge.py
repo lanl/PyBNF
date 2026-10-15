@@ -1468,32 +1468,10 @@ def test_bngsim_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_
 
 
 # ── sample_times validation tests ────────────────────────────────────────────
-
-class TestResolveSampleTimes:
-    def test_none_when_not_specified(self):
-        assert bngsim_model._resolve_sample_times({}) is None
-
-    def test_none_for_empty_list(self):
-        assert bngsim_model._resolve_sample_times({'sample_times': []}) is None
-
-    def test_none_for_single_point(self):
-        assert bngsim_model._resolve_sample_times({'sample_times': [1.0]}) is None
-
-    def test_two_points_accepted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 1.0]})
-        assert result == [0.0, 1.0]
-
-    def test_three_points_accepted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 0.5, 1.0]})
-        assert result == [0.0, 0.5, 1.0]
-
-    def test_returned_sorted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [1.0, 0.0, 0.5]})
-        assert result == [0.0, 0.5, 1.0]
-
-    # Further cases (explicit None, n_output_steps precedence, t_end appending,
-    # exponential literals) live in test_bngsim_scan.py, which is the bngsim-less
-    # CI tier — see the note there (lanl/bngsim#45).
+# The grid of an action with sample_times (absent, empty, one point, unsorted, n_steps
+# precedence, t_end before or after the last time, from t_start) is tested in
+# test_bngsim_scan.py, which is the bngsim-less CI tier -- see the note there (lanl/bngsim#45),
+# and against BNG2.pl's own output in test_sample_times_grid_872.py.
 
 
 # ── addConcentration parser tests ─────────────────────────────────────────────

@@ -798,8 +798,30 @@ Other Path Keys
   NFsim, anything but ``n_steps`` with ``t_end`` -- except ``sample_times``, which BNGsim's NFsim
   takes (two or more points) and BNG2.pl's does not. An action that names an option BNG2.pl reads to
   decide its rows and the BNGsim bridge does not -- ``argfile``, ``max_sim_steps``,
-  ``output_step_interval``, or ``print_on_stop`` other than 1 -- is not supported by the bridge:
-  ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the option.
+  ``output_step_interval``, or, beside ``stop_if``, ``print_on_stop`` other than 1 -- is not
+  supported by the bridge: ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the
+  option. That holds for an action in a protocol block that a ``method=>"protocol"`` scan runs,
+  too, except that PyBNF cannot run such a model on BNG2.pl either: it simulates the model's
+  generated ``.net`` file there, which carries no protocol block
+  (`#926 <https://github.com/lanl/PyBNF/issues/926>`_). So ``auto`` and ``bionetgen`` refuse a model
+  whose protocol block a scan runs whenever they would simulate it with BNG2.pl, when the fit sets
+  its models up, and ``bngsim`` refuses one whose protocol names such an option.
+
+  The rows of an action with ``sample_times`` are those BNG2.pl's ``run_network`` writes: the run
+  starts at ``t_start`` (0 unless the action says otherwise, or ``continue=>1`` starts it where the
+  previous run ended) and writes that row, then each listed time after ``t_start`` and before the
+  end, then the end -- the action's ``t_end`` when it gives one, below or above the last listed
+  time, else the last listed time. A time listed at or before ``t_start``, or at or after
+  ``t_end``, is not written. The run ends at that end, which is where a ``continue=>1`` action
+  starts, and where a ``parameter_scan`` point with ``sample_times`` takes its row. BNGsim's NFsim
+  takes the same rows, and refuses ``continue=>1``, as BNG2.pl's does (it used to ignore it). A
+  grid that starts at a negative ``t_start`` (BNG2.pl stops on it) or ends where it starts
+  (BNG2.pl integrates nothing and writes the one row at ``t_start``) is refused. BNGsim used to
+  integrate from the first listed time, reporting the initial state there, and to run past a
+  ``t_end`` below the last listed time (`#872 <https://github.com/lanl/PyBNF/issues/872>`_).
+  Edition-2 experiments list ``t = 0`` first, so their rows are unchanged; an edition-2 time
+  course of a BNGL model with data before ``t = 0`` is refused when the configuration loads,
+  since neither BNGL backend writes a row there.
 
   **Network-free experiments need BNGsim.** BNG2.pl's NFsim takes an output grid only as
   ``t_end`` with ``n_steps`` of 1 or more, and BNG2.pl has no RuleMonkey. An edition-2
@@ -819,13 +841,6 @@ Other Path Keys
   simulates nothing, such as ``pybnf.inference_data.from_pybnf`` reloading a finished run's
   configuration.) Such a model used to be accepted, and every simulation of it failed.
   (`#999 <https://github.com/lanl/PyBNF/issues/999>`_)
-
-  One difference remains (`#872 <https://github.com/lanl/PyBNF/issues/872>`_): when an action's
-  ``sample_times`` start after ``t_start``, BNGsim integrates from the first sample time, where
-  BNG2.pl integrates from ``t_start`` and writes that row; and with a ``t_end`` before the last
-  sample time, BNG2.pl writes rows up to ``t_end`` and BNGsim does not. Start ``sample_times`` at
-  ``t_start``, as edition-2 experiments always do, or use ``bngl_backend = bionetgen`` for such an
-  action.
 
   Default: auto
 

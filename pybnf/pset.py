@@ -1521,6 +1521,19 @@ class BNGLModel(Model):
                     f'{len(action.explicit_points)} explicit output time point(s) (including t=0), but '
                     "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
                     'positive time points.')
+            if action.explicit_points[0] < 0:
+                # The simulation starts at t_start => 0, and run_network writes no row at a
+                # sample time before t_start, nor does the bngsim bridge, which follows it
+                # (#872); the bridge used to start the run at the negative time instead.
+                raise PybnfError(
+                    f'The time_course action with suffix "{action.suffix}" has data at '
+                    f't = {action.explicit_points[0]:g}, before t = 0, where the simulation '
+                    'starts',
+                    f'The time_course action with suffix "{action.suffix}" has data at '
+                    f't = {action.explicit_points[0]:g}, but its simulation starts at t = 0 '
+                    "(t_start=>0). BNG2.pl writes no output row before a simulation's start, and "
+                    'nor does bngsim, so no simulation would have a row to score that datum '
+                    'against. Shift the data so that it starts at t = 0 or later.')
             sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
             return (f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],'
                     f'suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})')
@@ -2206,8 +2219,9 @@ class TimeCourse(Action):
         # output grid from the data's independent-variable column, the time course
         # outputs at exactly those points rather than a uniform n_steps grid. ``t=0``
         # is forced in so integration always starts at the model's baseline -- BNG2.pl's
-        # t_start defaults to 0, but RoadRunner's simulate(times=...) and bngsim's
-        # sample_times path both begin integrating at the FIRST listed time (verified:
+        # t_start defaults to 0 (and the bngsim BNGL bridge follows it, #872), but RoadRunner's
+        # simulate(times=...) and bngsim's Simulator.run(sample_times=...), which the SBML path
+        # calls, both begin integrating at the FIRST listed time (verified:
         # RoadRunner with times=[10,...] returns the initial condition at t=10, not the
         # evolved value), so without a leading 0 a data grid that starts at t>0 would
         # silently produce the wrong trajectory. The extra t=0 output row is harmless to
