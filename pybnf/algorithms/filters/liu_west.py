@@ -88,6 +88,13 @@ _ZERO_REL = 2.0 ** -42
 # The floor on each moved parameter's variance, as a fraction of its prior-draw variance.
 _VAR_FLOOR_FRAC = 1e-12
 
+# The dispersions the filter takes. PyBNF's negative binomial score cannot represent an expected
+# count below r * 1e-10 (lanl/PyBNF#987): it is exact to r = 1e7 for counts from 1e-3 and wrong by
+# tens at 1e8. numpy's forecast draw fails near r = 1e-35. The range leaves a margin on each side.
+_DISPERSION_MIN, _DISPERSION_MAX = 1e-6, 1e6
+_DISPERSION_RANGE_WHY = ('since PyBNF\'s negative binomial score is wrong for a larger one '
+                         '(lanl/PyBNF#987) and the forecast draw fails for a far smaller one')
+
 # A boxed parameter's position in its box is kept this far from either wall before its logit.
 _EDGE = 1e-12
 
@@ -1532,11 +1539,12 @@ def _resolve_noise_model(obj, column, cf):
         raise _refusal('the dispersion source %s on %s' % (type(source).__name__, column), why)
     if not obj._is_cumulative(column):
         raise _refusal('the column %s without the cumulative flag' % column, why)
-    if isinstance(source, ConstantSigma) and not (math.isfinite(source.const) and source.const > 0):
-        # Otherwise every particle would fail to score, and the run would blame the data row.
+    if isinstance(source, ConstantSigma) and not (_DISPERSION_MIN <= source.const <= _DISPERSION_MAX):
+        # Outside it, the run would score or draw wrongly, or count every particle as failing.
         raise _refusal('the dispersion fix_at %s on %s' % (_exact(source.const), column),
-                       'a negative binomial dispersion is a finite number above 0',
-                       hint='Write a dispersion above 0 on both noise_model lines.')
+                       'it takes a dispersion between %g and %g, %s'
+                       % (_DISPERSION_MIN, _DISPERSION_MAX, _DISPERSION_RANGE_WHY),
+                       hint='Write a dispersion in that range on both noise_model lines.')
     _check_whole_fit_objective(obj, column, source, cf)
     return source
 
@@ -1602,16 +1610,27 @@ def _check_parameters(config):
 
 
 def _check_free_dispersion(variables, name):
-    """Refuse a fitted dispersion whose prior reaches below 0, where no negative binomial exists:
-    every particle drawn or moved there would be counted as failing to integrate, and a run with
-    many of them would blame the data row. A log-scale prior stays above 0."""
+    """Refuse a fitted dispersion whose prior reaches below 0, where no negative binomial exists
+    (every particle drawn or moved there would be counted as failing to integrate, and a run with
+    many of them would blame the data row), or above _DISPERSION_MAX, where the score is wrong.
+    A log-scale prior stays above 0. A prior bounded at 0 is accepted: a particle lands on 0 only
+    by a fold, with probability near 1e-12 per move, and is then given weight 0."""
     v = next((v for v in variables if v.name == name), None)
-    if v is not None and not v.log_space and v.lower_bound < 0.0:
+    if v is None:
+        return
+    if not v.log_space and v.lower_bound < 0.0:
         raise _refusal('the dispersion %s, whose prior reaches below 0 (lower bound %s)'
                        % (name, _exact(v.lower_bound)),
                        'a negative binomial dispersion is above 0',
-                       hint='Give %s a prior that stays above 0, a loguniform_var or reflecting '
-                            'bounds from 0, say.' % name)
+                       hint='Give %s a prior that does not reach below 0, a loguniform_var or '
+                            'reflecting bounds from 0, say.' % name)
+    if v.upper_bound > _DISPERSION_MAX:
+        raise _refusal('the dispersion %s, whose prior reaches above %g (upper bound %s)'
+                       % (name, _DISPERSION_MAX, _exact(v.upper_bound)),
+                       'it takes a dispersion of at most %g, %s'
+                       % (_DISPERSION_MAX, _DISPERSION_RANGE_WHY),
+                       hint='Bound %s at %g or below, with reflecting bounds.'
+                            % (name, _DISPERSION_MAX))
 
 
 def _box_in_sampling_space(v):

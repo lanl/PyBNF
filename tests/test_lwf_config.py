@@ -245,25 +245,49 @@ def test_a_fixed_dispersion_is_quoted_exactly_in_the_refusal_and_its_hint(tmp_pa
     assert "'noise_model = neg_bin, dispersion = fix_at 20.000004, location = mean'" in message
 
 
-@pytest.mark.parametrize('value', ['0', '-5', 'inf', 'nan'])
-def test_a_fixed_dispersion_that_is_not_a_finite_number_above_0_is_refused(tmp_path, value):
-    """The first three loaded, and every particle was then counted as failing to integrate, with
-    the hint blaming the data row; nan was refused as differing from itself."""
-    message = _load_refusal(tmp_path, replace={
-        'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at %s, location = mean'
-                                 % value,
-        'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at %s, '
-                             'location = mean, cumulative' % value,
-        'loguniform_var = r': None})
-    assert 'the dispersion fix_at %s on cases' % value in message and 'above 0' in message
+def _fixed_dispersion(value):
+    return {'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at %s, '
+                                     'location = mean' % value,
+            'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at %s, '
+                                 'location = mean, cumulative' % value,
+            'loguniform_var = r': None}
 
 
-@pytest.mark.parametrize('line, bound', [('uniform_var = r -10 100', '-10'),
-                                         ('normal_var = r 20 30', '-inf')])
-def test_a_fitted_dispersion_whose_prior_reaches_below_0_is_refused(tmp_path, line, bound):
-    """Every particle drawn or moved below 0 was counted as failing to integrate."""
+@pytest.mark.parametrize('value', ['0', '-5', 'inf', 'nan', '1e7', '1e12', '1e308', '1e-7',
+                                   '1e-300', '5e-324'])
+def test_a_fixed_dispersion_outside_the_range_the_filter_honours_is_refused(tmp_path, value):
+    """0, -5 and inf loaded and every particle was then counted as failing to integrate; nan was
+    refused as differing from itself; 1e12 was scored as the clip's floor, not the particles'
+    means (lanl/PyBNF#987); 1e-300 crashed the forecast draw after every row was assimilated."""
+    message = _load_refusal(tmp_path, replace=_fixed_dispersion(value))
+    assert 'the dispersion fix_at %s on cases' % lw._exact(float(value)) in message
+    assert 'between 1e-06 and 1e+06' in message
+
+
+@pytest.mark.parametrize('value', ['1e-6', '1e6'])
+def test_a_fixed_dispersion_at_either_end_of_the_range_loads(tmp_path, value):
+    H.require_bng2pl()
+    alg = C.build(C.write_job(tmp_path, replace=_fixed_dispersion(value)))
+    assert alg._dispersion_value == float(value)
+
+
+@pytest.mark.parametrize('line, phrase', [
+    ('uniform_var = r -10 100', 'whose prior reaches below 0 (lower bound -10)'),
+    ('normal_var = r 20 30', 'whose prior reaches below 0 (lower bound -inf)'),
+    ('loguniform_var = r 1 1e7', 'whose prior reaches above 1e+06 (upper bound 10000000)'),
+    ('lognormal_var = r 1 1', 'whose prior reaches above 1e+06 (upper bound inf)'),
+], ids=['below_0', 'unbounded_normal', 'above_1e6', 'unbounded_lognormal'])
+def test_a_fitted_dispersion_whose_prior_leaves_the_range_is_refused(tmp_path, line, phrase):
+    """Every particle drawn or moved below 0 was counted as failing to integrate, and one above
+    1e6 risks a score for the wrong mean (lanl/PyBNF#987)."""
     message = _load_refusal(tmp_path, replace={'loguniform_var = r': line})
-    assert 'the dispersion r, whose prior reaches below 0 (lower bound %s)' % bound in message
+    assert 'the dispersion r, ' + phrase in message
+
+
+def test_a_fitted_dispersion_with_a_prior_bounded_at_0_loads(tmp_path):
+    H.require_bng2pl()
+    alg = C.build(C.write_job(tmp_path, replace={'loguniform_var = r': 'uniform_var = r 0 100'}))
+    assert alg._dispersion_name == 'r'
 
 
 def test_an_objective_token_that_stands_for_the_columns_line_loads(tmp_path):

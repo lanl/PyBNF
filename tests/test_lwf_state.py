@@ -164,14 +164,15 @@ def test_a_wall_time_stop_then_a_continuation_writes_what_the_uninterrupted_run_
 
 
 def test_a_wall_time_stop_before_row_1_continues_when_the_prior_has_an_infinite_draw(tmp_path):
-    """r is truncated below where 1 - F = 1e-15 and open above, so its inverse CDF is infinite on
-    the top 5% of quantiles: about one draw in twenty."""
-    kw = dict(particles=100, replace={'loguniform_var = r': (
-        'parameter: r, prior: normal, mean: 10, sd: 1, lower: 17.941345, upper: inf')})
+    """beta is truncated below where 1 - F = 1e-15 and open above, so its inverse CDF is infinite
+    on the top 5% of quantiles: about one draw in twenty. (The dispersion cannot carry this prior:
+    the filter refuses one that reaches above 1e6.)"""
+    kw = dict(particles=100, replace={'loguniform_var = beta': (
+        'parameter: beta, prior: normal, mean: 0.3, sd: 0.05, lower: 0.697067, upper: inf')})
     whole = _run(tmp_path / 'whole', **kw)
     alg = _build(tmp_path / 'parts', **kw)
-    (r,) = [v for v in alg.variables if v.name == 'r']
-    assert np.isinf(r.prior_quantile_u(0.95))
+    (beta,) = [v for v in alg.variables if v.name == 'beta']
+    assert np.isinf(beta.prior_quantile_u(0.95))
     now = [0.0]
     alg.budget = FitBudget(1.0, clock=lambda: now[0])
     now[0] = 5.0
