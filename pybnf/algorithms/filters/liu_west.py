@@ -222,9 +222,10 @@ def _check_keys_not_read(d):
             raise _refusal(key, why, hint='Remove the line.')
     read = _READ_GLOBAL_KEYS
     if 'neg_bin_r' in d:
-        if d.get('objective') != 'neg_bin':
+        # The loader reads the objective token case-blind (objective.build_named_objective).
+        if str(d.get('objective') or '').lower() != 'neg_bin':
             # Not the dispersion: a user who wrote it to set one would be scored with another.
-            raise _refusal('neg_bin_r = %s' % d['neg_bin_r'],
+            raise _refusal('neg_bin_r = %s' % _exact(d['neg_bin_r']),
                            'only objective = neg_bin reads it, and here the dispersion is the one '
                            'the noise_model lines declare', hint='Remove the line.')
         read = read | {'neg_bin_r'}
