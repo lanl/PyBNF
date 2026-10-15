@@ -11,6 +11,7 @@ from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
+from ...noise import ConstantSigma, FreeParameterSigma, NegBinomial
 
 from typing import Any
 
@@ -113,6 +114,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
         if self.config.config['output_noise_trajectory']:
             # Same as above: the separator is the parser's business now (#751).
             self.output_noise_columns = list(self.config.config['output_noise_trajectory'])
+            # Each column's counts are drawn from the noise model that scores it (#986).
+            self.output_noise_specs = {c: self._noise_draw_spec(c) for c in self.output_noise_columns}
             self.output_run_noise_current = {}
             self.output_run_noise_all = {}
             for i in self.output_noise_columns:
@@ -281,7 +284,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     self.list_trajactory = []
                                     for z in res.out[ib][js].data:
                                         self.list_trajactory.append(z.data[column])      
-                                    if '_Cum' in la:
+                                    if self.output_noise_specs[la][2]:
                                         getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
                                         self.output_run_noise_current[js+la][index]= getFirstValue
                                     else:
@@ -311,12 +314,13 @@ class Adaptive_MCMC(BayesianAlgorithm):
         
         # record the trajactorys for the graphs
         if self.iteration[index] >= self.valid_range and self.iteration[index] % self.config.config['sample_every'] == 0:
-            # if the objective function is negbin then add the negbin noise to the traj output else record accepted sim vals as is
-            if (self.config.config['objfunc'] == 'neg_bin' and self.config.config['output_noise_trajectory']) or (self.config.config['objfunc'] == 'neg_bin_dynamic' and self.config.config['output_noise_trajectory']):
+            # Draw each noise column's counts around the recorded prediction. _noise_draw_spec
+            # refused, at load, a column whose noise model is not a negative binomial (#986).
+            if self.config.config['output_noise_trajectory']:
                 for l in self.output_noise_columns:     
                     for i in self.output_run_noise_current.keys():
                         if l in i:
-                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index], self.chain_rngs[index])
+                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index], self.chain_rngs[index], l)
             if self.config.config['output_trajectory']:
                 for l in self.output_columns:
                     for i in self.output_run_current.keys():
@@ -507,19 +511,47 @@ class Adaptive_MCMC(BayesianAlgorithm):
                       'is not a column' if one else 'are not columns',
                       'it' if one else 'them', ', '.join(sorted(available))))
 
-    def generateBinomialNoise(self, timeseries, pset, rng):
-        # Generate the binomial noise for the results (rng = the chain's own Generator)
+    def _noise_draw_spec(self, column):
+        """``(family, dispersion source, cumulative)`` for one ``output_noise_trajectory``
+        column: the noise model that scores it, which must be a negative binomial with a fixed
+        or fitted dispersion. The draw used to be gated on the legacy ``objfunc``, which
+        edition 2 does not have, so an edition-2 run wrote files of zeros (#986); a legacy
+        ``neg_bin`` / ``neg_bin_dynamic`` resolves to the same spec. Edition 1 keeps its
+        ``_Cum`` naming convention for differencing; edition 2 uses the column's own
+        ``cumulative`` flag, as the scoring does."""
+        spec_for = getattr(self.objective, '_spec_for', None)
+        family, sources = spec_for(column) if spec_for is not None else (None, {})
+        if not isinstance(family, NegBinomial):
+            what = type(family).__name__ if family is not None else type(self.objective).__name__
+            raise PybnfError(
+                "output_noise_trajectory names %s, whose noise model is %s, not neg_bin"
+                % (column, what),
+                "output_noise_trajectory draws negative binomial counts around %s's prediction "
+                "from the noise model that scores it, and %s's is %s. Declare it with a neg_bin "
+                "noise model, or list it under output_trajectory instead." % (column, column, what))
+        source = sources.get('dispersion')
+        if not isinstance(source, (ConstantSigma, FreeParameterSigma)):
+            raise PybnfError(
+                "output_noise_trajectory names %s, whose neg_bin dispersion is %s"
+                % (column, type(source).__name__),
+                "output_noise_trajectory draws %s's counts with a dispersion fixed (fix_at) or "
+                "fitted (fit <parameter>); a dispersion of this kind has no single value to draw "
+                "with." % column)
+        legacy = int(self.config.config.get('edition') or 1) < 2
+        cumulative = self.objective._is_cumulative(column) or (legacy and '_Cum' in column)
+        return family, source, cumulative
+
+    def generateBinomialNoise(self, timeseries, pset, rng, column):
+        """Counts drawn around ``timeseries``, the predictions of ``column``, from its noise
+        model (:meth:`_noise_draw_spec`) under the chain's own Generator ``rng``."""
+        family, source, _ = self.output_noise_specs[column]
         self.output = np.copy(timeseries)
-        self.pset = pset
-        if self.config.config['objfunc'] == 'neg_bin_dynamic':
-            for p in self.pset:
-                if p.name == 'r__FREE':
-                    self.r = p.value
-        else:
-            self.r = self.config.config['neg_bin_r']
+        self.r = (source.const if isinstance(source, ConstantSigma)
+                  else pset.get_param(source.name).value)
         for i in range(len(timeseries)):
-            # A negative prediction is the mean 0, as the noise model scores it.
-            mean = max(float(timeseries[i]), 0.0)
+            # The distribution mean the noise model scores: a negative prediction is 0, and
+            # a median-located prediction is inverted to its mean.
+            mean = family._mean(float(timeseries[i]), float(self.r))
             self.prob = np.clip(self.r / (self.r + mean), 1e-10, 1 - 1e-10)
             self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1,
                                                random_state=rng)[0]

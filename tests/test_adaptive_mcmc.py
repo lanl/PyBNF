@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from .context import algorithms, config, pset, constraint, data
+from pybnf.printing import PybnfError
 
 
 class _FixedMvnRng:
@@ -966,6 +967,7 @@ class TestOutputTrajectoryCrossProductSuffixes:
         overrides = {'output_trajectory': [TestOutputTrajectoryCrossProductSuffixes.OBS]}
         if noise:
             overrides['output_noise_trajectory'] = [TestOutputTrajectoryCrossProductSuffixes.OBS]
+            overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
@@ -1126,6 +1128,7 @@ class TestAnUnmatchedTrajectoryNameIsReported:
         overrides = {'output_trajectory': list(wanted)}
         if noise_wanted:
             overrides['output_noise_trajectory'] = list(noise_wanted)
+            overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
         am.start_run()
@@ -1319,6 +1322,7 @@ class TestCombiningChainsWithAFileTheRunNeverWrote:
         overrides = {'output_trajectory': list(wanted)}
         if noise:
             overrides['output_noise_trajectory'] = list(wanted)
+            overrides.update({'objfunc': 'neg_bin', 'neg_bin_r': 20.0})   # a noise trajectory needs a neg_bin noise model (#986)
         cfg = _make_config(tmp_path, 2, UNIFORM_VARS, burn_in=2, adaptive=2,
                            max_iterations=10, **overrides)
         am = algorithms.Adaptive_MCMC(cfg)
@@ -1389,10 +1393,85 @@ def test_the_output_noise_draws_a_negative_prediction_as_the_mean_zero():
     from types import SimpleNamespace
     import numpy as np
     from pybnf.algorithms.samplers.adaptive_mcmc import Adaptive_MCMC
-    stub = SimpleNamespace(config=SimpleNamespace(config={'objfunc': 'neg_bin', 'neg_bin_r': 2.0}))
+    from pybnf.noise import MEAN, ConstantSigma, NegBinomial
+    stub = SimpleNamespace(output_noise_specs={
+        'c': (NegBinomial(location=MEAN), ConstantSigma(2.0), False)})
     series = np.array([-1e6, -2.0, -1.0, 0.0, 4.0])
-    draws = Adaptive_MCMC.generateBinomialNoise(stub, series, [], np.random.default_rng(1))
-    clamped = Adaptive_MCMC.generateBinomialNoise(stub, np.maximum(series, 0.0), [],
-                                                  np.random.default_rng(1))
+    draws = Adaptive_MCMC.generateBinomialNoise(stub, series, None, np.random.default_rng(1), 'c')
+    clamped = Adaptive_MCMC.generateBinomialNoise(stub, np.maximum(series, 0.0), None,
+                                                  np.random.default_rng(1), 'c')
     assert list(draws) == list(clamped)
     assert list(draws[:4]) == [0, 0, 0, 0]
+
+
+# --------------------------------------------------------------------------------------------
+# output_noise_trajectory draws from the column's own noise model (lanl/PyBNF#986)
+# --------------------------------------------------------------------------------------------
+
+def test_a_noise_trajectory_under_a_noise_model_that_is_not_neg_bin_is_refused(tmp_path):
+    """Under the default chi_sq the draw never ran, and the noise files held zeros."""
+    cfg = _make_config(tmp_path, 1, UNIFORM_VARS, output_noise_trajectory=['A'])
+    with pytest.raises(PybnfError) as info:
+        algorithms.Adaptive_MCMC(cfg)
+    # main() prints the message and logs the summary: both name the column and its family.
+    assert info.value.log_message.startswith(
+        'output_noise_trajectory names A, whose noise model is Gaussian, not neg_bin')
+    assert "A's is Gaussian. Declare it with a neg_bin noise model" in info.value.message
+
+
+def test_a_median_located_noise_draw_is_around_the_mean_that_places_the_median():
+    """An edition-2 neg_bin line defaults to the median location, so the draw's mean is the one
+    whose median is the prediction. Oracle: scipy.stats.nbinom on the same seed at
+    r / (r + _mean_for_median(prediction, r))."""
+    from types import SimpleNamespace
+    from scipy import stats
+    from pybnf.algorithms.samplers.adaptive_mcmc import Adaptive_MCMC
+    from pybnf.noise import MEDIAN, ConstantSigma, NegBinomial
+    from pybnf.noise.negative_binomial import _mean_for_median
+    r, series = 3.0, np.array([0.0, 2.0, 7.5, 40.0])
+    stub = SimpleNamespace(output_noise_specs={
+        'c': (NegBinomial(location=MEDIAN), ConstantSigma(r), False)})
+    draws = Adaptive_MCMC.generateBinomialNoise(stub, series, None, np.random.default_rng(5), 'c')
+    rng = np.random.default_rng(5)
+    expected = [stats.nbinom.rvs(n=r, p=np.clip(r / (r + _mean_for_median(x, r)), 1e-10,
+                                                1 - 1e-10), size=1, random_state=rng)[0]
+                for x in series]
+    np.testing.assert_array_equal(draws, expected)
+    assert _mean_for_median(7.5, r) != 7.5
+
+
+@pytest.mark.bngsim
+def test_an_edition_2_noise_trajectory_holds_counts_around_the_predicted_increments(
+        tmp_path, monkeypatch):
+    """lanl/PyBNF#986: under edition 2 the draw was gated on the legacy objfunc, so every
+    traj_noise_* file was all zeros. The counts are now negative binomial draws (fix_at 20)
+    around the increments of `cases`, a column declared cumulative without the _Cum naming
+    convention. Oracle: the plain trajectory written beside it, differenced the same way;
+    over every recorded row the drawn total is within 10% of the predicted total."""
+    from . import lwf_harness as L
+    from . import recovery_harness as R
+    R.require_bng2pl()
+    (tmp_path / 'sir.bngl').write_text(L.MODEL)
+    L.write_data(tmp_path / 'cases.exp')
+    (tmp_path / 'am.conf').write_text('\n'.join([
+        'edition = 2', 'model: sir.bngl', 'bngl_backend = bngsim', 'job_type = am',
+        'output_dir = out', 'experiment: epi, data: cases.exp',
+        'noise_model = neg_bin, dispersion = fix_at 20, location = mean',
+        'noise_model cases = neg_bin, dispersion = fix_at 20, location = mean, cumulative',
+        'uniform_var = beta 0.3 1.2', 'uniform_var = gamma 0.1 0.5',
+        'output_trajectory = cases', 'output_noise_trajectory = cases',
+        'population_size = 2', 'max_iterations = 40', 'burn_in = 10', 'adaptive = 10',
+        'sample_every = 1', 'step_size = 0.05', 'random_seed = 1', 'parallel_count = 2']) + '\n')
+    assert L.run_main(monkeypatch, tmp_path, tmp_path / 'am.conf') == 0
+    runs = tmp_path / 'out' / 'Results' / 'A_MCMC' / 'Runs'
+    drawn, predicted = 0.0, 0.0
+    for chain in (0, 1):
+        noise = np.loadtxt(runs / ('traj_noise_epicases_chain_%d.txt' % chain), ndmin=2)
+        plain = np.loadtxt(runs / ('traj_epicases_chain_%d.txt' % chain), ndmin=2)
+        assert noise.shape == plain.shape and noise.shape[0] > 10
+        increments = np.column_stack([plain[:, :1], np.diff(plain, axis=1)])
+        recorded = ~(plain == 0).all(axis=1)          # #859's never-simulated first row
+        drawn += noise[recorded].sum()
+        predicted += increments[recorded].sum()
+    assert predicted > 1000
+    assert abs(drawn / predicted - 1.0) < 0.1, (drawn, predicted)

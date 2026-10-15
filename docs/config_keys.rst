@@ -2740,8 +2740,14 @@ For Adaptive MCMC
     * ``adaptive = 50000``
   
   
-**output_noise_trajectory (Only for use with neg_bin and neg_bin_dynamic functions)**
-  Calculate and add the negative binomial noise to the specified observables or functions then save the output of the user defined observable or function from the simulation output to a .txt file.
+**output_noise_trajectory**
+  Draw negative binomial counts around the simulated values of the specified observables or
+  functions and save them to a .txt file (``job_type = am``). Each column is drawn from the noise
+  model that scores it: a ``neg_bin`` noise model with a fixed (``fix_at``) or fitted dispersion,
+  at its location (mean or median), differenced first when the column is declared
+  ``cumulative``. The legacy ``objfunc = neg_bin`` / ``neg_bin_dynamic`` are such noise models,
+  and under edition 1 a column whose name contains ``_Cum`` is differenced too. A column with any
+  other noise model is refused when the configuration loads.
   
   Default: None (multiple values can be defined separated by a comma)
   
