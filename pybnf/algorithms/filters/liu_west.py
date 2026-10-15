@@ -960,7 +960,7 @@ class LiuWestFilter(Algorithm):
     def _banner(self):
         runs = ('' if self.runs == 1 else
                 '%d independent runs of ' % self.runs)
-        return ('Running the Liu–West filter: %s%d particles over %d rows of %s (step %g), '
+        return ('Running the Liu–West filter: %s%d particles over %d rows of %s (step %.15g), '
                 'forecasting %d step(s) past the last row'
                 % (runs, self.particles, len(self.times), self.suffix, self.step,
                    self.forecast_intervals))
@@ -1076,7 +1076,7 @@ class LiuWestFilter(Algorithm):
             logw = np.where(live, np.log(np.where(live, pop.weights, 1.0)) + loglik, -np.inf)
         if not np.isfinite(logw).any():
             raise _DegenerateUpdate(
-                'Degenerate update at row %d (t = %.15g, count %g): no particle can explain it. Of '
+                'Degenerate update at row %d (t = %.15g, count %.15g): no particle can explain it. Of '
                 'the %d particle(s) with weight, %d failed to integrate and %d predicted no '
                 'increase of %s over the interval, which cannot produce a positive count.'
                 % (k + 1, t1, count, int(live.sum()), failed, zero, self.observable))
@@ -1498,7 +1498,7 @@ def _resolve_grid(data, suffix):
     if off.size:
         row = int(off[0]) + 1
         raise PybnfError(
-            'Row %d of the experiment %s (t = %.15g) is %g after %s, and the step of the data is %g; '
+            'Row %d of the experiment %s (t = %.15g) is %.15g after %s, and the step of the data is %.15g; '
             'each count is scored over the interval since the row before it.'
             % (row, suffix, times[row - 1], gaps[row - 1],
                'the origin t = 0' if row == 1 else 'the row before it', step),
@@ -1517,7 +1517,7 @@ def _resolve_counts(data, column, suffix):
             "Row(s) %s of the experiment %s have the count %s in '%s'. The negative binomial "
             'scores a count of 0 or more, so every count must be a finite number of at least 0.'
             % (', '.join(map(str, bad[:6])), suffix,
-               ', '.join('%g' % counts[i - 1] for i in bad[:6]), column),
+               ', '.join('%.15g' % counts[i - 1] for i in bad[:6]), column),
             hint='Write an interval whose count is missing as a row holding nan, which is '
                  'integrated over but not scored.')
 
