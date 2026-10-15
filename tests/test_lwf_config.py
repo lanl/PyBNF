@@ -264,6 +264,7 @@ def test_a_fixed_dispersion_outside_the_range_the_filter_honours_is_refused(tmp_
     assert 'between 1e-06 and 1e+06' in message
 
 
+@pytest.mark.bngsim
 @pytest.mark.parametrize('value', ['1e-6', '1e6'])
 def test_a_fixed_dispersion_at_either_end_of_the_range_loads(tmp_path, value):
     H.require_bng2pl()
@@ -284,6 +285,7 @@ def test_a_fitted_dispersion_whose_prior_leaves_the_range_is_refused(tmp_path, l
     assert 'the dispersion r, ' + phrase in message
 
 
+@pytest.mark.bngsim
 def test_a_fitted_dispersion_with_a_prior_bounded_at_0_loads(tmp_path):
     H.require_bng2pl()
     alg = C.build(C.write_job(tmp_path, replace={'loguniform_var = r': 'uniform_var = r 0 100'}))
