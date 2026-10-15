@@ -788,6 +788,14 @@ Other Path Keys
 
   BNGL workflows still need ``bng_command`` when PyBNF must run BNG2.pl to generate ``.net`` or XML files.
 
+  On BNGsim a ``simulate`` action writes the output grid BNG2.pl writes for it: ``n_output_steps`` is
+  ``n_steps``, an action with neither and no ``sample_times`` takes one step, ``n_steps`` takes
+  precedence over ``sample_times``, and ``sample_times`` needs three or more points. An action
+  BNG2.pl refuses is refused with BNG2.pl's message when the model is set up: both ``n_steps`` and
+  ``n_output_steps``, no ``t_end`` without ``sample_times`` (a ``parameter_scan`` too), and, for
+  NFsim, anything but ``n_steps`` with ``t_end`` -- except ``sample_times``, which BNGsim's NFsim
+  takes (two or more points) and BNG2.pl's does not.
+
   Default: auto
 
   Example:

@@ -31,6 +31,7 @@ from ..bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
+from ..bngsim_model.grid import check_output_grids
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
                          replicated_information_criteria)
@@ -579,6 +580,10 @@ class Algorithm(ABC):
                         m.name,
                     )
 
+                if use_hybrid or use_bngsim:
+                    # BNG2.pl's rules for each action's output grid (#990 review): refused here,
+                    # outside the fall-back below, since BNG2.pl refuses the same actions.
+                    check_output_grids(m.name, list(m.actions) + list(m.protocol or ()))
                 if use_hybrid:
                     # Hybrid path: generate_network already ran; now generate XML
                     # by running BNG2.pl again with generate_network + writeXML
@@ -737,6 +742,8 @@ class Algorithm(ABC):
                     final_model_list.append(m)
                     continue
 
+                # BNG2.pl's rules for each action's output grid (#990 review).
+                check_output_grids(m.name, list(m.actions) + list(m.protocol or ()))
                 logger.info(f'Model {m.name} is NF-only; generating XML for bngsim network-free simulation')
 
                 if not os.path.isdir(init_dir):
