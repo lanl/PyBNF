@@ -252,3 +252,78 @@ def test_an_equilibration_on_one_step_hands_on_the_state_one_on_a_hundred_does(t
         np.testing.assert_allclose(measured[0], measured[1], rtol=1e-8)
     else:
         np.testing.assert_array_equal(measured[0], measured[1])
+
+
+_UNREAD = [
+    ('argfile', 'argfile=>"simargs.txt"'),
+    ('max_sim_steps', 't_end=>20,n_steps=>20,max_sim_steps=>50'),
+    ('output_step_interval', 't_end=>20,n_steps=>20,output_step_interval=>5'),
+    ('print_on_stop', 't_end=>20,n_steps=>20,stop_if=>"Stot<50",print_on_stop=>0'),
+]
+
+
+@pytest.mark.parametrize('option, options', _UNREAD, ids=[u[0] for u in _UNREAD])
+def test_an_option_bng2pl_reads_for_the_rows_and_the_bridge_does_not_is_not_the_bridges(
+        option, options):
+    """BNG2.pl reads these to decide an action's rows (an argfile can hold t_end and n_steps);
+    the bridge reads none of them. Such an action is classified unsupported, so ``auto`` runs
+    the model on BNG2.pl; were it run on the bridge anyway, the refusal says the bridge does not
+    read the option -- not that BNG2.pl refuses the action, which it runs (#994 re-review)."""
+    from pybnf.bngsim_model.classification import (bngsim_unread_action_options,
+                                                   classify_actions_for_bngsim)
+    from pybnf.bngsim_model.grid import check_output_grids
+    action = 'simulate({method=>"ssa",%s,suffix=>"p1"})' % options
+    actions = ['generate_network({overwrite=>1})', action]
+    assert classify_actions_for_bngsim(actions) is None
+    assert bngsim_unread_action_options(actions) == [('p1', [option])]
+    with pytest.raises(PybnfError) as info:
+        check_output_grids('decay', [action])
+    assert info.value.log_message == ('Model decay, simulate action with suffix "p1": names %s, '
+                                      'which the bngsim bridge does not read' % option)
+    assert 'BNG2.pl refuses' not in info.value.message
+    scan = action.replace('simulate({', 'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],')
+    with pytest.raises(PybnfError, match='which the bngsim bridge does not read'):
+        check_output_grids('decay', [scan])
+
+
+def test_print_on_stop_at_its_default_stays_the_bridges():
+    from pybnf.bngsim_model import BNGSIM_BACKEND_NET
+    from pybnf.bngsim_model.classification import classify_actions_for_bngsim
+    actions = ['generate_network({overwrite=>1})',
+               'simulate({method=>"ode",t_end=>20,n_steps=>20,stop_if=>"Stot<50",'
+               'print_on_stop=>1,suffix=>"p1"})']
+    assert classify_actions_for_bngsim(actions) == BNGSIM_BACKEND_NET
+
+
+@pytest.mark.parametrize('backend', ['auto', 'bngsim'])
+def test_an_argfile_model_runs_on_bng2pl_under_auto_and_is_refused_by_name_under_bngsim(
+        tmp_path, monkeypatch, backend):
+    """Through the fit's model set-up. ``auto`` takes the BNG2.pl subprocess path for the model
+    (a plain NetModel, not the bridge); ``bngsim`` refuses, naming the argfile."""
+    from pybnf import algorithms, config
+    from pybnf.bngsim_model import BngsimModel
+    R.require_bng2pl()
+    (tmp_path / 'simargs.txt').write_text('t_end 2\nn_steps 8\n')
+    text = _model_block(FIXTURES / 'e2e_ode_decay.bngl').replace('k   0.3', 'k   k__FREE')
+    assert 'k__FREE' in text
+    model = tmp_path / 'decay.bngl'
+    model.write_text(text + 'generate_network({overwrite=>1})\n'
+                     'simulate({method=>"ode",argfile=>"%s",suffix=>"p1"})\n'
+                     % (tmp_path / 'simargs.txt'))
+    (tmp_path / 'p1.exp').write_text('# time Stot\n' + ''.join(
+        '%g %g\n' % (t, 100 * np.exp(-0.3 * t)) for t in (0.25, 0.5, 1.0)))
+    monkeypatch.chdir(tmp_path)
+    cfg = config.Configuration({
+        'population_size': 4, 'max_iterations': 2, 'output_dir': str(tmp_path / 'out') + '/',
+        'models': {str(model)}, 'exp_data': {str(tmp_path / 'p1.exp')},
+        str(model): [str(tmp_path / 'p1.exp')], 'fit_type': 'de', 'objfunc': 'sos',
+        'bngl_backend': backend, ('uniform_var', 'k__FREE'): [0.1, 1.0]})
+    if backend == 'bngsim':
+        with pytest.raises(PybnfError) as info:
+            algorithms.DifferentialEvolution(cfg)
+        assert ('The action with suffix "p1" names argfile, which BNG2.pl reads to decide its '
+                'output rows and the bridge does not') in info.value.message
+        return
+    alg = algorithms.DifferentialEvolution(cfg)
+    assert [type(m).__name__ for m in alg.model_list] == ['NetModel']
+    assert not isinstance(alg.model_list[0], BngsimModel)

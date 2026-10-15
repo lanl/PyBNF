@@ -26,6 +26,20 @@ A ``parameter_scan`` / ``bifurcate`` runs ``simulate`` at each point in BNG2.pl,
 ``t_end`` without ``sample_times`` and may not name both step keys. Its output is one row per
 scan point whatever its step count, so the bridge's step count for a scan is unchanged.
 
+Some options BNG2.pl reads decide an action's rows in a way these rules cannot see
+(:data:`UNREAD_GRID_OPTIONS`): an ``argfile`` supplies ``t_end``, ``n_steps`` or
+``sample_times`` from a file, and ``max_sim_steps``, ``output_step_interval`` and
+``print_on_stop=>0`` stop the run early, add rows, or drop the last one. The bridge reads none
+of them, so an action naming one is not the bridge's: ``classify_actions_for_bngsim`` reports the
+model unsupported, ``bngl_backend = auto`` runs it on BNG2.pl, and ``bngl_backend = bngsim``
+refuses it, naming the option.
+
+One difference is not covered, and is lanl/PyBNF#872, open and older than these rules: an action
+whose ``sample_times`` start after ``t_start`` is integrated from its first sample time on the
+bridge, where BNG2.pl integrates from ``t_start`` and writes that row; and with a ``t_end`` before
+its last sample time, BNG2.pl writes rows up to ``t_end`` and the bridge does not. So the grids
+agree for every action these rules accept except one with such ``sample_times``.
+
 Every refusal is a :class:`~pybnf.printing.PybnfError` naming the model and the action. The
 same functions run when the bridge is chosen for a model (:func:`check_output_grids`, as the
 fit sets up its models, before any simulation) and when an action runs, so the two cannot
@@ -49,6 +63,30 @@ logger = logging.getLogger(__name__)
 #: The ``method`` tokens BNG2.pl runs through ``simulate_nf`` (bngsim's NF aliases included).
 NETWORK_FREE_METHODS = frozenset(('nf', 'nfsim', 'nf_reject', 'nf_exact', 'rm', 'rulemonkey'))
 
+#: Options BNG2.pl reads that change which rows a ``simulate`` / ``parameter_scan`` writes, and
+#: that the bridge does not read (the module docstring says how each does it). ``print_on_stop``
+#: is one only when it is not 1, its default.
+UNREAD_GRID_OPTIONS = ('argfile', 'max_sim_steps', 'output_step_interval', 'print_on_stop')
+
+
+def unread_grid_options(params):
+    """The :data:`UNREAD_GRID_OPTIONS` a parsed action names, in that order."""
+    return [option for option in UNREAD_GRID_OPTIONS if option in params and not (
+        option == 'print_on_stop' and str(params[option]).strip() == '1')]
+
+
+def unread_options_refusal(where, options):
+    """The error for an action that names an option the bridge does not read. Not BNG2.pl's
+    refusal: BNG2.pl reads it and runs the action."""
+    return PybnfError(
+        '%s: names %s, which the bngsim bridge does not read' % (where, ', '.join(options)),
+        "%s names %s. BNG2.pl reads %s and runs the action, but the bngsim bridge does not, so "
+        "it cannot write the rows BNG2.pl writes for it. Run the model with bngl_backend = auto "
+        "(which picks BNG2.pl for it) or bngl_backend = bionetgen, or write the action's "
+        "t_end and step count into the action itself."
+        % (where, ', '.join(options), 'it' if len(options) == 1 else 'them'))
+
+
 _BOTH_STEP_KEYS = ("'n_steps' and 'n_output_steps' are the same thing, cannot define both. "
                    "Please only define one ('n_output_steps' is preferred).")
 
@@ -61,8 +99,8 @@ def grid_refusal(where, message, note='', bng2pl_says_so=True):
     return PybnfError(
         '%s: %s' % (where, message),
         "%s cannot run: %s %s, and the bngsim bridge follows BNG2.pl's rules for a "
-        "simulation's output grid, so the action gives the same grid, or the same refusal, on "
-        "both backends.%s" % (where, message, source, note))
+        "simulation's output grid, so that BNG2.pl and bngsim write the same rows for the "
+        "same action.%s" % (where, message, source, note))
 
 
 def describe_action(model_name, params, kind='simulate'):
@@ -80,6 +118,9 @@ def simulate_output_grid(sim_params, where, method, t_start=None, evaluate=None)
     point and ``n_steps`` is ``None``. ``evaluate`` turns an action value into a number, as
     the caller's path always has (``_eval_numeric`` on the ``.net`` bridge, ``float`` on the
     NFsim one); ``t_start`` is the run's start, needed only to check an NFsim ``t_end``."""
+    unread = unread_grid_options(sim_params)
+    if unread:
+        raise unread_options_refusal(where, unread)
     has_steps = 'n_steps' in sim_params
     has_output_steps = 'n_output_steps' in sim_params
     has_sample_times = 'sample_times' in sim_params
@@ -140,6 +181,9 @@ def scan_t_end(ps_params, where, sample_times, evaluate=None):
     ``method=>"protocol"`` scan runs the protocol block at each point instead
     (``simulate_protocol``), whose own ``simulate`` actions carry their grids."""
     method = str(ps_params.get('method', 'ode')).strip().lower()
+    unread = unread_grid_options(ps_params)
+    if unread:
+        raise unread_options_refusal(where, unread)
     if method == 'protocol':
         return None
     if 'n_steps' in ps_params and 'n_output_steps' in ps_params:

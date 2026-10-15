@@ -788,13 +788,23 @@ Other Path Keys
 
   BNGL workflows still need ``bng_command`` when PyBNF must run BNG2.pl to generate ``.net`` or XML files.
 
-  On BNGsim a ``simulate`` action writes the output grid BNG2.pl writes for it: ``n_output_steps`` is
+  On BNGsim a ``simulate`` action follows BNG2.pl's rules for its output grid: ``n_output_steps`` is
   ``n_steps``, an action with neither and no ``sample_times`` takes one step, ``n_steps`` takes
   precedence over ``sample_times``, and ``sample_times`` needs three or more points. An action
   BNG2.pl refuses is refused with BNG2.pl's message when the model is set up: both ``n_steps`` and
   ``n_output_steps``, no ``t_end`` without ``sample_times`` (a ``parameter_scan`` too), and, for
   NFsim, anything but ``n_steps`` with ``t_end`` -- except ``sample_times``, which BNGsim's NFsim
-  takes (two or more points) and BNG2.pl's does not.
+  takes (two or more points) and BNG2.pl's does not. An action that names an option BNG2.pl reads to
+  decide its rows and the BNGsim bridge does not -- ``argfile``, ``max_sim_steps``,
+  ``output_step_interval``, or ``print_on_stop`` other than 1 -- is not supported by the bridge:
+  ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the option.
+
+  One difference remains (`#872 <https://github.com/lanl/PyBNF/issues/872>`_): when an action's
+  ``sample_times`` start after ``t_start``, BNGsim integrates from the first sample time, where
+  BNG2.pl integrates from ``t_start`` and writes that row; and with a ``t_end`` before the last
+  sample time, BNG2.pl writes rows up to ``t_end`` and BNGsim does not. Start ``sample_times`` at
+  ``t_start``, as edition-2 experiments always do, or use ``bngl_backend = bionetgen`` for such an
+  action.
 
   Default: auto
 

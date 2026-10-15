@@ -31,6 +31,7 @@ from ..bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
+from ..bngsim_model.classification import bngsim_unread_action_options
 from ..bngsim_model.grid import check_output_grids
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
@@ -505,9 +506,14 @@ class Algorithm(ABC):
 
             if isinstance(m, BNGLModel) and explicit_bngsim:
                 if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
+                    unread = bngsim_unread_action_options(m.actions)
                     raise PybnfError(
                         f'bngl_backend = bngsim was requested for model {m.name}, but its BNGL actions are not '
-                        'supported by the bngsim bridge.'
+                        'supported by the bngsim bridge.' + ''.join(
+                            ' The action with suffix "%s" names %s, which BNG2.pl reads to decide '
+                            'its output rows and the bridge does not; bngl_backend = auto or '
+                            'bionetgen runs it on BNG2.pl.' % (suffix, ', '.join(options))
+                            for suffix, options in unread)
                     )
                 if not bngsim_available:
                     raise PybnfError(

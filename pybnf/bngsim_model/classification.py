@@ -12,6 +12,7 @@ import re
 
 from . import _runtime
 from .scan import _SS_METHOD_NEWTON, _SS_METHOD_PARITY
+from .grid import unread_grid_options
 from .parsing import (
     _collapse_action_line_continuations,
     _parse_simulate_action,
@@ -292,24 +293,26 @@ def _allowed_bngsim_backends_for_action(action_line):
     if re.match(r'\s*generate_network\s*\(', line):
         return frozenset((BNGSIM_BACKEND_NET,)), False
 
+    # An option BNG2.pl reads to decide the action's rows and the bridge does not (an argfile,
+    # max_sim_steps, ...; grid.UNREAD_GRID_OPTIONS) makes the action BNG2.pl's alone.
     sim_params = _parse_simulate_action(line)
     if sim_params is not None:
         backend = _classify_action_method_backend(sim_params.get('method', 'ode'))
-        if backend is None:
+        if backend is None or unread_grid_options(sim_params):
             return frozenset(), True
         return frozenset((backend,)), True
 
     ps_params = _parse_parameter_scan_action(line)
     if ps_params is not None:
         backend = _classify_action_method_backend(ps_params.get('method', 'ode'))
-        if backend is None:
+        if backend is None or unread_grid_options(ps_params):
             return frozenset(), True
         return frozenset((backend,)), True
 
     bf_params = _parse_bifurcate_action(line)
     if bf_params is not None:
         backend = _classify_action_method_backend(bf_params.get('method', 'ode'))
-        if backend is None:
+        if backend is None or unread_grid_options(bf_params):
             return frozenset(), True
         return frozenset((backend,)), True
 
@@ -352,6 +355,27 @@ def _allowed_bngsim_backends_for_action(action_line):
         return frozenset((BNGSIM_BACKEND_NET,)), False
 
     return frozenset(), False
+
+
+def bngsim_unread_action_options(actions):
+    """``[(action suffix, [option, ...])]`` for each action naming an option BNG2.pl reads to
+    decide its rows and the bngsim bridge does not (grid.UNREAD_GRID_OPTIONS), so that a refusal
+    of ``bngl_backend = bngsim`` can say which."""
+    found = []
+    for action_line in actions:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if not line or line.startswith('#'):
+            continue
+        for parse, default in ((_parse_simulate_action, 'time_course'),
+                               (_parse_parameter_scan_action, 'param_scan'),
+                               (_parse_bifurcate_action, 'param_scan')):
+            params = parse(line)
+            if params is not None:
+                options = unread_grid_options(params)
+                if options:
+                    found.append((params.get('suffix', default), options))
+                break
+    return found
 
 
 def classify_actions_for_bngsim(actions):
