@@ -858,10 +858,9 @@ Everything a configuration declares that the filter does not honour is refused b
   ``callable`` and ``data``;
 * any observation model but ``neg_bin`` at ``location = mean`` on the cumulative column, with the
   dispersion fitted or fixed (the :ref:`key reference <lwf_keys>`), since the forecast draws counts
-  from the negative binomial parameterized by its mean; a fixed dispersion outside 1e-6 to 1e6, or
-  a fitted one whose prior reaches below 0 or above 1e6, since PyBNF's negative binomial score is
-  wrong for a larger dispersion (`#987 <https://github.com/lanl/PyBNF/issues/987>`__); and
-  ``neg_bin_r`` unless ``objective = neg_bin`` reads it;
+  from the negative binomial parameterized by its mean; a fixed dispersion outside 1e-6 to 1e12,
+  or a fitted one whose prior reaches below 0 or above 1e12, since the forecast draw is wrong far
+  outside that range; and ``neg_bin_r`` unless ``objective = neg_bin`` reads it;
 * a job with no free parameter, in which every particle is the same model;
 * a prior with finite support but no reflecting bounds; start points, ``initial_value`` and
   ``starting_params``, since the initial population must be a prior draw for the weights to be

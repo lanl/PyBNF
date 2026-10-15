@@ -497,6 +497,197 @@ class TestNegBinNegativePrediction:
             == pytest.approx(self._scipy(observation, self.r, prediction), rel=1e-12)
 
 
+class TestNegBinLargeDispersion:
+    """lanl/PyBNF#987: data_fit clipped prob = r/(r + m) at 1 - 1e-10, a floor of r * 1e-10 on the
+    mean that grew with r, so from r ~ 1e7 on every expected count below the floor was scored as
+    the floor. The floor is now capped at 1e-7, and a large r is scored without forming p."""
+
+    nb = noise.NegBinomial(location=noise.MEAN)
+
+    @staticmethod
+    def _old(prediction, observation, r):
+        """data_fit before the fix: the clipped form the score keeps for r up to ~1e3."""
+        from scipy.special import loggamma
+        prob = np.clip(r / (r + max(prediction, 0.0)), 1e-10, 1 - 1e-10)
+        return -(loggamma(observation + r) - loggamma(observation + 1) - loggamma(r)
+                 + r * np.log(prob) + observation * np.log(1 - prob))
+
+    @pytest.mark.parametrize('r', [1e12, 1e100])
+    def test_a_large_dispersion_scores_the_poisson_limit(self, r):
+        """NB(k | m, r) differs from Poisson(k | m) by O((k - m)^2 / r) in log mass."""
+        for m in (1e-3, 0.5, 7.0, 300.0):
+            for k in (0, 1, 5, 100):
+                assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                    -stats.poisson.logpmf(k, m), rel=1e-9, abs=1e-6), (m, k)
+
+    @pytest.mark.parametrize('r', [1e4, 1e6])
+    def test_a_moderate_dispersion_scores_as_scipy(self, r):
+        for m in (1e-3, 1.0, 50.0, 1e4):
+            for k in (0, 3, 100):
+                assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                    -stats.nbinom.logpmf(k, r, r / (r + m)), rel=1e-7), (m, k)
+
+    def test_up_to_r_1e3_the_score_is_unchanged_to_the_bit(self):
+        for r in (1e-3, 1.0, 20.0, 999.0):
+            for m in (0.0, 1e-12, 1e-3, 1.0, 50.0, 1e4):
+                for k in (0.0, 1.0, 5.0, 100.0):
+                    assert self.nb.data_fit(m, k, r) == self._old(m, k, r), (r, m, k)
+
+    def test_a_mean_beyond_r_times_1e10_is_scored_as_scipy(self):
+        """The lower clip, prob < 1e-10, scored a huge mean at a tiny r as another too."""
+        r, m = 1e-6, 1e5
+        for k in (0, 1, 1000):
+            assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                -stats.nbinom.logpmf(k, r, r / (r + m)), rel=1e-9)
+            assert self.nb.data_fit(m, float(k), r) != self._old(m, float(k), r)
+
+    def test_a_zero_prediction_at_a_large_dispersion_makes_a_zero_count_almost_certain(self):
+        """The floor r * 1e-10 = 100 at r = 1e12 scored P(0 | prediction 0) as e**-100."""
+        assert self._old(0.0, 0.0, 1e12) == pytest.approx(100.0, rel=1e-6)
+        assert 0.0 <= self.nb.data_fit(0.0, 0.0, 1e12) <= 1e-6
+
+    @pytest.mark.parametrize('m', [1.0, 50.0])
+    def test_the_prediction_gradient_matches_the_score_at_a_large_dispersion(self, m):
+        r, k, h = 1e12, 3.0, 1e-5 * m
+        fd = (self.nb.data_fit(m + h, k, r) - self.nb.data_fit(m - h, k, r)) / (2 * h)
+        assert self.nb.d_data_fit_d_prediction(m, k, r) == pytest.approx(fd, rel=1e-6)
+
+
+def _mp_neg_bin_nll(k, m, r, mp, raw=False):
+    """-log NB(k | mean m, dispersion r) in mpmath, at a precision that covers the cancellation
+    between log Gamma(k + r) and log Gamma(r) and the size of log1p(m / r) at any r. ``raw``
+    evaluates at the caller's precision instead, for mp.diff, which raises it on its own."""
+    if not raw:
+        digits = 60 + sum(int(max(0.0, abs(np.log10(v))))
+                          for v in (r, max(k, 1.0), max(m, 1e-300)))
+        with mp.workdps(digits):
+            return _mp_neg_bin_nll(k, m, r, mp, raw=True)
+    k, m, r = mp.mpf(k), mp.mpf(m), mp.mpf(r)
+    log_pmf = mp.loggamma(k + r) - mp.loggamma(k + 1) - mp.loggamma(r) - r * mp.log1p(m / r)
+    if k != 0:
+        log_pmf += k * (mp.log(m) - mp.log(r + m))
+    return -log_pmf
+
+
+class TestNegBinScoreAgainstMpmath:
+    """lanl/PyBNF#987, checked against the exact negative binomial at high precision (mpmath),
+    which shares no code with data_fit. scipy is not the reference: its nbinom.logpmf loses digits
+    at a large dispersion."""
+
+    nb = noise.NegBinomial(location=noise.MEAN)
+
+    @pytest.fixture(autouse=True)
+    def _mp(self):
+        self.mp = pytest.importorskip('mpmath')
+
+    @staticmethod
+    def _clipped(nb, prediction, observation, r):
+        """data_fit on main before #987, verbatim: the form kept for r up to ~1e3."""
+        from scipy.special import loggamma
+        mean = nb._mean(prediction, r)
+        prob = np.clip(r / (r + mean), 1e-10, 1 - 1e-10)
+        return -(loggamma(observation + r) - loggamma(observation + 1) - loggamma(r)
+                 + r * np.log(prob) + observation * np.log(1 - prob))
+
+    @pytest.mark.parametrize('r', [2e3, 1e5, 1e12, 1e100, 1e300])
+    def test_the_score_matches_mpmath_at_a_large_dispersion(self, r):
+        """Non-integer counts, a count of 0, a zero prediction (scored at the floor 1e-7) and a
+        mean exactly on the floor."""
+        for m in (0.0, 1e-7, 1e-3, 0.5, 7.0, 300.0):
+            for k in (0.0, 0.5, 1.0, 3.0, 17.25):
+                ref = float(_mp_neg_bin_nll(k, max(m, 1e-7), r, self.mp))
+                assert self.nb.data_fit(m, k, r) == pytest.approx(ref, rel=1e-10, abs=0.0), (m, k)
+
+    @pytest.mark.parametrize('r, m', [(1e-6, 1e5), (0.5, 1e12), (999.0, 1e14)])
+    def test_a_mean_beyond_r_times_1e10_matches_mpmath(self, r, m):
+        for k in (0.0, 0.5, 3.0, 1000.0):
+            ref = float(_mp_neg_bin_nll(k, m, r, self.mp))
+            assert self.nb.data_fit(m, k, r) == pytest.approx(ref, rel=1e-10, abs=0.0), k
+
+    @pytest.mark.parametrize('r', [2e3, 1e6, 1e8, 1e12, 1e100])
+    def test_score_differences_between_means_match_mpmath(self, r):
+        """What a fit or the filter's weights read at a fixed dispersion is how the score moves
+        with the mean; that holds to 1e-9 even for a count of 1e4."""
+        ms = (1e-3, 0.5, 7.0, 300.0, 1e4)
+        for k in (0.0, 0.5, 3.0, 17.25, 1e4):
+            for i, m1 in enumerate(ms):
+                for m2 in ms[i + 1:]:
+                    got = self.nb.data_fit(m1, k, r) - self.nb.data_fit(m2, k, r)
+                    ref = float(_mp_neg_bin_nll(k, m1, r, self.mp)
+                                - _mp_neg_bin_nll(k, m2, r, self.mp))
+                    assert got == pytest.approx(ref, rel=1e-12, abs=1e-9), (k, m1, m2)
+
+    @pytest.mark.parametrize('r', [2e3, 1e8, 1e12, 1e100])
+    def test_the_prediction_slope_matches_mpmath(self, r):
+        mp = self.mp
+        for m in (2e-7, 1e-3, 7.0, 1e4):
+            for k in (0.0, 3.0, 100.0):
+                with mp.workdps(80 + int(np.log10(r))):
+                    ref = mp.diff(lambda x: _mp_neg_bin_nll(k, x, r, mp, raw=True), mp.mpf(m))
+                assert self.nb.d_data_fit_d_prediction(m, k, r) == pytest.approx(
+                    float(ref), rel=1e-12, abs=0.0), (m, k)
+
+    @pytest.mark.parametrize('r', [
+        0.03, 0.02, 0.01, 1.0, 24.0, 1e4, 1e8])
+    def test_a_median_prediction_of_0_scores_a_count_of_0_as_log_2(self, r):
+        """Closed-form oracle: the continuous CDF at 0 is P(X <= 0) = P(X = 0) = p**r, and the
+        median location makes it 1/2, so -log P(0) = log 2 at every r. Below r ~ 0.03 the mean
+        is beyond r * 1e10, where main's clip scored 0.46 at r = 0.02."""
+        nb = noise.NegBinomial(location=noise.MEDIAN)
+        assert nb.data_fit(0.0, 0.0, r) == pytest.approx(np.log(2.0), rel=1e-7)
+
+    def test_a_median_no_double_can_reach_is_refused_naming_the_dispersion(self):
+        """At r = 5e-4 a median of 0 needs a mean of r (2**(1/r) - 1), about 1e599, beyond any
+        double; _mean_for_median used to return its search bound (1e15) and score that mean."""
+        with pytest.raises(printing.PybnfError, match='dispersion 0.0005'):
+            noise.NegBinomial(location=noise.MEDIAN).data_fit(0.0, 0.0, 0.0005)
+
+    def test_up_to_r_1e3_the_score_is_the_clipped_form_to_the_bit(self):
+        """r through the last double that takes the kept form, means up to just below r * 1e10,
+        a negative prediction, non-integer counts and a count of 0, as Python and numpy scalars,
+        at both locations."""
+        r_last = _last_r_of_the_clipped_form()
+        rs = (1e-6, 0.37, 24.0, 999.0, r_last)
+        for r in rs:
+            for p in (-3.0, 0.0, 1e-300, 1e-9, 0.25, 7.0, 1e4, r * 1e9, r * 1e10 * 0.999):
+                if r / (r + max(p, 0.0)) < 1e-10:
+                    continue   # a mean beyond r * 1e10, which the claim leaves out
+                for k in (0.0, 0.5, 1.0, 17.25, 1e4):
+                    for P in (p, np.float64(p)):
+                        assert self.nb.data_fit(P, k, r) == self._clipped(self.nb, P, k, r), \
+                            (r, p, k)
+        median = noise.NegBinomial(location=noise.MEDIAN)
+        for r in (0.37, 24.0, r_last):
+            for p in (-1.0, 0.0, 3.0, 250.0):
+                for k in (0.0, 2.5, 40.0):
+                    assert median.data_fit(p, k, r) == self._clipped(median, p, k, r), (r, p, k)
+
+    @pytest.mark.parametrize('r, m', [(1e-300, 1e9), (1e-20, 1e300)])
+    def test_a_tiny_dispersion_with_a_huge_mean_scores_finitely(self, r, m):
+        ref = float(_mp_neg_bin_nll(3.0, m, r, self.mp))
+        assert self.nb.data_fit(m, 3.0, r) == pytest.approx(ref, rel=1e-10)
+
+    @pytest.mark.parametrize('r', [1e5, 1e8, 1e12])
+    def test_the_dispersion_slope_matches_mpmath_at_a_large_dispersion(self, r):
+        """psi(r) - psi(k + r) - log(prob) - 1 + (r + k)/(r + m) has terms of order k/r that
+        cancel to order 1/r**2; at r = 1e8 it was wrong by a factor of ~40, at 1e12 in sign."""
+        mp = self.mp
+        for m, k in ((3.0, 5.0), (50.0, 40.0), (0.5, 0.0)):
+            with mp.workdps(80 + 2 * int(np.log10(r))):
+                ref = mp.diff(lambda x: _mp_neg_bin_nll(k, m, x, mp, raw=True), mp.mpf(r))
+            got = self.nb.d_nll_d_noise_params(m, k, r)['dispersion']
+            assert got == pytest.approx(float(ref), rel=1e-6, abs=0.0), (m, k)
+
+
+def _last_r_of_the_clipped_form():
+    """The largest dispersion data_fit still scores with the kept clipped form."""
+    from pybnf.noise import negative_binomial as nbmod
+    r = nbmod._MEAN_FLOOR_MAX / nbmod._MEAN_FLOOR_REL
+    while r * nbmod._MEAN_FLOOR_REL <= nbmod._MEAN_FLOOR_MAX:
+        r = float(np.nextafter(r, np.inf))
+    return float(np.nextafter(r, 0.0))
+
+
 class TestLogScaleNonPositivePrediction:
     """The log additive scales (lognormal/log-normal noise) must not turn a
     non-positive value into a NaN. An ODE solver can undershoot to a tiny negative
