@@ -28,6 +28,7 @@ from .bngsim_antimony_model import (
     BngsimAntimonyModelNoTimeout,
 )
 from .printing import verbosity, print1, PybnfError
+from .output_keys import refuse_ambiguous_output_keys
 from .constraint import ConstraintSet
 
 import numpy as np
@@ -312,6 +313,10 @@ class Configuration:
         # wart is bypassed: a new-era model carries no data on its model line).
         self._load_experiments()
         logger.debug('Loaded experiments')
+        # Every model now has all its actions (legacy, synthesized) and conditions / mutants, so
+        # every output key it can produce is known: refuse two simulations that spell one key
+        # (#850, #833) before anything reads a key back.
+        self._check_output_keys_unique()
         # Deferred until here (post-_load_experiments) so the 'smoothing' misuse check sees the
         # edition-2 models' synthesized simulate/parameter_scan actions -- and thus their
         # `stochastic` flag (#471). Legacy models set the flag at parse time, so the check is
@@ -1824,6 +1829,20 @@ class Configuration:
                     "condition cannot be both; use distinct conditions (ADR-0052).")
             model = self.models[base]
             model.mutants = [m for m in model.mutants if m.suffix not in conds]
+
+    def _check_output_keys_unique(self):
+        """Refuse a model two of whose ``(action, condition)`` simulations produce one output
+        key (:func:`pybnf.output_keys.refuse_ambiguous_output_keys`, #850, #833).
+
+        An output is named by its action suffix (an edition-2 experiment's name) followed by
+        its condition's (an edition-2 ``condition:`` or an edition-1 mutant), so a wildtype
+        experiment ``data`` and an experiment ``dat`` run under a condition ``a`` both produce
+        ``data``. The simulation dict and the loaded data then keep one of the two, and every
+        consumer that reads a key back -- the gradient's routing, the per-condition sensitivity
+        request, multiple shooting, recorded trajectories -- can attribute it to either."""
+        ed = edition.resolve_edition(self.config.get('edition'))
+        for model in self.models.values():
+            refuse_ambiguous_output_keys(model, edition=ed)
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read

@@ -57,6 +57,7 @@ from ...gradient import (
     assemble_marginal_time_gradient,
     route_for_model,
 )
+from ...output_keys import resolve_output_key
 from ...printing import PybnfError, print0, print1, print2
 
 # ``DONE`` is the shared multi-start sentinel, re-exported here so a gradient leaf's
@@ -695,18 +696,14 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         """Resolve a scored ``suffix`` to the condition (``MutationSet``) it was
         simulated under, or ``None`` for the wildtype.
 
-        An edition-2 ``condition:`` is a named :class:`~pybnf.pset.MutationSet` added
-        to the model as a mutant (its name is the suffix); a mutant simulation's
-        output suffix carries the mutant's own suffix (``net_model.execute``), so a
-        scored suffix that ends with a known mutant suffix was simulated under that
-        condition. The wildtype experiment touches no mutant and maps to ``None`` (the
-        unperturbed routing, all factors 1)."""
-        best = None
-        for mut in getattr(model, 'mutants', []) or []:
-            ms = getattr(mut, 'suffix', '')
-            if ms and suffix.endswith(ms) and (best is None or len(ms) > len(best.suffix)):
-                best = mut
-        return best
+        A model names each output by its action suffix followed by its condition's suffix,
+        so the condition is read off the one ``(action, condition)`` pair of ``model`` that
+        produces ``suffix`` (:func:`pybnf.output_keys.resolve_output_key`), never off the
+        key's spelling: a wildtype experiment named ``data`` beside a condition ``a`` is the
+        wildtype, whatever it ends with (#850). A key no pair produces, or one two pairs
+        produce, is refused there; configuration refuses the second when it loads. ``self``
+        is not read, so the router's tests can call this on the class."""
+        return resolve_output_key(model, suffix)[1]
 
     # --- per-evaluation assembly ------------------------------------------- #
     def gradient_at(self, res):
