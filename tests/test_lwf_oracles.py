@@ -22,11 +22,21 @@ A second review of the fixes added:
 * A job with no free parameter is refused naming that cause.
 * ``neg_bin_r`` is reported or refused when nothing reads it.
 * A state file holding a negative predicted count is refused.
+
+A third review added:
+
+* ``neg_bin_r`` is the whole-fit dispersion whatever the case of the objective token, and is
+  refused beside ``neg_bin_dynamic`` naming the cause.
+* A fixed dispersion at the ends of the range the load check accepts is scored as the negative
+  binomial, or refused naming it.
+* A falling model's state file continues to what the uninterrupted run writes.
+* Row times past 1e6 are quoted exactly in the degenerate-update message and the summary.
 """
 
 import io
 import shutil
 import struct
+from pathlib import Path
 from contextlib import redirect_stdout
 
 import numpy as np
@@ -362,3 +372,137 @@ def test_a_state_file_holding_a_negative_predicted_count_is_refused(tmp_path):
                                     extra=['lwf_continue = 1']))
     with pytest.raises(PybnfError, match='predicted'):
         C.run(continued)
+
+
+def _fixed(r):
+    """The two noise_model lines at ``fix_at r``, with no prior for the dispersion."""
+    return {'noise_model = neg_bin': 'noise_model = neg_bin, dispersion = fix_at %s, location = mean'
+                                     % r,
+            'noise_model cases': 'noise_model cases = neg_bin, dispersion = fix_at %s, '
+                                 'location = mean, cumulative' % r,
+            'loguniform_var = r': None}
+
+
+# --------------------------------------------------------------------------------------------
+# neg_bin_r
+# --------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('token', ['neg_bin', 'NEG_BIN', 'Neg_Bin'])
+def test_neg_bin_r_is_the_whole_fit_dispersion_whatever_the_case_of_the_objective_token(
+        tmp_path, token):
+    """The objective builder reads the token case-blind (objective.build_named_objective lowers
+    it), so objective = NEG_BIN reads neg_bin_r exactly as objective = neg_bin does: its whole-fit
+    dispersion is neg_bin_r, and without the line it is the default 24, which the filter then
+    refuses as differing from the column's fix_at 5. A rule that reads the token case-blind in
+    one place and case-sensitively in another refuses a job the loader honours."""
+    replace = {**_fixed(5), 'noise_model = neg_bin': 'objective = %s' % token,
+               'lwf_particles': 'lwf_particles = 10'}
+    alg = C.build(C.write_job(tmp_path, replace=replace,
+                              extra=['noise_location = mean', 'neg_bin_r = 5']))
+    assert alg._dispersion_value == 5.0
+    assert alg.objective._default_sources()['dispersion'].const == 5.0
+
+
+@pytest.mark.parametrize('token', ['neg_bin_dynamic', 'NEG_BIN_DYNAMIC'])
+def test_neg_bin_r_beside_neg_bin_dynamic_is_refused_naming_the_cause(tmp_path, token):
+    """Under neg_bin_dynamic the dispersion is r__FREE; neg_bin_r would be accepted and ignored."""
+    replace = {'noise_model = neg_bin': 'objective = %s' % token,
+               'noise_model cases': 'noise_model cases = neg_bin, dispersion = fit r__FREE, '
+                                    'location = mean, cumulative',
+               'loguniform_var = r': 'loguniform_var = r__FREE 1 100'}
+    with pytest.raises(PybnfError) as info:
+        C.build(C.write_job(tmp_path, replace=replace,
+                            extra=['noise_location = mean', 'neg_bin_r = 5']))
+    assert 'does not accept neg_bin_r = 5' in info.value.message
+    assert 'only objective = neg_bin reads it' in info.value.message
+
+
+# --------------------------------------------------------------------------------------------
+# A fixed dispersion the load check accepts must be scored as the negative binomial
+# --------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('r', ['1e12', '1e308'])
+def test_a_large_fixed_dispersion_is_scored_as_its_poisson_limit_or_refused(tmp_path, r):
+    """config_keys.rst: "A fixed dispersion must be a finite number above 0". At r >= 1e12 the
+    negative binomial of mean m differs from Poisson(m) by O(k^2 / r) < 1e-10 in log mass for
+    these counts, so each particle's row-1 log weight must be scipy's Poisson log pmf at the
+    increment the filter predicted, and no particle may be counted as failing to integrate.
+    Refusing the value, naming it, is the other acceptable outcome."""
+    try:
+        alg = C.build(C.write_job(tmp_path, replace={**_fixed(r),
+                                                     'lwf_particles': 'lwf_particles = 8'},
+                                  counts=C.COUNTS[:3]))
+    except PybnfError as exc:
+        assert 'fix_at %s' % lw._exact(float(r)) in exc.message
+        return
+    pop = alg._initial_population()
+    theta = alg._theta(pop.u)
+    trial = _Population(u=pop.u.copy(), state=pop.state.copy(), weights=pop.weights)
+    loglik, predicted, failed, zero = alg._weigh(trial, theta, 0.0, 1.0, 0, 4.0)
+    assert failed == 0 and zero == 0
+    np.testing.assert_allclose(loglik, stats.poisson.logpmf(4, predicted), rtol=1e-8, atol=1e-8)
+
+
+def test_a_tiny_fixed_dispersion_runs_to_its_forecast_or_is_refused(tmp_path):
+    """fix_at 1e-300 is a finite number above 0, so the load check accepts it. The run must then
+    write its forecast, or the value must be refused at load naming it; a numpy ValueError from
+    the forecast draw after every row was assimilated is neither."""
+    try:
+        alg = C.build(C.write_job(tmp_path, replace={**_fixed('1e-300'),
+                                                     'lwf_particles': 'lwf_particles = 8'},
+                                  counts=C.COUNTS[:3]))
+    except PybnfError as exc:
+        assert 'fix_at 1e-300' in exc.message
+        return
+    folder = C.run(alg)
+    header, draws = C.read_table(folder / 'forecasts.txt')
+    assert draws.shape[0] == 8 and np.all(draws[:, -2:] >= 0)
+
+
+# --------------------------------------------------------------------------------------------
+# A falling model's state file continues
+# --------------------------------------------------------------------------------------------
+
+def test_a_state_file_of_a_falling_model_continues_to_what_the_uninterrupted_run_writes(tmp_path):
+    """Every particle's Inf falls (gamma > beta), so every raw increment is negative and every
+    predicted count the state file holds is max(increase, 0) = 0. The new refusal of a negative
+    predicted count must not refuse it, and the continuation must write, byte for byte, what the
+    uninterrupted run writes (the oracle: a run that never read a state file)."""
+    counts = (0, 0, 0, np.nan, 0, 0, 0)
+    replace = {'noise_model cases': 'noise_model Inf = neg_bin, dispersion = fit r, '
+                                    'location = mean, cumulative',
+               'loguniform_var = beta': 'loguniform_var = beta 0.2 0.5',
+               'uniform_var = gamma': 'uniform_var = gamma 0.6 1.5',
+               'lwf_particles': 'lwf_particles = 30'}
+    whole = C.build(C.write_job(tmp_path / 'whole', replace=replace, counts=counts, header='Inf'))
+    C.run(whole)
+    part = C.build(C.write_job(tmp_path / 'part', replace=replace, counts=counts[:3],
+                               header='Inf'))
+    C.run(part)
+    held = lw._read_state(part.state_files[0])['predicted']
+    assert held.shape == (3, 30) and np.all(held == 0.0) and not np.signbit(held).any()
+    continued = C.build(C.write_job(tmp_path / 'part', replace=replace, counts=counts,
+                                    header='Inf', extra=['lwf_continue = 1']))
+    shutil.rmtree(continued.res_dir)
+    C.run(continued)
+    assert C.files(Path(continued.res_dir) / 'LWF') == C.files(Path(whole.res_dir) / 'LWF')
+
+
+# --------------------------------------------------------------------------------------------
+# Row times past 1e6
+# --------------------------------------------------------------------------------------------
+
+def test_row_times_past_1e6_are_quoted_exactly_in_the_degenerate_update_and_the_summary(tmp_path):
+    """Rows at t = 1000003 and 2000006 (one step of 1000003). %g quoted them as 1e+06 and
+    2.00001e+06. With rho = 0 no particle can produce the count 3 at row 2, so the update there is
+    degenerate; the message and the summary must name the times the data file holds."""
+    model = C.MODEL.replace('rho    0.5', 'rho    0')
+    conf = C.write_job(tmp_path, model=model, replace={'lwf_particles': 'lwf_particles = 8'})
+    # lwf_harness.write_data writes times with %g, which would itself round them.
+    (tmp_path / 'cases.exp').write_text('# time cases\n1000003 0\n2000006 3\n')
+    alg = C.build(conf)
+    with pytest.raises(PybnfError) as info:
+        C.run(alg)
+    assert 'Degenerate update at row 2 (t = 2000006, count 3)' in info.value.message
+    summary = (Path(alg.res_dir) / 'LWF' / 'summary.txt').read_text()
+    assert 'Rows assimilated: 1 of 2 (t = 1000003 to 1000003).' in summary
