@@ -635,7 +635,10 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                   'substanceUnits', 'setModelName', 'visualize')
         state_by = params_by = None          # the line that last left each changed, if any
         baseline_by = None                   # what the default snapshot holds, if not the seed
-        state_saved, params_saved = {}, {}
+        # The default parameter slot holds the parameters the run was given, as the backend
+        # seeds it (_initial_parameter_snapshots): an unlabelled resetParameters() with no save
+        # before it returns there.
+        state_saved, params_saved = {}, {None: None}
         for line in lines[:scored]:
             if _is_reset_concentrations(line):
                 label = _snapshot_label(line)

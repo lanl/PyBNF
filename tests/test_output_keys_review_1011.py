@@ -208,3 +208,164 @@ end actions
     out = run.execute(str(tmp_path / 'sims'), 'p', 60)['x']
     t = np.unique(out.data[:, out.cols['time']])
     np.testing.assert_allclose(t, _TIMES)
+
+
+# --------------------------------------------------------------------------------------------
+# Second review round: continued runs appended on bngsim (#1009), the order rule on NF
+# --------------------------------------------------------------------------------------------
+
+def _continued(tmp_path, backend, actions, data_t=_TIMES):
+    """``(conf, alg, output x)`` of a legacy model whose action list is ``actions``, at kb = 1
+    (k1 = 0.3 in the model)."""
+    H.require_bng2pl()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'm.bngl').write_text(_BNGL.replace('kb  1.0', 'kb  kb__FREE') + """
+begin actions
+generate_network({overwrite=>1})
+%s
+end actions
+""" % '\n'.join(actions))
+    _write_exp(tmp_path / 'x.exp', 'Bobs', _b_closed_form(0.3, t=data_t), t=data_t)
+    conf = _load('\n'.join([
+        'model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'x.exp'),
+        'bngl_backend = %s' % backend, 'fit_type = de', 'objfunc = chi_sq',
+        'loguniform_var = kb__FREE 0.1 10', 'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')]) + '\n')
+    alg = H.build(conf, 'de')
+    run = alg.model_list[0].copy_with_param_set(
+        PSet([v.set_value(1.0) for v in alg.variables]))
+    (tmp_path / 'sims').mkdir()
+    return conf, alg, run.execute(str(tmp_path / 'sims'), 'p', 60)['x']
+
+
+@pytest.mark.bngsim
+def test_a_continue_with_a_t_start_after_the_current_time_is_refused(tmp_path):
+    """BNG2.pl aborts a ``continue=>1`` whose ``t_start`` is not the current model time ("t_start
+    must equal current model time for continuation"). bngsim integrates on from the state at
+    t = 5 but labels it t = 7, so the appended rows are the trajectory two time units late
+    (B at t = 7 is the closed form's B(5)), and they are scored. It should be refused, or else
+    be the closed form of one uninterrupted run."""
+    actions = ['simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"x"})',
+               'simulate({method=>"ode",t_start=>7,t_end=>10,n_steps=>3,suffix=>"x",'
+               'continue=>1})']
+    with pytest.raises(Exception):
+        _continued(tmp_path / 'bng2pl', 'bionetgen', actions)
+    try:
+        _conf, _alg, out = _continued(tmp_path / 'bngsim', 'bngsim', actions)
+    except PybnfError:
+        return
+    t = out.data[:, out.cols['time']]
+    np.testing.assert_allclose(out.data[:, out.cols['Bobs']], _b_closed_form(0.3, t=t),
+                               atol=1e-4)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('backend', ['bngsim', 'bionetgen'])
+def test_a_continued_sample_times_run_scores_the_appended_rows(tmp_path, backend):
+    """A ``sample_times`` run continued under its suffix: both backends write rows
+    0, 1, 2, 5, 7, 10, the closed form of one uninterrupted run, and data on exactly those rows
+    load and score about 0. Guards the merge with #1005's load-time sample_times check, which
+    reads only the first run's rows (0, 1, 2, 5) and refuses the data at t = 7 and 10."""
+    rows = np.array([0.0, 1.0, 2.0, 5.0, 7.0, 10.0])
+    conf, alg, out = _continued(
+        tmp_path, backend,
+        ['simulate({method=>"ode",t_start=>0,sample_times=>[0,1,2,5],suffix=>"x"})',
+         'simulate({method=>"ode",sample_times=>[5,7,10],suffix=>"x",continue=>1})'],
+        data_t=rows)
+    t = out.data[:, out.cols['time']]
+    np.testing.assert_allclose(t, rows)
+    np.testing.assert_allclose(out.data[:, out.cols['Bobs']], _b_closed_form(0.3, t=t),
+                               atol=1e-4)
+    value = conf.obj.evaluate_multiple(
+        {'m': {'x': out}}, conf.exp_data, PSet([v.set_value(1.0) for v in alg.variables]))
+    assert value < 1e-6
+
+
+@pytest.mark.bngsim
+def test_three_continued_runs_carry_the_analytic_sensitivity(tmp_path):
+    """Edition 2, a model bound the legacy way, three runs of ``x`` chained by ``continue=>1``.
+    ``B(t)`` is linear in ``kb``, so ``dB/dkb = (1 - e^{-k1 t})/k1 - t e^{-k1 t}`` exactly. The
+    appended tensor matches it on every row, and the assembled gradient matches central
+    differences of the scored objective."""
+    from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS
+    from pybnf.algorithms.core import Result
+    if not BNGSIM_HAS_OUTPUT_SENS:
+        pytest.skip('needs a bngsim build with the output_sensitivities feature')
+    H.require_bng2pl()
+    (tmp_path / 'm.bngl').write_text(_BNGL + """
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>4,n_steps=>4,suffix=>"x"})
+simulate({method=>"ode",t_end=>7,n_steps=>3,suffix=>"x",continue=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>3,suffix=>"x",continue=>1})
+end actions
+""")
+    # The data are the closed form at kb = 1.3, so the gradient at kb = 1 is not zero.
+    _write_exp(tmp_path / 'x.exp', 'Bobs', _b_closed_form(0.3, kb=1.3), sigma=0.1)
+    conf = _load('\n'.join([
+        'edition = 2', 'model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'x.exp'),
+        'bngl_backend = bngsim', 'job_type = lbfgs', 'objective = chi_sq',
+        'uniform_var = kb 0.1 10', 'population_size = 1', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')]) + '\n')
+    alg = H.build(conf, 'lbfgs')
+    alg._setup_gradient_path()
+
+    def run(kb, tag):
+        pset = PSet([v.set_value(kb) for v in alg.variables])
+        model = alg.model_list[0].copy_with_param_set(pset)
+        (tmp_path / tag).mkdir()
+        return pset, model.execute(str(tmp_path / tag), 'p', 60)
+
+    pset, sims = run(1.0, 'at')
+    out = sims['x']
+    t = out.data[:, out.cols['time']]
+    np.testing.assert_allclose(t, _TIMES)
+    sens = out.output_sensitivities
+    d_b = sens.d_param[:, sens.selectors.index('observable:Bobs'), sens.param_names.index('kb')]
+    np.testing.assert_allclose(d_b, (1 - np.exp(-0.3 * t)) / 0.3 - t * np.exp(-0.3 * t),
+                               atol=1e-5)
+    gradient = alg.gradient_at(Result(pset, {'m': sims}, 'g')).gradient
+    h = 1e-4
+    values = []
+    for kb, tag in ((1.0 + h, 'plus'), (1.0 - h, 'minus')):
+        p, s = run(kb, tag)
+        values.append(conf.obj.evaluate_multiple({'m': s}, conf.exp_data, p))
+    np.testing.assert_allclose(gradient, [(values[0] - values[1]) / (2 * h)], rtol=1e-5)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('order', ['warm-up before', 'warm-up after'])
+def test_the_order_rule_holds_on_the_network_free_bridge(tmp_path, order):
+    """The bngsim network-free bridge keeps the last write of a suffix, as the ``.net`` path
+    does. A suffix-less NF warm-up (t = 0..3) before the scored ``time_course`` (t = 0..10)
+    replaces nothing, and loads; after a model-file ``time_course`` it is the output kept, and
+    is refused."""
+    H.require_bng2pl()
+    warm = 'simulate({method=>"nf",t_start=>0,t_end=>3,n_steps=>3})'
+    if order == 'warm-up before':
+        actions = [warm, 'resetConcentrations()']
+        extra = ['time_course = model:m, time:10, step:1, method:nf']
+    else:
+        actions = [
+            'simulate({method=>"nf",t_start=>0,t_end=>10,n_steps=>10,suffix=>"time_course"})',
+            'resetConcentrations()', warm]
+        extra = []
+    (tmp_path / 'm.bngl').write_text(
+        _BNGL.replace('kb  1.0', 'kb  kb__FREE').replace('A()  10', 'A()  100')
+        + '\nbegin actions\n%s\nend actions\n' % '\n'.join(actions))
+    _write_exp(tmp_path / 'time_course.exp', 'Bobs', _b_closed_form(0.3))
+    text = '\n'.join(
+        ['model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'time_course.exp')] + extra
+        + ['fit_type = de', 'objfunc = chi_sq', 'bngl_backend = bngsim',
+           'loguniform_var = kb__FREE 0.1 10', 'population_size = 4', 'max_iterations = 2',
+           'output_dir = %s' % (tmp_path / 'out')]) + '\n'
+    if order == 'warm-up after':
+        with pytest.raises(PybnfError, match="would both produce the output 'time_course'"):
+            _load(text)
+        return
+    alg = H.build(_load(text), 'de')
+    run = alg.model_list[0].copy_with_param_set(
+        PSet([v.set_value(1.0) for v in alg.variables]))
+    (tmp_path / 'sims').mkdir()
+    out = run.execute(str(tmp_path / 'sims'), 'p', 60)['time_course']
+    np.testing.assert_allclose(out.data[:, out.cols['time']], _TIMES)

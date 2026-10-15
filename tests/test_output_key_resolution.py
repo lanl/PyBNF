@@ -704,6 +704,52 @@ def test_appending_refuses_what_is_not_one_trajectory():
     np.testing.assert_array_equal(joined.data, [[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]])
 
 
+def test_a_continuation_must_start_at_the_current_model_time():
+    """BNG2.pl's rule, at 15 significant digits: a ``continue=>1`` with an explicit
+    ``t_start`` other than the current model time is refused, naming both times."""
+    from pybnf.bngsim_model.net_model import _require_continuation_start
+    _require_continuation_start('the action', 5.0, 5.0)
+    _require_continuation_start('the action', 0.1 + 0.2, 0.3)      # equal at 15 digits
+    with pytest.raises(PybnfError) as err:
+        _require_continuation_start('the action', 7.0, 5.0)
+    assert 't_start = 7' in err.value.message and 'model time is 5' in err.value.message
+    assert 'must equal the current model time' in err.value.message
+
+
+def _nf_continue(tmp_path, t_start):
+    H.require_bng2pl()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'm.bngl').write_text(
+        _BNGL.replace('kb  1.0', 'kb  kb__FREE').replace('A()  10', 'A()  100') + """
+begin actions
+simulate({method=>"nf",t_start=>0,t_end=>5,n_steps=>5,suffix=>"a"})
+simulate({method=>"nf",t_start=>%s,t_end=>10,n_steps=>5,suffix=>"b",continue=>1})
+end actions
+""" % t_start)
+    _write_exp(tmp_path / 'b.exp', 'Bobs', _b_closed_form(0.3, t=np.arange(5.0, 11.0)),
+               t=np.arange(5.0, 11.0))
+    conf = _load('\n'.join([
+        'model = %s : %s' % (tmp_path / 'm.bngl', tmp_path / 'b.exp'),
+        'bngl_backend = bngsim', 'fit_type = de', 'objfunc = chi_sq',
+        'loguniform_var = kb__FREE 0.1 10', 'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')]) + '\n')
+    alg = H.build(conf, 'de')
+    run = alg.model_list[0].copy_with_param_set(
+        PSet([v.set_value(1.0) for v in alg.variables]))
+    (tmp_path / 'sims').mkdir()
+    return run.execute(str(tmp_path / 'sims'), 'p', 60)
+
+
+@pytest.mark.bngsim
+def test_a_network_free_continuation_must_start_at_the_current_model_time(tmp_path):
+    """The network-free bridge keeps the model time too: a ``continue=>1`` from ``t_start =>
+    7`` after a run that ended at 5 is refused; from 5 it runs."""
+    with pytest.raises(PybnfError, match='t_start = 7.*model time is 5'):
+        _nf_continue(tmp_path / 'late', 7)
+    out = _nf_continue(tmp_path / 'on_time', 5)['b']
+    np.testing.assert_allclose(out.data[:, out.cols['time']], np.arange(5.0, 11.0))
+
+
 def test_a_network_free_continue_under_a_shared_suffix_is_refused(tmp_path):
     """NFsim cannot continue a run (BNG2.pl refuses it, the bngsim bridge keeps the last run),
     so a shared suffix there is two outputs, one of them dropped."""
@@ -743,6 +789,10 @@ _X = 'simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10,suffix=>"x"})'
       'resetConcentrations()'], 'suffix=>"eq"'),
     (['setConcentration("A()",3)'], 'setConcentration'),
     (['writeXML()', 'generate_network({overwrite=>1})'], None),
+    # The default parameter slot is the run's own parameters, as the backend seeds it.
+    (['resetParameters()'], None),
+    (['setParameter("k1",0.9)', 'resetParameters()'], None),
+    (['setParameter("k1",0.9)', 'resetParameters("never_saved")'], 'resetParameters'),
 ])
 def test_multiple_shooting_refuses_a_run_an_earlier_action_feeds(before, refused):
     """A segment lane starts from the model's own state and parameters, replaying nothing;

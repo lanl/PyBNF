@@ -151,6 +151,25 @@ class _SimulateRunPlan:
     stop_if: object
 
 
+def _require_continuation_start(where, t_start, current_time):
+    """Refuse a ``continue=>1`` whose explicit ``t_start`` is not the current model time.
+
+    BNG2.pl aborts such an action ("t_start must equal current model time for continuation",
+    ``BNGAction.pm``). bngsim would integrate on from the state the last run left and label it
+    ``t_start``, so the run is the trajectory shifted in time, and appended to the output of its
+    suffix it is scored as one (#1009 review). Compared at 15 significant digits, as the output
+    grid check compares times (#872)."""
+    if float('%.15g' % float(t_start)) == float('%.15g' % float(current_time)):
+        return
+    raise PybnfError(
+        "%s continues the run before it (continue=>1) from t_start = %.15g, but the current "
+        "model time is %.15g. BNG2.pl refuses this (t_start must equal the current model time "
+        "for a continuation): the state carried over is the one at %.15g, so the run would be "
+        "that trajectory relabelled. Omit t_start, or set it to %.15g."
+        % (where, float(t_start), float(current_time), float(current_time),
+           float(current_time)))
+
+
 def _is_continuation(sim_params):
     """Whether a parsed ``simulate`` asks to continue the run before it (``continue=>1``), read
     as :meth:`BngsimModel._prepare_simulate_run` reads it."""
@@ -1683,6 +1702,10 @@ class BngsimModel(NetModel):
             t_start = state.current_time
         else:
             t_start = _eval_numeric(str(sim_params.get('t_start', 0)))
+            if continue_flag:
+                _require_continuation_start(
+                    describe_action(self._grid_label(), sim_params), t_start,
+                    state.current_time)
         # The output grid by BNG2.pl's rules (grid.py): n_output_steps is n_steps, one step by
         # default, t_end required without sample_times. These used to default to 100 and 100.
         where = describe_action(self._grid_label(), sim_params)

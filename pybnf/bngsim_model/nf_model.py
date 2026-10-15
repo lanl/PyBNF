@@ -21,7 +21,7 @@ from ..data import Data
 from ..printing import PybnfError
 from ..pset import Model, _stage_and_rewrite_tfun_files
 from .._seed import resolve_action_seed
-from .net_model import BngsimModel
+from .net_model import BngsimModel, _require_continuation_start
 from .parsing import (
     _collapse_action_line_continuations,
     _parse_simulate_action,
@@ -283,7 +283,8 @@ class BngsimNfModel(Model):
         # saveParameters snapshots by label (None: the default slot, which starts as the
         # parameters this run was given); a labelled reset needs its own save first (#830).
         saved_param_inputs = {None: dict(current_param_inputs)}
-        sess = SimpleNamespace(nfsim=None, method=None, gml=None)
+        # ``time`` is the model time as BNG2.pl keeps it: 0 at the start, the end of each run.
+        sess = SimpleNamespace(nfsim=None, method=None, gml=None, time=0.0)
         self._pybnf_current_action_info = None
 
         # Bootstrap seed for sessions that need to be lazily started by a
@@ -440,6 +441,10 @@ class BngsimNfModel(Model):
         # data's independent-variable points, which the objective matches by ivar. When
         # present, sample_times overrides the uniform t_start/t_end/n_steps grid.
         t_start = float(sim_params.get('t_start', 0))
+        if 't_start' in sim_params and bool(int(float(sim_params.get('continue', 0)))):
+            _require_continuation_start(
+                describe_action(self._grid_label(), sim_params), t_start,
+                getattr(sess, 'time', 0.0))
         # The output grid by BNG2.pl's NFsim rules (grid.py): n_steps and t_end > t_start are
         # required unless sample_times (a bngsim extension) gives the grid. These used to
         # default to 100 steps and t_end = 100.
@@ -497,6 +502,7 @@ class BngsimNfModel(Model):
         else:
             result = sess.nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
         ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
+        sess.time = float(t_end) if t_end is not None else sess.time
 
     def _nf_set_concentration_action(self, sc, sess, current_param_overrides, bootstrap_seed):
         """Apply one setConcentration() action, lazily starting a session if needed.
