@@ -204,6 +204,54 @@ def scan_t_end(ps_params, where, sample_times, evaluate=None):
     return evaluate(ps_params['t_end'])
 
 
+#: The one network-free ``method`` BNG2.pl has: its ``simulate`` dispatches ``nf`` to
+#: ``simulate_nf`` (NFsim) and rejects every other network-free token in
+#: :data:`NETWORK_FREE_METHODS` -- RuleMonkey (``rm``, ``rulemonkey``, ``nf_exact``) and bngsim's
+#: other spellings of NFsim (``nfsim``, ``nf_reject``) -- as "not a valid option".
+BNG2PL_NETWORK_FREE_METHOD = 'nf'
+
+
+def bng2pl_network_free_refusals(action_lines):
+    """``[(kind, suffix, BNG2.pl's message)]`` for each network-free ``simulate`` /
+    ``parameter_scan`` / ``bifurcate`` among ``action_lines`` that BNG2.pl refuses to run
+    (BNG2.pl 2.9.3, ``Perl2/BNGAction.pm``; #999).
+
+    * A method BNG2.pl does not have (see :data:`BNG2PL_NETWORK_FREE_METHOD`).
+    * ``method=>"nf"`` without ``n_steps``. ``simulate_nf`` reads ``n_steps`` and nothing else
+      for its grid: with ``sample_times`` instead it aborts ("sample_times not supported in this
+      version of NFsim"), and with neither ("No simulation output requested: set n_steps>0").
+      A ``parameter_scan`` / ``bifurcate`` runs ``simulate`` at each point with its own
+      options, so the same holds for each point. The edition-2 experiments write exactly these
+      lines -- ``sample_times`` for a time course, a scan with no ``n_steps`` -- which bngsim's
+      NFsim runs.
+
+    Every other action, network-free or not, is left to :func:`check_output_grids` and BNG2.pl.
+    Pure: reads only the action text, so the configuration can call it before any model is
+    set up."""
+    found = []
+    for action_line in action_lines:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if not line or line.startswith('#'):
+            continue
+        for kind, parse in (('simulate', _parse_simulate_action),
+                            ('parameter_scan', _parse_parameter_scan_action),
+                            ('bifurcate', _parse_bifurcate_action)):
+            params = parse(line)
+            if params is None:
+                continue
+            method = str(params.get('method', 'ode')).strip().lower()
+            suffix = params.get('suffix', 'time_course' if kind == 'simulate' else 'param_scan')
+            if method in NETWORK_FREE_METHODS and method != BNG2PL_NETWORK_FREE_METHOD:
+                found.append((kind, suffix, "Simulation method '%s' is not a valid option."
+                              % method))
+            elif method == BNG2PL_NETWORK_FREE_METHOD and 'n_steps' not in params:
+                found.append((kind, suffix, 'sample_times not supported in this version of NFsim'
+                              if 'sample_times' in params
+                              else 'No simulation output requested: set n_steps>0'))
+            break
+    return found
+
+
 def check_output_grids(model_name, action_lines):
     """Refuse, before anything runs, every ``simulate`` / ``parameter_scan`` / ``bifurcate``
     among ``action_lines`` whose output grid BNG2.pl's rules do not define (the module

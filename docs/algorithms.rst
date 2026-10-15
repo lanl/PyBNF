@@ -1150,7 +1150,9 @@ space. Use it to verify that a model satisfies a set of qualitative properties
 quick way to test a candidate fit or validate a model against its specification.
 See the `model-checking tutorial lesson
 <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/46_model_checking>`__
-for a worked example.
+for a worked example. A check simulates its BNGL models with BNG2.pl, whatever
+:ref:`bngl_backend <bngl_backend>` says, so a network-free experiment, which BNG2.pl cannot run
+as PyBNF writes it, is refused when the configuration loads.
 
 
 .. _model_selection:

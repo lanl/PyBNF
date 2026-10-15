@@ -684,7 +684,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
         * A column ``normalization`` scales analytically (``scale``). The factor is profiled
           against the data inside the objective at each evaluation and is not part of the
           simulated series, so the file would hold the prediction off the data's scale by the
-          factor the fit applied.
+          factor the fit applied. The configuration now refuses ``scale`` for every sampler
+          before ``am`` is built (#996), so a configuration does not reach this; it stays for
+          the day a sampler takes ``scale`` with its marginal, when the file would still be
+          wrong.
         * An ``output_noise_trajectory`` column an experiment normalizes. Its counts are drawn
           from the negative binomial whose mean is the prediction, and a normalized prediction
           (a ratio to the first or peak value, a z-score, a floored value) is not an expected
@@ -742,11 +745,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
     def _experiment_label(self, data_key):
         """How a message names the experiment of ``data_key``: an edition-2 experiment by its
         name and condition (``epi2 (condition hi)`` for ``epi2hi``), any other by its data key,
-        which in edition 1 is the data file's name without ``.exp``."""
-        for name, (_base, key) in self.config._experiment_data_keys.items():
-            if key == data_key and key != name and key.startswith(name):
-                return '%s (condition %s)' % (name, key[len(name):])
-        return data_key
+        which in edition 1 is the data file's name without ``.exp``. The configuration's
+        refusals name experiments the same way (``Configuration.experiment_label``)."""
+        return self.config.experiment_label(data_key)
 
     def _normalizing_experiments(self, column):
         """The experiments, by output suffix, whose ``normalization`` transforms ``column``

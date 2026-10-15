@@ -193,7 +193,8 @@ def _edition_1_two_files(tmp_path, monkeypatch, lines):
 def test_a_noise_column_that_no_file_normalizes_is_not_refused(tmp_path, monkeypatch):
     """``normalization = init: a.exp`` normalizes a.exp's one column, ``cases``, in experiment
     ``a`` and nothing else. ``Inf`` is measured only in b.exp, so its prediction is a raw count
-    in both experiments and a negative binomial draw around it is well defined.
+    in both experiments and a negative binomial draw around it is well defined. ``cases`` is
+    scored as a Gaussian: a count noise model takes no normalization (#997).
 
     Oracle: the normalization applied by hand to a synthetic result leaves ``Inf`` exactly as
     simulated in every experiment, while it does divide ``cases`` in ``a`` by its first value.
@@ -201,8 +202,8 @@ def test_a_noise_column_that_no_file_normalizes_is_not_refused(tmp_path, monkeyp
     from pybnf.algorithms.core import Result
     from pybnf.data import Data
     cfg = _edition_1_two_files(tmp_path, monkeypatch, [
-        'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
-        'output_noise_trajectory = Inf'])
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'noise_model cases = normal, sigma = fix_at 5',
+        'normalization = init: a.exp', 'output_noise_trajectory = Inf'])
     raw = np.column_stack([np.arange(4.0), 10 + np.arange(4.0), 2 + np.arange(4.0),
                            3 + np.arange(4.0)])
     sim = {}
@@ -223,10 +224,11 @@ def test_a_noise_column_that_no_file_normalizes_is_not_refused(tmp_path, monkeyp
 
 def test_a_noise_column_that_a_file_normalizes_is_still_refused(tmp_path, monkeypatch):
     """The control for the test above: ``cases`` is normalized in experiment ``a``, so the
-    refusal is right for it."""
+    refusal is right for it. (Scored as a Gaussian, as above, so that the configuration loads
+    and the refusal is am's; as a count it is refused when the configuration loads, #997.)"""
     cfg = _edition_1_two_files(tmp_path, monkeypatch, [
-        'objfunc = neg_bin', 'neg_bin_r = 20', 'normalization = init: a.exp',
-        'output_noise_trajectory = cases'])
+        'objfunc = neg_bin', 'neg_bin_r = 20', 'noise_model cases = normal, sigma = fix_at 5',
+        'normalization = init: a.exp', 'output_noise_trajectory = cases'])
     with pytest.raises(PybnfError, match='output_noise_trajectory names cases, which '
                                          'normalization transforms'):
         algorithms.Adaptive_MCMC(cfg)

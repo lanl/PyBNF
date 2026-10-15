@@ -150,12 +150,15 @@ class TestUnaffectedCombinations:
         line = next(a for a in conf.models["m"].actions if 'suffix=>"tc"' in a)
         assert f'method=>"{method}"' in line
 
-    def test_nf_under_bng2pl_builds(self, tmp_path):
-        # NFsim under BNG2.pl always honored the explicit output points.
-        conf = _build(tmp_path, conf_lines=_BASE + [
-            "bngl_backend = bionetgen",
-            "experiment: tc, method: nf, data: tc.exp",
-        ])
-        assert "tc" in conf.exp_data["m"]
-        line = next(a for a in conf.models["m"].actions if 'suffix=>"tc"' in a)
-        assert 'method=>"nf"' in line
+    def test_nf_under_bng2pl_is_refused(self, tmp_path):
+        # It was asserted to build, on the belief that BNG2.pl's NFsim honored the explicit
+        # output points. It does not: BNG2.pl 2.9.3 aborts the action ("sample_times not
+        # supported in this version of NFsim"), so every simulation failed (#999). Refused
+        # when the configuration loads; tests/test_load_refusals_996_997_999.py runs BNG2.pl.
+        from pybnf.printing import PybnfError
+        with pytest.raises(PybnfError, match="BNG2.pl cannot run experiment 'tc' "
+                                             r"\(sample_times not supported"):
+            _build(tmp_path, conf_lines=_BASE + [
+                "bngl_backend = bionetgen",
+                "experiment: tc, method: nf, data: tc.exp",
+            ])

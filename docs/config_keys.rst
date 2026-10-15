@@ -195,7 +195,9 @@ Required Keys
       ⇒ each dose runs to steady state). For a ``steady_state`` experiment it is instead the
       **max-time bound** on the relaxation, default ``1e6``. Inert for a time course, whose
       grid comes from the data.
-    * **method:** the simulator, default ``ode``.
+    * **method:** the simulator, default ``ode``. A network-free experiment (``nf``, ``rm``)
+      needs BNGsim: BNG2.pl cannot run the action PyBNF writes for it, so it is refused
+      wherever BNG2.pl would simulate it (see :ref:`bngl_backend <bngl_backend>`).
 
   Requires ``edition >= 2``.
 
@@ -798,6 +800,21 @@ Other Path Keys
   decide its rows and the BNGsim bridge does not -- ``argfile``, ``max_sim_steps``,
   ``output_step_interval``, or ``print_on_stop`` other than 1 -- is not supported by the bridge:
   ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the option.
+
+  **Network-free experiments need BNGsim.** BNG2.pl's NFsim takes an output grid only as
+  ``t_end`` with ``n_steps``, and BNG2.pl has no RuleMonkey. An edition-2 ``method: nf``
+  experiment writes its data's times as ``sample_times`` (a dose-response, a ``parameter_scan``
+  with no ``n_steps``), and ``method: rm`` names RuleMonkey, so BNG2.pl cannot run either. A model
+  with such an action (or a hand-written one like it) is refused, naming the experiment and
+  BNG2.pl's message, wherever it would be simulated with BNG2.pl: under ``bngl_backend =
+  bionetgen`` and under ``job_type = check`` (which simulates with BNG2.pl whatever this key
+  says) when the configuration loads; under ``auto`` -- when BNGsim is not available (or
+  ``PYBNF_NO_BNGSIM`` is set), its bridge cannot take the model's actions, or the installed build
+  lacks the engine -- when the fit sets its models up, before any simulation; and the same when
+  a BNGsim set-up step fails and ``auto`` would otherwise fall back to BNG2.pl. (A configuration
+  under ``auto`` still loads on a machine without BNGsim, for a reader that simulates nothing,
+  such as a PEtab export.) Such a model used to be accepted, and every simulation of it failed.
+  (`#999 <https://github.com/lanl/PyBNF/issues/999>`_)
 
   One difference remains (`#872 <https://github.com/lanl/PyBNF/issues/872>`_): when an action's
   ``sample_times`` start after ``t_start``, BNGsim integrates from the first sample time, where
@@ -1464,7 +1481,7 @@ Algorithm Options
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
    - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1).
    - ``floor <rho>`` - add a measurement-noise **floor** ``x' = x + rho*max(x)`` (``rho`` a small fraction, default ``0.03``), so a log / relative objective stays finite where a series legitimately touches zero. Applied **identically to the simulated and the experimental** column.
-   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise. Refused when the configuration loads for a column whose noise model has no additive scale to profile in (``neg_bin``).
+   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise. Refused when the configuration loads for a column whose noise model has no additive scale to profile in (``neg_bin``), and for every Bayesian sampler (``am``, ``dream``, ``hmc``, ``mh``, ``p_dream``, ``pt``): the optimum is a **profile**, not a marginal, so the draws would not be posterior draws (`#996 <https://github.com/lanl/PyBNF/issues/996>`_), as for ``noise_profiling`` and ``linear_profiling``. To sample the scale, make it a free parameter in the measurement layer (``observable: y, formula: c * y`` with ``c`` declared free).
 
   Normalization is a per-observable *prediction* transform -- a sibling of the per-observable
   :ref:`noise_model <noise_model_key>` / ``cumulative`` surface -- so under a modern
@@ -1496,6 +1513,19 @@ Algorithm Options
   and is discarded only if a ``nan`` falls on a time the data actually measures. A column with
   no measured value at all is left untouched; that simulation is then rejected by scoring, as
   it would be without any normalization.
+
+  **Counts are not normalized.** A column scored by a count noise model (``neg_bin``: the
+  legacy ``objfunc = neg_bin`` / ``neg_bin_dynamic``, ``objective = neg_bin``, or ``noise_model
+  [<observable>] = neg_bin``) takes no normalization of any type. That noise model is a
+  probability mass function over the non-negative integers with its dispersion in count units;
+  a normalized value is not a count, so it would be scored through the function's continuous
+  extension, which is not a likelihood, and the best fit would move with the normalizing
+  constant. The configuration is refused when it loads, naming the column, the normalization
+  and the noise model (`#997 <https://github.com/lanl/PyBNF/issues/997>`_). Fit the counts as
+  counts, and put any rescaling in the measurement layer (an ``observable:`` formula with a free
+  scale parameter). Normalizing another column that a continuous noise model scores is
+  unaffected.
+
   Together with ``objective = lognormal`` the chain ``floor 0.03, scale`` spells the
   "sum of squared log-differences of geometric-mean-normalized trajectories" objective common
   to arbitrary-unit fluorescence / blot fits.

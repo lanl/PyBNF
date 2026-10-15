@@ -320,6 +320,9 @@ class Configuration:
         # Same deferral, same reason: the end-of-fit stage that confirms the best fit of a
         # stochastic fit keys off the models' `stochastic` flags (#659).
         self._check_best_fit_confirmation()
+        # Also deferred until the edition-2 experiments are synthesized: a network-free action
+        # that BNG2.pl cannot run, on a model that will be simulated with BNG2.pl (#999).
+        self._refuse_what_bng2pl_cannot_run()
         # New-era observable: column-header overrides (ADR-0028, Chunk 4). Runs after every
         # experimental Data exists (so it can rename columns across all of them) and before
         # the objective is built (so the objective's by-name column match + per-observable
@@ -352,6 +355,9 @@ class Configuration:
             self._check_variable_correspondence()
         logger.debug('Loaded variables')
         self._postprocess_normalization()
+        # A count noise family scores counts, and a normalized value is not one (#997). Read off
+        # the compiled normalization grid and the built objective's per-column families.
+        self._refuse_normalized_counts()
         # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
         # attaches to the (already-built) objective here, after the normalization grid is compiled.
         self._attach_analytic_scale()
@@ -1075,6 +1081,35 @@ class Configuration:
                 'so PyBNF overrides the BNGL seed per replicate.'
                 % (self.config['smoothing'], self.config['stochastic_seed'])
             )
+
+    def _refuse_what_bng2pl_cannot_run(self):
+        """Refuse a BNGL model that will be simulated with BNG2.pl and has a network-free action
+        BNG2.pl cannot run (#999).
+
+        An edition-2 ``method: nf`` experiment writes its data's times as ``sample_times`` (#427),
+        or, as a dose-response, a ``parameter_scan`` with no ``n_steps``. bngsim's NFsim runs
+        both; BNG2.pl's ``simulate_nf`` refuses both, and has no RuleMonkey (``method: rm``) at
+        all (:func:`~pybnf.bngsim_model.grid.bng2pl_network_free_refusals`). Such a model used to
+        be accepted, and every one of its simulations then failed, so the run ended with
+        "Your simulations are failing to run", or exited 0 with an objective of ``inf`` for
+        every parameter set and the cause only in ``FailedSimLogs``.
+
+        Refused here when the configuration itself sends every BNGL model to BNG2.pl, whatever
+        the machine (:func:`~pybnf.algorithms.base.bng2pl_by_configuration`:
+        ``bngl_backend = bionetgen``, and every model under ``job_type = check``). Where
+        ``bngl_backend = auto`` sends a model depends on whether bngsim is installed here, so
+        that is refused as the fit sets its models up (``Algorithm._initialize_models``, before
+        any network generation), and a configuration still loads for a reader that simulates
+        nothing, such as a PEtab export. Hand-written actions are read the same way, since
+        BNG2.pl refuses them alike."""
+        from .algorithms.base import bng2pl_by_configuration, refuse_what_bng2pl_cannot_run
+        plan = bng2pl_by_configuration(self.config['fit_type'], self.config['bngl_backend'])
+        if plan is None:
+            return
+        for name, model in self.models.items():
+            if isinstance(model, BNGLModel):
+                refuse_what_bng2pl_cannot_run(name, list(model.actions) + list(model.protocol),
+                                              *plan, experiments=self._experiment_data_keys)
 
     def _check_best_fit_confirmation(self):
         """Validate the two best-fit confirmation keys, and tell a fit that needs the stage
@@ -3167,6 +3202,7 @@ class Configuration:
         analytic_scale = self.config.get('analytic_scale')
         if not analytic_scale:
             return
+        self._refuse_scale_for_a_sampler(analytic_scale)
         if not isinstance(self.obj, objective.SummationObjective):
             raise UnknownObjectiveFunctionError(
                 'analytic scale is not available for a column-joint objective',
@@ -3176,6 +3212,145 @@ class Configuration:
                 f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
         self._require_additive_scale(analytic_scale)
         self.obj._analytic_scale = analytic_scale
+
+    def _refuse_normalized_counts(self):
+        """Refuse any normalization of a column that a count noise family scores (#997).
+
+        A count family (``scores_counts``: today ``neg_bin``, from ``objfunc = neg_bin`` /
+        ``neg_bin_dynamic``, ``objective = neg_bin``, or ``noise_model [<obs>] = neg_bin``) is a
+        probability mass function over the non-negative integers, with its dispersion and its
+        Poisson part in count units. ``init`` / ``peak`` / ``zero`` / ``unit`` make the compared
+        values ratios or z-scores and ``floor`` adds a fraction of the maximum to both columns,
+        so none of them is a count any more. The family would score them anyway, through the
+        mass function's continuous (gamma-function) extension, which is not a likelihood, and
+        whose best prediction moves with the normalizing constant; under ``init`` / ``peak``
+        that constant is the simulated series' own, so the noise model would change with the
+        parameter set during the fit.
+
+        Runs on the compiled setting (``{data key: [(transform, [columns])]}``, either
+        edition and every form; the legacy per-file form also keeps each file name as a key,
+        which names no experiment and is skipped). ``scale`` is not in that setting: it is
+        routed to the objective, and :meth:`_require_additive_scale` refuses it on a family
+        with no additive scale, as ``neg_bin`` is, so that case keeps the one message it
+        already had. (``scale`` leaves the data as they are and multiplies the prediction, so
+        on a count family that did have an additive scale it would not be a normalized
+        count.)"""
+        spec_for = getattr(self.obj, '_spec_for', None)
+        if spec_for is None:
+            return      # no per-column noise family (least squares, an analytical objective)
+        settings = self.config.get('normalization')
+        if not isinstance(settings, dict):
+            return
+        refused = {}
+        for by_key in self.exp_data.values():
+            for data_key in by_key:
+                groups = settings.get(data_key)
+                if not isinstance(groups, list):
+                    continue
+                for transform, columns in groups:
+                    name = transform[0] if isinstance(transform, tuple) else transform
+                    for column in columns:
+                        family, _sources = spec_for(column)
+                        if family is not None and family.scores_counts:
+                            refused.setdefault((column, family), {}).setdefault(
+                                name, set()).add(data_key)
+        if not refused:
+            return
+
+        def token_of(family):
+            """The noise_model token(s) a user writes for ``family`` (``neg_bin``)."""
+            return ', '.join(sorted(t for t, make in objective._NOISE_FAMILIES.items()
+                                    if type(make()) is type(family))) or type(family).__name__
+
+        def described(column, family):
+            uses = '; '.join('%s in experiment %s' % (
+                name, ', '.join(self.experiment_label(dk) for dk in sorted(data_keys)))
+                for name, data_keys in sorted(refused[(column, family)].items()))
+            return '%s (%s, scored by %s)' % (column, uses, token_of(family))
+
+        keys = sorted(refused, key=lambda key: key[0])
+        column, family = keys[0]
+        token = token_of(family)
+        normalizations = ', '.join(sorted(refused[keys[0]]))
+        others = ('' if len(keys) == 1 else ' The same holds for %s.'
+                  % '; '.join(described(*key) for key in keys[1:]))
+        raise PybnfError(
+            f"normalization {normalizations} transforms {column}, which the count noise model "
+            f"{token} scores",
+            f"normalization transforms {described(column, family)}. {token} is a count noise "
+            f"model: a probability mass function over the non-negative integers, with its "
+            f"dispersion in count units. A normalized value is not a count, so it would be "
+            f"scored through the mass function's continuous extension, which is not a "
+            f"likelihood, and the best fit would move with the normalizing constant.{others}",
+            hint=f"Fit the counts as counts: remove the normalization from {column}. To relate "
+                 f"a count to a rescaled readout, put the scale in the measurement layer (an "
+                 f"'observable:' formula with a free scale parameter). If the data are not "
+                 f"counts, score {column} with a continuous noise model (normal, lognormal, "
+                 f"...).")
+
+    def experiment_label(self, data_key):
+        """How a message names the experiment of ``data_key``: an edition-2 experiment by its
+        name and condition (``epi2 (condition hi)`` for ``epi2hi``), any other by its data key,
+        which in edition 1 is the data file's name without ``.exp``."""
+        for name, (_base, key) in self._experiment_data_keys.items():
+            if key == data_key and key != name and key.startswith(name):
+                return '%s (condition %s)' % (name, key[len(name):])
+        return data_key
+
+    def _bayesian_sampler(self):
+        """The registry entry of this fit's job type when it is a Bayesian sampler (registry
+        family ``'sampler'``: am, dream, hmc, mh, p_dream, pt), else ``None``.
+
+        A sampler draws from a posterior, which integrates every nuisance over its prior. The
+        three switches that instead maximize a nuisance out -- ``noise_profiling``,
+        ``linear_profiling`` and ``normalization ... = scale`` -- are each refused for every
+        job type this returns, so all three refusals read the one definition (ADR-0108, #996).
+        The Liu-West filter (``lwf``, family ``'filter'``) refuses all three on its own,
+        together with every other normalization."""
+        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
+        return entry if entry is not None and entry.family == 'sampler' else None
+
+    def _refuse_scale_for_a_sampler(self, analytic_scale):
+        """Refuse ``normalization ... = scale`` under a Bayesian sampler (#996).
+
+        ``scale`` replaces each declared series' multiplicative scale by its best fit to the
+        data at every evaluation: a profile, exactly as ``noise_profiling`` and
+        ``linear_profiling`` are, and refused for the same reason. For a Gaussian series
+        ``y_i ~ N(c m_i(theta), sigma_i^2)`` with a flat prior on ``c`` the marginal is the
+        profile times ``sqrt(2 pi / A(theta))``, ``A = sum m_i^2 / sigma_i^2``. ``A`` depends on
+        the parameters through the prediction, so a chain that samples the profile does not
+        sample the posterior the configuration describes. Keyed off the compiled
+        ``analytic_scale``, so every form that can declare ``scale`` -- whole-fit, per
+        observable, per experiment, in either edition -- is covered."""
+        entry = self._bayesian_sampler()
+        if entry is None:
+            return
+        columns = sorted({column for cols in analytic_scale.values() for column in cols})
+        names = ', '.join(columns)
+        fit_type = self.config['fit_type']
+        if edition.is_modern(edition.resolve_edition(self.config.get('edition'))):
+            free_scale = (f"multiply the model output by a free parameter in the measurement "
+                          f"layer: an 'observable:' line whose formula is c * {columns[0]}, with "
+                          f"c declared free (e.g. 'loguniform_var = c 1e-3 1e3')")
+        else:
+            free_scale = (f"multiply the model output by a free parameter in the model: a "
+                          f"function c__FREE * {columns[0]}, with c__FREE declared free (e.g. "
+                          f"'loguniform_var = c__FREE 1e-3 1e3'), measured instead")
+        raise PybnfError(
+            f"normalization scales {names} analytically (scale), which is not available for a "
+            f"Bayesian sampler",
+            f"normalization scales {names} analytically (scale): at every evaluation it replaces "
+            f"the series' multiplicative scale by its best fit to the data. That is a PROFILE, "
+            f"not a marginal: it maximizes the nuisance out where a posterior integrates it over "
+            f"its prior, and for a Gaussian series the two differ by a factor that depends on "
+            f"the model parameters. Draws from '{fit_type}' ({entry.display_name}) would "
+            f"therefore not be posterior "
+            f"draws. noise_profiling and linear_profiling are refused for every sampler for the "
+            f"same reason.",
+            hint=[f"Sample the scale as a free parameter instead: remove scale from the "
+                  f"normalization of {names}, and {free_scale}.",
+                  "Or keep scale and fit with an optimizer (for example job_type = de, or "
+                  "lbfgs)."])
 
     def _require_additive_scale(self, analytic_scale):
         """Refuse ``scale`` on a column whose noise family has no additive scale (#990).
@@ -3249,8 +3424,8 @@ class Configuration:
                 f"'{type(self.obj).__name__}' has no per-point noise model to estimate one "
                 f"with. Use a likelihood objective (normal / lognormal / lnnormal / laplace) "
                 f"whose scale is declared 'fit <parameter>'.")
-        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
-        if entry is not None and entry.family == 'sampler':
+        entry = self._bayesian_sampler()
+        if entry is not None:
             raise PybnfError(
                 'noise_profiling is not available for a Bayesian sampler',
                 f"noise_profiling = 1 replaces each estimated noise scale by its maximum-"
@@ -3357,8 +3532,8 @@ class Configuration:
                 f"search as the minimizer of a Gaussian likelihood, but the objective "
                 f"'{type(self.obj).__name__}' has no per-point noise model. Use a linear-scale "
                 f"Gaussian likelihood (chi_sq / normal).")
-        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
-        if entry is not None and entry.family == 'sampler':
+        entry = self._bayesian_sampler()
+        if entry is not None:
             raise PybnfError(
                 'linear_profiling is not available for a Bayesian sampler',
                 f"linear_profiling = 1 replaces each linear observable coefficient by its "

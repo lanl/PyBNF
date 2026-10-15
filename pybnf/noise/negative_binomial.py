@@ -160,6 +160,9 @@ class NegBinomial(NoiseModel):
     #: The count domain, for the objective's exclusion warning (#523).
     observation_domain = 'a non-negative count'
 
+    #: A count family: a normalized column is refused for it when the configuration loads (#997).
+    scores_counts = True
+
     def observation_in_domain(self, observation):
         """A count is non-negative, so a **negative** observation is outside the negative
         binomial's domain -- it has no probability under the family (#523).
