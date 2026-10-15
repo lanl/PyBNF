@@ -3074,9 +3074,8 @@ mean, so it accepts only ``location = mean`` and refuses, rather than warns on, 
 ``objective = neg_bin_dynamic`` with ``noise_location = mean`` is that whole-fit line with the
 dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
 the kernel then moves the model's free parameters only. A fixed dispersion must lie between 1e-6
-and 1e6, and a fitted one's prior must not reach below 0 or above 1e6: PyBNF's negative binomial
-score is wrong for a larger dispersion (`#987 <https://github.com/lanl/PyBNF/issues/987>`__), and the
-forecast draw fails for a far smaller one. ``objective = neg_bin`` with
+and 1e12, and a fitted one's prior must not reach below 0 or above 1e12, the range in which the
+forecast draw is right. ``objective = neg_bin`` with
 ``neg_bin_r = <value>`` is the whole-fit line ``fix_at <value>``; elsewhere ``neg_bin_r`` is refused,
 since the dispersion is the one the noise_model lines declare. A key the filter does not read is
 reported as unused, as under any job type; ``refine``, ``bootstrap``, ``noise_profiling`` and

@@ -497,6 +497,62 @@ class TestNegBinNegativePrediction:
             == pytest.approx(self._scipy(observation, self.r, prediction), rel=1e-12)
 
 
+class TestNegBinLargeDispersion:
+    """lanl/PyBNF#987: data_fit clipped prob = r/(r + m) at 1 - 1e-10, a floor of r * 1e-10 on the
+    mean that grew with r, so from r ~ 1e7 on every expected count below the floor was scored as
+    the floor. The floor is now capped at 1e-7, and a large r is scored without forming p."""
+
+    nb = noise.NegBinomial(location=noise.MEAN)
+
+    @staticmethod
+    def _old(prediction, observation, r):
+        """data_fit before the fix: the clipped form the score keeps for r up to ~1e3."""
+        from scipy.special import loggamma
+        prob = np.clip(r / (r + max(prediction, 0.0)), 1e-10, 1 - 1e-10)
+        return -(loggamma(observation + r) - loggamma(observation + 1) - loggamma(r)
+                 + r * np.log(prob) + observation * np.log(1 - prob))
+
+    @pytest.mark.parametrize('r', [1e12, 1e100])
+    def test_a_large_dispersion_scores_the_poisson_limit(self, r):
+        """NB(k | m, r) differs from Poisson(k | m) by O((k - m)^2 / r) in log mass."""
+        for m in (1e-3, 0.5, 7.0, 300.0):
+            for k in (0, 1, 5, 100):
+                assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                    -stats.poisson.logpmf(k, m), rel=1e-9, abs=1e-6), (m, k)
+
+    @pytest.mark.parametrize('r', [1e4, 1e6])
+    def test_a_moderate_dispersion_scores_as_scipy(self, r):
+        for m in (1e-3, 1.0, 50.0, 1e4):
+            for k in (0, 3, 100):
+                assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                    -stats.nbinom.logpmf(k, r, r / (r + m)), rel=1e-7), (m, k)
+
+    def test_up_to_r_1e3_the_score_is_unchanged_to_the_bit(self):
+        for r in (1e-3, 1.0, 20.0, 999.0):
+            for m in (0.0, 1e-12, 1e-3, 1.0, 50.0, 1e4):
+                for k in (0.0, 1.0, 5.0, 100.0):
+                    assert self.nb.data_fit(m, k, r) == self._old(m, k, r), (r, m, k)
+
+    def test_a_mean_beyond_r_times_1e10_is_scored_as_scipy(self):
+        """The lower clip, prob < 1e-10, scored a huge mean at a tiny r as another too."""
+        r, m = 1e-6, 1e5
+        for k in (0, 1, 1000):
+            assert self.nb.data_fit(m, float(k), r) == pytest.approx(
+                -stats.nbinom.logpmf(k, r, r / (r + m)), rel=1e-9)
+            assert self.nb.data_fit(m, float(k), r) != self._old(m, float(k), r)
+
+    def test_a_zero_prediction_at_a_large_dispersion_makes_a_zero_count_almost_certain(self):
+        """The floor r * 1e-10 = 100 at r = 1e12 scored P(0 | prediction 0) as e**-100."""
+        assert self._old(0.0, 0.0, 1e12) == pytest.approx(100.0, rel=1e-6)
+        assert 0.0 <= self.nb.data_fit(0.0, 0.0, 1e12) <= 1e-6
+
+    @pytest.mark.parametrize('m', [1.0, 50.0])
+    def test_the_prediction_gradient_matches_the_score_at_a_large_dispersion(self, m):
+        r, k, h = 1e12, 3.0, 1e-5 * m
+        fd = (self.nb.data_fit(m + h, k, r) - self.nb.data_fit(m - h, k, r)) / (2 * h)
+        assert self.nb.d_data_fit_d_prediction(m, k, r) == pytest.approx(fd, rel=1e-6)
+
+
 class TestLogScaleNonPositivePrediction:
     """The log additive scales (lognormal/log-normal noise) must not turn a
     non-positive value into a NaN. An ODE solver can undershoot to a tiny negative

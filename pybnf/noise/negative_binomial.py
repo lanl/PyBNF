@@ -17,6 +17,17 @@ _PROB_CLIP = 1e-10
 #: value path scores finitely -- yields a finite slope rather than ``nan``/``-inf``.
 _MEAN_FLOOR_REL = _PROB_CLIP / (1 - _PROB_CLIP)
 
+#: The cap on that floor. ``r * _MEAN_FLOOR_REL`` grows with the dispersion, and from r ~ 1e7 on
+#: it reached the counts being scored, so every expected count below it was scored as the floor
+#: (#987). Capped at 1e-7, the floor is unchanged for r up to ~1e3 and keeps a zero prediction
+#: finite at any r.
+_MEAN_FLOOR_MAX = 1e-7
+
+
+def _mean_floor(r):
+    """The smallest mean the score and its derivatives take for dispersion ``r``."""
+    return min(r * _MEAN_FLOOR_REL, _MEAN_FLOOR_MAX)
+
 
 def _d_betainc_d_b(a, b, x, rel=1e-6):
     """``d/db`` of the regularized incomplete beta ``betainc(a, b, x) = I_x(a, b)`` w.r.t. its
@@ -160,18 +171,34 @@ class NegBinomial(NoiseModel):
         large finite push toward a positive prediction is the right search direction.
         MEDIAN centering never reaches the floor (``_mean_for_median`` returns a strictly
         positive mean for any prediction), so it is a no-op there."""
-        return max(self._mean(prediction, noise), noise * _MEAN_FLOOR_REL)
+        return max(self._mean(prediction, noise), _mean_floor(noise))
 
     def data_fit(self, prediction, observation, noise, extra=None):
         if observation < 0:
             return 0
         mean = self._mean(prediction, noise)
-        prob = np.clip(noise / (noise + mean), _PROB_CLIP, 1 - _PROB_CLIP)
         assert isinstance(noise, float)
+        prob = noise / (noise + mean)
         # log of the negative-binomial PMF P(observation | r=noise, prob)
         # == scipy.stats.nbinom.logpmf(observation, noise, prob).
-        log_pmf = loggamma(observation + noise) - loggamma(observation + 1) - loggamma(noise) \
-            + noise * np.log(prob) + observation * np.log(1 - prob)
+        if noise * _MEAN_FLOOR_REL <= _MEAN_FLOOR_MAX and prob >= _PROB_CLIP:
+            # r up to ~1e3, and a mean below r * 1e10: the clip binds only for a mean on the
+            # floor (a zero prediction), and the score is the one it has always been, to the bit.
+            prob = min(prob, 1 - _PROB_CLIP)
+            log_pmf = loggamma(observation + noise) - loggamma(observation + 1) - loggamma(noise) \
+                + noise * np.log(prob) + observation * np.log(1 - prob)
+        else:
+            # A larger r, or a mean beyond r * 1e10 (#987): the clip would score the mean as
+            # another, and the form above loses digits to cancellation (2e-7 relative at
+            # r = 1e8, 0.1% at 1e12). The PMF of the mean itself, kept above the capped floor:
+            # log p and log(1 - p) without forming p, and the binomial coefficient as
+            # -log k - betaln(r, k) rather than loggamma(k + r) - loggamma(r).
+            m = max(mean, _mean_floor(noise))
+            log_p = -np.log1p(m / noise)
+            log_q = np.log(m) - np.logaddexp(np.log(noise), np.log(m))
+            log_coefficient = (-np.log(observation) - betaln(noise, observation)
+                               if observation > 0 else 0.0)
+            log_pmf = log_coefficient + noise * log_p + observation * log_q
         # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
         # log-likelihood -log_pmf >= 0.
         return -log_pmf

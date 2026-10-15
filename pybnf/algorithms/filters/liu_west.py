@@ -88,12 +88,12 @@ _ZERO_REL = 2.0 ** -42
 # The floor on each moved parameter's variance, as a fraction of its prior-draw variance.
 _VAR_FLOOR_FRAC = 1e-12
 
-# The dispersions the filter takes. PyBNF's negative binomial score cannot represent an expected
-# count below r * 1e-10 (lanl/PyBNF#987): it is exact to r = 1e7 for counts from 1e-3 and wrong by
-# tens at 1e8. numpy's forecast draw fails near r = 1e-35. The range leaves a margin on each side.
-_DISPERSION_MIN, _DISPERSION_MAX = 1e-6, 1e6
-_DISPERSION_RANGE_WHY = ('since PyBNF\'s negative binomial score is wrong for a larger one '
-                         '(lanl/PyBNF#987) and the forecast draw fails for a far smaller one')
+# The dispersions the filter takes: those its forecast draw honours. numpy's negative binomial
+# draw keeps its mean to r = 1e14 and is biased from 1e15, and it fails near r = 1e-35 for a
+# mean above 1e3. The range leaves a margin on each side. (The score itself is exact at any r
+# since lanl/PyBNF#987.)
+_DISPERSION_MIN, _DISPERSION_MAX = 1e-6, 1e12
+_DISPERSION_RANGE_WHY = 'since the forecast draw is wrong for a dispersion far outside it'
 
 # A boxed parameter's position in its box is kept this far from either wall before its logit.
 _EDGE = 1e-12
