@@ -665,3 +665,64 @@ def test_an_imported_petab_period_before_zero_is_refused_without_a_wrong_remedy(
     assert 'has data at t = -5, before t = 0' in info.value.log_message
     assert 'lanl/PyBNF#951' in info.value.message
     assert 'Shift the data' not in info.value.message
+
+
+_MINUTES = (
+    'def postprocess(simdata):\n'
+    '    simdata.data[:, 0] = simdata.data[:, 0] / 60.0\n'
+    '    return simdata\n')
+
+
+@pytest.mark.parametrize('named, refused', [
+    ('x', None), ('x xslow', None), ('xslow', 'x'), ('y', 'x')],
+    ids=['action_suffix', 'both_keys', 'mutant_key_only', 'another_suffix'])
+def test_an_output_a_postprocess_script_rewrites_is_not_judged(tmp_path, monkeypatch, named,
+                                                               refused):
+    """A postprocess script may rewrite the time column the objective scores (here seconds to
+    minutes, docs/advanced.rst), so an output it is applied to is not judged at load: every key
+    the edition-1 line ``postprocess = script.py suff ...`` names, and, for an action suffix it
+    names, that action's outputs under each mutant too. An output it is not applied to still
+    is. (#1005 review, P1.)"""
+    from pybnf import config, parse
+    action = 'simulate({method=>"ode",t_end=>600,n_steps=>10,suffix=>"x"})'
+    other = 'simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"y"})'
+    (tmp_path / 'decay.bngl').write_text(_DECAY_FREE + 'begin actions\n  %s\n  %s\n  %s\n'
+                                         'end actions\n' % (_GEN, action, other))
+    (tmp_path / 'minutes.py').write_text(_MINUTES)
+    minutes = '# time Stot\n1 74.08\n2 54.88\n5 22.31\n'
+    (tmp_path / 'x.exp').write_text(minutes)
+    (tmp_path / 'xslow.exp').write_text(minutes)
+    (tmp_path / 'y.exp').write_text('# time Stot\n1 74.08\n')
+    monkeypatch.chdir(tmp_path)
+    lines = ['model = decay.bngl : x.exp, y.exp', 'mutant = decay slow k__FREE*0.5 : xslow.exp',
+             'postprocess = minutes.py %s' % named, 'output_dir = out', 'fit_type = de',
+             'objfunc = sos', 'bngl_backend = bngsim', 'uniform_var = k__FREE 0.001 0.02',
+             'population_size = 4', 'max_iterations = 1']
+    if refused is None:
+        config.Configuration(parse.ploop([ln + '\n' for ln in lines]))
+        return
+    with pytest.raises(PybnfError) as info:
+        config.Configuration(parse.ploop([ln + '\n' for ln in lines]))
+    assert info.value.log_message == ('Model decay, simulate action with suffix "x": the data '
+                                      'for "%s" has t = 1, 2, 5, where the action writes no row'
+                                      % refused)
+
+
+_UNUSED_DATA = FIXTURES / 'special_cases' / 'unused_data'
+
+
+@pytest.mark.parametrize('conf', ['parabola.conf', 'parabola_local.conf'])
+def test_the_unused_data_fixture_is_refused_at_its_off_grid_time(conf, monkeypatch):
+    """The fixture's data has a row at t = 7.5 that parabola.bngl's grid (t = -10 ... 10 in 20
+    steps, so whole numbers) has no row at: every job failed and the fit ended "Fitting complete"
+    at inf. It is refused when the configuration loads, naming the time and the rows. Oracle:
+    the action's rows are the whole numbers from -10 to 10."""
+    from pybnf import config, parse
+    monkeypatch.chdir(FIXTURES.parent.parent)                   # the paths are the repo's
+    with pytest.raises(PybnfError) as info:
+        config.Configuration(parse.ploop((_UNUSED_DATA / conf).read_text().splitlines(
+            keepends=True)))
+    assert info.value.log_message == ('Model parabola, simulate action with suffix "par1": the '
+                                      'data for "par1" has t = 7.5, where the action writes no '
+                                      'row')
+    assert 'writes rows at t = -10, -9, -8, -7, -6, ..., 6, 7, 8, 9, 10' in info.value.message

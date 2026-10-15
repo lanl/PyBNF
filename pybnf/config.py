@@ -1910,11 +1910,16 @@ class Configuration:
         a datum at ``t = inf`` (a steady state) is scored against the last row. Data are matched
         to an output by key, its condition included
         (:func:`~pybnf.output_keys.output_pairs`). Not judged: a kept output that is a scan, a
-        ``continue=>1`` chain, or a grid known only when it runs."""
+        ``continue=>1`` chain, or a grid known only when it runs; nor an output a ``postprocess``
+        script is applied to, which may rewrite its times (docs/advanced.rst) -- every output key
+        the script names, and, for an action suffix it names, that action's outputs under every
+        condition too."""
         from .bngsim_model.grid import kept_output_rows
         from .output_keys import output_pairs
         if self.config.get('ind_var_rounding', 0) or self._time_error_active():
             return
+        postprocessed = {suffix for spec in (self.config.get('postprocess') or [])
+                         for suffix in list(spec)[1:]}
         for model in self.models.values():
             data = self.exp_data.get(model.name) or {}
             if not isinstance(model, BNGLModel) or not data:
@@ -1922,6 +1927,8 @@ class Configuration:
             grids = list(kept_output_rows(model.actions).items())
             for key, suffix, rows, _condition in output_pairs(model, grids):
                 exp = data.get(key)
+                if key in postprocessed or suffix in postprocessed:
+                    continue
                 if exp is None or min(exp.cols, key=exp.cols.get) != 'time':
                     continue
                 times = np.unique(exp.data[:, exp.cols['time']])

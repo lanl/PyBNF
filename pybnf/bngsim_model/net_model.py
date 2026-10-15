@@ -1741,8 +1741,10 @@ class BngsimModel(NetModel):
                     "put back its dx/dtheta there (it carries the one at the run's t_end), so "
                     "the derivatives of this action would be wrong."
                     % (self._grid_label(), suffix),
-                    hint="Run a gradient-free job_type (e.g. job_type = de), or put a "
-                         "resetConcentrations() between the stop_if run and this action.")
+                    hint="Run a gradient-free job_type (e.g. job_type = de), or start this "
+                         "action from the seed or from a state saved before the stop: a "
+                         "resetConcentrations() to a snapshot taken after it brings the "
+                         "stopped state back.")
             run_kwargs['carry_sensitivities'] = True
 
         if stop_if:
@@ -2315,8 +2317,10 @@ class BngsimModel(NetModel):
                 "where the stop condition held, as BNG2.pl leaves it, but bngsim cannot put back "
                 "its dx/dtheta there, so the scan's derivatives would be wrong."
                 % (self._grid_label(), s.suffix),
-                hint="Run a gradient-free job_type (e.g. job_type = de), or put a "
-                     "resetConcentrations() between the stop_if run and the scan.")
+                hint="Run a gradient-free job_type (e.g. job_type = de), or start the scan "
+                     "from the seed or from a state saved before the stop: a "
+                     "resetConcentrations() to a snapshot taken after it brings the stopped "
+                     "state back.")
         if bears:
             self._require_carried_scan_sensitivities(model, s)
             # bngsim writes the scanned parameter itself at each point, so a scan of a derived

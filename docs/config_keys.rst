@@ -831,7 +831,8 @@ Other Path Keys
   whose rows are known as the configuration loads -- its ``sample_times`` or its step count,
   written as numbers, and no ``stop_if``, ``steady_state`` or ``continue=>1`` -- a datum at a time
   it does not write is refused then, since no simulation could score it (unless
-  ``ind_var_rounding = 1``, or the fit has a ``time_error``). A
+  ``ind_var_rounding = 1``, the fit has a ``time_error``, or a ``postprocess`` script, which may
+  rewrite the times, is applied to the output). A
   grid that starts at a negative ``t_start`` (BNG2.pl stops on it) or ends where it starts
   (BNG2.pl integrates nothing: it writes the one row at ``t_start``, or, continuing a run, stops)
   is refused. BNGsim used to integrate from the first listed time, reporting the initial state
