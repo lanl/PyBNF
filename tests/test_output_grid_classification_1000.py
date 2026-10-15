@@ -92,7 +92,8 @@ def _set_up(tmp_path, model, exp, backend):
 
 def test_protocol_actions_are_classified_with_the_actions_that_run_them(tmp_path):
     """The protocol block's lines count when an action runs it, and only then: BNG2.pl runs a
-    protocol block only from a ``method=>"protocol"`` scan (``simulate_protocol``)."""
+    protocol block only from a ``simulate_protocol`` action or a ``method=>"protocol"`` scan
+    (``simulate_protocol``, BNGAction.pm 30-73)."""
     model = BNGLModel(str(_protocol_model(tmp_path, _ARGFILE)[0]))
     assert classify_actions_for_bngsim(model.actions) == BNGSIM_BACKEND_NET
     assert classify_actions_for_bngsim(action_lines_run(model.actions, model.protocol)) is None
@@ -264,3 +265,87 @@ def test_bngsim_runs_print_on_stop_without_stop_if(tmp_path, monkeypatch):
     alg = algorithms.DifferentialEvolution(cfg)
     assert isinstance(alg.model_list[0], BngsimModel)
 
+
+
+# ---------------------------------------------------------------------------------------------
+# A simulate_protocol action runs the protocol block too (#1005 review, F2)
+# ---------------------------------------------------------------------------------------------
+
+_SIMULATE_PROTOCOL = """begin protocol
+  simulate({method=>"ode",t_end=>2,n_steps=>4,suffix=>"p"})
+end protocol
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_end=>4,n_steps=>4,suffix=>"x"})
+  simulate_protocol({});  # the protocol, once
+end actions
+"""
+
+
+def _simulate_protocol_model(tmp_path, k='k__FREE'):
+    model = tmp_path / 'decay.bngl'
+    model.write_text((_PROTOCOL_MODEL[:_PROTOCOL_MODEL.index('begin protocol')] % k)
+                     + _SIMULATE_PROTOCOL)
+    exp = tmp_path / 'x.exp'
+    exp.write_text('# time Stot\n2 %.6f\n4 %.6f\n' % (100 * np.exp(-0.6), 100 * np.exp(-1.2)))
+    return model, exp
+
+
+def test_a_simulate_protocol_action_runs_the_protocol_block():
+    from pybnf.bngsim_model.classification import runs_protocol_block, runs_simulate_protocol
+    for line in ('simulate_protocol({})', '  simulate_protocol({});  # once',
+                 'simulate_protocol({prefix=>"p"})'):
+        assert runs_simulate_protocol([line]) and runs_protocol_block([line])
+    assert not runs_protocol_block(['# simulate_protocol({})',
+                                    'simulate({method=>"ode",t_end=>2,n_steps=>2})'])
+    assert action_lines_run(['simulate_protocol({})'], ['setParameter("k",1)']) == [
+        'simulate_protocol({})', 'setParameter("k",1)']
+
+
+def test_bng2pl_runs_simulate_protocol_only_from_the_model_as_written(tmp_path, monkeypatch):
+    """The oracle for the refusals below: BNG2.pl runs the model as written, the protocol
+    included (its simulate writes 100 exp(-0.3 t) at t = 0 ... 2, continuing from the state at
+    t = 4), and stops on the model PyBNF hands it (a NetModel of the generated .net file)."""
+    R.require_bng2pl()
+    bng = tmp_path / 'bng'
+    bng.mkdir()
+    model_path, _exp = _simulate_protocol_model(bng, k='0.3')
+    done = subprocess.run([R._default_bng_command(), model_path.name], cwd=bng,
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert 'executing 1 commands in protocol' in done.stdout
+    model = BNGLModel(str(_simulate_protocol_model(tmp_path)[0]))
+    assert model.protocol and model.generates_network
+    monkeypatch.chdir(tmp_path)
+    net = NetModel(model.name, model.actions, model.suffixes, model.mutants,
+                   nf=str(bng / 'decay.net'))
+    net.bng_command = R._default_bng_command()
+    folder = tmp_path / 'net'
+    folder.mkdir()
+    with pytest.raises(CalledProcessError):
+        net.execute(str(folder), 'decay_net', 60)
+    assert 'ABORT' in (folder / 'decay_net.log').read_text()
+
+
+@pytest.mark.parametrize('backend, message', [
+    ('auto', 'Model decay: bngl_backend = auto simulates it with BNG2.pl, because the bngsim '
+             'bridge does not support its actions, which cannot run its protocol block'),
+    ('bionetgen', 'Model decay: bngl_backend = bionetgen simulates it with BNG2.pl, which cannot '
+                  'run its protocol block'),
+    ('bngsim', 'bngl_backend = bngsim was requested for model decay, but its BNGL actions are not '
+               'supported by the bngsim bridge. Its simulate_protocol action runs the protocol '
+               'block'),
+])
+def test_a_simulate_protocol_model_is_refused_where_nothing_runs_it(tmp_path, monkeypatch,
+                                                                   backend, message):
+    """The bridge does not run simulate_protocol, and PyBNF's BNG2.pl path drops the protocol
+    block, so every backend would fail every simulation: refused at set-up, saying why. Under
+    auto it used to fall back to BNG2.pl and end "Fitting complete" at inf."""
+    R.require_bng2pl()
+    model, exp = _simulate_protocol_model(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(PybnfError) as info:
+        _set_up(tmp_path, model, exp, backend)
+    assert info.value.log_message.startswith(message)
+    if backend == 'auto':
+        assert 'simulate_protocol' in ' '.join(info.value.hints or [])

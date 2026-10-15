@@ -1521,19 +1521,6 @@ class BNGLModel(Model):
                     f'{len(action.explicit_points)} explicit output time point(s) (including t=0), but '
                     "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
                     'positive time points.')
-            if action.explicit_points[0] < 0:
-                # The simulation starts at t_start => 0, and run_network writes no row at a
-                # sample time before t_start, nor does the bngsim bridge, which follows it
-                # (#872); the bridge used to start the run at the negative time instead.
-                raise PybnfError(
-                    f'The time_course action with suffix "{action.suffix}" has data at '
-                    f't = {action.explicit_points[0]:g}, before t = 0, where the simulation '
-                    'starts',
-                    f'The time_course action with suffix "{action.suffix}" has data at '
-                    f't = {action.explicit_points[0]:g}, but its simulation starts at t = 0 '
-                    "(t_start=>0). BNG2.pl writes no output row before a simulation's start, and "
-                    'nor does bngsim, so no simulation would have a row to score that datum '
-                    'against. Shift the data so that it starts at t = 0 or later.')
             sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
             return (f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],'
                     f'suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})')
@@ -2233,9 +2220,23 @@ class TimeCourse(Action):
         self.initial_state_only = False
         if explicit_points is not None:
             pts = sorted({float(p) for p in explicit_points} | {0.0})
-            if pts[-1] <= 0.0 and pts != [0.0]:
-                raise PybnfError('A time_course with explicit output points needs at least one '
-                                 'nonnegative time point, and may contain only t=0.')
+            if pts[0] < 0.0:
+                # Every backend starts the simulation at t = 0 (t_start), the clock the data's
+                # times are read on: BNG2.pl writes no row before it (and neither does the bngsim
+                # BNGL bridge, #872), and RoadRunner and bngsim's SBML path, which start a run at
+                # its first listed time, would start it at the negative time instead and score
+                # every reading against the model at the wrong time (#952).
+                raise PybnfError(
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}, '
+                    'before t = 0, where its simulation starts',
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}. '
+                    "Its simulation starts at t = 0, and an experiment's times are read on that "
+                    'clock, so no simulation can score the datum: BNG2.pl and the bngsim BNGL '
+                    'bridge write no row before the start, and RoadRunner and bngsim for SBML '
+                    'would start the run at the earliest time instead, scoring every reading at '
+                    'the wrong time. A job imported from a PEtab problem whose period starts '
+                    "before 0 keeps its times on the period's own clock, which the import does "
+                    'not yet shift (lanl/PyBNF#951).')
             self.explicit_points = pts
             self.initial_state_only = pts == [0.0]
             if self.time is None:

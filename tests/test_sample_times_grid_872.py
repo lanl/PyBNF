@@ -335,6 +335,10 @@ def test_a_grid_that_ends_where_it_starts_is_refused(tmp_path):
     with pytest.raises(PybnfError) as info:
         check_output_grids('decay', [action])
     assert info.value.log_message == message
+    # It says what BNG2.pl does, and that refusing is the bridge's choice (#1005 review, F5).
+    assert ('BNG2.pl integrates nothing for such an action and writes the one row at t_start. '
+            'The bngsim bridge, whose runs need a time after their start, refuses it instead'
+            in info.value.message)
     with pytest.raises(PybnfError) as info:
         _bngsim_net(FIXTURES / 'e2e_ode_decay.net', [action], ['x']).execute(
             str(tmp_path / 'run'), 'decay_bngsim', 60)
@@ -351,11 +355,16 @@ def test_a_continued_grid_that_ends_before_the_clock_is_refused_when_it_runs(tmp
     code, log = _bng2pl(tmp_path, 'decay', _decay_block(),
                         ['generate_network({overwrite=>1})'] + actions)
     assert code != 0 and 'simulation will not run' in log, log
+    assert 'Number of species in model (1) and CDAT file (0) differ' in log
     check_output_grids('decay', actions)        # not known at set-up
     with pytest.raises(PybnfError) as info:
         _run_bridge(tmp_path, actions, ['a', 'x'], 'x')
     assert info.value.log_message.endswith('ends at t = 8, which is not after t_start = 10')
     assert 'continue=>1' in info.value.message
+    # BNG2.pl stops on it; it does not write a row at t_start (#1005 review, F5).
+    assert ('BNG2.pl writes no row for such a continued run, and then stops ("Number of species '
+            'in model ... and CDAT file ... differ")' in info.value.message)
+    assert 'writes the one row' not in info.value.message
 
 
 def test_edition2_data_before_t_zero_is_refused_when_the_configuration_loads(tmp_path):
@@ -372,8 +381,8 @@ def test_edition2_data_before_t_zero_is_refused_when_the_configuration_loads(tmp
              'population_size = 4', 'max_iterations = 1']
     with pytest.raises(PybnfError) as info:
         config.Configuration(parse.ploop([ln + '\n' for ln in lines]))
-    assert info.value.log_message == ('The time_course action with suffix "tc" has data at '
-                                      't = -2, before t = 0, where the simulation starts')
+    assert info.value.log_message == ('The time_course with suffix "tc" has data at t = -2, '
+                                      'before t = 0, where its simulation starts')
 
 
 # ---------------------------------------------------------------------------------------------
@@ -428,3 +437,185 @@ def test_a_de_fit_of_late_sample_times_recovers_the_rate(tmp_path, monkeypatch, 
     best = alg.trajectory.best_fit()
     assert abs(best['kdeg__FREE'] - 0.1) < 0.003, best['kdeg__FREE']
     assert alg.trajectory.best_score() < 1e3     # it was 4e5 on the bridge
+
+
+
+# ---------------------------------------------------------------------------------------------
+# Review of #1005: data the corrected grid does not reach (F1), BNG2.pl's 15-digit times (F4),
+# and the negative times of lanl/PyBNF#952 on every backend (F3)
+# ---------------------------------------------------------------------------------------------
+
+_DECAY_FREE = _decay_block().replace('k   0.3', 'k   k__FREE')
+_GEN = 'generate_network({overwrite=>1})'
+
+
+def _legacy_configuration(tmp_path, actions, exp_text, suffix='x', **keys):
+    """An edition-1 configuration of the decay fixture with ``actions``, scored against
+    ``exp_text`` (the data for ``suffix``)."""
+    from pybnf import config
+    model = tmp_path / 'decay.bngl'
+    model.write_text(_DECAY_FREE + 'begin actions\n' + ''.join('  %s\n' % a for a in actions)
+                     + 'end actions\n')
+    exp = tmp_path / ('%s.exp' % suffix)
+    exp.write_text(exp_text)
+    return config.Configuration({
+        'population_size': 4, 'max_iterations': 1, 'output_dir': str(tmp_path / 'out') + '/',
+        'models': {str(model)}, 'exp_data': {str(exp)}, str(model): [str(exp)],
+        'fit_type': 'de', 'objfunc': 'sos', 'bngl_backend': 'bngsim',
+        ('uniform_var', 'k__FREE'): [0.1, 1.0], **keys})
+
+
+@pytest.mark.parametrize('options, data, missing', [
+    ('t_end=>7,sample_times=>[0,5,10]', [5, 10], '10'),
+    ('t_start=>3,sample_times=>[0,3,5,10]', [1, 5], '1'),
+    ('sample_times=>[-5,0,5,10]', [-5, 5], '-5'),
+], ids=['after_t_end', 'before_t_start', 'negative_listed'])
+def test_data_at_a_time_the_grid_does_not_write_is_refused_at_load(tmp_path, options, data,
+                                                                   missing):
+    """The oracle: BNG2.pl's own rows for the action do not include the datum's time, so every
+    evaluation fails on BNG2.pl and on the bridge alike ("Fitting complete" at inf). Refused
+    when the configuration loads, naming the time and the action's rows."""
+    action = 'simulate({method=>"ode",%s,suffix=>"x"})' % options
+    bng = _run_bng2pl(tmp_path, [action], 'decay_x.gdat')
+    assert not np.any(np.isclose(bng[:, 0], float(missing)))
+    exp = '# time Stot\n' + ''.join('%g %.6f\n' % (t, 100 * np.exp(-K * t)) for t in data)
+    with pytest.raises(PybnfError) as info:
+        _legacy_configuration(tmp_path, [_GEN, action], exp)
+    assert info.value.log_message == ('Model decay, simulate action with suffix "x": the data '
+                                      'for "x" has t = %s, where the action writes no row'
+                                      % missing)
+    assert 'writes rows at t = %s' % ', '.join('%g' % t for t in bng[:, 0]) in info.value.message
+
+
+def test_data_on_the_grid_and_the_cases_not_judged_at_load_still_load(tmp_path):
+    """Not refused: data on the rows, the nearest-row matching of ind_var_rounding = 1, a
+    step-count grid (whose rows the objective matches to within its relative tolerance), a grid
+    known only when it runs (an expression, continue=>1), and a run that can stop early."""
+    action = 'simulate({method=>"ode",t_end=>7,sample_times=>[0,5,10],suffix=>"x"})'
+    on_grid = '# time Stot\n5 22.313016\n7 12.245643\n'
+    off_grid = '# time Stot\n5 22.313016\n10 4.978707\n'
+    _legacy_configuration(tmp_path, [_GEN, action], on_grid)
+    _legacy_configuration(tmp_path, [_GEN, action], off_grid, ind_var_rounding=1)
+    for shape in ('t_end=>0.1*70,sample_times=>[0,5,10]',            # an expression
+                  't_end=>12,n_steps=>4',                            # a step count
+                  't_end=>7,sample_times=>[0,5,10],stop_if=>"Stot<1"'):
+        _legacy_configuration(tmp_path, [_GEN, 'simulate({method=>"ode",%s,suffix=>"x"})'
+                                         % shape], off_grid)
+    _legacy_configuration(tmp_path, [_GEN, 'simulate({method=>"ode",t_end=>4,n_steps=>1,'
+                                           'suffix=>"a"})',
+                                     'simulate({method=>"ode",continue=>1,sample_times=>[5,7,9],'
+                                     't_end=>7,suffix=>"x"})'], off_grid)
+
+
+def test_a_conditions_data_is_checked_against_its_actions_rows(tmp_path, monkeypatch):
+    """Data are matched to an action by output key, a mutant's suffix included: the mutant
+    'slow' of the action 'x' is scored against xslow.exp."""
+    from pybnf import config, parse
+    action = 'simulate({method=>"ode",t_end=>7,sample_times=>[0,5,10],suffix=>"x"})'
+    (tmp_path / 'decay.bngl').write_text(_DECAY_FREE + 'begin actions\n  %s\n  %s\nend actions\n'
+                                         % (_GEN, action))
+    (tmp_path / 'x.exp').write_text('# time Stot\n5 22.313016\n7 12.245643\n')
+    (tmp_path / 'xslow.exp').write_text('# time Stot\n5 60.65\n10 36.79\n')
+    monkeypatch.chdir(tmp_path)
+    lines = ['model = decay.bngl : x.exp', 'mutant = decay slow k__FREE*0.5 : xslow.exp',
+             'output_dir = out', 'fit_type = de', 'objfunc = sos', 'bngl_backend = bngsim',
+             'uniform_var = k__FREE 0.1 1', 'population_size = 4', 'max_iterations = 1']
+    with pytest.raises(PybnfError) as info:
+        config.Configuration(parse.ploop([ln + '\n' for ln in lines]))
+    assert info.value.log_message.endswith('the data for "xslow" has t = 10, where the action '
+                                           'writes no row')
+
+
+@pytest.mark.parametrize('options, rows', [
+    ('t_start=>0.3,sample_times=>[0.1*3,0.5,1]', [0.3, 0.5, 1.0]),
+    ('t_end=>0.1*3,sample_times=>[0.1,0.2,0.3]', [0.0, 0.1, 0.2, 0.3]),
+], ids=['listed_time_at_t_start', 't_end_at_last_listed'])
+def test_times_are_compared_with_15_significant_digits_as_bng2pl_hands_them_on(tmp_path, options,
+                                                                              rows):
+    """Perl writes each time on run_network's command line with 15 significant digits, so
+    0.1*3 is 0.3 there. Compared at full precision, the bridge kept both 0.3 and
+    0.30000000000000004: the first case failed every run (CV_TOO_CLOSE), and the second wrote
+    an extra row. Oracle: BNG2.pl's rows and the closed form."""
+    action = 'simulate({method=>"ode",%s,suffix=>"x"})' % options
+    bng = _run_bng2pl(tmp_path, [action], 'decay_x.gdat')
+    np.testing.assert_allclose(bng[:, 0], rows, atol=1e-12)
+    np.testing.assert_allclose(bng[:, 1], _closed_form(bng[:, 0], rows[0]), rtol=1e-5)
+    out = _run_bridge(tmp_path, [action], ['x'], 'x')
+    np.testing.assert_array_equal(_times(out), rows)
+    np.testing.assert_allclose(out['Stot'], bng[:, 1], rtol=1e-5)
+
+
+def _edition2(tmp_path, lines, data):
+    from pybnf import config, parse
+    model = tmp_path / 'm.bngl'
+    model.write_text(_decay_block())
+    for name, text in data.items():
+        (tmp_path / name).write_text(text)
+    conf = ['edition = 2', 'model: %s' % model, 'output_dir = %s' % (tmp_path / 'out'),
+            'job_type = de', 'objective = sos', 'bngl_backend = bngsim', 'uniform_var = k 0.1 1',
+            'population_size = 4', 'max_iterations = 1'] + lines
+    return config.Configuration(parse.ploop([ln + '\n' for ln in conf]))
+
+
+@pytest.mark.parametrize('experiment, field, value', [
+    ('experiment: dose, t_end: -0.5, data: {d}/dose.exp', 't_end', '-0.5'),
+    ('experiment: dose, t_end: 0, data: {d}/dose.exp', 't_end', '0'),
+    ('experiment: dose, preequilibrate: pre, t_end: -1, data: {d}/dose.exp', 't_end', '-1'),
+    ('experiment: tc, preequilibrate: pre, equil_t_end: -2, data: {d}/tc.exp', 'equil_t_end',
+     '-2'),
+    ('experiment: tc, preequilibrate: pre, equil_t_end: 0, data: {d}/tc.exp', 'equil_t_end',
+     '0'),
+], ids=['scan_t_end_negative', 'scan_t_end_zero', 'preequilibrated_scan_t_end',
+        'equil_t_end_negative', 'equil_t_end_zero'])
+def test_a_scan_or_equilibration_time_not_after_zero_is_refused_at_load(tmp_path, experiment,
+                                                                       field, value):
+    """lanl/PyBNF#952: BNG2.pl integrates nothing for such a time (a scan scores every dose at
+    its starting state, an equilibration is skipped) and bngsim fails every simulation; both
+    were accepted at load. The same experiment with a time after 0 loads."""
+    data = {'dose.exp': '# S0 Stot\n50 37.04\n100 74.08\n',
+            'tc.exp': '# time Stot\n1 74.08\n2 54.88\n'}
+    with pytest.raises(PybnfError) as info:
+        _edition2(tmp_path, ['condition: pre, perturbations: k = 0.1',
+                             experiment.format(d=tmp_path)], data)
+    name = experiment.split(',')[0].split(': ')[1]
+    assert info.value.log_message == ("Experiment '%s' has '%s: %s', which is not a finite time "
+                                      "after 0" % (name, field, value))
+    good = experiment.replace(field + ': ' + value, field + ': 2')
+    _edition2(tmp_path, ['condition: pre, perturbations: k = 0.1', good.format(d=tmp_path)], data)
+
+
+def test_an_imported_petab_period_before_zero_is_refused_without_a_wrong_remedy(tmp_path,
+                                                                               monkeypatch):
+    """A valid PEtab v2 problem whose one period starts at t = -10, measured at -5 and later,
+    imports to data at a negative time (the import keeps the period's clock, #951). Every
+    backend would mis-score it; it is refused, and the message names #951 rather than telling
+    the user to shift the data to start at 0 (the right shift is the period's start)."""
+    pytest.importorskip('petab')
+    from pybnf import config, parse
+    from pybnf.petab import import_job
+    src = tmp_path / 'src'
+    src.mkdir()
+    (src / 'decay.bngl').write_text(_decay_block().replace('k   0.3', 'k   0.5'))
+    tables = {
+        'experiments.tsv': 'experimentId\ttime\tconditionId\ne1\t-10\t\n',
+        'measurements.tsv': ('observableId\texperimentId\ttime\tmeasurement\n'
+                             'obs_S\te1\t-5\t8.2085\nobs_S\te1\t0\t0.6738\nobs_S\te1\t1\t0.4087\n'),
+        'observables.tsv': ('observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+                            'obs_S\tStot\t1\tnormal\n'),
+        'parameters.tsv': 'parameterId\testimate\tlowerBound\tupperBound\nk\ttrue\t0.01\t5\n',
+        'problem.yaml': ('format_version: 2.0.0\nparameter_files:\n  - parameters.tsv\n'
+                         'observable_files:\n  - observables.tsv\nmeasurement_files:\n'
+                         '  - measurements.tsv\nexperiment_files:\n  - experiments.tsv\n'
+                         'model_files:\n  decay:\n    location: decay.bngl\n    language: bngl\n'),
+    }
+    for name, text in tables.items():
+        (src / name).write_text(text)
+    out = tmp_path / 'job'
+    import_job(str(src / 'problem.yaml'), str(out), job_type='de')
+    conf = next(out.glob('*.conf'))
+    monkeypatch.chdir(out)
+    with pytest.raises(PybnfError) as info:
+        config.Configuration(parse.ploop(conf.read_text().splitlines(keepends=True)))
+    assert 'has data at t = -5, before t = 0' in info.value.log_message
+    assert 'lanl/PyBNF#951' in info.value.message
+    assert 'Shift the data' not in info.value.message

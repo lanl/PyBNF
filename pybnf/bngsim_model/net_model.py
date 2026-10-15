@@ -113,6 +113,10 @@ class _SimulateActionState:
     with it (#532). A hand-written block can make that sequence; the synthesized
     experiments no longer do, since a pre-equilibrated scan labels its snapshot (#830,
     ADR-0151). A labelled snapshot's own carried flag is kept beside it in the action loop.
+
+    ``stopped_early`` says the carried state is the trigger row of a ``stop_if`` run, put back
+    after the run (#1010) without the ``dx/dθ`` bngsim would carry: a sensitivity run that
+    carries it is refused rather than seeded from nothing.
     """
     sim: object
     method: str = 'ode'
@@ -120,6 +124,7 @@ class _SimulateActionState:
     current_time: float = 0.0
     carried_state: bool = False
     carried_baseline: bool = False
+    stopped_early: bool = False
     # The gradient path's record of the initial-condition seeding (pybnf._bngsim_seeding):
     # ``baseline_seed`` is what a fresh start from the reset target is seeded with -- read
     # before the save that made it, declared again after every reset back to it -- and
@@ -148,6 +153,7 @@ class _SimulateRunPlan:
     n_steps: int
     run_kwargs: dict
     stop_if: object
+    stopped: bool = False     # set when the run stops early on its stop_if (#1010)
 
 
 @dataclass
@@ -1299,10 +1305,7 @@ class BngsimModel(NetModel):
                     'n_steps': plan.n_steps,
                 })
                 result = self._run_prepared_simulate(plan, stop_log_label='stop_if triggered')
-                # BNG2.pl sets the model's clock to the time of the run's last row: the end of
-                # its grid, which for sample_times is t_end or the last listed time (#872).
-                state.current_time = plan.t_end
-                state.carried_state = True   # the simulator now holds an advanced state
+                self._settle_after_run(state, plan, result)
                 ds[plan.suffix] = self._result_to_data(result, print_functions=plan.print_funcs)
                 continue
 
@@ -1326,6 +1329,7 @@ class BngsimModel(NetModel):
                     # The reset target is the seed ICs -- or, once a saveConcentrations() has
                     # redefined it, that snapshot, which is carried if the state it captured was.
                     state.carried_state = state.carried_baseline
+                    state.stopped_early = False
                     if not state.carried_state:
                         declare_rows(model, state.baseline_seed, model_name=self.name,
                                      where='the action %s' % line)
@@ -1338,6 +1342,7 @@ class BngsimModel(NetModel):
                             "before it." % (self.name, line, label, label))
                     model.restore_concentrations(label)
                     state.carried_state = labelled_carried[label]
+                    state.stopped_early = False
                 concentration_overrides.clear()
                 continue
 
@@ -1495,8 +1500,7 @@ class BngsimModel(NetModel):
                 )
                 last_result = self._run_prepared_simulate(
                     plan, stop_log_label='protocol stop_if triggered')
-                state.current_time = plan.t_end     # the grid's end, as in _execute_actions
-                state.carried_state = True   # the simulator now holds an advanced state
+                self._settle_after_run(state, plan, last_result)
                 continue
 
             # ── setConcentration() ──
@@ -1541,6 +1545,7 @@ class BngsimModel(NetModel):
                     # The reset target, which a saveConcentrations() may have redefined to a
                     # carried state (as in _execute_actions).
                     state.carried_state = state.carried_baseline
+                    state.stopped_early = False
                 else:
                     if label not in labelled_carried:
                         raise PybnfError(
@@ -1549,6 +1554,7 @@ class BngsimModel(NetModel):
                             "runs before it." % (self.name, line, label, label))
                     model.restore_concentrations(label)
                     state.carried_state = labelled_carried[label]
+                    state.stopped_early = False
                 continue
 
             # ── saveConcentrations() ──
@@ -1581,6 +1587,7 @@ class BngsimModel(NetModel):
                     **self._codegen_kwargs(state.method),
                     **self._sensitivity_request_kwargs(state.method))
                 state.carried_state = False   # a fresh simulator carries no state
+                state.stopped_early = False
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
@@ -1686,6 +1693,7 @@ class BngsimModel(NetModel):
                 state.method = 'psa'
                 state.poplevel = poplevel
                 state.carried_state = False   # a fresh simulator carries no state
+                state.stopped_early = False
         elif state.method != method:
             state.sim = _runtime.bngsim.Simulator(
                 model, method=method,
@@ -1693,6 +1701,7 @@ class BngsimModel(NetModel):
             state.method = method
             state.poplevel = None
             state.carried_state = False       # a fresh simulator carries no state
+            state.stopped_early = False
 
         # Pre-equilibration sensitivity continuity (ADR-0052, GH #210 / #457): on the
         # gradient path, a measurement-phase simulate that continues a carried-over species
@@ -1710,6 +1719,16 @@ class BngsimModel(NetModel):
         req = self._sensitivity_request
         if (req is not None and self._run_sensitivity_params() and method == 'ode'
                 and state.carried_state):
+            if state.stopped_early:
+                raise PybnfError(
+                    "Model %s: the simulate action with suffix '%s' continues from the state a "
+                    "stop_if run stopped at, on the gradient path. That state is put back at the "
+                    "row where the stop condition held, as BNG2.pl leaves it, but bngsim cannot "
+                    "put back its dx/dtheta there (it carries the one at the run's t_end), so "
+                    "the derivatives of this action would be wrong."
+                    % (self._grid_label(), suffix),
+                    hint="Run a gradient-free job_type (e.g. job_type = de), or put a "
+                         "resetConcentrations() between the stop_if run and this action.")
             run_kwargs['carry_sensitivities'] = True
 
         if stop_if:
@@ -1730,12 +1749,60 @@ class BngsimModel(NetModel):
         ``__init__`` has none, and is named by its class."""
         return getattr(self, 'name', type(self).__name__)
 
+    def _settle_after_run(self, state, plan, result):
+        """Leave the model where BNG2.pl leaves it after a ``simulate`` (#1010): at the time of
+        the run's last row, holding that row's state. BNG2.pl reads both back from the last
+        row it wrote (BNGAction.pm 757-779).
+
+        That row is the grid's end (``plan.t_end``) unless the run stopped early.
+
+        * ``stop_if``: run_network stops an ODE run at the first output time at which the
+          condition holds, and bngsim cuts its result there too, but bngsim checks the
+          condition only after integrating the whole interval, so it leaves the model at
+          ``t_end``. Every species is put back at the trigger row (``Result.species`` holds
+          every species of a network model, :meth:`_restore_stopped_state`) and the clock at
+          its time. A stochastic method's ``stop_if`` never reaches here: BNG2.pl stops it
+          between output times, and the bridge does not run it (grid.UNREAD_GRID_OPTIONS).
+        * ``steady_state``: bngsim stops the run at steady state and holds that state; the
+          clock is the last row's time, not ``t_end``.
+        """
+        end = plan.t_end
+        stopped = plan.stopped
+        if stopped:
+            end = self._restore_stopped_state(plan, result)
+        elif plan.run_kwargs.get('steady_state') and len(result.time):
+            end = float(result.time[-1])
+        state.current_time = end
+        state.carried_state = True   # the simulator now holds an advanced state
+        state.stopped_early = stopped
+
+    def _restore_stopped_state(self, plan, result):
+        """Put every species back at the last row of a run cut short by ``stop_if``, and the
+        clock at its time; return that time."""
+        sim = plan.sim
+        names = list(result.species_names)
+        held = list(getattr(sim, 'species_names', names))
+        species = np.asarray(result.species, dtype=float)
+        if names != held or species.ndim != 2 or species.shape[1] != len(held) \
+                or not len(result.time):
+            raise PybnfError(
+                "Model %s: the simulate action with suffix '%s' stopped early on stop_if, but "
+                "the state it stopped at cannot be put back: its result reports %d species of "
+                "the model's %d. BNG2.pl continues from that state; the bngsim bridge would "
+                "continue from the run's t_end instead."
+                % (self._grid_label(), plan.suffix, len(names), len(held)),
+                hint="Run the model with bngl_backend = bionetgen.")
+        time = float(result.time[-1])
+        sim.set_state(species[-1], time=time)
+        return time
+
     @staticmethod
     def _run_prepared_simulate(plan, stop_log_label):
         """Run a prepared simulate() plan, handling stop_if/StopConditionMet.
 
         ``stop_log_label`` labels the info-log emitted when a stop condition
-        fires ('stop_if triggered' vs 'protocol stop_if triggered').
+        fires ('stop_if triggered' vs 'protocol stop_if triggered'). A result cut
+        short by a stop condition sets ``plan.stopped``, for :meth:`_settle_after_run`.
         """
         try:
             if plan.sample_times is not None:
@@ -1755,6 +1822,7 @@ class BngsimModel(NetModel):
             if isinstance(exc, _runtime.bngsim.StopConditionMet):
                 logger.info("%s: %s", stop_log_label, plan.stop_if)
                 result = exc.result
+                plan.stopped = True
             else:
                 raise
 

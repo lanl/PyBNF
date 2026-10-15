@@ -1794,12 +1794,18 @@ class TestStopIf:
                 self.observable_names = ['obs']
                 self.n_times = len(times)
                 self.n_observables = 1
+                self.species_names = ['A()', 'B()']
+                self.species = np.column_stack([10.0 - self.time, self.time])
 
         class FakeStopConditionMet(Exception):
             def __init__(self, result):
                 self.result = result
 
+        restored = []
+
         class FakeSimulator:
+            species_names = ['A()', 'B()']
+
             def __init__(self, model, method='ode', **kw):
                 pass
 
@@ -1807,6 +1813,9 @@ class TestStopIf:
                 # Simulate early stop at t=5 instead of t=10
                 truncated = FakeResult(np.linspace(t_span[0], 5, 3))
                 raise FakeStopConditionMet(truncated)
+
+            def set_state(self, state, time=None):
+                restored.append((list(state), time))
 
             def add_stop_condition(self, expr, label=None):
                 pass
@@ -1836,6 +1845,9 @@ class TestStopIf:
         # Truncated result should have 3 time points (not 11)
         assert ds['tc'].data.shape[0] == 3
         assert ds['tc'].data[-1, 0] == pytest.approx(5.0)
+        # ...and every species is put back at the stop row, the clock at its time (#1010):
+        # bngsim leaves the model at t_end.
+        assert restored == [([5.0, 5.0], 5.0)]
 
 
 # ── Gap 4: print_functions tests ─────────────────────────────────────────────────

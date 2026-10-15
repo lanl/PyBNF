@@ -12,7 +12,7 @@ import re
 
 from . import _runtime
 from .scan import _SS_METHOD_NEWTON, _SS_METHOD_PARITY
-from .grid import unread_grid_options
+from .grid import _statement, unread_grid_options
 from .parsing import (
     _collapse_action_line_continuations,
     _parse_simulate_action,
@@ -357,10 +357,21 @@ def _allowed_bngsim_backends_for_action(action_line):
     return frozenset(), False
 
 
+def runs_simulate_protocol(actions):
+    """Whether one of ``actions`` is BNG2.pl's ``simulate_protocol`` action, which runs the
+    protocol block once (BNGAction.pm 30-73). The bngsim bridge does not run it."""
+    return any(re.match(r'simulate_protocol\s*\(', _statement(line))
+               for line in actions)
+
+
 def runs_protocol_block(actions):
-    """Whether one of ``actions`` runs the model's protocol block: a ``parameter_scan`` or
-    ``bifurcate`` with ``method=>"protocol"``, the only actions that do in BNG2.pl
-    (``simulate_protocol``) and on the bngsim bridge."""
+    """Whether one of ``actions`` runs the model's protocol block. In BNG2.pl two kinds of
+    action do (``simulate_protocol``, BNGAction.pm 30-73): a ``simulate_protocol`` action, which
+    runs it once (:func:`runs_simulate_protocol`; the bngsim bridge does not run it), and a
+    ``parameter_scan`` or ``bifurcate`` with ``method=>"protocol"``, which runs it at each
+    point (as the bridge does)."""
+    if runs_simulate_protocol(actions):
+        return True
     for action_line in actions:
         line = _collapse_action_line_continuations(action_line).strip()
         if not line or line.startswith('#'):

@@ -317,6 +317,8 @@ class Configuration:
         # every output key it can produce is known: refuse two simulations that spell one key
         # (#850, #833) before anything reads a key back.
         self._check_output_keys_unique()
+        # ...and a datum is at a time its simulation writes a row at, where that is known now.
+        self._refuse_data_without_rows()
         # Deferred until here (post-_load_experiments) so the 'smoothing' misuse check sees the
         # edition-2 models' synthesized simulate/parameter_scan actions -- and thus their
         # `stochastic` flag (#471). Legacy models set the flag at parse time, so the check is
@@ -1809,7 +1811,7 @@ class Configuration:
                     scan = {'suffix': name, 'method': method, 'param': stacked.indvar}
                     t_end = fields.get('t_end')
                     if t_end is not None:
-                        scan['time'] = t_end
+                        scan['time'] = self._time_after_start(name, 't_end', t_end)
                     else:
                         scan['steady_state'] = 1
                     action = ParamScan(scan, explicit_points=points)
@@ -1881,6 +1883,59 @@ class Configuration:
         for model in self.models.values():
             refuse_ambiguous_output_keys(model, edition=ed)
 
+    def _refuse_data_without_rows(self):
+        """Refuse a datum at a time that the BNGL ``simulate`` it is scored against writes no row
+        at (#872 review).
+
+        A ``simulate`` whose grid is its ``sample_times`` writes the rows
+        :func:`~pybnf.bngsim_model.grid.sample_time_rows` lists, on BNG2.pl and on the bngsim
+        bridge alike: from ``t_start``, and no later than ``t_end``. When those are known as the
+        configuration loads (:func:`~pybnf.bngsim_model.grid.literal_sample_time_rows`), every
+        time of the data scored against the action must be one of them, matched as the objective
+        matches it (equal to within its relative tolerance, ``_sim_row_for``). Otherwise every
+        evaluation raises, every job is scored as a failed simulation, and the fit ends
+        "Fitting complete" at an objective of inf. With ``ind_var_rounding = 1`` the objective
+        takes the nearest row instead, so nothing is refused; a datum at ``t = inf`` (a steady
+        state) is scored against the last row. Data are matched to an action by output key, its
+        condition included (:func:`~pybnf.output_keys.output_pairs`). A step-count grid, and a
+        ``sample_times`` grid known only when it runs, are not checked here."""
+        from .bngsim_model.grid import _statement, literal_sample_time_rows
+        from .bngsim_model.parsing import _parse_simulate_action
+        from .output_keys import output_pairs
+        if self.config.get('ind_var_rounding', 0):
+            return
+        for model in self.models.values():
+            data = self.exp_data.get(model.name) or {}
+            if not isinstance(model, BNGLModel) or not data:
+                continue
+            grids = []
+            for line in model.actions:
+                params = _parse_simulate_action(_statement(line))
+                rows = None if params is None else literal_sample_time_rows(params)
+                if rows is not None:
+                    grids.append((params.get('suffix', 'time_course'), (params, rows)))
+            for key, suffix, (params, rows), _condition in output_pairs(model, grids):
+                exp = data.get(key)
+                if exp is None or min(exp.cols, key=exp.cols.get) != 'time':
+                    continue
+                times = np.unique(exp.data[:, exp.cols['time']])
+                missing = [t for t in times if np.isfinite(t)
+                           and not np.any(np.isclose(rows, t, atol=0.))]
+                if not missing:
+                    continue
+                listed = ', '.join('%g' % t for t in missing)
+                raise PybnfError(
+                    'Model %s, simulate action with suffix "%s": the data for "%s" has t = %s, '
+                    'where the action writes no row' % (model.name, suffix, key, listed),
+                    'Model %s, simulate action with suffix "%s" writes rows at t = %s: BNG2.pl '
+                    'starts the run at t_start and writes that row, then each of its sample_times '
+                    'after t_start and before the end, then the end (its t_end when it gives one, '
+                    'else its last sample time), and the bngsim bridge writes the same rows. The '
+                    'data for "%s" has t = %s, which no simulation, on either backend, has a row '
+                    'to score against, so every evaluation would fail. Add the time to the '
+                    "action's sample_times (and move its t_end past it), or remove the data."
+                    % (model.name, suffix, ', '.join('%g' % t for t in rows), key, listed))
+
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read
         from a named condition's ``MutationSet`` (ADR-0052, #474).
@@ -1918,6 +1973,28 @@ class Configuration:
             kind = 'species' if getattr(mut, 'is_species', False) else 'param'
             perts.append((kind, mut.name, mut.value))
         return perts
+
+    @staticmethod
+    def _time_after_start(name, field, value):
+        """``value`` of an experiment's ``t_end:`` (a parameter scan's readout time) or
+        ``equil_t_end:`` (a fixed equilibration's duration), refused unless it is a finite time
+        after t = 0, where the run starts (#952). At or before 0 BNG2.pl integrates nothing --
+        a scan scores every dose at its starting state, and an equilibration is skipped -- while
+        bngsim fails every simulation; either way the fit reports nothing true."""
+        try:
+            time = float(value)
+        except (TypeError, ValueError):
+            raise PybnfError(f"Experiment '{name}': '{field}: {value}' is not a number.")
+        if not (np.isfinite(time) and time > 0):
+            what = ('the time each dose is read, after its run starts at t = 0' if field == 't_end'
+                    else 'how long the equilibration runs before the measured part starts')
+            raise PybnfError(
+                f"Experiment '{name}' has '{field}: {value}', which is not a finite time after 0",
+                f"Experiment '{name}' has '{field}: {value}'. The {field} is {what}, so it must "
+                "be a finite time after 0. At or before 0 BNG2.pl integrates nothing (a scan "
+                "scores every dose at its starting state; an equilibration is skipped), and "
+                "bngsim fails every simulation.")
+        return value
 
     @staticmethod
     def _steady_state_action(name, method, fields):
@@ -1999,6 +2076,8 @@ class Configuration:
         # steady state; it must run its equilibration phase for a FIXED time given by
         # ``equil_t_end:`` (any method may use it; ODE/SSA default to a steady-state solve).
         equil_t_end = fields.get('equil_t_end')
+        if equil_t_end is not None:
+            equil_t_end = self._time_after_start(name, 'equil_t_end', equil_t_end)
         if method == 'nf' and equil_t_end is None:
             raise PybnfError(
                 f"Experiment '{name}' is a network-free (method: nf) pre-equilibration, but NFsim "
@@ -2012,7 +2091,7 @@ class Configuration:
             scan = {'suffix': name, 'method': method, 'param': indvar}
             t_end = fields.get('t_end')
             if t_end is not None:
-                scan['time'] = t_end
+                scan['time'] = self._time_after_start(name, 't_end', t_end)
             else:
                 scan['steady_state'] = 1
             action = ParamScan(scan, explicit_points=points)
