@@ -170,7 +170,14 @@ Required Keys
       before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
       order of the ``experiment:`` lines never changes a fit. (ADR-0151)
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
-      "model as is").
+      "model as is"). An experiment run under a condition names its output, and its data
+      key, by the experiment's name followed by the condition's name. Names that spell one
+      output in two ways — an experiment ``data`` with no condition beside an experiment
+      ``dat`` and a condition ``a`` of the same model — are refused at load, naming both, even
+      when only one of the two pairings is measured. A name that merely ends with a
+      condition's name (``no_inhibition`` beside ``inhibition``) is fine: PyBNF reads each
+      output back from the experiment and condition that produced it, never from its
+      spelling. (ADR-0153)
     * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
       unmeasured **steady state before the measured time course begins** — the PEtab v2
       pre-equilibration protocol. The named condition (and the measurement ``condition:``,
