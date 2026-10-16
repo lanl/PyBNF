@@ -2483,21 +2483,36 @@ _PARABOLA_TEXT = (Path(__file__).parent / 'bngl_files' / 'parabola.bngl').read_t
 def test_a_simulate_with_n_output_steps_or_no_step_count_loads(tmp_path, steps, fit_type):
     """``find_t_length`` refused both for every job type, to compute a length only am read
     (#998). BNG2.pl takes ``n_output_steps`` for ``n_steps`` and defaults to one step. The
-    length is gone, and am sizes its buffers from the output it records."""
+    length is gone, and am sizes its buffers from the output it records.
+
+    With no step count the action writes only t = -10 and 10 (BNG2.pl's one step from t_start),
+    so that case gets those two rows of the data; the 21 rows of ``par1.exp`` are refused at
+    load for the 19 times it writes no row (#872)."""
     text = _PARABOLA_TEXT.replace('n_steps=>20,', steps + (',' if steps else ''))
     assert ('n_output_steps=>20' in text) == bool(steps) and 'n_steps' not in text
     model = tmp_path / 'parabola.bngl'
     model.write_text(text)
     exp = Path(__file__).parent / 'bngl_files' / 'par1.exp'
     out = str(tmp_path) + '/'
-    base = {'population_size': 1, 'max_iterations': 100, 'step_size': 0.2,
-            'output_hist_every': 5, 'sample_every': 2, 'burn_in': 10, 'adaptive': 10,
-            'credible_intervals': [68, 95], 'output_dir': out, 'models': {str(model)},
-            'exp_data': {str(exp)}, 'initialization': 'lh', str(model): [str(exp)],
-            'fit_type': fit_type, **UNIFORM_VARS}
-    if fit_type == 'am':
-        base['output_trajectory'] = ['y']
-    cfg = config.Configuration(base)
+
+    def configure(exp):
+        base = {'population_size': 1, 'max_iterations': 100, 'step_size': 0.2,
+                'output_hist_every': 5, 'sample_every': 2, 'burn_in': 10, 'adaptive': 10,
+                'credible_intervals': [68, 95], 'output_dir': out, 'models': {str(model)},
+                'exp_data': {str(exp)}, 'initialization': 'lh', str(model): [str(exp)],
+                'fit_type': fit_type, **UNIFORM_VARS}
+        if fit_type == 'am':
+            base['output_trajectory'] = ['y']
+        return config.Configuration(base)
+
+    if not steps:
+        with pytest.raises(PybnfError) as info:
+            configure(exp)
+        assert 'writes rows at t = -10, 10' in info.value.message
+        lines = exp.read_text().splitlines()
+        exp = tmp_path / 'par1.exp'
+        exp.write_text('\n'.join([lines[0], lines[1], lines[-1]]) + '\n')
+    cfg = configure(exp)
     assert 'time_length' not in cfg.config
     if fit_type == 'am':
         am = algorithms.Adaptive_MCMC(cfg)
