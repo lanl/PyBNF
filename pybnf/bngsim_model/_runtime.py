@@ -23,6 +23,7 @@ BNGSIM_HAS_RULEMONKEY = _bngsim_caps.BNGSIM_HAS_RULEMONKEY
 BNGSIM_HAS_OUTPUT_SENS = _bngsim_caps.BNGSIM_HAS_OUTPUT_SENS
 BNGSIM_HAS_SS_OUTPUT_SENS = _bngsim_caps.BNGSIM_HAS_SS_OUTPUT_SENS
 BNGSIM_HAS_SCAN_SENS_CARRY = _bngsim_caps.BNGSIM_HAS_SCAN_SENS_CARRY
+BNGSIM_SET_STATE_TAKES_TIME = _bngsim_caps.BNGSIM_SET_STATE_TAKES_TIME
 BNGSIM_VERSION = _bngsim_caps.BNGSIM_VERSION
 feature_missing_reason = _bngsim_caps.feature_missing_reason
 gradient_floor_problem = _bngsim_caps.gradient_floor_problem

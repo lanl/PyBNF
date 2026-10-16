@@ -1813,7 +1813,12 @@ class BngsimModel(NetModel):
                 % (self._grid_label(), suffix, len(names), len(held)),
                 hint="Run the model with bngl_backend = bionetgen.")
         time = float(result.time[-1])
-        sim.set_state(species[-1], time=time)
+        if _runtime.BNGSIM_SET_STATE_TAKES_TIME:
+            sim.set_state(species[-1], time=time)
+        else:
+            # bngsim 0.16.0 keeps its clock at t_end; the bridge's clock (the time returned
+            # here) starts every later run, so nothing reads it (_bngsim_caps).
+            sim.set_state(species[-1])
         return time
 
     @staticmethod

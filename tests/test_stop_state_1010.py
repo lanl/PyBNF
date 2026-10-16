@@ -73,6 +73,18 @@ end model
 STOP = 'simulate({method=>"ode",t_end=>20,n_steps=>20,stop_if=>"Atot<500",suffix=>"eq"})'
 
 
+@pytest.fixture(params=[True, False], ids=['state_and_clock', 'state_only'])
+def put_back(request, monkeypatch):
+    """Both ways the stop row goes back: with its time where ``Simulator.set_state`` takes
+    ``time=``, and the state alone on bngsim 0.16.0, whose clock stays at ``t_end`` while the
+    bridge's own clock starts the next run (``_bngsim_caps.BNGSIM_SET_STATE_TAKES_TIME``)."""
+    from pybnf.bngsim_model import _runtime
+    if request.param and not _runtime.BNGSIM_SET_STATE_TAKES_TIME:
+        pytest.skip('this bngsim build has no Simulator.set_state(time=)')
+    monkeypatch.setattr(_runtime, 'BNGSIM_SET_STATE_TAKES_TIME', request.param)
+    return request.param
+
+
 def _both(tmp_path, model_text, actions, suffixes):
     """BNG2.pl's ``.gdat`` rows of each suffix, and the bridge's output, for ``actions``."""
     code, log = _bng2pl(tmp_path, 'm', model_text,
@@ -109,7 +121,8 @@ _AFTER = [
 
 
 @pytest.mark.parametrize('after, rows, offset', [a[1:] for a in _AFTER], ids=[a[0] for a in _AFTER])
-def test_the_action_after_a_stop_starts_from_the_stop_row(tmp_path, after, rows, offset):
+def test_the_action_after_a_stop_starts_from_the_stop_row(tmp_path, after, rows, offset,
+                                                          put_back):
     """BNG2.pl continues from A(7), with every species (B too) at the stop row, and a continued
     action starts its clock at 7. The bridge used to continue from A(20) at t = 20: a plain
     simulate fitted the next phase to 1000 exp(-0.1 (20 + t)) instead of exp(-0.1 (7 + t))."""
@@ -141,7 +154,7 @@ def test_the_clock_after_a_steady_state_stop_is_its_last_row(tmp_path):
     np.testing.assert_allclose(out['x']['Atot'], 100.0, rtol=1e-4)
 
 
-def test_a_protocol_scan_continues_from_the_stop_row(tmp_path):
+def test_a_protocol_scan_continues_from_the_stop_row(tmp_path, put_back):
     """The protocol block takes the same path: a stop then a simulate, run at each point of a
     method=>"protocol" scan over kdeg. Oracle: BNG2.pl's .scan, and A(t*) exp(-kdeg 5) with
     A(t*) the first integer t at which A < 500."""
@@ -208,7 +221,7 @@ def test_the_network_free_paths_both_ignore_stop_if(tmp_path):
     np.testing.assert_allclose(_times(out), np.arange(11), atol=1e-9)
 
 
-def test_the_gradient_path_refuses_to_carry_a_stopped_state(tmp_path):
+def test_the_gradient_path_refuses_to_carry_a_stopped_state(tmp_path, put_back):
     """bngsim cannot put a stopped run's dx/dtheta back at the stop row, so a sensitivity run
     that continues from it is refused (with a reset between, it starts afresh and runs)."""
     import pybnf.bngsim_model as bngsim_model
@@ -294,7 +307,7 @@ def test_each_scan_point_stops_on_the_scans_stop_if(tmp_path, options, stops):
     np.testing.assert_allclose(out['Btot'], bng['Btot'], rtol=1e-6)
 
 
-def test_a_continuation_scans_first_point_stops_on_its_stop_if(tmp_path):
+def test_a_continuation_scans_first_point_stops_on_its_stop_if(tmp_path, put_back):
     """reset_conc=>0 takes the same per-point stop. (Its later points start from the seed on
     the bridge, not from the point before, lanl/PyBNF#871, so only the first is compared.)"""
     bng, model = _scan_both(tmp_path, 't_end=>20,n_steps=>20,stop_if=>"Atot<500",reset_conc=>0')

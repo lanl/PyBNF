@@ -1778,8 +1778,10 @@ class TestSimulatorKwargs(TestContinueFlag):
 # ── Gap 2: stop_if tests ────────────────────────────────────────────────────────
 
 class TestStopIf:
-    def test_stop_if_catches_exception(self, monkeypatch):
-        """stop_if triggers StopConditionMet → uses truncated result."""
+    @pytest.mark.parametrize('takes_time', [True, False], ids=['set_state_time', 'state_only'])
+    def test_stop_if_catches_exception(self, monkeypatch, takes_time):
+        """stop_if triggers StopConditionMet → uses truncated result. A build whose
+        ``set_state`` takes no ``time=`` (bngsim 0.16.0) is given the state alone."""
 
         class FakeCoreResult:
             def __init__(self, times):
@@ -1831,6 +1833,7 @@ class TestStopIf:
         fake_bngsim.StopConditionMet = FakeStopConditionMet
         monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
         monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_SET_STATE_TAKES_TIME', takes_time)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -1847,7 +1850,7 @@ class TestStopIf:
         assert ds['tc'].data[-1, 0] == pytest.approx(5.0)
         # ...and every species is put back at the stop row, the clock at its time (#1010):
         # bngsim leaves the model at t_end.
-        assert restored == [([5.0, 5.0], 5.0)]
+        assert restored == [([5.0, 5.0], 5.0 if takes_time else None)]
 
 
 # ── Gap 4: print_functions tests ─────────────────────────────────────────────────

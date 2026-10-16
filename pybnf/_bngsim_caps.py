@@ -11,6 +11,7 @@ import collections
 import contextlib
 import ctypes
 import importlib.metadata
+import inspect
 import logging
 import os
 import re
@@ -178,6 +179,25 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
     BNGSIM_AVAILABLE
     and hasattr(getattr(bngsim, 'Model', None), 'declare_ic_sensitivity')
 )
+
+
+def _set_state_takes_time():
+    """Whether ``Simulator.set_state`` takes ``time=``, so the clock goes back with the state.
+
+    A signature that cannot be read answers no: the call without it is one every build takes."""
+    try:
+        return 'time' in inspect.signature(bngsim.Simulator.set_state).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+# ``Simulator.set_state(state, time=t)`` sets the clock with the state, rewinding the event
+# carry with it; bngsim 0.16.0, the supported floor, takes the state alone. Both still report
+# 0.16.0, so the keyword is the probe. The bridge puts a ``stop_if`` run's last row back with
+# it (#1010). Without it the simulator's clock stays at the run's ``t_end``, which nothing the
+# bridge runs reads: every run gets its start from an explicit ``t_span`` or ``sample_times``
+# (the bridge's own clock), and a network model has no events to carry.
+BNGSIM_SET_STATE_TAKES_TIME = bool(BNGSIM_AVAILABLE and _set_state_takes_time())
 # Forward sensitivities that survive a DISCRETE EVENT -- the jump
 #
 #     s+ = dh/dx . (s- + f-.dt*/dp) + dh/dp - f+.dt*/dp
