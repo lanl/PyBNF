@@ -28,7 +28,9 @@ from .bngsim_antimony_model import (
     BngsimAntimonyModelNoTimeout,
 )
 from .printing import verbosity, print1, PybnfError
-from .output_keys import refuse_ambiguous_output_keys
+from .output_keys import (
+    output_pairs, refuse_ambiguous_output_keys, refuse_duplicate_action_suffixes,
+    simulation_conditions)
 from .constraint import ConstraintSet
 
 import numpy as np
@@ -314,8 +316,9 @@ class Configuration:
         self._load_experiments()
         logger.debug('Loaded experiments')
         # Every model now has all its actions (legacy, synthesized) and conditions / mutants, so
-        # every output key it can produce is known: refuse two simulations that spell one key
-        # (#850, #833) before anything reads a key back.
+        # every output key it can produce is known: refuse two simulations that spell one key a
+        # consumer reads (#850, #833) before anything reads a key back. Postprocessing targets
+        # are read later, so the check runs again once they are loaded.
         self._check_output_keys_unique()
         # Deferred until here (post-_load_experiments) so the 'smoothing' misuse check sees the
         # edition-2 models' synthesized simulate/parameter_scan actions -- and thus their
@@ -384,6 +387,8 @@ class Configuration:
         self._load_start_point()
         self._check_starting_params()
         self._load_postprocessing()
+        # A postprocessing target is one more key a consumer reads (#850).
+        self._check_output_keys_unique()
         # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
         # constraints, and postprocessing are all populated: records per model the full
         # output suffixes any consumer reads, so the backend execute() can skip the
@@ -1539,17 +1544,35 @@ class Configuration:
             mut_objects = [Mutation(var, op, float(val)) for var, op, val in mutations]
             mut_set = MutationSet(mut_objects, name)
             self.models[base].add_mutant(mut_set)
-            # Check that the exp files will have simulation outputs
+            # Check that the exp files will have simulation outputs -- of this mutant. A file's
+            # stem is the output it is scored against, so it is resolved from the model's
+            # (action, mutant) pairs: matching the mutant's name inside the stem accepted
+            # xbc.exp under mutant b (as x + b + c) and scored it against the unmutated
+            # action xbc (#850).
             for ex in exps:
                 ename = self._file_prefix(ex, '(exp|con|prop)')
-                base_suffix = re.match(f'.*(?={name})', ename)
                 suffix_choices = [x[1] for x in self.models[base].suffixes]
                 if len(suffix_choices) == 0:
                     raise PybnfError(f"Model {base} has no action suffixes, so I can't have mutant model {name} with "
                                      f"data file {ex} based on that model")
-                if not base_suffix or base_suffix.group(0) not in suffix_choices:
+                producers = [(suffix, condition) for key, suffix, _action, condition
+                             in output_pairs(self.models[base]) if key == ename]
+                if len(producers) == 1 and producers[0][1] is mut_set:
+                    continue
+                if not producers:
                     raise PybnfError(f'Experimental file name {ex} in mutant model {name}. This file name should consist of '
                                      f'the model suffix it corresponds to, followed by the mutant name (e.g. {suffix_choices[0]}{name}.exp)')
+                found = '; '.join(
+                    f"action '{suffix}' " + ('with no mutant' if condition is None
+                                             else f"under mutant '{condition.suffix}'")
+                    for suffix, condition in producers)
+                raise PybnfError(
+                    f"Experimental file {ex} is listed under mutant {name}, but its name '{ename}' is "
+                    f"the output of {found}, not of an action under mutant {name}, so it would be "
+                    f"scored against that simulation.",
+                    hint=f"Name the file for the action it measures followed by the mutant name (e.g. "
+                         f"{suffix_choices[0]}{name}.exp), or list it under the model or mutant it "
+                         f"belongs to.")
             # Stages these exp files to get loaded along with regular model ones
             self._data_map[base] += exps
 
@@ -1698,6 +1721,10 @@ class Configuration:
         # _postprocess_normalization resolves the qualifier through this map. Always
         # defined (even with no experiments) so the resolver can read it unconditionally.
         self._experiment_data_keys = {}
+        # experiment name -> the condition it is measured under ('' for none, and for a
+        # pre-equilibration, whose conditions are applied inline to the model as written), so
+        # the output-key check can tell an experiment's own pair from one it never asked for.
+        self._experiment_conditions = {}
         experiments = [(k[1], v) for k, v in self.config.items()
                        if isinstance(k, tuple) and k[0] == 'experiment']
         if not experiments:
@@ -1747,6 +1774,8 @@ class Configuration:
             data_key = self._resolve_experiment_data_key(
                 name, model, base, fields.get('condition'), preequilibrate)
             self._experiment_data_keys[name] = (base, data_key)
+            self._experiment_conditions[name] = (
+                fields.get('condition') or '' if preequilibrate is None else '')
             method = fields.get('method', 'ode')
             if preequilibrate is None and fields.get('condition') is not None:
                 regular_conditions.setdefault(base, set()).add(fields['condition'])
@@ -1868,18 +1897,56 @@ class Configuration:
             model.mutants = [m for m in model.mutants if m.suffix not in conds]
 
     def _check_output_keys_unique(self):
-        """Refuse a model two of whose ``(action, condition)`` simulations produce one output
-        key (:func:`pybnf.output_keys.refuse_ambiguous_output_keys`, #850, #833).
+        """Refuse a model that registers one output suffix twice
+        (:func:`pybnf.output_keys.refuse_duplicate_action_suffixes`), or two of whose simulations
+        produce one output key a consumer reads
+        (:func:`pybnf.output_keys.refuse_ambiguous_output_keys`, #850, #833).
 
         An output is named by its action suffix (an edition-2 experiment's name) followed by
         its condition's (an edition-2 ``condition:`` or an edition-1 mutant), so a wildtype
         experiment ``data`` and an experiment ``dat`` run under a condition ``a`` both produce
         ``data``. The simulation dict and the loaded data then keep one of the two, and every
         consumer that reads a key back -- the gradient's routing, the per-condition sensitivity
-        request, multiple shooting, recorded trajectories -- can attribute it to either."""
+        request, multiple shooting, recorded trajectories -- can attribute it to either.
+
+        Edition 1 runs every pair and ``am`` records every key, so every collision is refused.
+        Edition 2 runs a pair only when its key is read (:meth:`_compute_emit_suffixes`), so a
+        collision is refused only on a key :meth:`_consumed_output_keys` lists."""
         ed = edition.resolve_edition(self.config.get('edition'))
-        for model in self.models.values():
-            refuse_ambiguous_output_keys(model, edition=ed)
+        declared = getattr(self, '_experiment_conditions', {})
+        # BNG2.pl stores a suffix-less action's output in its own file, never under a suffix.
+        bng2pl = self.config.get('bngl_backend') == 'bionetgen'
+        for base, model in self.models.items():
+            refuse_duplicate_action_suffixes(model, edition=ed)
+            consumed = self._consumed_output_keys(base, model) if ed >= 2 else None
+            refuse_ambiguous_output_keys(
+                model, edition=ed, consumed=consumed, bng2pl=bng2pl,
+                declared={name: cond for name, cond in declared.items()
+                          if self._experiment_data_keys[name][0] == base})
+
+    def _consumed_output_keys(self, base, model):
+        """Every output key of ``model`` something reads: the scored data, every experiment's own
+        output (a constraint-only one too), each constraint's home and cross-references, every
+        postprocessing target loaded so far, and every key of an action no experiment
+        synthesized (a legacy ``time_course`` / ``param_scan`` key, or a model bound the legacy
+        way), which runs under every condition unpruned and ``am`` records. This is the emit
+        set of :meth:`_compute_emit_suffixes` widened to those actions: a key outside it is one
+        no pair is run for (#484), so two pairs that spell it overwrite nothing anyone reads."""
+        consumed = set(self.exp_data.get(base, {}))
+        experiment_names = set()
+        for name, (model_name, data_key) in self._experiment_data_keys.items():
+            if model_name == base:
+                experiment_names.add(name)
+                consumed.add(data_key)
+        consumed |= self._constraint_read_suffixes(base, set(model.get_suffixes()))
+        consumed |= {suffix for (model_name, suffix) in getattr(self, 'postprocessing', {}) or {}
+                     if model_name == base}
+        conditions = simulation_conditions(model)
+        for entry in getattr(model, 'suffixes', None) or []:
+            suffix = entry if isinstance(entry, str) else entry[1]
+            if suffix not in experiment_names:
+                consumed |= {suffix + (c.suffix if c is not None else '') for c in conditions}
+        return consumed
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read
@@ -2116,12 +2183,7 @@ class Configuration:
                 continue
             producible = set(model.get_suffixes())
             emit = set(self.exp_data.get(base, {}).keys())
-            for cs in self.constraints:
-                if cs.base_model != base:
-                    continue
-                emit.add(cs.base_suffix)
-                for c in cs.constraints:
-                    emit |= self._constraint_ref_suffixes(c, producible)
+            emit |= self._constraint_read_suffixes(base, producible)
             emit |= {suff for (m, suff) in self.postprocessing if m == base}
             missing = emit - producible
             if missing:
@@ -2132,17 +2194,39 @@ class Configuration:
                     f"so the pair is simulated (lanl/PyBNF#484).")
             self.emit_suffixes[base] = emit
 
-    @staticmethod
-    def _constraint_ref_suffixes(constraint, producible):
+    def _constraint_read_suffixes(self, base, producible):
+        """Every output suffix of model ``base`` a constraint reads: the home ``base_suffix`` of
+        each constraint set on ``base``, and every dotted ``suffix.observable`` reference of
+        **any** constraint set that names one of ``base``'s outputs -- a constraint resolves a
+        dotted reference against every model (:meth:`pybnf.constraint.Constraint.get_key`), so
+        one bound to another model reads this one's output too (#1011 review)."""
+        reads = set()
+        for cs in getattr(self, 'constraints', None) or []:
+            if cs.base_model == base:
+                reads.add(cs.base_suffix)
+            for c in cs.constraints:
+                reads |= self._constraint_ref_suffixes(c, producible)
+        return reads
+
+    #: Every attribute through which a constraint reads an output: its two sides, the
+    #: ``altpenalty`` sides, and the enforcement variables of ``at X=v``, a split ``at``, and
+    #: ``between X=v1, Y=v2`` (:mod:`pybnf.constraint`).
+    _CONSTRAINT_READS = ('quant1', 'quant2', 'alt1', 'alt2', 'atvar', 'atvar1', 'atvar2',
+                         'startvar', 'endvar')
+
+    @classmethod
+    def _constraint_ref_suffixes(cls, constraint, producible):
         """The producible output suffixes one constraint references through a dotted
-        ``suffix.observable`` quantity (its two sides and any ``altpenalty`` sides). A
-        bare observable (no ``.``) resolves to the constraint's own ``base_suffix`` (already
-        unioned by the caller), so only dotted cross-references matter here. Restricting to
-        ``producible`` suffixes keeps a stray token (e.g. a numeric bound that slipped
-        through) from polluting the emit-set; a genuine dotted ref to an off-diagonal cell
-        is kept alive (defensive) rather than silently pruned (#484)."""
+        ``suffix.observable`` quantity: its two sides, any ``altpenalty`` sides, and its
+        enforcement variables (``at EgfTnfInh.Aobs=3`` reads ``EgfTnfInh``). A bare observable
+        (no ``.``) resolves to the constraint's own ``base_suffix`` (already unioned by the
+        caller), so only dotted cross-references matter here. Restricting to ``producible``
+        suffixes keeps a stray token (e.g. a numeric bound that slipped through) from polluting
+        the emit-set; a genuine dotted ref to an off-diagonal cell is kept alive (defensive)
+        rather than silently pruned (#484)."""
         refs = set()
-        for q in (constraint.quant1, constraint.quant2, constraint.alt1, constraint.alt2):
+        for attribute in cls._CONSTRAINT_READS:
+            q = getattr(constraint, attribute, None)
             if isinstance(q, str) and '.' in q:
                 prefix = q.split('.', 1)[0]
                 if prefix in producible:

@@ -967,6 +967,12 @@ class BNGLModel(Model):
         # nothing else (#900); under edition 2 that is at most the network definition, which it
         # writes back (#969). Protocol lines are not actions and are left out.
         self.action_line_indices = frozenset(skip_lines - protocol_lines)
+        # How many of ``self.suffixes`` the model file itself registers; the configuration's
+        # actions (an experiment, a time_course / param_scan key) are appended after them. Two
+        # file actions that share a suffix are BNG2.pl's own business -- the last one written is
+        # the output, on every backend -- while a configuration action that reuses a suffix is
+        # refused (pybnf.output_keys.refuse_duplicate_action_suffixes, #850).
+        self.file_suffix_count = len(self.suffixes)
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = self._synthesized_generate_network_line()
 
@@ -1612,6 +1618,11 @@ class BNGLModel(Model):
         _mt = float(action.equil_max_time)
         max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
         equil_suffix = f'{action.suffix}_preequil'
+        # The phase is not registered, but the bngsim backends still store its output under
+        # this suffix, so the configuration's output-key check counts it, and names it by its
+        # experiment (pybnf.output_keys, #850).
+        self.phase_outputs = {**(getattr(self, 'phase_outputs', None) or {}),
+                              equil_suffix: action.suffix}
         is_nf = getattr(action, 'method', None) == 'nf'
         self._append_experiment_start()
         for pert in action.equil_perturbations:
