@@ -1468,32 +1468,10 @@ def test_bngsim_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_
 
 
 # ── sample_times validation tests ────────────────────────────────────────────
-
-class TestResolveSampleTimes:
-    def test_none_when_not_specified(self):
-        assert bngsim_model._resolve_sample_times({}) is None
-
-    def test_none_for_empty_list(self):
-        assert bngsim_model._resolve_sample_times({'sample_times': []}) is None
-
-    def test_none_for_single_point(self):
-        assert bngsim_model._resolve_sample_times({'sample_times': [1.0]}) is None
-
-    def test_two_points_accepted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 1.0]})
-        assert result == [0.0, 1.0]
-
-    def test_three_points_accepted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 0.5, 1.0]})
-        assert result == [0.0, 0.5, 1.0]
-
-    def test_returned_sorted(self):
-        result = bngsim_model._resolve_sample_times({'sample_times': [1.0, 0.0, 0.5]})
-        assert result == [0.0, 0.5, 1.0]
-
-    # Further cases (explicit None, n_output_steps precedence, t_end appending,
-    # exponential literals) live in test_bngsim_scan.py, which is the bngsim-less
-    # CI tier — see the note there (lanl/bngsim#45).
+# The grid of an action with sample_times (absent, empty, one point, unsorted, n_steps
+# precedence, t_end before or after the last time, from t_start) is tested in
+# test_bngsim_scan.py, which is the bngsim-less CI tier -- see the note there (lanl/bngsim#45),
+# and against BNG2.pl's own output in test_sample_times_grid_872.py.
 
 
 # ── addConcentration parser tests ─────────────────────────────────────────────
@@ -1809,8 +1787,10 @@ class TestSimulatorKwargs(TestContinueFlag):
 # ── Gap 2: stop_if tests ────────────────────────────────────────────────────────
 
 class TestStopIf:
-    def test_stop_if_catches_exception(self, monkeypatch):
-        """stop_if triggers StopConditionMet → uses truncated result."""
+    @pytest.mark.parametrize('takes_time', [True, False], ids=['set_state_time', 'state_only'])
+    def test_stop_if_catches_exception(self, monkeypatch, takes_time):
+        """stop_if triggers StopConditionMet → uses truncated result. A build whose
+        ``set_state`` takes no ``time=`` (bngsim 0.16.0) is given the state alone."""
 
         class FakeCoreResult:
             def __init__(self, times):
@@ -1825,12 +1805,18 @@ class TestStopIf:
                 self.observable_names = ['obs']
                 self.n_times = len(times)
                 self.n_observables = 1
+                self.species_names = ['A()', 'B()']
+                self.species = np.column_stack([10.0 - self.time, self.time])
 
         class FakeStopConditionMet(Exception):
             def __init__(self, result):
                 self.result = result
 
+        restored = []
+
         class FakeSimulator:
+            species_names = ['A()', 'B()']
+
             def __init__(self, model, method='ode', **kw):
                 pass
 
@@ -1838,6 +1824,9 @@ class TestStopIf:
                 # Simulate early stop at t=5 instead of t=10
                 truncated = FakeResult(np.linspace(t_span[0], 5, 3))
                 raise FakeStopConditionMet(truncated)
+
+            def set_state(self, state, time=None):
+                restored.append((list(state), time))
 
             def add_stop_condition(self, expr, label=None):
                 pass
@@ -1853,6 +1842,7 @@ class TestStopIf:
         fake_bngsim.StopConditionMet = FakeStopConditionMet
         monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
         monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_SET_STATE_TAKES_TIME', takes_time)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -1867,6 +1857,9 @@ class TestStopIf:
         # Truncated result should have 3 time points (not 11)
         assert ds['tc'].data.shape[0] == 3
         assert ds['tc'].data[-1, 0] == pytest.approx(5.0)
+        # ...and every species is put back at the stop row, the clock at its time (#1010):
+        # bngsim leaves the model at t_end.
+        assert restored == [([5.0, 5.0], 5.0 if takes_time else None)]
 
 
 # ── Gap 4: print_functions tests ─────────────────────────────────────────────────

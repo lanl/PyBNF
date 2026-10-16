@@ -12,7 +12,7 @@ import re
 
 from . import _runtime
 from .scan import _SS_METHOD_NEWTON, _SS_METHOD_PARITY
-from .grid import unread_grid_options
+from .grid import _statement, unread_grid_options
 from .parsing import (
     _collapse_action_line_continuations,
     _parse_simulate_action,
@@ -305,14 +305,14 @@ def _allowed_bngsim_backends_for_action(action_line):
     ps_params = _parse_parameter_scan_action(line)
     if ps_params is not None:
         backend = _classify_action_method_backend(ps_params.get('method', 'ode'))
-        if backend is None or unread_grid_options(ps_params):
+        if backend is None or unread_grid_options(ps_params, scan=True):
             return frozenset(), True
         return frozenset((backend,)), True
 
     bf_params = _parse_bifurcate_action(line)
     if bf_params is not None:
         backend = _classify_action_method_backend(bf_params.get('method', 'ode'))
-        if backend is None or unread_grid_options(bf_params):
+        if backend is None or unread_grid_options(bf_params, scan=True):
             return frozenset(), True
         return frozenset((backend,)), True
 
@@ -357,10 +357,46 @@ def _allowed_bngsim_backends_for_action(action_line):
     return frozenset(), False
 
 
+def runs_simulate_protocol(actions):
+    """Whether one of ``actions`` is BNG2.pl's ``simulate_protocol`` action, which runs the
+    protocol block once (BNGAction.pm 30-73). The bngsim bridge does not run it."""
+    return any(re.match(r'simulate_protocol\s*\(', _statement(line))
+               for line in actions)
+
+
+def runs_protocol_block(actions):
+    """Whether one of ``actions`` runs the model's protocol block. In BNG2.pl two kinds of
+    action do (``simulate_protocol``, BNGAction.pm 30-73): a ``simulate_protocol`` action, which
+    runs it once (:func:`runs_simulate_protocol`; the bngsim bridge does not run it), and a
+    ``parameter_scan`` or ``bifurcate`` with ``method=>"protocol"``, which runs it at each
+    point (as the bridge does)."""
+    if runs_simulate_protocol(actions):
+        return True
+    for action_line in actions:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if not line or line.startswith('#'):
+            continue
+        for parse in (_parse_parameter_scan_action, _parse_bifurcate_action):
+            params = parse(line)
+            if params is not None:
+                if str(params.get('method', '')).strip().lower() == 'protocol':
+                    return True
+                break
+    return False
+
+
+def action_lines_run(actions, protocol=()):
+    """The action lines a model runs: its ``actions``, and the lines of its ``protocol`` block
+    when one of the actions runs it (:func:`runs_protocol_block`); a protocol block nothing runs
+    is never simulated, by BNG2.pl or by the bridge."""
+    return list(actions) + (list(protocol or ()) if runs_protocol_block(actions) else [])
+
+
 def bngsim_unread_action_options(actions):
     """``[(action suffix, [option, ...])]`` for each action naming an option BNG2.pl reads to
     decide its rows and the bngsim bridge does not (grid.UNREAD_GRID_OPTIONS), so that a refusal
-    of ``bngl_backend = bngsim`` can say which."""
+    of ``bngl_backend = bngsim`` can say which. Pass a protocol block's lines on their own to
+    name them as its (BNG2.pl drops a protocol action's suffix)."""
     found = []
     for action_line in actions:
         line = _collapse_action_line_continuations(action_line).strip()
@@ -371,7 +407,7 @@ def bngsim_unread_action_options(actions):
                                (_parse_bifurcate_action, 'param_scan')):
             params = parse(line)
             if params is not None:
-                options = unread_grid_options(params)
+                options = unread_grid_options(params, scan=default == 'param_scan')
                 if options:
                     found.append((params.get('suffix', default), options))
                 break
@@ -382,8 +418,12 @@ def classify_actions_for_bngsim(actions):
     """
     Classify an action set as the `.net` bridge, the NFsim bridge, or unsupported.
 
+    Pass a model's :func:`action_lines_run`: a ``method=>"protocol"`` scan runs the protocol
+    block's lines on the bridge, so a protocol action naming an option the bridge does not read
+    makes the model unsupported, as an action in the actions block does (#1000).
+
     Returns:
-        `BNGSIM_BACKEND_NET`, `BNGSIM_BACKEND_NF`, or `None`.
+        `BNGSIM_BACKEND_NET`, `BNGSIM_BACKEND_NF`, `BNGSIM_BACKEND_HYBRID`, or `None`.
     """
     candidates = set(_BNGSIM_ACTION_BACKENDS)
     saw_simulation_action = False

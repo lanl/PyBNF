@@ -254,17 +254,19 @@ def test_an_equilibration_on_one_step_hands_on_the_state_one_on_a_hundred_does(t
         np.testing.assert_array_equal(measured[0], measured[1])
 
 
+# Each: (option, the action's options, its method). print_on_stop is unread only beside stop_if
+# (#1000), and stop_if only on a stochastic method (#1010), so print_on_stop is shown on ode.
 _UNREAD = [
-    ('argfile', 'argfile=>"simargs.txt"'),
-    ('max_sim_steps', 't_end=>20,n_steps=>20,max_sim_steps=>50'),
-    ('output_step_interval', 't_end=>20,n_steps=>20,output_step_interval=>5'),
-    ('print_on_stop', 't_end=>20,n_steps=>20,stop_if=>"Stot<50",print_on_stop=>0'),
+    ('argfile', 'argfile=>"simargs.txt"', 'ssa'),
+    ('max_sim_steps', 't_end=>20,n_steps=>20,max_sim_steps=>50', 'ssa'),
+    ('output_step_interval', 't_end=>20,n_steps=>20,output_step_interval=>5', 'ssa'),
+    ('print_on_stop', 't_end=>20,n_steps=>20,stop_if=>"Stot<50",print_on_stop=>0', 'ode'),
 ]
 
 
-@pytest.mark.parametrize('option, options', _UNREAD, ids=[u[0] for u in _UNREAD])
+@pytest.mark.parametrize('option, options, method', _UNREAD, ids=[u[0] for u in _UNREAD])
 def test_an_option_bng2pl_reads_for_the_rows_and_the_bridge_does_not_is_not_the_bridges(
-        option, options):
+        option, options, method):
     """BNG2.pl reads these to decide an action's rows (an argfile can hold t_end and n_steps);
     the bridge reads none of them. Such an action is classified unsupported, so ``auto`` runs
     the model on BNG2.pl; were it run on the bridge anyway, the refusal says the bridge does not
@@ -272,7 +274,7 @@ def test_an_option_bng2pl_reads_for_the_rows_and_the_bridge_does_not_is_not_the_
     from pybnf.bngsim_model.classification import (bngsim_unread_action_options,
                                                    classify_actions_for_bngsim)
     from pybnf.bngsim_model.grid import check_output_grids
-    action = 'simulate({method=>"ssa",%s,suffix=>"p1"})' % options
+    action = 'simulate({method=>"%s",%s,suffix=>"p1"})' % (method, options)
     actions = ['generate_network({overwrite=>1})', action]
     assert classify_actions_for_bngsim(actions) is None
     assert bngsim_unread_action_options(actions) == [('p1', [option])]

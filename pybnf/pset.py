@@ -2217,8 +2217,9 @@ class TimeCourse(Action):
         # output grid from the data's independent-variable column, the time course
         # outputs at exactly those points rather than a uniform n_steps grid. ``t=0``
         # is forced in so integration always starts at the model's baseline -- BNG2.pl's
-        # t_start defaults to 0, but RoadRunner's simulate(times=...) and bngsim's
-        # sample_times path both begin integrating at the FIRST listed time (verified:
+        # t_start defaults to 0 (and the bngsim BNGL bridge follows it, #872), but RoadRunner's
+        # simulate(times=...) and bngsim's Simulator.run(sample_times=...), which the SBML path
+        # calls, both begin integrating at the FIRST listed time (verified:
         # RoadRunner with times=[10,...] returns the initial condition at t=10, not the
         # evolved value), so without a leading 0 a data grid that starts at t>0 would
         # silently produce the wrong trajectory. The extra t=0 output row is harmless to
@@ -2230,9 +2231,23 @@ class TimeCourse(Action):
         self.initial_state_only = False
         if explicit_points is not None:
             pts = sorted({float(p) for p in explicit_points} | {0.0})
-            if pts[-1] <= 0.0 and pts != [0.0]:
-                raise PybnfError('A time_course with explicit output points needs at least one '
-                                 'nonnegative time point, and may contain only t=0.')
+            if pts[0] < 0.0:
+                # Every backend starts the simulation at t = 0 (t_start), the clock the data's
+                # times are read on: BNG2.pl writes no row before it (and neither does the bngsim
+                # BNGL bridge, #872), and RoadRunner and bngsim's SBML path, which start a run at
+                # its first listed time, would start it at the negative time instead and score
+                # every reading against the model at the wrong time (#952).
+                raise PybnfError(
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}, '
+                    'before t = 0, where its simulation starts',
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}. '
+                    "Its simulation starts at t = 0, and an experiment's times are read on that "
+                    'clock, so no simulation can score the datum: BNG2.pl and the bngsim BNGL '
+                    'bridge write no row before the start, and RoadRunner and bngsim for SBML '
+                    'would start the run at the earliest time instead, scoring every reading at '
+                    'the wrong time. A job imported from a PEtab problem whose period starts '
+                    "before 0 keeps its times on the period's own clock, which the import does "
+                    'not yet shift (lanl/PyBNF#951).')
             self.explicit_points = pts
             self.initial_state_only = pts == [0.0]
             if self.time is None:

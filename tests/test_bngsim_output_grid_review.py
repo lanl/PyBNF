@@ -78,12 +78,12 @@ def test_nf_n_steps_takes_precedence_over_sample_times_as_in_bng2pl(tmp_path):
     np.testing.assert_allclose(_times(out), bng, atol=1e-9)
 
 
-@pytest.mark.xfail(strict=True, reason="lanl/PyBNF#872")
 def test_sample_times_after_t_start_are_reached_from_t_start(tmp_path):
     """An edition-1 action whose ``sample_times`` begin after ``t_start`` (0 by default):
     BNG2.pl integrates from t_start and writes it as its first row; the values at the sample
     times are the decay from t = 0. Oracle: the closed form 100 exp(-0.3 t) at 5 and 10, and
-    BNG2.pl's own rows. (Edition-2 experiments always put t = 0 first, so they never meet this.)"""
+    BNG2.pl's own rows. (Edition-2 experiments always put t = 0 first, so they never meet this.)
+    It was a strict xfail until lanl/PyBNF#872: the bridge reported the initial state at t = 2."""
     action = 'simulate({method=>"ode",sample_times=>[2,5,10],suffix=>"x"})'
     code, log = _bng2pl(tmp_path, 'decay', _decay_block(),
                         ['generate_network({overwrite=>1})', action])
@@ -97,6 +97,9 @@ def test_sample_times_after_t_start_are_reached_from_t_start(tmp_path):
     for t in (2.0, 5.0, 10.0):
         assert t in at, (t, sorted(at))
         np.testing.assert_allclose(at[t], 100.0 * np.exp(-0.3 * t), rtol=1e-5)
+    # ...and the same rows as BNG2.pl, the t_start row included.
+    np.testing.assert_allclose(_times(out), bng[:, 0], atol=1e-9)
+    np.testing.assert_allclose(out['Stot'], bng[:, 1], rtol=1e-5)
 
 
 def test_an_argfile_simulate_is_not_refused_as_one_bng2pl_refuses(tmp_path):

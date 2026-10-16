@@ -61,13 +61,12 @@ from .expressions import (
     _parse_net_species_initializers as _parse_net_species_initializers,
     initial_state_only_ids as initial_state_only_ids,
 )
-# Scan-point/sample-time resolution + steady-state constants live in scan.py;
+# Scan-point resolution + steady-state constants live in scan.py;
 # on-disk action-output writing in output.py (both numpy-only, bngsim-free).
 # Re-exported so the model classes / classification resolve the bare names.
 from .scan import (
     _with_sim_timeout as _with_sim_timeout,
     _resolve_scan_points as _resolve_scan_points,
-    _resolve_sample_times as _resolve_sample_times,
     _SS_METHOD_PARITY as _SS_METHOD_PARITY,
     _SS_METHOD_NEWTON as _SS_METHOD_NEWTON,
     _SS_SCAN_N_POINTS as _SS_SCAN_N_POINTS,

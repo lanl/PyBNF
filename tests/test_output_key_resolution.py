@@ -604,7 +604,8 @@ def test_a_suffixless_line_after_the_scored_action_is_refused_where_it_overwrite
         tmp_path, monkeypatch):
     """After the scored ``time_course``, a suffix-less line is the last write of that name on
     bngsim: refused. With the check switched off, the scored output is indeed the warm-up's
-    t = 0..3, not the experiment's 0..10. BNG2.pl writes the suffix-less line to its own
+    t = 0..3, not the experiment's 0..10 (the check of data against the kept output's rows,
+    #872, then refuses the data at t = 4..10). BNG2.pl writes the suffix-less line to its own
     file, so with ``bngl_backend = bionetgen`` the same model loads."""
     with pytest.raises(PybnfError) as err:
         _load(_suffixless_after(tmp_path / 'refused', 'bngsim'))
@@ -614,6 +615,11 @@ def test_a_suffixless_line_after_the_scored_action_is_refused_where_it_overwrite
 
     import pybnf.config
     monkeypatch.setattr(pybnf.config, 'refuse_ambiguous_output_keys', lambda *a, **k: None)
+    with pytest.raises(PybnfError) as err:
+        _load(_suffixless_after(tmp_path / 'rows', 'bngsim'))
+    assert 'writes rows at t = 0, 1, 2, 3,' in err.value.message
+    monkeypatch.setattr(pybnf.config.Configuration, '_refuse_data_without_rows',
+                        lambda self: None)
     conf = _load(_suffixless_after(tmp_path / 'off', 'bngsim'))
     H.require_bng2pl()
     alg = H.build(conf, 'de')
@@ -741,13 +747,15 @@ end actions
 
 
 @pytest.mark.bngsim
-def test_a_network_free_continuation_must_start_at_the_current_model_time(tmp_path):
-    """The network-free bridge keeps the model time too: a ``continue=>1`` from ``t_start =>
-    7`` after a run that ended at 5 is refused; from 5 it runs."""
-    with pytest.raises(PybnfError, match='t_start = 7.*model time is 5'):
-        _nf_continue(tmp_path / 'late', 7)
-    out = _nf_continue(tmp_path / 'on_time', 5)['b']
-    np.testing.assert_allclose(out.data[:, out.cols['time']], np.arange(5.0, 11.0))
+@pytest.mark.parametrize('t_start', [7, 5], ids=['late', 'on_time'])
+def test_a_network_free_continuation_must_start_at_the_current_model_time(tmp_path, t_start):
+    """A network-free ``continue=>1`` is refused as the configuration loads, from ``t_start =>
+    7`` after a run that ended at 5 and from 5 alike: BNG2.pl's simulate_nf refuses the option
+    whatever the start (BNGAction.pm 906-909), and the bridge follows it (#872). Without a
+    ``t_start`` the bridge would read the start as 0 and label the carried state from there."""
+    with pytest.raises(PybnfError) as info:
+        _nf_continue(tmp_path, t_start)
+    assert "NFsim does not support 'continue' option" in info.value.message
 
 
 def test_a_network_free_continue_under_a_shared_suffix_is_refused(tmp_path):
