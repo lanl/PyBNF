@@ -171,13 +171,22 @@ Required Keys
       order of the ``experiment:`` lines never changes a fit. (ADR-0151)
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
       "model as is"). An experiment run under a condition names its output, and its data
-      key, by the experiment's name followed by the condition's name. Names that spell one
-      output in two ways — an experiment ``data`` with no condition beside an experiment
-      ``dat`` and a condition ``a`` of the same model — are refused at load, naming both, even
-      when only one of the two pairings is measured. A name that merely ends with a
-      condition's name (``no_inhibition`` beside ``inhibition``) is fine: PyBNF reads each
-      output back from the experiment and condition that produced it, never from its
-      spelling. (ADR-0153)
+      key, by the experiment's name followed by the condition's name, and a model runs each
+      of its experiments under each of its conditions whenever something reads that run's
+      output (data, a constraint, including its ``at`` / ``between`` variables, or a
+      postprocessing script). So names that spell one output that is read in two ways — an
+      experiment ``data`` with no condition beside an experiment ``dat`` and a condition ``a``
+      of the same model, whether or not any experiment uses ``a`` — are refused at load,
+      naming both. Two pairings nothing reads that happen to spell the same output (``Egf``
+      under ``TnfInh`` and ``EgfTnf`` under ``Inh``) load: they may still run (BNG2.pl and
+      RoadRunner run every pairing, and so does bngsim for ``job_type = check`` or a model
+      with an action no experiment wrote), and a saved simulation file under that name may
+      hold either, but nothing scores or constrains them. Nor may an experiment be named after
+      another's pre-equilibration phase (``x_preequil`` beside an experiment ``x`` with
+      ``preequilibrate:``), whose output is stored under that name. A name that
+      merely ends with a condition's name (``no_inhibition`` beside ``inhibition``) is fine:
+      PyBNF reads each output back from the experiment and condition that produced it, never
+      from its spelling. (ADR-0153)
     * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
       unmeasured **steady state before the measured time course begins** — the PEtab v2
       pre-equilibration protocol. The named condition (and the measurement ``condition:``,
@@ -827,10 +836,13 @@ Other Path Keys
   for ``run_network``. A ``parameter_scan`` point with ``sample_times`` takes its row at that
   end. BNGsim's NFsim takes the same rows, and refuses ``continue=>1``, as BNG2.pl's does (it
   used to ignore it). The output kept for a suffix is the last action that writes it (a run
-  that does not continue writes it afresh, in BNG2.pl as in BNGsim). When that is a ``simulate``
-  whose rows are known as the configuration loads -- its ``sample_times`` or its step count,
-  written as numbers, and no ``stop_if``, ``steady_state`` or ``continue=>1`` -- a datum at a time
-  it does not write is refused then, since no simulation could score it (unless
+  that does not continue writes it afresh, in BNG2.pl as in BNGsim; one with ``continue=>1``
+  appends its rows after its start to the output of the run before it on the suffix, so a chain
+  of them writes the rows of each). When that is a ``simulate``, or a chain of them, whose rows
+  are known as the configuration loads -- their ``sample_times`` or step counts, written as
+  numbers, no ``stop_if`` or ``steady_state``, and each continued run starting where the run
+  before it on the suffix ended -- a datum at a time it does not write is refused then, since no
+  simulation could score it (unless
   ``ind_var_rounding = 1``, the fit has a ``time_error``, or a ``postprocess`` script, which may
   rewrite the times, is applied to the output). A
   grid that starts at a negative ``t_start`` (BNG2.pl stops on it) or ends where it starts

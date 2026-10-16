@@ -59,9 +59,10 @@ an end that is not after ``t_start`` (BNG2.pl integrates nothing: it writes the 
 times).
 
 A ``continue=>1`` action writes no row at its start in BNG2.pl, which appends its rows to the
-output of the runs before it on the same suffix (run_network ``-x``); how the bridge keeps such
-a chain is not a grid rule, and the check of data against rows at load does not judge it
-(:func:`kept_output_rows`).
+output of the runs before it on the same suffix (run_network ``-x``), and the bridge appends
+them too (#1009). The check of data against rows at load judges such a chain on the union of
+its runs' rows, where each run starts where the one before it on the suffix ended
+(:func:`kept_outputs`).
 
 Some options BNG2.pl reads decide an action's rows in a way these rules cannot see
 (:data:`UNREAD_GRID_OPTIONS`): an ``argfile`` supplies ``t_end``, ``n_steps`` or
@@ -84,6 +85,7 @@ it runs.
 """
 
 import logging
+import re
 
 from ..printing import PybnfError
 from .parsing import (
@@ -256,16 +258,38 @@ def _check_literal_sample_times(params, where):
     sample_time_rows(where, sorted(listed), t_start, t_end, continued=bool(_resumes(params)))
 
 
-def kept_outputs(action_lines):
-    """``{suffix: (kind, params, chained)}``: for each output suffix among ``action_lines``, the
-    action whose output the run keeps (``execute`` keeps one output per suffix): the last
-    ``simulate`` / ``parameter_scan`` / ``bifurcate`` that writes it. A run that does not
-    continue writes the suffix's output afresh, in BNG2.pl as on the bridge. ``chained`` says
-    the kept action sets ``continue=>1`` (or an expression for it): BNG2.pl appends its rows to
-    the output of the runs before it on the same suffix (run_network ``-x``), so the output is
-    the chain of those runs, which :func:`kept_output_rows` does not judge (lanl/PyBNF#1011 is
-    to have the bridge append it too, and may judge it there)."""
+#: A statement that can run a simulation, and so move the model's clock, other than the
+#: ``simulate`` / ``parameter_scan`` / ``bifurcate`` the rules here read (``simulate_ode``,
+#: ``simulate_protocol``, ...).
+_RUNS_SOMETHING = re.compile(r'(simulate\w*|parameter_scan|bifurcate)\s*\(')
+
+
+def kept_outputs(action_lines, bng2pl=False):
+    """``{suffix: (kind, params, rows, chained)}``: for each output suffix among
+    ``action_lines``, the action whose output the run keeps (``execute`` keeps one output per
+    suffix): the last ``simulate`` / ``parameter_scan`` / ``bifurcate`` that writes it; the
+    times of that output's rows when they are known before anything runs, else ``None``; and
+    whether the output is a chain of more than one run. A line that names no suffix writes
+    ``time_course`` (``param_scan`` for a scan) on the bngsim bridge, and its own file in
+    BNG2.pl, so with ``bng2pl`` it writes none of these outputs (``output_keys``).
+
+    A run that does not continue writes the suffix's output afresh, in BNG2.pl as on the bridge,
+    and its rows are its own grid (:func:`literal_sample_time_rows`, :func:`literal_step_rows`).
+    A ``simulate`` with ``continue=>1`` starts on the model's clock, where the ``simulate``
+    before it ended, whatever its suffix (BNGAction.pm 456-477 and 779;
+    ``BngsimModel._settle_after_run``), and appends its rows after that start to the output of
+    the run before it on the same suffix, in BNG2.pl (run_network ``-x``) as on the bridge
+    (#1009). So a chain of such runs, each starting where the one before it ended, writes the
+    union of their grids. The two backends' rows differ otherwise, and are not known here: a
+    continued run whose suffix has no output yet, or one that starts after its suffix's output
+    ends (another run in between), writes its start row on the bridge and not in BNG2.pl.
+
+    The clock is followed from 0 through every run whose rows are known; after any other run (a
+    scan, which moves BNG2.pl's clock and not the bridge's, a run that can stop early, or one
+    these rules do not read) it is not known, and nor are the rows of a run that continues from
+    it. A scan's rows are its points, not times, and are never known here."""
     kept = {}
+    clock = 0.0
     for action_line in action_lines:
         line = _statement(action_line)
         if not line:
@@ -275,40 +299,70 @@ def kept_outputs(action_lines):
                             ('bifurcate', _parse_bifurcate_action)):
             params = parse(line)
             if params is not None:
-                default = 'time_course' if kind == 'simulate' else 'param_scan'
-                kept[params.get('suffix', default)] = (
-                    kind, params, kind == 'simulate' and _resumes(params) is not False)
                 break
+        else:
+            match = _RUNS_SOMETHING.match(line)
+            if match is not None:
+                clock = None
+                params = _parse_action_dict(line, match.group(1))
+                if params is not None and not (bng2pl and 'suffix' not in params):
+                    kept[params.get('suffix', 'time_course')] = ('simulate', params, None, False)
+            continue
+        default = 'time_course' if kind == 'simulate' else 'param_scan'
+        suffix = params.get('suffix', default)
+        writes = not (bng2pl and 'suffix' not in params)
+        if kind != 'simulate':
+            if writes:
+                kept[suffix] = (kind, params, None, False)
+            clock = None
+            continue
+        own = literal_sample_time_rows(params, clock)
+        if own is None:
+            own = literal_step_rows(params, clock)
+        rows, chained = own, bool(_resumes(params))
+        if chained:
+            before = kept.get(suffix, (None, None, None))
+            before = before[2] if before[0] == 'simulate' else None
+            if before is None or own is None or bng2pl_time(own[0]) != bng2pl_time(before[-1]):
+                rows = None
+            else:
+                rows = before + own[1:]
+        if writes:
+            kept[suffix] = ('simulate', params, rows, chained)
+        clock = None if own is None else own[-1]
     return kept
 
 
-def kept_output_rows(action_lines):
-    """``{suffix: rows}`` for each suffix whose kept output (:func:`kept_outputs`) has rows
-    known before anything runs: a ``simulate`` that does not continue an earlier run and whose
-    grid is literal, its ``sample_times`` (:func:`literal_sample_time_rows`) or its step count
-    (:func:`literal_step_rows`). A scan, a continued chain, and a grid known only when it runs
-    are left out."""
-    rows = {}
-    for suffix, (kind, params, chained) in kept_outputs(action_lines).items():
-        if kind != 'simulate' or chained:
-            continue
-        grid = literal_sample_time_rows(params)
-        if grid is None:
-            grid = literal_step_rows(params)
-        if grid is not None:
-            rows[suffix] = grid
-    return rows
+def kept_output_rows(action_lines, bng2pl=False):
+    """``{suffix: rows}`` for each suffix whose kept output (:func:`kept_outputs`) is a
+    ``simulate``, or a ``continue=>1`` chain of them, with rows known before anything runs."""
+    return {suffix: rows for suffix, (kind, _params, rows, _chained)
+            in kept_outputs(action_lines, bng2pl).items()
+            if kind == 'simulate' and rows is not None}
 
 
-def literal_step_rows(params):
+def _continued_start(params, clock):
+    """Where a ``continue=>1`` run starts: on the model's clock (``None`` when that is not
+    known), or at its own ``t_start``, which BNG2.pl and the bridge both refuse unless it is the
+    clock, compared at 15 significant digits (``None`` when it is not)."""
+    if 't_start' not in params:
+        return clock
+    t_start = _number(params['t_start'])
+    if t_start is None or clock is None:
+        return t_start
+    return t_start if bng2pl_time(t_start) == bng2pl_time(clock) else None
+
+
+def literal_step_rows(params, clock=None):
     """The times of the rows a ``simulate`` writes for its step count, when they are known before
     anything runs, on BNG2.pl and on the bridge alike: ``t_start`` and the ``n_steps`` (or
-    ``n_output_steps``; one by default) equal steps after it to ``t_end``. ``None`` when the grid
-    is ``sample_times``, a value is an expression, the run can stop early (``stop_if``,
-    ``steady_state``), ``continue=>1`` takes ``t_start`` from the clock, or the grid is refused.
-    Nor for an NFsim run that starts after 0, whose rows BNG2.pl labels by the time since its
-    start and the bridge by the time itself, nor for an action naming an option that changes its
-    rows in a way these rules do not see (:data:`UNREAD_GRID_OPTIONS`)."""
+    ``n_output_steps``; one by default) equal steps after it to ``t_end``. A ``continue=>1``
+    run starts on the model's ``clock`` (:func:`_continued_start`). ``None`` when the grid is
+    ``sample_times``, a value is an expression, the run can stop early (``stop_if``,
+    ``steady_state``), a continued run's start is not known, or the grid is refused. Nor for an
+    NFsim run that continues (both refuse it) or starts after 0, whose rows BNG2.pl labels by
+    the time since its start and the bridge by the time itself, nor for an action naming an
+    option that changes its rows in a way these rules do not see (:data:`UNREAD_GRID_OPTIONS`)."""
     if unread_grid_options(params):
         return None
     method = str(params.get('method', 'ode')).strip().lower()
@@ -319,14 +373,15 @@ def literal_step_rows(params):
     if 'stop_if' in params or _number(params.get('steady_state', 0)) != 0:
         return None
     resumes = _resumes(params)
-    if resumes is None or (resumes and 't_start' not in params) or 't_end' not in params:
+    if resumes is None or (resumes and network_free) or 't_end' not in params:
         return None
     if not network_free and 'n_steps' in params and 'n_output_steps' in params:
         return None
     key = next((key for key in keys if key in params), None)
     if key is None and network_free:
         return None
-    t_start = _number(params.get('t_start', 0))
+    t_start = (_continued_start(params, clock) if resumes
+               else _number(params.get('t_start', 0)))
     t_end = _number(params['t_end'])
     steps = _number(params[key]) if key is not None else 1
     if None in (t_start, t_end, steps) or (network_free and t_start != 0):
@@ -337,11 +392,12 @@ def literal_step_rows(params):
     return [t_start + k * (t_end - t_start) / steps for k in range(steps + 1)]
 
 
-def literal_sample_time_rows(params):
+def literal_sample_time_rows(params, clock=None):
     """The times of the rows a ``simulate`` writes for its ``sample_times``, when they are known
     before anything runs, on BNG2.pl and on the bridge alike (:func:`sample_time_rows`); else
-    ``None``. They are not known when the grid is a step count, when a time is an expression,
-    when ``continue=>1`` takes ``t_start`` from the model's clock, or when the run can stop
+    ``None``. A ``continue=>1`` run starts on the model's ``clock``
+    (:func:`_continued_start`). They are not known when the grid is a step count, when a time
+    is an expression, when a continued run's start is not known, or when the run can stop
     early (``stop_if``, ``steady_state``); nor when the grid is refused (the set-up and
     BNG2.pl say why), or the action names an option that changes its rows in a way these rules
     do not see (:data:`UNREAD_GRID_OPTIONS`)."""
@@ -356,10 +412,11 @@ def literal_sample_time_rows(params):
     if 'stop_if' in params or _number(params.get('steady_state', 0)) != 0:
         return None
     resumes = _resumes(params)
-    if resumes is None or (resumes and 't_start' not in params):
+    if resumes is None or (resumes and method in NETWORK_FREE_METHODS):
         return None
     listed = [_number(value) for value in raw]
-    t_start = _number(params.get('t_start', 0))
+    t_start = (_continued_start(params, clock) if resumes
+               else _number(params.get('t_start', 0)))
     t_end = _number(params['t_end']) if 't_end' in params else None
     if None in listed or t_start is None or ('t_end' in params and t_end is None):
         return None

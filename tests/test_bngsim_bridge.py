@@ -1726,16 +1726,25 @@ class TestContinueFlag:
         # continue=>1 with no explicit t_start → uses model_time=50
         assert run_log[1]['t_span'] == (50, 100)
 
-    def test_explicit_t_start_overrides_continue(self, monkeypatch):
+    def test_explicit_t_start_other_than_the_model_time_is_refused_on_continue(self, monkeypatch):
+        """BNG2.pl aborts a continuation whose t_start is not the current model time; running it
+        would carry the state at 50 and label it 25 (#1009 review)."""
         actions = [
             'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"phase1"})',
             'simulate({method=>"ode",t_start=>25,t_end=>100,n_steps=>10,continue=>1,suffix=>"phase2"})',
         ]
         obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
-        ds = obj._execute_actions(model)
+        with pytest.raises(printing.PybnfError, match='t_start = 25.*model time is 50'):
+            obj._execute_actions(model)
 
-        # Explicit t_start=25 is used even with continue=>1
-        assert run_log[1]['t_span'] == (25, 100)
+    def test_explicit_t_start_equal_to_the_model_time_continues(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"phase1"})',
+            'simulate({method=>"ode",t_start=>50,t_end=>100,n_steps=>10,continue=>1,suffix=>"phase2"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        obj._execute_actions(model)
+        assert run_log[1]['t_span'] == (50, 100)
 
     def test_no_continue_defaults_to_zero(self, monkeypatch):
         actions = [

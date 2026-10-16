@@ -538,6 +538,70 @@ def test_only_the_output_kept_for_a_suffix_is_judged(tmp_path):
     _legacy_configuration(tmp_path, [_GEN, first, steps], '# time Stot\n4 30.12\n8 9.07\n')
 
 
+def _ode(options, suffix='x'):
+    return 'simulate({method=>"ode",%s,suffix=>"%s"})' % (options, suffix)
+
+
+_SCAN = ('parameter_scan({parameter=>"k",par_scan_vals=>[0.1,0.2],method=>"ode",t_end=>3,'
+         'n_steps=>3,suffix=>"s"})')
+
+# Each: (id, actions, whether both backends write the same rows for "x").
+_CHAINS = [
+    ('consecutive', [_ode('t_end=>4,n_steps=>4'), _ode('continue=>1,t_end=>7,n_steps=>3')],
+     True),
+    ('reset_between', [_ode('t_end=>4,n_steps=>4'), 'resetConcentrations()',
+                       _ode('continue=>1,t_end=>7,n_steps=>3')], True),
+    ('three_runs', [_ode('t_end=>4,n_steps=>4'), _ode('continue=>1,t_end=>7,n_steps=>3'),
+                    _ode('continue=>1,t_start=>7,sample_times=>[8,9.5,12],t_end=>10')], True),
+    ('sample_times', [_ode('t_start=>0,sample_times=>[0,1,2,5]'),
+                      _ode('continue=>1,sample_times=>[5,7,10]')], True),
+    ('no_output_yet', [_ode('t_end=>4,n_steps=>4', 'y'), _ode('continue=>1,t_end=>7,n_steps=>3')],
+     False),
+    ('other_suffix_between', [_ode('t_end=>4,n_steps=>4'),
+                              _ode('continue=>1,t_end=>6,n_steps=>2', 'y'),
+                              _ode('continue=>1,t_end=>10,n_steps=>4')], False),
+    ('scan_between', [_ode('t_end=>4,n_steps=>4'), _SCAN, _ode('continue=>1,t_end=>10,n_steps=>2')],
+     False),
+]
+
+
+@pytest.mark.parametrize('actions, agree', [c[1:] for c in _CHAINS], ids=[c[0] for c in _CHAINS])
+def test_a_continued_chain_is_judged_on_the_rows_both_backends_append(tmp_path, actions, agree):
+    """BNG2.pl appends a continue=>1 run's rows, after its start, to the output of the run
+    before it on its suffix (run_network -x), and the bridge does too (#1009). The rows the load
+    check judges a chain on are the union of its runs' grids, each starting on the clock. The
+    oracle is the rows both backends write. Where they differ -- a continued run whose suffix has
+    no output yet, or whose suffix's output ended before the clock (another run in between),
+    writes its start row on the bridge alone, and a scan moves BNG2.pl's clock and not the
+    bridge's -- the chain is not judged."""
+    from pybnf.bngsim_model.grid import kept_output_rows, kept_outputs
+    bng = _run_bng2pl(tmp_path, actions, 'decay_x.gdat')[:, 0]
+    bridge = _times(_run_bridge(tmp_path, actions, ['x', 'y', 's'], 'x'))
+    rows = kept_output_rows(actions).get('x')
+    assert kept_outputs(actions)['x'][3]
+    if agree:
+        np.testing.assert_allclose(bridge, bng, atol=1e-9)
+        np.testing.assert_allclose(rows, bng, atol=1e-9)
+    else:
+        assert len(bridge) != len(bng) or not np.allclose(bridge, bng)
+        assert rows is None
+
+
+def test_data_off_a_continued_chains_rows_is_refused_at_load(tmp_path):
+    """BNG2.pl's rows for the chain are 0..4 and 5, 6, 7 appended: data at 7.5 has none, and is
+    refused naming the chain's rows; data at 2 and 6, one from each run, load."""
+    actions = [_ode('t_end=>4,n_steps=>4'), _ode('continue=>1,t_end=>7,n_steps=>3')]
+    bng = _run_bng2pl(tmp_path, actions, 'decay_x.gdat')
+    np.testing.assert_allclose(bng[:, 0], np.arange(8.0), atol=1e-9)
+    with pytest.raises(PybnfError) as info:
+        _legacy_configuration(tmp_path, [_GEN] + actions, '# time Stot\n2 54.88\n7.5 10.54\n')
+    assert info.value.log_message == ('Model decay, simulate action with suffix "x": the data '
+                                      'for "x" has t = 7.5, where the action writes no row')
+    assert 'writes rows at t = 0, 1, 2, 3, 4, 5, 6, 7,' in info.value.message
+    assert 'continues the runs before it on that suffix (continue=>1)' in info.value.message
+    _legacy_configuration(tmp_path, [_GEN] + actions, '# time Stot\n2 54.88\n6 16.53\n')
+
+
 def test_time_error_data_off_the_grid_still_loads(tmp_path):
     """A time_error fit integrates over a dense grid that its data need not lie on (ADR-0112)."""
     from pybnf import config, parse
