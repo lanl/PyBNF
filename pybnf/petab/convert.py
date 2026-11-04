@@ -33,9 +33,10 @@ mean and sd v2 then reads ``ln 10`` times too small (petab1to2 warns), and a nat
 ``log-uniform(e^a;e^b)`` (no warning). So petab1to2's prior is not kept for any row whose v1
 author declared one: :func:`v2_prior_from_v1` rewrites each from the v1 row, mapping every
 v1 prior type on every scale to the v2 prior with the same distribution over the parameter.
-The cases petab1to2 refuses outright (``logNormal``, ``logLaplace``, a ``log10``
-``parameterScaleUniform`` / ``parameterScaleLaplace``) still stop the conversion there;
-ADR-0073's 2026-09-25 addendum tabulates every case.
+petab < 0.10.0 refuses some cases outright (``logNormal``, ``logLaplace``, a ``log10``
+``parameterScaleUniform`` / ``parameterScaleLaplace``), and the conversion stops there;
+petab 0.10.0 converts them, and the converter rewrites them from v1 like every other declared
+prior. ADR-0073's 2026-09-25 addendum tabulates every case.
 
 **observableTransformation (the residual scale; issue #499, ADR-0073).** A v1 observable with
 ``observableTransformation = log10`` fits the residual on the log10 scale (with the
@@ -45,15 +46,19 @@ a different search. PEtab v2 removed the column and folded transformation into
 log10 form**; ``petab1to2`` therefore cannot carry a v1 ``log10`` transformation faithfully.
 petab < 0.9.0 dropped it entirely (a missing ``return`` left ``noiseDistribution`` blank, so
 the observable imported as a linear Gaussian and the fit optimised the wrong objective);
-petab >= 0.9.0 substitutes the natural-log family (``log10-normal`` -> ``log-normal``, with a
-warning), which silently rescales sigma by ``ln 10``. Since v2 has no faithful
-representation, we re-inject ``observableTransformation`` as a **preserved extra column** on
+petab 0.9.x substitutes the natural-log family (``log10-normal`` -> ``log-normal``, with a
+warning), which silently rescales sigma by ``ln 10``; petab 0.10.0 makes that substitution
+exact by also writing the noise formula as ``log(10) * (<formula>)``. Rather than depend on
+which petab ran, we re-inject ``observableTransformation`` as a **preserved extra column** on
 the v2 observables table and reset ``noiseDistribution`` to the v1 **linear base family**
 (``normal`` / ``laplace``), so the residual scale is stated in exactly one place: PyBNF's
 importer reads the column to select the noise family's additive scale (``lin`` / ``log10`` /
 ``log``; :mod:`pybnf.petab.observables`, :mod:`pybnf.petab.import_`) and refuses a log
 transformation over an already-log distribution as a contradiction (issue #679), while other
-PEtab v2 tools ignore the unknown column (it passes v2 lint). This is directly parallel to
+PEtab v2 tools ignore the unknown column (it passes v2 lint). A log10 observable's
+``noiseFormula`` is put back to the v1 one as well, undoing petab 0.10.0's ``log(10)``
+factor, since under the re-injected column its sigma is on the log10 scale, as v1 stated it
+(:func:`restore_v1_noise_formulas`; any other rewrite is refused). This is directly parallel to
 the parameterScale re-injection above -- the same "re-add the scale petab1to2 dropped"
 migration, on the observable axis.
 
@@ -109,6 +114,10 @@ _HANDLED_PETAB1TO2_WARNINGS = (
     # log10 + normal observable -> log-normal. Every log observable's noiseDistribution is
     # reset to its v1 base and its observableTransformation re-injected (#499, #679).
     r"Noise distribution `log10-normal' for observable `[^']*' is not supported in PEtab v2\.",
+    # The same, as petab >= 0.10.0 words it: log10-<dist> -> log-<dist> with the noise
+    # formula multiplied by log(10). The distribution and transformation are repaired as
+    # above, and the multiplication is undone by restore_v1_noise_formulas.
+    r'PEtab v2 does not support log10-transformed observables\.',
     # log10 parameterScaleNormal -> log-normal with the numbers unchanged. Every declared
     # prior is rewritten from its v1 row by v2_prior_from_v1 (#893).
     r"Prior distribution `log10-normal' for parameter `[^']*' is not supported in PEtab v2\.",
@@ -212,14 +221,21 @@ def petab1to2_preserve_scale(v1_yaml_path, out_dir):
     #    family (petab >= 0.9.0; blank before), so that column is reset to the v1 linear base
     #    (normal / laplace) -- the importer refuses a log transformation over an already-log
     #    distribution as a contradiction (issue #679).
+    #    petab >= 0.10.0 also rewrites a log10 observable's noiseFormula as
+    #    ``log(10) * (<v1 formula>)``, which is right for the natural-log family it writes and
+    #    wrong under the log10 transformation re-injected here: the sigma would be ln 10 times
+    #    the one v1 stated, with no error. So that formula is put back (restore_v1_noise_formulas).
     scales = _v1_observable_scales(v1_yaml_path, v1_spec)
     if scales:
         transformations = {oid: transformation for oid, (transformation, _) in scales.items()}
         distributions = {oid: distribution for oid, (_, distribution) in scales.items()}
+        log10_formulas = _v1_noise_formulas(v1_yaml_path, v1_spec, {
+            oid for oid, transformation in transformations.items() if transformation == 'log10'})
         for obs_file in v2_spec.get('observable_files', []):
             v2_obs_path = out_dir / obs_file
             v2_odf = pd.read_csv(v2_obs_path, sep='\t')
             inject_observable_transformations(v2_odf, transformations, distributions)
+            restore_v1_noise_formulas(v2_odf, log10_formulas)
             v2_odf.to_csv(v2_obs_path, sep='\t', index=False)
 
     return v2_yaml
@@ -497,6 +513,72 @@ def inject_observable_transformations(v2_odf, transformations, distributions=Non
             if distributions and oid in distributions:
                 v2_odf.at[i, dcol] = distributions[oid]
     return v2_odf
+
+
+#: How petab >= 0.10.0 rewrites a log10 observable's noise formula (``v1v2_observable_df``):
+#: ``log(10) * (<formula>)``, the factor that turns a log10-scale sigma into a natural-log one.
+_LN10_NOISE_PREFIX = 'log(10) * ('
+_LN10_NOISE_SUFFIX = ')'
+
+
+def restore_v1_noise_formulas(v2_odf, v1_formulas):
+    """Put back the v1 ``noiseFormula`` of each log10 observable petab1to2 rescaled.
+
+    ``v1_formulas`` is ``{observableId: v1 noiseFormula text}`` for the observables whose v1
+    ``observableTransformation`` is ``log10``. PyBNF states that scale in the re-injected
+    ``observableTransformation`` column over the linear base family
+    (:func:`inject_observable_transformations`), so the noise formula has to be the v1 one,
+    whose sigma is on the log10 scale. petab < 0.10.0 leaves the formula as it was; petab
+    >= 0.10.0 writes ``log(10) * (<formula>)`` for its natural-log family, and that wrapper is
+    removed here. Any other rewrite raises :class:`PybnfError` rather than being guessed at:
+    the cell decides the sigma, and a wrong sigma is a wrong objective, not a failed fit.
+    Mutates and returns ``v2_odf``.
+    """
+    col = 'noiseFormula'
+    if not v1_formulas or col not in v2_odf.columns:
+        return v2_odf
+    v2_odf[col] = v2_odf[col].astype('object')
+    for i, row in v2_odf.iterrows():
+        oid = str(row['observableId'])
+        if oid not in v1_formulas:
+            continue
+        v1 = v1_formulas[oid]
+        v2 = '' if _cell(row[col]) is None else str(row[col])
+        if v2.strip() == v1.strip():
+            continue
+        if v2.startswith(_LN10_NOISE_PREFIX) and v2.endswith(_LN10_NOISE_SUFFIX):
+            inner = v2[len(_LN10_NOISE_PREFIX):-len(_LN10_NOISE_SUFFIX)]
+            if inner.strip() == v1.strip():
+                v2_odf.at[i, col] = inner
+                continue
+        raise PybnfError(
+            f"Converting PEtab v1 observable '{oid}' (observableTransformation log10): "
+            f"petab1to2 rewrote its noiseFormula from {v1!r} to {v2!r}, which is not the "
+            f"'log(10) * (...)' rescaling this converter knows how to undo.",
+            hint='The noise formula sets sigma, so it is not carried over on a guess. Check '
+                 'what this petab release does to log10 observables, or convert the problem '
+                 'with petab 0.9 or 0.10.')
+    return v2_odf
+
+
+def _v1_noise_formulas(v1_yaml_path, v1_spec, observable_ids):
+    """``{observableId: noiseFormula}`` from the v1 observable file(s), as text, for each id
+    in ``observable_ids``. Read with petab's own v1 reader, the one petab1to2 reads with, so a
+    numeric cell prints here exactly as petab1to2 printed it inside ``log(10) * (...)``."""
+    import petab.v1 as petab_v1
+    import petab.v1.C as C1
+
+    formulas = {}
+    if not observable_ids:
+        return formulas
+    for problem in v1_spec.get('problems', []):
+        for obs_file in problem.get('observable_files', []):
+            odf = petab_v1.get_observable_df(str(Path(v1_yaml_path).parent / obs_file))
+            for oid, row in odf.iterrows():
+                if str(oid) in observable_ids:
+                    value = row.get(C1.NOISE_FORMULA)
+                    formulas[str(oid)] = '' if _cell(value) is None else str(value)
+    return formulas
 
 
 def _v1_observable_scales(v1_yaml_path, v1_spec):

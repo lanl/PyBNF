@@ -32,6 +32,7 @@ from pybnf.petab.convert import (
     inject_log_uniform_priors,
     inject_observable_transformations,
     petab1to2_preserve_scale,
+    restore_v1_noise_formulas,
     v2_prior_from_v1,
 )
 from pybnf.printing import PybnfError
@@ -139,6 +140,27 @@ class TestFullConversion:
         assert 'objective = lognormal' in conf
         assert 'objective = chi_sq' not in conf     # the linear (wrong) import is gone
         assert 'loguniform_var = k' in conf         # parameterScale=log10 preserved too
+
+    def test_a_log10_observables_sigma_imports_as_v1_stated_it(self, tmp_path):
+        # v1: log10(y) ~ N(log10(h), 0.1). petab 0.10.0 writes the faithful v2 natural-log
+        # form, log(y) ~ N(log(h), log(10) * 0.1), but the converter states the scale as
+        # observableTransformation = log10 over `normal`, where the v1 sigma is the right one.
+        # Left alone, the import read sigma = formula log(10) * (0.1): a log10 residual with a
+        # sigma 2.30x too large, imported with no error (petab 0.9.0 imported fix_at 0.1).
+        from pybnf.petab import import_job
+        yaml = _write_v1_problem(tmp_path / 'v1', 'log10')
+        obs = tmp_path / 'v1' / 'observables.tsv'
+        obs.write_text(obs.read_text().replace('\tnoiseParameter1_obs_V\n', '\t0.1\n'))
+        meas = tmp_path / 'v1' / 'measurements.tsv'
+        meas.write_text(meas.read_text().replace('\t0.1\n', '\t\n'))
+        v2_yaml = petab1to2_preserve_scale(str(yaml), str(tmp_path / 'v2'))
+        row = pd.read_csv(v2_yaml.parent / 'observables.tsv', sep='\t').set_index(
+            'observableId').loc['obs_V']
+        assert (row['observableTransformation'], row['noiseDistribution']) == ('log10', 'normal')
+        assert float(row['noiseFormula']) == 0.1
+        conf = (import_job(v2_yaml, tmp_path / 'imported') / 'imported.conf').read_text()
+        assert 'noise_model = lognormal, sigma = fix_at 0.1' in conf
+        assert 'log(10)' not in conf
 
     def test_converted_log_problem_imports_as_lnnormal(self, tmp_path):
         # v1 ``log`` means natural log. It reaches Gaussian(LN) through the explicit
@@ -265,10 +287,11 @@ _ACCEPTED_V1_PRIORS = [
     ('lin', '', '0.01;100'), ('log', '', '0.5;2'), ('log10', '', '-2;2'),
 ]
 
-# The v1 priors petab1to2 (petab 0.9.0) refuses outright. Each is exactly representable in v2
-# (v2_prior_from_v1 maps it; TestV2PriorFromV1 pins those values), but petab1to2 raises before
-# the converter sees its output. If a petab release starts accepting one, move it into
-# _ACCEPTED_V1_PRIORS: the converter rewrites it from v1 whatever petab1to2 writes.
+# The v1 priors petab1to2 refused outright through petab 0.9.x. Each is exactly representable in
+# v2 (v2_prior_from_v1 maps it; TestV2PriorFromV1 pins those values), but petab 0.9.x raises
+# before the converter sees its output. petab 0.10.0 converts every one of them, so on such a
+# release they join _ACCEPTED_V1_PRIORS' oracles: the converter rewrites each from v1 whatever
+# petab1to2 writes. pyproject allows both releases, so each is tested where it applies.
 _REFUSED_UPSTREAM_V1_PRIORS = [
     ('lin', 'logNormal', '-1;0.5'), ('log', 'logNormal', '-1;0.5'),
     ('log10', 'logNormal', '-1;0.5'),
@@ -276,6 +299,16 @@ _REFUSED_UPSTREAM_V1_PRIORS = [
     ('log10', 'logLaplace', '-1;0.5'),
     ('log10', 'parameterScaleUniform', '-2;2'), ('log10', 'parameterScaleLaplace', '-1;0.5'),
 ]
+
+
+def _petab_release():
+    import petab
+    return tuple(int(part) for part in petab.__version__.split('.')[:2])
+
+
+_PETAB1TO2_REFUSES_SOME_V1_PRIORS = _petab_release() < (0, 10)
+_CONVERTED_V1_PRIORS = _ACCEPTED_V1_PRIORS + (
+    [] if _PETAB1TO2_REFUSES_SOME_V1_PRIORS else _REFUSED_UPSTREAM_V1_PRIORS)
 
 
 def _v1_logpdf(prior_type, parameters, scale, theta):
@@ -400,7 +433,7 @@ class TestV1PriorConversion:
         assert fp.type == 'loguniform_var'
         assert (fp.p1, fp.p2) == (pytest.approx(0.01, rel=1e-15), pytest.approx(100.0, rel=1e-15))
 
-    @pytest.mark.parametrize('scale,prior_type,parameters', _ACCEPTED_V1_PRIORS)
+    @pytest.mark.parametrize('scale,prior_type,parameters', _CONVERTED_V1_PRIORS)
     def test_converted_prior_has_the_v1_distribution(self, tmp_path, scale, prior_type,
                                                      parameters):
         # Oracle 1: the v2 row, read by hand from the v2 specification, has exactly the v1
@@ -423,7 +456,7 @@ class TestV1PriorConversion:
         offset = pybnf[finite] - v1[finite]
         np.testing.assert_allclose(offset, offset[0], rtol=0, atol=1e-7)
 
-    @pytest.mark.parametrize('scale,prior_type,parameters', _ACCEPTED_V1_PRIORS)
+    @pytest.mark.parametrize('scale,prior_type,parameters', _CONVERTED_V1_PRIORS)
     def test_libpetab_reads_the_v1_and_v2_rows_alike(self, tmp_path, scale, prior_type,
                                                     parameters):
         # Oracle 3: libpetab's own reading of the v1 row (petab.v1.priors.Prior) and of the
@@ -438,10 +471,12 @@ class TestV1PriorConversion:
         (param,) = petab_v2.Problem.from_yaml(v2_yaml).parameters
         np.testing.assert_allclose(param.prior_dist.pdf(_THETAS), v1, rtol=1e-9, atol=0)
 
+    @pytest.mark.skipif(not _PETAB1TO2_REFUSES_SOME_V1_PRIORS,
+                        reason='petab >= 0.10.0 converts these; _CONVERTED_V1_PRIORS checks them')
     @pytest.mark.parametrize('scale,prior_type,parameters', _REFUSED_UPSTREAM_V1_PRIORS)
     def test_priors_petab1to2_refuses_still_stop_the_conversion(self, tmp_path, scale,
                                                               prior_type, parameters):
-        # Loud, not silent: petab1to2 raises NotImplementedError (log10-uniform/-laplace) or a
+        # Loud, not silent: petab 0.9.x raises NotImplementedError (log10-uniform/-laplace) or a
         # pydantic ValidationError, a ValueError (logNormal/logLaplace, not v2 spellings).
         with pytest.raises((NotImplementedError, ValueError)):
             _convert_one(tmp_path, scale, prior_type, parameters)
@@ -480,7 +515,7 @@ class TestV1PriorConversion:
                 == (tmp_path / 'plain' / 'parameters.tsv').read_bytes())
 
 
-# A narrow box that every prior in _ACCEPTED_V1_PRIORS crosses on at least one side, so the
+# A narrow box that every prior in _CONVERTED_V1_PRIORS crosses on at least one side, so the
 # bounds truncate each one; nominalValue 3 lies inside every truncated support. The points
 # straddle both walls and the interior support edges (e^0.5 = 1.649 for the natural-log
 # uniform cases).
@@ -522,7 +557,7 @@ class TestTruncatedV1PriorConversion:
     point for point, not just up to a constant: the same support, the same walls, the same
     mass. A second oracle is libpetab's own truncated reading of the v1 row."""
 
-    @pytest.mark.parametrize('scale,prior_type,parameters', _ACCEPTED_V1_PRIORS)
+    @pytest.mark.parametrize('scale,prior_type,parameters', _CONVERTED_V1_PRIORS)
     def test_imported_prior_is_the_truncated_v1_prior(self, tmp_path, scale, prior_type,
                                                       parameters):
         from petab.v1.priors import Prior
@@ -888,6 +923,44 @@ class TestInjectObservableTransformations:
         df['noiseDistribution'] = ['log-normal', '']
         inject_observable_transformations(df, {'obs_V': 'log10'})
         assert df.set_index('observableId').loc['obs_V', 'noiseDistribution'] == 'log-normal'
+
+
+class TestRestoreV1NoiseFormulas:
+    """petab 0.10.0 writes a log10 observable's noiseFormula as ``log(10) * (<v1>)``; under
+    the re-injected log10 transformation the v1 formula is the right sigma, so it goes back."""
+
+    def _odf(self, formulas):
+        return pd.DataFrame({'observableId': list(formulas), 'noiseFormula': list(formulas.values())})
+
+    def test_petab_0_10s_wrapper_is_removed(self):
+        odf = self._odf({'obs_V': 'log(10) * (noiseParameter1_obs_V)', 'obs_c': 'log(10) * (0.1)'})
+        restore_v1_noise_formulas(odf, {'obs_V': 'noiseParameter1_obs_V', 'obs_c': '0.1'})
+        assert list(odf['noiseFormula']) == ['noiseParameter1_obs_V', '0.1']
+
+    def test_petab_0_9s_untouched_formula_is_left_alone(self):
+        odf = self._odf({'obs_V': 'sigma_V'})
+        restore_v1_noise_formulas(odf, {'obs_V': 'sigma_V'})
+        assert list(odf['noiseFormula']) == ['sigma_V']
+
+    def test_a_v1_formula_that_is_itself_scaled_by_log_10_is_unwrapped_once(self):
+        # v1 wrote the factor; petab 0.9.x keeps it, petab 0.10.0 adds a second one.
+        v1 = 'log(10) * (s)'
+        for written in (v1, 'log(10) * (log(10) * (s))'):
+            odf = self._odf({'obs_V': written})
+            restore_v1_noise_formulas(odf, {'obs_V': v1})
+            assert list(odf['noiseFormula']) == [v1], written
+
+    def test_observables_that_are_not_log10_are_not_touched(self):
+        # A natural-log observable keeps its formula under every petab release, and a linear
+        # one is never in the map; neither is rewritten even if its text looks wrapped.
+        odf = self._odf({'obs_ln': 'log(10) * (s)', 'obs_lin': 'log(10) * (s)'})
+        restore_v1_noise_formulas(odf, {})
+        assert list(odf['noiseFormula']) == ['log(10) * (s)', 'log(10) * (s)']
+
+    def test_any_other_rewrite_is_refused_naming_both_formulas(self):
+        odf = self._odf({'obs_V': '2.302585 * (sigma_V)'})
+        with pytest.raises(PybnfError, match=r"obs_V.*'sigma_V'.*'2\.302585 \* \(sigma_V\)'"):
+            restore_v1_noise_formulas(odf, {'obs_V': 'sigma_V'})
 
 
 class TestHelpers:
