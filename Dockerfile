@@ -81,14 +81,14 @@ COPY --from=pybnf-build /wheels /tmp/wheels
 RUN python -m pip install --no-cache-dir \
       'dask>=2024.1.0' \
       'distributed>=2024.1.0' \
-      'libroadrunner>=1.6.0' \
-      'msgpack>=0.6.2' \
-      'numpy>=1.24' \
+      'libroadrunner>=2.5.0' \
+      'msgpack>=1.0.6' \
+      'numpy>=1.26' \
       'paramiko>=2.7' \
-      'pydantic>=2,<3' \
-      'pyparsing>=2.4,<4' \
-      'scipy>=1.10' \
-      'tornado>=6.1' && \
+      'pydantic>=2.0.2,<3' \
+      'pyparsing>=3.0,<4' \
+      'scipy>=1.11.2' \
+      'tornado>=6.2' && \
     python -m pip install --no-cache-dir --no-deps /tmp/wheels/*.whl && \
     rm -rf /tmp/wheels
 

@@ -358,6 +358,7 @@ end model
 """
 
 
+@pytest.mark.petab
 def test_shared_column_observables_with_per_observable_noise_import_and_parse(tmp_path):
     """Two observables measuring the same model output `z` in different experiments, each with
     its own estimated sigma, must import into a *parseable* conf with two distinct noise
@@ -442,10 +443,12 @@ class TestImportSharedColumnObservablesRoundTrip:
         return _roundtrip(tmp_path_factory.mktemp('sharedcol'), conf, extra_files=extra,
                           model_name='shared.bngl')
 
+    @pytest.mark.petab
     def test_problem_round_trips_byte_for_byte(self, imported):
         petab1, _, petab2, _ = imported
         _assert_problem_round_trips(petab1, petab2)
 
+    @pytest.mark.petab
     def test_two_observables_share_the_model_column(self, imported):
         # The source PEtab really is two observables on the ONE model entity z (the shape
         # that collided before #503), each carrying its own estimated sigma.
@@ -455,6 +458,7 @@ class TestImportSharedColumnObservablesRoundTrip:
         assert {r['observableFormula'] for r in rows} == {'z'}
         assert {r['noiseFormula'] for r in rows} == {'sd_a', 'sd_b'}
 
+    @pytest.mark.petab
     def test_reimport_materializes_distinct_columns_and_noise(self, imported):
         # The re-imported conf keeps each observable on its own obsId column with its own
         # per-observable noise -- never a single colliding `noise_model z`.
@@ -4757,6 +4761,7 @@ class TestPlaceholderReductionImport:
         d = tmp_path_factory.mktemp('scaling')
         return import_job(SCALING_DIR / 'problem.yaml', d / 'out')
 
+    @pytest.mark.petab
     def test_observable_parameters_substitute_into_observable_formula(self, out):
         text = (out / 'imported.conf').read_text()
         # The observableParameter1_obs_sx placeholder is substituted by its constant token
@@ -4767,6 +4772,7 @@ class TestPlaceholderReductionImport:
         # obs_y's observableFormula is the bare model function y -> no measurement model line.
         assert 'observable: obs_y' not in text
 
+    @pytest.mark.petab
     def test_expression_noise_formula_imports_as_a_formula_sigma(self, out):
         text = (out / 'imported.conf').read_text()
         assert 'objective = chi_sq' in text                       # the structural base
@@ -4777,11 +4783,13 @@ class TestPlaceholderReductionImport:
                      if l.startswith('noise_model y =') and 'formula' in l)
         assert 'slope' in nline and 'noiseParameter' not in nline
 
+    @pytest.mark.petab
     def test_exp_columns_have_no_sd(self, out):
         # The sigmas are a fixed constant / a formula, not per-point data -> no _SD columns.
         exp = Data(file_name=str(out / 'epo.exp'))
         assert set(exp.cols) == {'time', 'obs_sx', 'y'}
 
+    @pytest.mark.petab
     def test_imported_conf_loads_and_scores(self, out, monkeypatch):
         # The imported job is runnable: it loads as a Configuration (the scaling/slope
         # nuisances are recognized, not flagged as orphan typos), the measurement layer
@@ -4811,6 +4819,7 @@ class TestPlaceholderReductionImport:
         # The materialized scale is live: the layer added obs_sx = scaling * x to the sim data.
         assert np.allclose(sim['obs_sx'], [-30., -27., -24.])
 
+    @pytest.mark.petab
     def test_row_varying_observable_parameters_imports_as_per_measurement_model(self, tmp_path):
         # A row-varying observableParameters scale (a different scale per timepoint) is no longer
         # deferred (ADR-0045): the observableFormula KEEPS its placeholder and the per-row scale
@@ -4872,6 +4881,7 @@ class TestRowVaryingNoiseImport:
         # Keyed by the data COLUMN (y), the placeholder, and time -> the row's estimated id.
         assert table == {'y': {'noiseParameter1_obs_y': {0.0: 'sd_lo', 1.0: 'sd_hi', 2.0: 'sd_lo'}}}
 
+    @pytest.mark.petab
     def test_imported_conf_loads_and_scores_with_per_row_sigma(self, out, monkeypatch):
         # The imported job loads (sd_lo/sd_hi recognized as binding-table nuisances, not orphan
         # typos), attaches the binding table to the exp Data, and scores each obs_y point with its
@@ -4903,6 +4913,7 @@ class TestRowVaryingNoiseImport:
         broadcast = 18.0 + 3 * float(np.log(0.5))
         assert not np.isclose(score, broadcast)
 
+    @pytest.mark.petab
     def test_per_measurement_sigma_source_survives_pickle(self, out, monkeypatch):
         # The objective (carrying the PerMeasurementFormulaSigma) is scattered to dask workers;
         # the lambdify callable is dropped + rebuilt worker-side, and the binding table rides the
@@ -4957,6 +4968,7 @@ class TestRowVaryingObservableImport:
         d = tmp_path_factory.mktemp('obsscale')
         return import_job(OBSSCALE_DIR / 'problem.yaml', d / 'out')
 
+    @pytest.mark.petab
     def test_row_varying_observable_imports_as_per_measurement_model(self, out):
         text = (out / 'imported.conf').read_text()
         # obs_y's row-varying observableParameters scale stays a placeholder measurement model
@@ -4969,6 +4981,7 @@ class TestRowVaryingObservableImport:
         exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
         assert 'measurement_params: epo_measparams.tsv' in exp_line
 
+    @pytest.mark.petab
     def test_sidecar_carries_the_per_row_scale_ids(self, out):
         from pybnf.petab._measurement_params import read_measurement_params
         table = read_measurement_params(out / 'epo_measparams.tsv')
@@ -4976,6 +4989,7 @@ class TestRowVaryingObservableImport:
         assert table == {'obs_y': {'observableParameter1_obs_y': {0.0: 's_lo', 1.0: 's_hi',
                                                                    2.0: 's_lo'}}}
 
+    @pytest.mark.petab
     def test_imported_conf_loads_and_scores_with_per_row_scale(self, out, monkeypatch):
         # The imported job loads (s_lo/s_hi recognized as binding-table nuisances, not orphan
         # typos), attaches the binding table to the exp Data, and scales each obs_y prediction by
@@ -5010,6 +5024,7 @@ class TestRowVaryingObservableImport:
         broadcast = (2. ** 2 + 30.5 ** 2 + 4. ** 2) / 2.
         assert not np.isclose(score, broadcast)
 
+    @pytest.mark.petab
     def test_per_measurement_model_survives_pickle(self, out, monkeypatch):
         # The objective (carrying the PerMeasurementModel) is scattered to dask workers; the
         # lambdify callable is dropped + rebuilt worker-side, and the binding table rides the exp
@@ -5031,6 +5046,7 @@ class TestRowVaryingObservableImport:
         score = obj.evaluate_multiple({'obsscale_model': {'epo': sim}}, exp, pset)
         assert score == pytest.approx(28.0)
 
+    @pytest.mark.petab
     def test_row_varying_observable_on_column_joint_objective_is_deferred(self, out, monkeypatch):
         # A row-varying observable scale is bound per data point in _prediction, which the
         # column-joint kl / wasserstein objectives do not have -> a clean deferral (ADR-0045).
@@ -5788,6 +5804,7 @@ class TestMultiTokenRowVaryingNoiseImport:
             'noiseParameter1_obs_y': {0.0: 's_lo', 1.0: 's_hi', 2.0: 's_lo'},
             'noiseParameter2_obs_y': {0.0: 'sig', 1.0: 'sig', 2.0: 'sig'}}}
 
+    @pytest.mark.petab
     def test_imported_conf_loads_and_scores_with_per_row_product_sigma(self, out, monkeypatch):
         cfg = _load_conf(out, monkeypatch)
         # s_lo/s_hi/sig are recognized as binding-table nuisances, not orphan typos.
@@ -5841,6 +5858,7 @@ class TestReplicateSpecificMeasurementParamsImport:
         out = import_job(fixture / 'problem.yaml', fixture.parent / 'out')
         return fixture, out
 
+    @pytest.mark.petab
     def test_import_writes_two_exp_files_and_a_replicate_aware_sidecar(self, imported):
         _fixture, out = imported
         text = (out / 'imported.conf').read_text()
@@ -5862,6 +5880,7 @@ class TestReplicateSpecificMeasurementParamsImport:
                 (0, 0.0): 'sig', (0, 1.0): 'sig', (0, 2.0): 'sig',
                 (1, 0.0): 'sig', (1, 1.0): 'sig', (1, 2.0): 'sig'}}}
 
+    @pytest.mark.petab
     def test_config_attaches_each_replicates_tokens_and_scores_them(self, imported, monkeypatch):
         _fixture, out = imported
         cfg = _load_conf(out, monkeypatch)
@@ -5881,6 +5900,7 @@ class TestReplicateSpecificMeasurementParamsImport:
         expected = float(np.sum(residual ** 2 / (2 * sigma ** 2) + np.log(sigma)))
         assert score == pytest.approx(expected)
 
+    @pytest.mark.petab
     def test_export_restores_each_replicate_placeholder_tokens(self, imported, tmp_path, monkeypatch):
         _fixture, out = imported
         monkeypatch.chdir(out)
@@ -5915,6 +5935,7 @@ class TestPredictionDependentNoiseImport:
     def out(self, tmp_path_factory):
         return import_job(PREDSIGMA_DIR / 'problem.yaml', tmp_path_factory.mktemp('pred') / 'out')
 
+    @pytest.mark.petab
     def test_affine_prediction_noise_imports_as_prediction_formula(self, out):
         text = (out / 'imported.conf').read_text()
         assert 'objective = chi_sq' in text
@@ -5923,6 +5944,7 @@ class TestPredictionDependentNoiseImport:
         line = next(l for l in text.splitlines() if l.startswith('noise_model y'))
         assert 'prediction_formula sd_abs + sd_rel*y' in line
 
+    @pytest.mark.petab
     def test_imported_conf_loads_and_scores_against_sim_based_nll(self, out, monkeypatch):
         cfg = _load_conf(out, monkeypatch)
         assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'sd_abs', 'sd_rel'}
@@ -5936,6 +5958,7 @@ class TestPredictionDependentNoiseImport:
         sig_data = 0.5 + 0.1 * np.array([43., 34.5, 27.])
         assert not np.isclose(score, float(np.sum(res ** 2 / (2 * sig_data ** 2) + np.log(sig_data))))
 
+    @pytest.mark.petab
     def test_prediction_noise_source_survives_pickle(self, out, monkeypatch):
         # The objective carrying the PredictionFormulaSigma is scattered to dask workers; the
         # lambdify callable is dropped + rebuilt worker-side (ADR-0075), so a round-tripped
@@ -5954,6 +5977,7 @@ class TestPredictionDependentNoiseImport:
         res = np.array([1., 2., 2.])
         assert score == pytest.approx(float(np.sum(res ** 2 / (2 * sig ** 2) + np.log(sig))))
 
+    @pytest.mark.petab
     def test_prediction_formula_over_free_params_only_is_rejected(self, tmp_path, monkeypatch):
         # prediction_formula must reference a model output; a σ over free parameters alone should
         # use `formula` instead (ADR-0075) -- config raises a pointed error at load.

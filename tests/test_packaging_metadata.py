@@ -8,6 +8,8 @@ import textwrap
 import tomllib
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_ACTION = REPO_ROOT / '.github' / 'actions' / 'setup-pybnf' / 'action.yml'
@@ -469,3 +471,106 @@ def test_the_floor_check_reads_a_requirement_and_orders_versions():
     assert floors['petab'] == '0.9'                            # read out of pyproject, not typed
     assert floors['bngsim'] == '0.17.0'                        # extras stripped
     assert 'h5py' not in floors                                # declared with no lower bound
+
+
+# --------------------------------------------------------------------------- #
+# Dependency floors (#1023)
+# --------------------------------------------------------------------------- #
+DEPENDENCY_FLOORS = REPO_ROOT / 'tools' / 'dependency_floors.py'
+DOCKERFILE = REPO_ROOT / 'Dockerfile'
+
+
+def _load_dependency_floors():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('pybnf_tools_dependency_floors',
+                                                  DEPENDENCY_FLOORS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dependency_floors_pins_each_requirement_at_its_lower_bound():
+    """The constraints the floors leg installs with, on requirements of every shape it meets.
+
+    Written out by hand, not read back from pyproject, so a parser that misreads a shape
+    fails here instead of producing a constraints file that pins the wrong version.
+    """
+    floors = _load_dependency_floors()
+    assert floors.floor_pins([
+        'bngsim[antimony]>=0.17.0,<1',       # extras dropped, ceiling ignored
+        'numpy>=1.26',
+        'pydantic >= 2.0.2, < 3',            # spaces
+        'exact==1.2.3',
+        'compatible~=4.5',
+        'tomli>=2; python_version < "3.11"',  # an environment marker is carried through
+    ]) == [
+        'bngsim==0.17.0',
+        'numpy==1.26',
+        'pydantic==2.0.2',
+        'exact==1.2.3',
+        'compatible==4.5',
+        'tomli==2; python_version < "3.11"',
+    ]
+
+
+def test_dependency_floors_refuses_a_runtime_dependency_with_no_lower_bound():
+    """A dependency with no floor cannot be tested at its floor, so the tool must not pass it
+    over. Left out of the constraints, it would resolve to the newest release and the floors
+    leg would report on a version nobody declared."""
+    floors = _load_dependency_floors()
+    with pytest.raises(ValueError, match=r'no lower bound.*h5py.*scipy<2'):
+        floors.floor_pins(['numpy>=1.26', 'h5py', 'scipy<2'])
+
+
+def test_dependency_floors_check_names_each_package_off_its_floor():
+    """``--check`` is what stops a floors leg whose pins never took from passing on the newest
+    releases, so its comparison is pinned on the cases it has to tell apart."""
+    floors = _load_dependency_floors()
+    installed = {'numpy': '1.26.0', 'scipy': '1.14.1', 'tornado': '6.2'}
+
+    def lookup(name):
+        if name not in installed:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return installed[name]
+
+    assert floors.mismatches(
+        ['numpy==1.26', 'scipy==1.11.2', 'tornado==6.2', 'msgpack==1.0.6'], lookup
+    ) == [('scipy', '1.11.2', '1.14.1'), ('msgpack', '1.0.6', None)]
+    # '1.26' and '1.26.0' are one release, and a marker does not stop the match.
+    assert floors.mismatches(['numpy==1.26.0; python_version >= "3"'], lookup) == []
+
+
+def test_dependency_floors_runs_on_the_real_pyproject_with_the_standard_library_alone():
+    """The floors leg runs the tool with the runner's bare interpreter, before anything is
+    installed. Run it the same way here, and check it pins every runtime dependency once."""
+    result = subprocess.run([sys.executable, '-I', str(DEPENDENCY_FLOORS)],
+                            capture_output=True, text=True, check=True)
+    pins = result.stdout.split()
+    declared = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())['project']['dependencies']
+    assert len(pins) == len(declared)
+    assert sorted(pin.split('==')[0] for pin in pins) == sorted(
+        _split_requirement(requirement)[0] for requirement in declared)
+
+
+def test_the_dockerfile_installs_every_runtime_dependency_at_pyproject_s_range():
+    """The Dockerfile is a third hand-written copy of the runtime dependency list, beside
+    pyproject.toml and the CI action, and nothing compared it with the other two. When #1023
+    raised seven floors that were below anything installable, the Dockerfile still held all
+    seven old values.
+
+    It leaves bngsim out on purpose and installs PyBNF with --no-deps (#414), so bngsim is the
+    one runtime dependency it is allowed to omit.
+    """
+    metadata = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())
+    declared = dict(_split_requirement(r) for r in metadata['project']['dependencies'])
+    declared.pop('bngsim')
+
+    in_dockerfile = _requirements_quoted_in(DOCKERFILE.read_text())
+
+    missing = sorted(name for name in declared if name not in in_dockerfile)
+    assert not missing, f'the Dockerfile does not install these runtime dependencies: {missing}'
+    drifted = {name: (declared[name], in_dockerfile[name])
+               for name in declared if declared[name] != in_dockerfile[name]}
+    assert not drifted, (
+        'the Dockerfile and pyproject.toml disagree about a version range '
+        f'(name: pyproject wants, Dockerfile installs): {drifted}')

@@ -27,7 +27,14 @@ jobs:
           # wheel ships.
           - python-version: '3.14'
             no-bngsim: '1'
-    name: pytest (py${{ matrix.python-version }}${{ matrix.no-bngsim == '1' && ', bngsim-less' || '' }})
+          # The same suite with every runtime dependency at exactly the lowest
+          # version pyproject.toml allows (#1023). The legs above install the
+          # newest releases, so without this one no declared floor is ever
+          # tested. 3.12 is the lowest supported Python, the one an old
+          # dependency is most likely to be paired with.
+          - python-version: '3.12'
+            floors: '1'
+    name: pytest (py${{ matrix.python-version }}${{ matrix.no-bngsim == '1' && ', bngsim-less' || '' }}${{ matrix.floors == '1' && ', dependency floors' || '' }})
     steps:
       - uses: actions/checkout@v6
 
@@ -35,6 +42,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           bngsim: ${{ matrix.no-bngsim == '1' && 'false' || 'true' }}
+          dependency-floors: ${{ matrix.floors == '1' && 'true' || 'false' }}
+          # Its own uv cache, so it does not race the newest-release 3.12 leg
+          # for the same key (see the action's cache-suffix input).
+          cache-suffix: ${{ matrix.floors == '1' && 'pybnf-floors' || 'pybnf' }}
 
       - name: Warm the arviz version-check stamp
         # arviz < 1.0 prints a daily refactor warning on import and

@@ -999,6 +999,7 @@ class TestExportRowVaryingRoundTrip:
         assert _petab_validation_errors(self.CASES[case][0] / 'problem.yaml') == []
 
     @pytest.mark.parametrize('case', list(CASES))
+    @pytest.mark.petab
     def test_reexport_is_petab_valid(self, case, tmp_path):
         # The re-exported problem passes petab's full default_validation_tasks (the external
         # oracle): the per-observable noise, the retargeted placeholders, and the per-row
@@ -1007,6 +1008,7 @@ class TestExportRowVaryingRoundTrip:
         assert _petab_validation_errors(pet2 / 'problem.yaml') == []
 
     @pytest.mark.parametrize('case', list(CASES))
+    @pytest.mark.petab
     def test_round_trip_preserves_the_fit(self, case, tmp_path, monkeypatch):
         # The end-to-end oracle: the re-imported conf scores a known trajectory identically to the
         # importer's hand-derived NLL, so the row-varying binding (per-row sigma / scale) and the
@@ -1026,6 +1028,7 @@ class TestExportRowVaryingRoundTrip:
         score = cfg.obj.evaluate_multiple({model: {expname: sim}}, cfg.exp_data, pset)
         assert score == pytest.approx(expected)
 
+    @pytest.mark.petab
     def test_per_observable_formula_sigma_round_trips(self, tmp_path):
         # scaling_v2: a per-observable FormulaSigma (the y column) coexisting with a per-observable
         # constant (the obs_sx measurement-model column) -- the per-observable gate the export
@@ -1049,6 +1052,7 @@ class TestExportRowVaryingRoundTrip:
                 if r['observableId'] == 'func_y']
         assert [r['noiseParameters'] for r in rows] == ['sd_lo', 'sd_hi', 'sd_lo']
 
+    @pytest.mark.petab
     def test_row_varying_observable_emits_observable_parameters(self, tmp_path):
         # obsscale_v2: the per-row scale id rides the measurements observableParameters column;
         # the measurement-model observableFormula keeps its placeholder verbatim (its id obs_y is
@@ -1116,6 +1120,7 @@ class TestExportNewNoiseShapesRoundTrip:
         assert _petab_validation_errors(self.CASES[case][0] / 'problem.yaml') == []
 
     @pytest.mark.parametrize('case', list(CASES))
+    @pytest.mark.petab
     def test_reexport_is_petab_valid(self, case, tmp_path):
         # The re-exported problem passes petab's full default_validation_tasks (the external
         # oracle): the multi-token noiseParameters and the prediction-dependent noiseFormula are
@@ -1124,6 +1129,7 @@ class TestExportNewNoiseShapesRoundTrip:
         assert _petab_validation_errors(pet2 / 'problem.yaml') == []
 
     @pytest.mark.parametrize('case', list(CASES))
+    @pytest.mark.petab
     def test_round_trip_preserves_the_fit(self, case, tmp_path, monkeypatch):
         # The end-to-end oracle: the re-imported conf scores the fixed trajectory identically to
         # the importer's hand-derived NLL, so the multi-token binding and the prediction-dependent
@@ -1157,6 +1163,7 @@ class TestExportNewNoiseShapesRoundTrip:
                 if r['observableId'] == 'func_y']
         assert [r['noiseParameters'] for r in rows] == ['s_lo;sig', 's_hi;sig', 's_lo;sig']
 
+    @pytest.mark.petab
     def test_prediction_dependent_noise_exports_verbatim_formula(self, tmp_path):
         # predsigma_v2: the prediction-dependent sigma exports as a plain noiseFormula (the direct
         # mirror of a FormulaSigma) -- its coefficients declared estimated, the model entity y kept

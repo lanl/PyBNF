@@ -107,6 +107,7 @@ def test_every_form_that_declares_scale_is_refused(tmp_path, monkeypatch, lines,
     assert remedy in error.message
 
 
+@pytest.mark.petab
 def test_one_free_scale_per_series_replaces_scale_and_one_shared_scale_does_not(tmp_path,
                                                                               monkeypatch):
     """scale profiles one factor per series -- each experiment's column -- so the refusal lists
@@ -165,6 +166,7 @@ def test_scale_with_an_optimizer_still_loads(tmp_path, monkeypatch, job_type):
     assert conf.obj._analytic_scale == {'par1': frozenset({'y'})}
 
 
+@pytest.mark.petab
 def test_the_free_scale_the_refusal_suggests_loads_under_a_sampler(tmp_path, monkeypatch):
     conf = _load(tmp_path, monkeypatch, _E2 + [
         'job_type = dream', 'objective = chi_sq', *_SAMPLER_KEYS[:2],

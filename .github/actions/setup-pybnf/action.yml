@@ -36,6 +36,16 @@ inputs:
       [jax] extra.
     required: false
     default: 'false'
+  dependency-floors:
+    description: >-
+      Install every runtime dependency at exactly the lowest version
+      pyproject.toml allows, rather than the newest release (#1023). Default
+      "false". The pins come from tools/dependency_floors.py, and the step fails
+      if the environment it built does not match them. petab is left out on such
+      a leg: petab >= 0.9 needs pydantic >= 2.10, well above the core pydantic
+      floor, so the two cannot share an environment, and the petab suites skip.
+    required: false
+    default: 'false'
   cache-suffix:
     description: >-
       uv cache namespace suffix. Two jobs that run the SAME python version
@@ -91,6 +101,7 @@ runs:
       env:
         BNGSIM: ${{ inputs.bngsim }}
         JAX: ${{ inputs.jax }}
+        FLOORS: ${{ inputs.dependency-floors }}
       run: |
         # Build the venv from the setup-python interpreter (see note above), not
         # a uv-managed one.
@@ -123,6 +134,23 @@ runs:
         if [ "$JAX" = 'true' ]; then
           JAX_SPEC=('jax>=0.4' 'jaxlib>=0.4' 'blackjax>=1.2')
         fi
+        # The dependency-floors leg (#1023): constrain every runtime dependency to
+        # the floor pyproject.toml declares, and leave petab out, because petab >=
+        # 0.9 needs pydantic >= 2.10 and cannot share an environment with the core
+        # pydantic floor. Everything else (the test stack, transitive deps) still
+        # resolves to the newest release compatible with those pins. Wheels only:
+        # a floor with no wheel for this Python then fails here, naming the
+        # package, instead of compiling an old release from source.
+        PETAB_SPEC=('petab>=0.9,<1')
+        FLOOR_ARGS=()
+        if [ "$FLOORS" = 'true' ]; then
+          FLOORS_FILE="$RUNNER_TEMP/dependency-floors.txt"
+          "${{ steps.python.outputs.python-path }}" tools/dependency_floors.py > "$FLOORS_FILE"
+          echo 'Installing the runtime dependencies at their declared floors:'
+          cat "$FLOORS_FILE"
+          FLOOR_ARGS=(--constraint "$FLOORS_FILE" --only-binary ':all:')
+          PETAB_SPEC=()
+        fi
         # Mirror pyproject.toml's runtime deps, plus the test stack (pytest,
         # hypothesis, pytest-xdist), petab, and the optional test extras that
         # otherwise leave whole suites importorskip-skipping on the runner (#516).
@@ -143,28 +171,35 @@ runs:
         # tests/test_packaging_metadata.py checks that, for every requirement in
         # this file and in pyproject.toml, both name the same version range.
         uv pip install \
+          "${FLOOR_ARGS[@]}" \
           "${BNGSIM_SPEC[@]}" \
           "${JAX_SPEC[@]}" \
+          "${PETAB_SPEC[@]}" \
           'dask>=2024.1.0' \
           'distributed>=2024.1.0' \
-          'libroadrunner>=1.6.0' \
-          'msgpack>=0.6.2' \
-          'numpy>=1.24' \
+          'libroadrunner>=2.5.0' \
+          'msgpack>=1.0.6' \
+          'numpy>=1.26' \
           'paramiko>=2.7' \
-          'pydantic>=2,<3' \
-          'pyparsing>=2.4,<4' \
-          'scipy>=1.10' \
-          'tornado>=6.1' \
+          'pydantic>=2.0.2,<3' \
+          'pyparsing>=3.0,<4' \
+          'scipy>=1.11.2' \
+          'tornado>=6.2' \
           'pytest>=7,<10' \
           'hypothesis>=6,<7' \
           'pytest-xdist' \
           'arviz>=0.17' \
           'h5netcdf>=1' \
           'h5py' \
-          'matplotlib>=3.5' \
-          'petab>=0.9,<1'
+          'matplotlib>=3.5'
         # Install pybnf itself without re-resolving deps: on a bngsim: 'false'
         # leg a re-resolve would pull bngsim in through pyproject.toml and
         # defeat the point, and everywhere it would re-derive a dependency set
         # this step just pinned.
         uv pip install --no-deps .
+        # A floors leg whose pins did not take would test the newest releases
+        # and pass, saying nothing about the floors. Check the environment it
+        # actually built, and stop if it is not the floors.
+        if [ "$FLOORS" = 'true' ]; then
+          .venv/bin/python tools/dependency_floors.py --check
+        fi

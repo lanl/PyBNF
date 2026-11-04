@@ -367,6 +367,7 @@ experiment: e_high, preequilibrate: basal, condition: high, method: ode, data: r
 """
 
 
+@pytest.mark.petab
 def test_two_conf_experiments_sharing_a_preequilibration_condition_differ(tmp_path, monkeypatch):
     """The corpus shape end to end (Brannmark/Weber): two ``experiment:`` lines with one
     shared ``preequilibrate:`` and different measurement ``condition:``s, built through the
@@ -387,6 +388,7 @@ def test_two_conf_experiments_sharing_a_preequilibration_condition_differ(tmp_pa
     np.testing.assert_allclose(high, _analytic(2.0, [0.0, 0.5, 1.0]), rtol=1e-5, atol=1e-8)
 
 
+@pytest.mark.petab
 def test_a_none_preequilibration_equilibrates_the_model_as_it_stands(tmp_path, monkeypatch):
     """``perturbations: none`` (#906, ADR-0150) on the SBML backend: the equilibration runs
     with nothing changed -- the free ``k_prod`` at its trial value (5, not the file's 3) and

@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip('petab', reason='these tests need the optional pybnf[petab] extra')
+
 from petab.v2 import Problem
 from petab.v2.lint import lint_problem
 

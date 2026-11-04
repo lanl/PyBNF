@@ -84,6 +84,7 @@ def _build(conf, fit_type):
 # Tier 1: backend-free -- runs in default CI.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize('example', EXAMPLES, ids=lambda e: e.folder)
+@pytest.mark.petab
 def test_real_world_conf_is_wellformed(example, tmp_path):
     """Every committed real-world conf parses, is edition 2, selects its documented
     simulator, and binds its data/constraints -- backend-free (no bngsim / BNG2.pl needed)."""

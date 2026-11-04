@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip('petab', reason='these tests need the optional pybnf[petab] extra')
+
 from . import recovery_harness as H
 
 from petab.v2 import Problem
