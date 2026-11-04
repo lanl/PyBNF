@@ -603,13 +603,20 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         warning a hundred times. The refusal is once-only for the same reason -- it has
         already ended the run the first time.
 
-        Never raises except under ``sensitivity_fallback = error``, which is a user
-        asking to be stopped."""
+        Raises under ``sensitivity_fallback = error``, which is a user asking to be
+        stopped, and -- under any policy that probes -- for a model whose request **no run
+        can answer**: bngsim refused to build its sensitivity Simulator
+        (``status.refusal``), or its analytic RHS is declined and it asks for an
+        initial-value column, which CVODES' difference quotient cannot supply (it has no
+        parameter to perturb for an initial value). bngsim >= 0.17.0 refuses the latter when
+        the Simulator is built; 0.16.0 builds it and fails every run. Either way the fit used
+        to score every evaluation as a failed simulation and finish at ``inf``, exit 0."""
         policy = str(self.config.config.get('sensitivity_fallback', 'warn')).lower()
         if policy == 'ignore' or getattr(self, '_sens_rhs_reported', False):
             return
         self._sens_rhs_reported = True
         declined = []
+        unanswerable = []
         for model in self.model_list:
             probe = getattr(model, 'analytic_sens_rhs_status', None)
             if not callable(probe):
@@ -618,6 +625,18 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                 # that cannot supply a gradient at all, so this is not a failure.
                 continue
             status = probe()
+            if getattr(status, 'refusal', None):
+                unanswerable.append((model, status.refusal))
+                continue
+            request = getattr(model, '_sensitivity_request', None)
+            initial_values = list(getattr(request, 'ic', None) or ())
+            if status.analytic is False and initial_values:
+                unanswerable.append((model, (
+                    "its analytic sensitivity right-hand side is declined, and the fit asks "
+                    "for the initial-value column(s) of %s, which CVODES' difference "
+                    "quotient cannot supply: it has no parameter to perturb for an initial "
+                    "value" % ', '.join(map(str, initial_values)))))
+                continue
             if status.analytic is None:
                 logger.info(
                     "Model %s: cannot tell whether the forward sensitivities run on "
@@ -629,6 +648,18 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             else:
                 declined.append((model, status))
                 self._warn_sensitivity_fallback(model, status)
+        if unanswerable:
+            raise PybnfError(
+                "Gradient-based fitting (job_type = %s) cannot compute the sensitivities it "
+                "needs for %s." % (
+                    self._fit_type_label(),
+                    '; '.join("model '%s': %s" % (m.name, why) for m, why in unanswerable)),
+                hint=["Re-encode the declined rate law in a form bngsim can differentiate; "
+                      "bngsim's reason is in the message above.",
+                      "Or fix the species initial value(s) instead of fitting them, so the "
+                      "fit asks for parameter columns only, which the difference quotient "
+                      "can supply (more slowly).",
+                      _FALLBACK_HINT])
         if declined and policy == 'error':
             raise PybnfError(
                 "Gradient-based fitting (job_type = %s) was asked to require the "

@@ -713,8 +713,13 @@ _SENS_RHS_UNCOMPENSATED_MARK = 'does not recover'
 
 
 class SensRhsStatus(collections.namedtuple(
-        'SensRhsStatus', 'analytic route reasons columns')):
+        'SensRhsStatus', 'analytic route reasons columns refusal', defaults=(None,))):
     """One model's answer to "is this fit's gradient on the analytic ``∂f/∂p``?" (#606).
+
+    ``refusal`` is bngsim's own message when it refused to build a sensitivity-bearing
+    Simulator for this model at all (:func:`is_sensitivity_refusal`) -- not a fallback that
+    runs slower but a request no run can answer, such as an initial-value column on a
+    model whose analytic RHS is declined. ``None`` otherwise.
 
     ``analytic`` is the tri-state verdict :func:`analytic_sens_rhs_probe` reached
     (``True`` / ``False`` / ``None`` for no opinion) and ``route`` names the evidence
@@ -765,19 +770,42 @@ def probe_sens_rhs(make_simulator, columns=0):
 
     Never raises. A model that cannot be prepared for a sensitivity run reports no
     opinion: this is a diagnostic, and a diagnostic that can end a fit is worse than
-    no diagnostic. Whatever is genuinely wrong surfaces at the first simulation with
-    its own message.
+    no diagnostic. The one exception to "no opinion" is bngsim *refusing* the request
+    (:func:`is_sensitivity_refusal`): that is a verdict, the same at every parameter set,
+    so it comes back as a declined status carrying bngsim's message in ``refusal``, for
+    the caller to act on. It used to be read as no opinion, and the fit then scored every
+    evaluation as a failed simulation and finished at ``inf``.
     """
+    reasons = []
     try:
         with capture_sens_rhs_declines() as reasons:
             sim = make_simulator()
         state, route = analytic_sens_rhs_probe(sim)
         return SensRhsStatus(state, route, list(reasons), int(columns))
-    except Exception:
+    except Exception as exc:
+        if is_sensitivity_refusal(exc):
+            return SensRhsStatus(
+                False, 'bngsim refusing the sensitivity request when the Simulator was built',
+                list(reasons), int(columns), str(exc))
         logger.debug('could not probe the analytic sensitivity RHS', exc_info=True)
         return SensRhsStatus(
             None, 'the model could not be prepared for a sensitivity run', [],
             int(columns))
+
+
+def is_sensitivity_refusal(exc, module=None):
+    """Is ``exc`` bngsim refusing a forward-sensitivity request for this model?
+
+    ``bngsim.SensitivityUnsupportedError`` is that refusal by type: a model whose analytic
+    sensitivity RHS is declined asked for an initial-value column (the difference quotient
+    has no parameter to perturb for one), or one whose fallback would integrate through a
+    moving crossing (lanl/bngsim#414/#416). It depends on the model and the request, never
+    on the parameter set, so it is not a point the optimizer can back off from. ``module`` is
+    the bngsim namespace to read the type from; ``None`` is the real one.
+    """
+    module = bngsim if module is None else module
+    refusal = getattr(module, 'SensitivityUnsupportedError', None)
+    return isinstance(refusal, type) and isinstance(exc, refusal)
 
 
 def analytic_sens_rhs_probe(sim):
