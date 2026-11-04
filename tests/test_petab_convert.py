@@ -302,8 +302,8 @@ _REFUSED_UPSTREAM_V1_PRIORS = [
 
 
 def _petab_release():
-    import petab
-    return tuple(int(part) for part in petab.__version__.split('.')[:2])
+    from importlib.metadata import version
+    return tuple(int(part) for part in version('petab').split('.')[:2])
 
 
 _PETAB1TO2_REFUSES_SOME_V1_PRIORS = _petab_release() < (0, 10)

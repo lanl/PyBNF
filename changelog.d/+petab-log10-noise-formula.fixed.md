@@ -4,5 +4,5 @@
   wrong under the `observableTransformation = log10` column that
   `petab1to2_preserve_scale` restores. A log10 observable with a numeric sigma then imported
   with a sigma 2.3 times the stated one, with no error. The converter now puts the v1 noise
-  formula back, and refuses any other rewrite of it. It gives the same result under petab
-  0.9 and 0.10.
+  formula back, and refuses any other rewrite of it, so the noise formula is the same under
+  petab 0.9 and 0.10.

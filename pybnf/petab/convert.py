@@ -233,7 +233,9 @@ def petab1to2_preserve_scale(v1_yaml_path, out_dir):
             oid for oid, transformation in transformations.items() if transformation == 'log10'})
         for obs_file in v2_spec.get('observable_files', []):
             v2_obs_path = out_dir / obs_file
-            v2_odf = pd.read_csv(v2_obs_path, sep='\t')
+            # As text: a float parse can move a 17-digit noise formula by an ulp (pandas
+            # < 3.1), which then no longer matches its v1 text in the restore below.
+            v2_odf = pd.read_csv(v2_obs_path, sep='\t', dtype=str, keep_default_na=False)
             inject_observable_transformations(v2_odf, transformations, distributions)
             restore_v1_noise_formulas(v2_odf, log10_formulas)
             v2_odf.to_csv(v2_obs_path, sep='\t', index=False)
@@ -555,9 +557,9 @@ def restore_v1_noise_formulas(v2_odf, v1_formulas):
             f"Converting PEtab v1 observable '{oid}' (observableTransformation log10): "
             f"petab1to2 rewrote its noiseFormula from {v1!r} to {v2!r}, which is not the "
             f"'log(10) * (...)' rescaling this converter knows how to undo.",
-            hint='The noise formula sets sigma, so it is not carried over on a guess. Check '
-                 'what this petab release does to log10 observables, or convert the problem '
-                 'with petab 0.9 or 0.10.')
+            hint='The noise formula sets sigma, so it is not carried over on a guess. This '
+                 'converter knows what petab 0.9 and 0.10 write for a log10 observable; '
+                 'check what the installed petab release writes.')
     return v2_odf
 
 
