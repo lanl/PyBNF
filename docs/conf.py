@@ -26,9 +26,9 @@ author = 'Ryan Suderman, Eshan Mitra'
 # Keep in sync with pybnf.__version__ (docs/conf.py is not imported by the
 # package, so this is a manual bump at release time).
 # The short X.Y version
-version = '1.8.1'
+version = '1.8.2'
 # The full version, including alpha/beta/rc tags
-release = 'v1.8.1'
+release = 'v1.8.2'
 
 
 # -- General configuration ---------------------------------------------------
