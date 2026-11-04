@@ -256,6 +256,11 @@ class NetSegmentBackend(SegmentBackend):
                     kwargs[key] = float(self.sim_params[key])
                 except (TypeError, ValueError):
                     pass
+        if 'atol' in kwargs:
+            # Exact, as the ordinary simulate path passes it (bngsim >= 0.17.0 reads a bare
+            # float as a ceiling off each segment's own start state).
+            rt = _runtime()
+            kwargs['atol'] = rt.exact_atol(kwargs['atol'], rt.bngsim)
         try:
             timeout = float(self.timeout)
         except (TypeError, ValueError):

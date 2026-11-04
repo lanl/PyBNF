@@ -1749,10 +1749,14 @@ class BngsimModel(NetModel):
         # Gap 4: print_functions
         print_funcs = bool(int(_eval_numeric(str(sim_params.get('print_functions', 0)))))
 
-        # Gap 3: atol, rtol, seed
+        # Gap 3: atol, rtol, seed. ``atol=>`` means one number for every species, as
+        # BioNetGen (and BNG2.pl, this backend's sibling) reads it, so it goes to bngsim as
+        # an exact tolerance: from 0.17.0 a bare float is a per-species ceiling read off
+        # each run's start state (see :func:`pybnf._bngsim_caps.exact_atol`).
         run_kwargs = {}
         if 'atol' in sim_params:
-            run_kwargs['atol'] = _eval_numeric(str(sim_params['atol']))
+            run_kwargs['atol'] = _runtime.exact_atol(
+                _eval_numeric(str(sim_params['atol'])), _runtime.bngsim)
         if 'rtol' in sim_params:
             run_kwargs['rtol'] = _eval_numeric(str(sim_params['rtol']))
         explicit_seed = None

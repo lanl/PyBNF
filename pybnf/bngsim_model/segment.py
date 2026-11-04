@@ -176,9 +176,14 @@ class SegmentIntegrator:
         engine.set_state(state)
         self.n_integrations += 1
         run_kwargs = dict(self._tolerances)
+        bngsim = _runtime.bngsim
+        if 'atol' in run_kwargs:
+            # Exact, as the ordinary simulate path passes it: a bare float would be a
+            # ceiling read off this segment's own start state (bngsim >= 0.17.0), so two
+            # segments of one action would integrate at two tolerances.
+            run_kwargs['atol'] = _runtime.exact_atol(run_kwargs['atol'], bngsim)
         if self._timeout is not None:
             run_kwargs['timeout'] = self._timeout
-        bngsim = _runtime.bngsim
         try:
             with _QUIET:
                 result = sim.run(t_span=(grid[0], grid[-1]), n_points=len(grid),

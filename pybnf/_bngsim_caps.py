@@ -368,6 +368,39 @@ BNGSIM_HAS_TRACKING_ATOL = bool(
 )
 
 
+# Whether a bare scalar ``atol`` means what it says. From bngsim 0.17.0 (lanl/bngsim#1420)
+# ``Simulator.run`` reads a float ``atol`` as a per-species *ceiling*: each species takes
+# ``min(atol, rtol * max(|x_i|, floor))`` in the state that call starts from, except on a
+# run whose sensitivities come from CVODES' difference quotient, which keeps the scalar.
+# ``ExactAtol(value)`` is the opt-out, "how bngsim read a scalar before". Every scalar PyBNF
+# hands bngsim is a number PyBNF or the user chose to mean exactly that number -- ADR-0103's
+# derivation, a stated ``sbml_atol``, a BNGL action's ``atol=>`` as BioNetGen reads it -- so
+# each one goes through :func:`exact_atol`. Read as a ceiling it would move with the fit
+# point's initial conditions, which ADR-0105 rules out, differ between a gradient fit and a
+# scalar fit of the same model, and make ``sbml_atol = 1e-10`` integrate exactly as
+# ``1e-8`` does on a model whose species sit below one.
+#
+# A name probe, like the two flags above: the type arrived with the ceiling reading, in the
+# same change, so its presence is what says a float would be read as a ceiling.
+BNGSIM_HAS_EXACT_ATOL = bool(
+    BNGSIM_AVAILABLE and hasattr(bngsim, 'ExactAtol')
+)
+
+
+def exact_atol(value, module=None):
+    """``value`` as an absolute tolerance bngsim holds every species to exactly.
+
+    ``module`` is the bngsim namespace the caller runs against (the ``bngsim_model``
+    package passes its ``_runtime.bngsim`` seam, so a test's stand-in decides); ``None``
+    is the real one. On a build without ``ExactAtol`` a float already means exactly that
+    number, so the float is returned unchanged and an older bngsim runs every fit it ran
+    before.
+    """
+    module = bngsim if module is None else module
+    exact = getattr(module, 'ExactAtol', None)
+    return float(value) if exact is None else exact(float(value))
+
+
 # Whether a Newton (KINSOL) steady state's ``dY_ss/dθ`` carries a parameter's
 # initial-condition seeding through a **conserved total** (lanl/bngsim#704, merged with
 # lanl/bngsim#982). ``A <-> B`` started at ``A0`` relaxes to ``B* = A0 kf/(kf + kr)``, which

@@ -46,9 +46,11 @@ ever tighten. "Typical" is the median rather than the minimum, for a reason
 transient nine decades below everything else must not set the tolerance for the model
 around it. The fixture here is the piecewise-in-time FD/analytic oracle #546 asks
 for and the #385 gradient epic never had -- a three-stage time-gated decay, with an
-``and`` in the middle condition so it takes the same declined-analytic-RHS difference
-quotient path Giordano does, and an initial value of ``1e-8`` so it sits exactly at the
-old default. Its closed-form solution gives an exact sensitivity oracle, which is
+``and`` in the middle condition so that, through bngsim 0.16.0, it takes the same
+declined-analytic-RHS difference quotient path Giordano did, and an initial value of
+``1e-8`` so it sits exactly at the old default. bngsim 0.17.0 differentiates that
+condition, so the sensitivities are analytic there; the tolerance result does not depend
+on the path (see ``test_the_backend_default_atol_is_what_corrupted_those_sensitivities``). Its closed-form solution gives an exact sensitivity oracle, which is
 stronger than finite differences: the tests below assert the tensor against the true
 derivative, and assert that pinning ``sbml_atol`` back to the old default reproduces the
 original error.
@@ -88,7 +90,9 @@ import numpy as np
 import pytest
 
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
-from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS, BNGSIM_HAS_PER_SPECIES_ATOL
+from pybnf._bngsim_caps import (
+    BNGSIM_HAS_EXACT_ATOL, BNGSIM_HAS_OUTPUT_SENS, BNGSIM_HAS_PER_SPECIES_ATOL,
+)
 from pybnf.bngsim_sbml_model import (
     _BNGSIM_DEFAULT_ATOL, _BNGSIM_DEFAULT_RTOL, _DERIVED_ATOL_FLOOR, _derive_atol,
     _derive_atol_vector,
@@ -116,9 +120,9 @@ _needs_per_species_atol = pytest.mark.skipif(
 # X' = -k(t)*X with k(t) = k0 on [0, t1], k1 on (t1, t2], k2 on (t2, inf). Each stage
 # is its own single-piece `piecewise` summed with the others -- the idiom Giordano's
 # 14 assignment rules use -- and the middle condition is an `and` of two inequalities,
-# which is what makes bngsim decline the analytic sensitivity RHS and fall back to
-# CVODES' internal difference quotient. X(0) = 1e-8 puts the whole trajectory at or
-# beneath bngsim's default absolute tolerance.
+# which made bngsim (through 0.16.0) decline the analytic sensitivity RHS and fall back to
+# CVODES' internal difference quotient; 0.17.0 differentiates it. X(0) = 1e-8 puts the
+# whole trajectory at or beneath bngsim's default absolute tolerance.
 _TIME = ('<csymbol encoding="text" '
          'definitionURL="http://www.sbml.org/sbml/symbols/time">time</csymbol>')
 
@@ -331,6 +335,28 @@ def _tolerance_kwargs(model):
     return engine, model._run_tolerance_kwargs(model._make_simulator(engine, 'ode'), engine)
 
 
+def _exact(value):
+    """A scalar ``atol`` as PyBNF hands it to ``Simulator.run``: held exactly.
+
+    From bngsim 0.17.0 a bare float is a per-species ceiling, so the scalar travels as
+    ``ExactAtol``; on the 0.16.0 floor a float already means exactly that number.
+    """
+    if BNGSIM_HAS_EXACT_ATOL:
+        return bngsim_sbml_model.bngsim.ExactAtol(value)
+    return value
+
+
+def _scalar(atol):
+    """The number inside a scalar ``atol`` PyBNF handed bngsim, after checking it is exact."""
+    if BNGSIM_HAS_EXACT_ATOL:
+        assert isinstance(atol, bngsim_sbml_model.bngsim.ExactAtol), (
+            'a scalar atol must reach bngsim as ExactAtol, or it is read as a ceiling: %r'
+            % (atol,))
+        return atol.value
+    assert isinstance(atol, float), atol
+    return atol
+
+
 # --- the boundaries are already handed to CVODE -------------------------------- #
 def test_time_gated_piecewise_registers_a_cvode_root_per_boundary(tmp_path):
     """Every ``time`` inequality in the rule becomes a discontinuity root (#546).
@@ -464,7 +490,7 @@ def test_effective_tolerances_reach_the_bngsim_run_call(tmp_path, monkeypatch):
         model._run_simulation(object(), 1.0, 2, method='ode')
 
     assert captured['rtol'] == 1e-9
-    assert captured['atol'] == 1e-18
+    assert _scalar(captured['atol']) == 1e-18
 
 
 def test_a_stochastic_run_sets_no_tolerances(tmp_path, monkeypatch):
@@ -700,7 +726,7 @@ def test_a_model_of_one_scale_keeps_the_scalar_call(tmp_path):
     model = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_v.xml')
     _, kwargs = _tolerance_kwargs(model)
 
-    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': _BNGSIM_DEFAULT_ATOL}
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': _exact(_BNGSIM_DEFAULT_ATOL)}
 
 
 @_needs_per_species_atol
@@ -714,7 +740,7 @@ def test_an_explicit_sbml_atol_pins_the_scalar_path(tmp_path):
                              atol=1e-12)
     _, kwargs = _tolerance_kwargs(model)
 
-    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': 1e-12}
+    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': _exact(1e-12)}
 
 
 def test_an_older_bngsim_keeps_adr_0103s_scalar(tmp_path, monkeypatch):
@@ -728,8 +754,9 @@ def test_an_older_bngsim_keeps_adr_0103s_scalar(tmp_path, monkeypatch):
     model = _piecewise_model(tmp_path, text=_TWO_SCALE_SBML, name='pw_two_old.xml')
     _, kwargs = _tolerance_kwargs(model)
 
-    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL,
-                      'atol': pytest.approx(_TWO_SCALE_SCALAR)}
+    assert set(kwargs) == {'rtol', 'atol'}
+    assert kwargs['rtol'] == _BNGSIM_DEFAULT_RTOL
+    assert _scalar(kwargs['atol']) == pytest.approx(_TWO_SCALE_SCALAR)
 
 
 @_needs_per_species_atol
@@ -750,8 +777,9 @@ def test_a_species_the_document_does_not_name_falls_back_and_says_so(tmp_path, c
     with caplog.at_level('WARNING'):
         kwargs = model._run_tolerance_kwargs(object(), _RenamedEngine())
 
-    assert kwargs == {'rtol': _BNGSIM_DEFAULT_RTOL,
-                      'atol': pytest.approx(_TWO_SCALE_SCALAR)}
+    assert set(kwargs) == {'rtol', 'atol'}
+    assert kwargs['rtol'] == _BNGSIM_DEFAULT_RTOL
+    assert _scalar(kwargs['atol']) == pytest.approx(_TWO_SCALE_SCALAR)
     assert any('_ant_Big' in r.message for r in caplog.records)
 
 
@@ -810,10 +838,12 @@ def test_piecewise_in_time_sensitivities_match_the_analytic_oracle(tmp_path):
 
     The regression test for #546 proper. This is the model shape the whole #385 epic had
     no fixture for -- a rate law switching on simulation time, differentiated with
-    respect to the per-stage rate constants -- and it takes the same code path Giordano
-    does: the ``and`` in the middle condition makes bngsim decline the analytic
+    respect to the per-stage rate constants. Through bngsim 0.16.0 it took the code path
+    Giordano did: the ``and`` in the middle condition made bngsim decline the analytic
     sensitivity RHS in favour of CVODES' internal difference quotient, which inherits
-    whatever accuracy the state solve has.
+    whatever accuracy the state solve has. From 0.17.0 the sensitivity RHS is analytic,
+    and the derived tolerance is what this test still depends on: at the old default the
+    analytic columns are as wrong as the quotient's were (the test below).
     """
     model = _piecewise_model(tmp_path)
     model.enable_output_sensitivities(params=['k0', 'k1', 'k2'])
@@ -899,10 +929,22 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
 
     The other half of the regression: without this, a future change that quietly stopped
     deriving the tolerance would leave the test above passing on some unrelated accuracy
-    margin. Same model, same roots, same difference-quotient sensitivity path (``k`` is
-    still declined for the analytic RHS -- "uses unsupported construct: if() conditional"
-    -- so this is the CVODES internal quotient inheriting the state solve's accuracy),
-    integrated at the old default instead of the derived one.
+    margin. Same model, same roots, integrated at the old default instead of the derived
+    one.
+
+    **The sensitivity path does not matter, the tolerance does.** Through bngsim 0.16.0
+    ``k`` was declined for the analytic RHS ("uses unsupported construct: if()
+    conditional"), so this was the CVODES internal quotient inheriting the state solve's
+    accuracy. bngsim 0.17.0 differentiates the condition, and at an exact ``1e-8`` its
+    analytic columns come out the same as the quotient's did, to the digits below:
+    ``[8.50e-02, 3.95e-02, 3.79e-01]`` on both builds.
+
+    **And the test only reproduces it because PyBNF states the tolerance exactly.** From
+    0.17.0 bngsim reads a bare float ``atol`` as a per-species ceiling,
+    ``min(atol, rtol * |x_i(0)|)``, which tightens ``X`` here to 1e-16. Handed the float,
+    this run measured ``[2.3e-07, 7.6e-07, 1.1e-06]``: ``sbml_atol = 1e-8`` had stopped
+    meaning 1e-8. PyBNF now passes it as ``bngsim.ExactAtol``, and this test is what
+    noticed.
 
     **Two claims, because one number is not portable across backend versions (#566).**
     At least one column is corrupted outright -- 3.8e-01 measured, the order #546 saw on
@@ -947,6 +989,42 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
     # 3.9e-02 measured on the tightest -- still 390x the 1e-4 the derived tolerance is
     # held to next door, so no single accuracy regime can satisfy both halves.
     assert min(errs) > 1e-3, f'expected every column to blow the 1e-4 budget, got {errs}'
+
+
+def test_a_stated_sbml_atol_is_the_tolerance_every_species_is_integrated_at(tmp_path):
+    """``sbml_atol = <number>`` integrates every species at that number, on every build.
+
+    The docs promise it ("a number replaces the whole derivation: it integrates every
+    species at that value"), and from bngsim 0.17.0 keeping the promise takes PyBNF
+    passing the number as ``ExactAtol``. A bare float is a per-species ceiling there,
+    ``min(atol, rtol * |x_i(0)|)``, which takes ``X`` (X(0) = 1e-8) to 1e-16 whatever was
+    stated. No sensitivities here on purpose: that is the run the ceiling applies to (a
+    difference-quotient sensitivity run keeps the scalar either way).
+
+    The closed form is the oracle. Measured, worst relative error over the trajectory:
+
+        ==============  ============  =============================  ================
+        stated          0.16.0 float  0.17.0 float (read as ceiling)  0.17.0 ExactAtol
+        ==============  ============  =============================  ================
+        1e-8            2.26e-01      8.34e-07                        2.26e-01
+        1e-10           1.04e-01      8.34e-07                        7.50e-02
+        ==============  ============  =============================  ================
+
+    Read as a ceiling the two stated numbers were the same run. Held exactly, each is the
+    tolerance it says, and the looser one is the less accurate.
+    """
+    def worst_error(atol, name):
+        data = _piecewise_model(tmp_path, atol=atol, name=name).execute(
+            str(tmp_path), name.replace('.xml', ''), 0)['time_course']
+        t = np.asarray(data['time'])
+        return np.max(np.abs(np.asarray(data['X']) - _exact_x(t)) / _exact_x(t))
+
+    loose = worst_error(1e-8, 'pw_stated_loose.xml')
+    tight = worst_error(1e-10, 'pw_stated_tight.xml')
+    # Each sits a decade or more above anything a ceiling-tightened run reaches (8e-07).
+    assert loose > 1e-2, f'sbml_atol = 1e-8 was not integrated at 1e-8: {loose:.2e} off'
+    assert tight > 1e-2, f'sbml_atol = 1e-10 was not integrated at 1e-10: {tight:.2e} off'
+    assert tight < loose, (loose, tight)
 
 
 # --- config surface -------------------------------------------------------------- #
@@ -1108,7 +1186,7 @@ def test_a_model_above_the_backend_default_gets_no_vector_until_it_opts_in(tmp_p
                                 atol='auto')
 
     assert _tolerance_kwargs(clamped)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL,
-                                             'atol': _LARGE_SPREAD_CLAMPED}
+                                             'atol': _exact(_LARGE_SPREAD_CLAMPED)}
 
     engine, kwargs = _tolerance_kwargs(opted_in)
     assert dict(zip(engine.species_names, kwargs['atol'])) == pytest.approx(
@@ -1131,8 +1209,10 @@ def test_the_opt_in_reaches_a_model_with_no_vector_to_give(tmp_path, monkeypatch
     model = _piecewise_model(tmp_path, text=_LARGE_SPREAD_SBML, name='large_old.xml',
                              atol='auto')
 
-    assert _tolerance_kwargs(model)[1] == {
-        'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': pytest.approx(_LARGE_SPREAD_LOOSENED)}
+    kwargs = _tolerance_kwargs(model)[1]
+    assert set(kwargs) == {'rtol', 'atol'}
+    assert kwargs['rtol'] == _BNGSIM_DEFAULT_RTOL
+    assert _scalar(kwargs['atol']) == pytest.approx(_LARGE_SPREAD_LOOSENED)
 
 
 @_needs_per_species_atol
@@ -1714,7 +1794,7 @@ def test_a_stated_map_travels_even_when_it_agrees_with_the_scalar(tmp_path):
     """
     unstated = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_a.xml')
     assert _tolerance_kwargs(unstated)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL,
-                                              'atol': _BNGSIM_DEFAULT_ATOL}
+                                              'atol': _exact(_BNGSIM_DEFAULT_ATOL)}
 
     stated = _piecewise_model(tmp_path, text=_ORDER_ONE_SBML, name='pw_one_b.xml',
                               species_atol={'X': _BNGSIM_DEFAULT_ATOL})
@@ -2093,4 +2173,4 @@ def test_a_conf_states_one_models_tolerance_and_leaves_the_other_alone(tmp_path,
 
     engine, kwargs = _tolerance_kwargs(one)
     assert dict(zip(engine.species_names, kwargs['atol']))['X'] == 1e-11
-    assert _tolerance_kwargs(two)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': 1e-7}
+    assert _tolerance_kwargs(two)[1] == {'rtol': _BNGSIM_DEFAULT_RTOL, 'atol': _exact(1e-7)}

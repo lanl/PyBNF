@@ -382,6 +382,7 @@ from ._bngsim_caps import (
     BNGSIM_SBML_ERROR,
     SensRhsStatus,
     bngsim,
+    exact_atol,
     feature_missing_reason,
     gradient_floor_problem,
     probe_sens_rhs,
@@ -2541,6 +2542,12 @@ class BngsimSbmlModelNoTimeout(Model):
         moves initial conditions would then put a step in the objective wherever the
         derivation crossed a rounding boundary.
 
+        The scalar travels as :func:`~pybnf._bngsim_caps.exact_atol` for the same reason
+        again. From bngsim 0.17.0 a bare float is a per-species ceiling read off the state
+        each run starts from, which is that live-state derivation arriving by default; on
+        the #546 fixture it turned ``sbml_atol = 1e-8`` and ``1e-10`` into the same run.
+        The vector and the tracking ceiling are used as given on every build.
+
         When the vector declines -- a model whose species share one scale, an ordering it
         cannot take, a bngsim without lanl/bngsim#196 -- tracking still applies, with the
         scalar as a broadcast ceiling. That case is not a degradation: what tracking adds
@@ -2558,7 +2565,7 @@ class BngsimSbmlModelNoTimeout(Model):
             return {'rtol': rtol, 'atol': bngsim.TrackingAtol(**spec),
                     'steady_state_tol': scalar_atol}
         if vector is None:
-            return {'rtol': rtol, 'atol': scalar_atol}
+            return {'rtol': rtol, 'atol': exact_atol(scalar_atol, bngsim)}
         return {'rtol': rtol, 'atol': vector, 'steady_state_tol': scalar_atol}
 
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
