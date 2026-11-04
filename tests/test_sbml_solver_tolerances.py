@@ -51,7 +51,8 @@ quotient path Giordano does, and an initial value of ``1e-8`` so it sits exactly
 old default. Its closed-form solution gives an exact sensitivity oracle, which is
 stronger than finite differences: the tests below assert the tensor against the true
 derivative, and assert that pinning ``sbml_atol`` back to the old default reproduces the
-original error.
+original error on a bngsim that holds a scalar ``atol`` exactly, and is resolved on one that
+reads it as a per-species ceiling (0.17.0, lanl/bngsim#1420).
 
 **The median charged the whole model for one end of it, and #549 gives that back**
 (ADR-0105). A scalar ``atol`` says one thing about a state that may span decades, so it
@@ -87,6 +88,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import pybnf._bngsim_caps as _bngsim_caps
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
 from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS, BNGSIM_HAS_PER_SPECIES_ATOL
 from pybnf.bngsim_sbml_model import (
@@ -110,6 +112,12 @@ _needs_per_species_atol = pytest.mark.skipif(
     not BNGSIM_HAS_PER_SPECIES_ATOL,
     reason='needs a bngsim build whose Simulator.run takes a per-species atol '
            '(lanl/bngsim#196, exported by lanl/bngsim#212)')
+
+# bngsim 0.17.0 reads a scalar ``atol`` as a ceiling per species,
+# ``min(atol, rtol * max(|x_i(0)|, floor))`` (lanl/bngsim#1420), and added ``ExactAtol``, the
+# old exact reading, in the same release; that name is the probe. PyBNF hands the number over
+# as written on every build, so which reading a run gets is bngsim's.
+_READS_SCALAR_ATOL_AS_CEILING = getattr(_bngsim_caps.bngsim, 'ExactAtol', None) is not None
 
 
 # --- fixture: a three-stage piecewise-in-time decay, seeded below the old atol -- #
@@ -894,8 +902,16 @@ def test_the_vector_does_not_resolve_what_adr_0103_declined_to(tmp_path):
 
 
 @_needs_output_sens
+@pytest.mark.skipif(
+    _READS_SCALAR_ATOL_AS_CEILING,
+    reason='this bngsim reads a scalar atol as a per-species ceiling (lanl/bngsim#1420), so '
+           'the old default no longer corrupts these columns; '
+           'test_a_per_species_ceiling_resolves_what_the_old_default_corrupted covers it')
 def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path):
     """Pinning ``sbml_atol`` back to 1e-8 reproduces the original wrong gradient.
+
+    On a bngsim that holds a scalar ``atol`` exactly, i.e. through 0.16.0; 0.17.0's reading
+    is pinned by the test after this one.
 
     The other half of the regression: without this, a future change that quietly stopped
     deriving the tolerance would leave the test above passing on some unrelated accuracy
@@ -947,6 +963,35 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
     # 3.9e-02 measured on the tightest -- still 390x the 1e-4 the derived tolerance is
     # held to next door, so no single accuracy regime can satisfy both halves.
     assert min(errs) > 1e-3, f'expected every column to blow the 1e-4 budget, got {errs}'
+
+
+@_needs_output_sens
+@pytest.mark.skipif(
+    not _READS_SCALAR_ATOL_AS_CEILING,
+    reason='needs a bngsim that reads a scalar atol as a per-species ceiling '
+           '(0.17.0, lanl/bngsim#1420)')
+def test_a_per_species_ceiling_resolves_what_the_old_default_corrupted(tmp_path):
+    """On bngsim 0.17.0 the same pinned ``sbml_atol = 1e-8`` no longer corrupts a column.
+
+    PyBNF hands the number over as written. bngsim reads it as a ceiling per species,
+    ``min(1e-8, rtol * max(|X(0)|, floor))``, so X, seeded at ``1e-8``, is held well below
+    the number stated -- the resolution PyBNF's derived tolerance exists to buy, here bought
+    by bngsim's own reading. Same model, same pin, same oracle as the test above. Measured on
+    0.17.0: ``[2.3e-07, 7.6e-07, 1.1e-06]``, every column two decades inside the ``1e-4``
+    budget the derived tolerance is held to.
+    """
+    model = _piecewise_model(tmp_path, atol=_BNGSIM_DEFAULT_ATOL)
+    model.enable_output_sensitivities(params=['k0', 'k1', 'k2'])
+    data = model.execute(str(tmp_path), 'pw_ceiling', 0)['time_course']
+
+    t = np.asarray(data['time'])
+    got = data.output_sensitivities.slice_for('species:X', axis='parameter')
+    oracle = _exact_sensitivities(t)
+
+    errs = [np.max(np.abs(got[:, j] - oracle[:, j])) / np.max(np.abs(oracle[:, j]))
+            for j in range(3)]
+    assert max(errs) < 1e-4, (
+        f'expected the per-species ceiling to resolve every column, got {errs}')
 
 
 # --- config surface -------------------------------------------------------------- #

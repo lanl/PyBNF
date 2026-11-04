@@ -1792,9 +1792,13 @@ Algorithm Options
 
   Set ``sbml_atol`` to a **number** if your model lives below the ``1e-16`` floor, or if
   you want a different tolerance from the one the derivation picks. A number replaces the
-  whole derivation: it integrates every species at that value, which is also the way to
-  pin the pre-per-species behaviour exactly. ``auto`` and ``tracking`` are not that — they
-  say how far the model's own state may set its tolerance, so the derivation stays on.
+  whole derivation, and PyBNF hands it to bngsim as written. Through bngsim 0.16.0 that
+  integrates every species at that value, which is also the way to pin the pre-per-species
+  behaviour exactly. bngsim 0.17.0 reads a number, like its own default, as a ceiling per
+  species, ``min(number, rtol·max(|x_i(0)|, floor))``: no species is held looser than the
+  number, and one far below it is still resolved. The derived scalar and a BNGL action's
+  ``atol=>`` are read the same way. ``auto`` and ``tracking`` are not that — they say how
+  far the model's own state may set its tolerance, so the derivation stays on.
 
   If what you want is a tolerance for **one species** that the derivation does not
   produce, that is ``species_atol:`` on the :ref:`model: <model_decl>` line rather than
@@ -1832,8 +1836,10 @@ Algorithm Options
 
   bngsim derives ``∂f/∂θ`` in closed form and compiles it, but CVODES takes one
   sensitivity-RHS callback for every column, so a single rate law it cannot
-  differentiate — an ``abs()``/``floor()``/``erf()`` term, a comparison in a place it
-  cannot solve, or simply a derivation that ran out of its build-time budget — declines
+  differentiate — a ``floor()``/``erf()`` term (through bngsim 0.16.0, an ``abs()``,
+  ``min()`` or ``max()`` of the state too; 0.17.0 differentiates those unless they sit under
+  a call, a division or a power), a comparison in a place it cannot solve, or simply a
+  derivation that ran out of its build-time budget — declines
   the analytic path for the **whole model**. CVODES' internal difference quotient carries
   every column instead. That answer is still correct; it costs an extra right-hand-side
   evaluation per column per step, so an ``N``-parameter fit pays roughly ``N`` times the
