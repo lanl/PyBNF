@@ -123,6 +123,10 @@ class SegmentIntegrator:
                     % (model.name, line, key, why))
         self._tolerances = {key: _number(model.name, line, key, sim_params[key])
                             for key in ('atol', 'rtol') if key in sim_params}
+        self._where = 'Model %s: the action %s' % (model.name, line)
+        if 'atol' in self._tolerances:
+            # Refused here, not at the first integration: a negative or non-finite atol=>.
+            _runtime.exact_atol(self._tolerances['atol'], _runtime.bngsim, where=self._where)
         self._timeout = None if timeout is None else _normalize_sim_timeout(float(timeout))
         self._model = _reloaded(model)
         template = self._model._engine_model
@@ -181,7 +185,8 @@ class SegmentIntegrator:
             # Exact, as the ordinary simulate path passes it: a bare float would be a
             # ceiling read off this segment's own start state (bngsim >= 0.17.0), so two
             # segments of one action would integrate at two tolerances.
-            run_kwargs['atol'] = _runtime.exact_atol(run_kwargs['atol'], bngsim)
+            run_kwargs['atol'] = _runtime.exact_atol(run_kwargs['atol'], bngsim,
+                                                     where=self._where)
         if self._timeout is not None:
             run_kwargs['timeout'] = self._timeout
         try:

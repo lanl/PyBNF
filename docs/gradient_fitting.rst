@@ -1056,7 +1056,8 @@ The fallback is **all or nothing per model**. ``CVodeSensInit1`` takes one sensi
 callback for every column, so a single rate law bngsim cannot differentiate declines the analytic
 path for the whole model; there is no per-reaction mixture. bngsim declines on an underivable
 construct (``floor()``, ``erf()``, ``tgamma()``; through bngsim 0.16.0 also ``abs()``, ``min()``
-and ``max()`` of the state, which 0.17.0 differentiates), on a comparison in a position it
+and ``max()`` of the state, which 0.17.0 differentiates unless they sit under a call, a division
+or a power), on a comparison in a position it
 cannot solve, and on a derivation that exhausts its own build-time budget — which means the same
 model can decline or not depending on how long the derivation took, with no version difference to
 point at.

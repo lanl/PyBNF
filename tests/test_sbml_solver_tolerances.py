@@ -46,11 +46,11 @@ ever tighten. "Typical" is the median rather than the minimum, for a reason
 transient nine decades below everything else must not set the tolerance for the model
 around it. The fixture here is the piecewise-in-time FD/analytic oracle #546 asks
 for and the #385 gradient epic never had -- a three-stage time-gated decay, with an
-``and`` in the middle condition so that, through bngsim 0.16.0, it takes the same
-declined-analytic-RHS difference quotient path Giordano did, and an initial value of
-``1e-8`` so it sits exactly at the old default. bngsim 0.17.0 differentiates that
-condition, so the sensitivities are analytic there; the tolerance result does not depend
-on the path (see ``test_the_backend_default_atol_is_what_corrupted_those_sensitivities``). Its closed-form solution gives an exact sensitivity oracle, which is
+``and`` in the middle condition, which bngsim declined to differentiate when #546 was
+measured (the difference-quotient path Giordano took), and an initial value of ``1e-8`` so
+it sits exactly at the old default. bngsim 0.16.0 and 0.17.0 both differentiate that
+condition, so these tests now run on the analytic sensitivity RHS; what they pin is the
+tolerance. Its closed-form solution gives an exact sensitivity oracle, which is
 stronger than finite differences: the tests below assert the tensor against the true
 derivative, and assert that pinning ``sbml_atol`` back to the old default reproduces the
 original error.
@@ -120,9 +120,9 @@ _needs_per_species_atol = pytest.mark.skipif(
 # X' = -k(t)*X with k(t) = k0 on [0, t1], k1 on (t1, t2], k2 on (t2, inf). Each stage
 # is its own single-piece `piecewise` summed with the others -- the idiom Giordano's
 # 14 assignment rules use -- and the middle condition is an `and` of two inequalities,
-# which made bngsim (through 0.16.0) decline the analytic sensitivity RHS and fall back to
-# CVODES' internal difference quotient; 0.17.0 differentiates it. X(0) = 1e-8 puts the
-# whole trajectory at or beneath bngsim's default absolute tolerance.
+# which made the bngsim #546 was measured on decline the analytic sensitivity RHS and fall
+# back to CVODES' internal difference quotient; 0.16.0 and 0.17.0 both differentiate it.
+# X(0) = 1e-8 puts the whole trajectory at or beneath bngsim's default absolute tolerance.
 _TIME = ('<csymbol encoding="text" '
          'definitionURL="http://www.sbml.org/sbml/symbols/time">time</csymbol>')
 
@@ -838,12 +838,12 @@ def test_piecewise_in_time_sensitivities_match_the_analytic_oracle(tmp_path):
 
     The regression test for #546 proper. This is the model shape the whole #385 epic had
     no fixture for -- a rate law switching on simulation time, differentiated with
-    respect to the per-stage rate constants. Through bngsim 0.16.0 it took the code path
+    respect to the per-stage rate constants. When #546 was measured it took the code path
     Giordano did: the ``and`` in the middle condition made bngsim decline the analytic
     sensitivity RHS in favour of CVODES' internal difference quotient, which inherits
-    whatever accuracy the state solve has. From 0.17.0 the sensitivity RHS is analytic,
-    and the derived tolerance is what this test still depends on: at the old default the
-    analytic columns are as wrong as the quotient's were (the test below).
+    whatever accuracy the state solve has. bngsim 0.16.0 and 0.17.0 both differentiate
+    it, and the derived tolerance is still what this test depends on: at the old default
+    the analytic columns are wrong too (the test below).
     """
     model = _piecewise_model(tmp_path)
     model.enable_output_sensitivities(params=['k0', 'k1', 'k2'])
@@ -932,12 +932,12 @@ def test_the_backend_default_atol_is_what_corrupted_those_sensitivities(tmp_path
     margin. Same model, same roots, integrated at the old default instead of the derived
     one.
 
-    **The sensitivity path does not matter, the tolerance does.** Through bngsim 0.16.0
-    ``k`` was declined for the analytic RHS ("uses unsupported construct: if()
-    conditional"), so this was the CVODES internal quotient inheriting the state solve's
-    accuracy. bngsim 0.17.0 differentiates the condition, and at an exact ``1e-8`` its
-    analytic columns come out the same as the quotient's did, to the digits below:
-    ``[8.50e-02, 3.95e-02, 3.79e-01]`` on both builds.
+    **It is the tolerance, not the sensitivity path.** When #546 was measured ``k`` was
+    declined for the analytic RHS ("uses unsupported construct: if() conditional"), so
+    this was the CVODES internal quotient inheriting the state solve's accuracy. bngsim
+    0.16.0 and 0.17.0 both differentiate the condition, and at an exact ``1e-8`` the
+    analytic columns are wrong all the same: ``[8.50e-02, 3.95e-02, 3.79e-01]`` on both
+    builds.
 
     **And the test only reproduces it because PyBNF states the tolerance exactly.** From
     0.17.0 bngsim reads a bare float ``atol`` as a per-species ceiling,

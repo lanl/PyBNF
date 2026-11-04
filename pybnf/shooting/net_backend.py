@@ -249,18 +249,24 @@ class NetSegmentBackend(SegmentBackend):
     def _run_kwargs(self):
         """The action's own tolerances and this fit's ``wall_time_sim``, as the ordinary
         net simulate path passes them."""
+        from ..bngsim_model.segment import _number
+
+        model_name = getattr(getattr(self, 'model', None), 'name', '?')
+        where = "segment '%s'" % getattr(self, 'suffix', '?')
         kwargs = {}
         for key in ('atol', 'rtol'):
             if key in self.sim_params:
-                try:
-                    kwargs[key] = float(self.sim_params[key])
-                except (TypeError, ValueError):
-                    pass
+                # Evaluated as the ordinary path and the segment integrator evaluate it, and
+                # refused if it does not evaluate. It was read with float() and a value it
+                # could not parse (atol=>1e-8/100) was dropped, so multiple shooting ran at
+                # bngsim's default where the ordinary fit ran at the stated number.
+                kwargs[key] = _number(model_name, where, key, self.sim_params[key])
         if 'atol' in kwargs:
             # Exact, as the ordinary simulate path passes it (bngsim >= 0.17.0 reads a bare
             # float as a ceiling off each segment's own start state).
             rt = _runtime()
-            kwargs['atol'] = rt.exact_atol(kwargs['atol'], rt.bngsim)
+            kwargs['atol'] = rt.exact_atol(kwargs['atol'], rt.bngsim,
+                                           where='Model %s: %s' % (model_name, where))
         try:
             timeout = float(self.timeout)
         except (TypeError, ValueError):

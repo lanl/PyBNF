@@ -1756,7 +1756,7 @@ class BngsimModel(NetModel):
         run_kwargs = {}
         if 'atol' in sim_params:
             run_kwargs['atol'] = _runtime.exact_atol(
-                _eval_numeric(str(sim_params['atol'])), _runtime.bngsim)
+                _eval_numeric(str(sim_params['atol'])), _runtime.bngsim, where=where)
         if 'rtol' in sim_params:
             run_kwargs['rtol'] = _eval_numeric(str(sim_params['rtol']))
         explicit_seed = None

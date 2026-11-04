@@ -1835,7 +1835,8 @@ Algorithm Options
   bngsim derives ``∂f/∂θ`` in closed form and compiles it, but CVODES takes one
   sensitivity-RHS callback for every column, so a single rate law it cannot
   differentiate — a ``floor()``/``erf()`` term (through bngsim 0.16.0, an ``abs()``,
-  ``min()`` or ``max()`` of the state too, which 0.17.0 differentiates), a comparison in
+  ``min()`` or ``max()`` of the state too; 0.17.0 differentiates those unless they sit under
+  a call, a division or a power), a comparison in
   a place it cannot solve, or simply a derivation that ran out of its build-time budget — declines
   the analytic path for the **whole model**. CVODES' internal difference quotient carries
   every column instead. That answer is still correct; it costs an extra right-hand-side

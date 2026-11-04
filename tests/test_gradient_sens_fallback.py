@@ -406,9 +406,10 @@ _ANALYTIC_LAW = '<apply><times/><ci>k</ci><ci>S</ci></apply>'
 #
 # This was ``k*S*|S-Km|`` until bngsim 0.17.0, which differentiates a bend (abs, min,
 # max) over the state through the state Jacobian's kink rewrite (lanl/bngsim#1126) and
-# so stopped declining it -- correctly: its ``dS/dk`` and ``dS/dS0`` were measured
-# against the closed form ``1/S = 1/Km + (1/S0 - 1/Km) exp(-k Km t)`` at 2e-09 and
-# 1e-09. A step has no such rewrite.
+# so stopped declining it -- correctly: at rtol = atol = 1e-10 its ``dS/dk`` and
+# ``dS/dS0`` agree with the closed form ``1/S = 1/Km + (1/S0 - 1/Km) exp(-k Km t)`` to
+# 2e-09 and 1e-09 relative (at the default tolerances, to the same 7e-07 as the smooth
+# ``k*S*(S-Km)``). A step has no such rewrite.
 _DECLINED_LAW = ('<apply><times/><ci>k</ci><ci>S</ci>'
                  '<apply><floor/><ci>Km</ci></apply>'
                  '</apply>')

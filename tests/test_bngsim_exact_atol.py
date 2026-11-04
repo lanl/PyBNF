@@ -147,3 +147,38 @@ def test_the_multiple_shooting_net_backend_on_a_build_without_it(monkeypatch):
     monkeypatch.setattr(bngsim_model._runtime, 'bngsim', types.SimpleNamespace())
     owner = types.SimpleNamespace(sim_params={'atol': '1e-8'}, timeout=None)
     assert NetSegmentBackend._run_kwargs(owner) == {'atol': 1e-8}
+
+
+# --- a value that is not a tolerance is refused, naming where it came from -------------- #
+
+@pytest.mark.parametrize('value', [-1e-8, float('nan'), float('inf'), '-1e-8'])
+def test_a_negative_or_non_finite_atol_is_refused(value):
+    """Out of ``ExactAtol`` it was a raw ``ValueError`` that failed every evaluation as "an
+    unknown error" on 0.17.0, and on 0.16.0 it ran. Refused on every build, by name."""
+    from pybnf.printing import PybnfError
+    with pytest.raises(PybnfError, match=r"the action X sets an absolute tolerance of"):
+        _bngsim_caps.exact_atol(value, types.SimpleNamespace(ExactAtol=_ExactAtol),
+                                where='the action X')
+    with pytest.raises(PybnfError):
+        _bngsim_caps.exact_atol(value, types.SimpleNamespace())
+
+
+def test_zero_is_a_tolerance():
+    """``atol = 0`` is pure relative error control, which CVODE accepts."""
+    assert _bngsim_caps.exact_atol(0, types.SimpleNamespace()) == 0.0
+
+
+@pytest.mark.bngsim
+def test_a_bngl_action_with_a_negative_atol_ends_the_run(small_decay_net, tmp_path):
+    from pybnf.printing import PybnfError
+    with pytest.raises(PybnfError, match=r'absolute tolerance of -1e-08'):
+        _model(small_decay_net, '-1e-8').execute(str(tmp_path), 'x', None)
+
+
+def test_multiple_shooting_refuses_an_atol_that_does_not_evaluate(monkeypatch):
+    """It used to drop such a value and run at bngsim's default."""
+    from pybnf.printing import PybnfError
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', types.SimpleNamespace())
+    owner = types.SimpleNamespace(sim_params={'atol': '1e-8*oops'}, timeout=None)
+    with pytest.raises(PybnfError, match=r'does not evaluate to a number'):
+        NetSegmentBackend._run_kwargs(owner)

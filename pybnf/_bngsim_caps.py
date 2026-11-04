@@ -13,6 +13,7 @@ import ctypes
 import importlib.metadata
 import inspect
 import logging
+import math
 import os
 import re
 
@@ -387,7 +388,7 @@ BNGSIM_HAS_EXACT_ATOL = bool(
 )
 
 
-def exact_atol(value, module=None):
+def exact_atol(value, module=None, where=None):
     """``value`` as an absolute tolerance bngsim holds every species to exactly.
 
     ``module`` is the bngsim namespace the caller runs against (the ``bngsim_model``
@@ -395,10 +396,20 @@ def exact_atol(value, module=None):
     is the real one. On a build without ``ExactAtol`` a float already means exactly that
     number, so the float is returned unchanged and an older bngsim runs every fit it ran
     before.
+
+    A value that is not a finite number >= 0 is refused with a :class:`PybnfError` naming
+    ``where`` it came from, on every build: as a raw ``ValueError`` out of ``ExactAtol`` it
+    failed each evaluation as "an unknown error", and on 0.16.0 it ran.
     """
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        from .printing import PybnfError
+        raise PybnfError(
+            '%s an absolute tolerance of %r; it must be a finite number >= 0.'
+            % ('%s sets' % where if where else 'A simulation was given', value))
     module = bngsim if module is None else module
     exact = getattr(module, 'ExactAtol', None)
-    return float(value) if exact is None else exact(float(value))
+    return number if exact is None else exact(number)
 
 
 # Whether a Newton (KINSOL) steady state's ``dY_ss/dθ`` carries a parameter's
