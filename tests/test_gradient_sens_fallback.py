@@ -226,9 +226,10 @@ def _model(name, status):
 def _report(models, policy='warn', n_variables=3):
     """Drive the real reporting code over a stand-in carrying only what it reads.
 
-    ``_report_sensitivity_rhs`` touches ``model_list``, ``variables``, the config and
-    ``_fit_type_label`` -- so binding the two real methods onto a namespace exercises
-    them exactly, with none of the model building an ``Algorithm`` construction needs.
+    ``_report_sensitivity_rhs`` touches ``model_list``, ``variables``, the config,
+    ``_fit_type_label`` and ``_initial_value_columns`` -- so binding the real methods onto a
+    namespace exercises them exactly, with none of the model building an ``Algorithm``
+    construction needs.
     """
     opt = types.SimpleNamespace(
         model_list=models,
@@ -238,6 +239,8 @@ def _report(models, policy='warn', n_variables=3):
     )
     opt._warn_sensitivity_fallback = types.MethodType(
         GradientOptimizer._warn_sensitivity_fallback, opt)
+    opt._initial_value_columns = types.MethodType(
+        GradientOptimizer._initial_value_columns, opt)
     return GradientOptimizer._report_sensitivity_rhs(opt)
 
 
@@ -360,6 +363,8 @@ def test_the_warning_is_spoken_once_per_run_not_once_per_bootstrap_refit(capsys)
     )
     opt._warn_sensitivity_fallback = types.MethodType(
         GradientOptimizer._warn_sensitivity_fallback, opt)
+    opt._initial_value_columns = types.MethodType(
+        GradientOptimizer._initial_value_columns, opt)
     GradientOptimizer._report_sensitivity_rhs(opt)
     assert 'difference quotient' in capsys.readouterr().out
     GradientOptimizer._report_sensitivity_rhs(opt)

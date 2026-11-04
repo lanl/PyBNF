@@ -1864,6 +1864,14 @@ Algorithm Options
   bngsim's codegen reads parameter values, so a model that branches on a fitted threshold
   could in principle change its answer mid-search.
 
+  One case is not a slower answer but no answer: a declined model that the fit asks for an
+  **initial-value** column — a fitted species initial value, or, under ``job_type = ms``,
+  any state carried across a knot. The difference quotient perturbs a parameter, and an
+  initial value has none. Under ``warn`` and ``error`` such a fit is refused at job start,
+  as is one bngsim refuses to build a sensitivity simulator for at all. Fix the initial
+  value, or re-encode the rate law bngsim names, to run a gradient fit. ``ignore`` skips
+  this check with the rest, and the fit then fails every simulation.
+
   Default: warn
 
   Examples:
