@@ -1,20 +1,21 @@
-"""A sensitivity request no run can answer ends the fit, instead of failing every job.
+"""A sensitivity request no run can answer is refused at job start, instead of failing every job.
 
-Two requests have no answer on any bngsim build:
+An **initial-value column on a model whose analytic sensitivity RHS is declined** has no answer
+on any bngsim build. CVODES' difference quotient, the fallback for a declined RHS, perturbs a
+parameter; an initial value has none. bngsim 0.17.0 refuses the request when the Simulator is
+built (``SensitivityUnsupportedError``); 0.16.0 builds the Simulator and every run then raises
+"sensitivity_ic requires codegen sensitivity RHS".
 
-* an **initial-value column on a model whose analytic sensitivity RHS is declined**. CVODES'
-  difference quotient, the fallback for a declined RHS, perturbs a parameter; an initial
-  value has none. bngsim 0.17.0 refuses this when the Simulator is built
-  (``SensitivityUnsupportedError``); 0.16.0 builds the Simulator and every run then raises
-  "sensitivity_ic requires codegen sensitivity RHS".
-* a declined model whose fallback would integrate through a **crossing whose time moves**,
-  which bngsim >= 0.14 refuses at run time rather than return a gradient it knows is wrong.
+PyBNF scored that as a failed simulation at every point, so a ``trf`` fit that fitted a
+species' initial value on such a model ran every job to failure and reported "Stop criterion
+satisfied with objective function value of inf", exit status 0. On 0.17.0 the setup probe also
+read the construction-time refusal as "no opinion", so nothing was said before the fit started.
+Multiple shooting asks for every carried state's initial-value column, so it met the same
+request on any declined model, even one fitted on its parameters only.
 
-Both are the same verdict at every parameter set. PyBNF scored each as a failed simulation,
-so a ``trf`` fit that fitted a species' initial value on such a model ran every job to
-failure and reported "Stop criterion satisfied with objective function value of inf", exit
-status 0. On 0.17.0 the setup probe also read the construction-time refusal as "no opinion",
-so nothing was said before the fit started.
+Only job start changes. A refusal bngsim raises while a simulation *runs* stays a failed point:
+some depend on the parameter values (a parameter exactly on a kink of ``max()``), and ending the
+fit there stopped one that recovered (``test_gradient_sens_refusal_review.py``).
 """
 
 import pytest
@@ -22,17 +23,13 @@ import pytest
 from pybnf import _bngsim_caps
 from pybnf.printing import PybnfError
 
-from .test_gradient_sens_fallback import _ANALYTIC_LAW, _SBML
+from .test_gradient_sens_fallback import _ANALYTIC_LAW, _SBML, _report
 
 
 # ``k*S*floor(Km)``: a step in a parameter, declined by every bngsim build (a step's
 # derivative is a delta) and crossed by no run, so a parameter column falls back correctly.
 _DECLINED_LAW = ('<apply><times/><ci>k</ci><ci>S</ci><apply><floor/><ci>Km</ci></apply>'
                  '</apply>')
-# ``k*S*(1 + floor(S/1000))``: a step in the state. S stays below 1000 here, but bngsim reads
-# the branch statically, and a build that refuses a moving crossing refuses this model.
-_CROSSING_LAW = ('<apply><times/><ci>k</ci><ci>S</ci><apply><plus/><cn>1</cn><apply><floor/>'
-                 '<apply><divide/><ci>S</ci><cn>1000</cn></apply></apply></apply></apply>')
 
 _needs_sens = pytest.mark.skipif(not _bngsim_caps.BNGSIM_HAS_OUTPUT_SENS,
                                  reason='needs a bngsim build with output_sensitivities')
@@ -73,9 +70,45 @@ def test_any_other_failure_to_prepare_is_still_no_opinion():
     assert status.refusal is None
 
 
-# --- a real trf fit, SBML through bngsim --------------------------------------------- #
+# --- the report, over stand-in models ------------------------------------------------ #
 
-def _fit_config(tmp_path, law, free, **overrides):
+def _stand_in(name, status, ic=()):
+    import types
+    return types.SimpleNamespace(
+        name=name, analytic_sens_rhs_status=lambda: status,
+        _sensitivity_request=types.SimpleNamespace(params=['k'], ic=list(ic)))
+
+
+def _declined():
+    return _bngsim_caps.SensRhsStatus(False, 'the test', [('uses floor()', False)], 2)
+
+
+@pytest.mark.parametrize('policy', ['warn', 'error'])
+def test_a_declined_model_asked_for_an_initial_value_is_refused_under_every_probing_policy(
+        policy, capsys):
+    with pytest.raises(PybnfError, match=r"model 'm'.*initial-value column\(s\) of S"):
+        _report([_stand_in('m', _declined(), ic=['S'])], policy=policy)
+    assert 'The gradient stays correct' not in capsys.readouterr().out
+
+
+def test_a_model_bngsim_refused_is_refused_with_bngsims_words():
+    status = _bngsim_caps.SensRhsStatus(False, 'the test', [], 2, 'no RHS for sensitivity_ic')
+    with pytest.raises(PybnfError, match=r"model 'm': no RHS for sensitivity_ic"):
+        _report([_stand_in('m', status)])
+
+
+def test_ignore_still_skips_the_check_entirely():
+    _report([_stand_in('m', _declined(), ic=['S'])], policy='ignore')
+
+
+def test_a_declined_model_asked_for_parameters_only_is_not_refused(capsys):
+    _report([_stand_in('m', _declined())])
+    assert 'difference quotient' in capsys.readouterr().out
+
+
+# --- a real gradient fit, SBML through bngsim --------------------------------------- #
+
+def _fit_config(tmp_path, law, free, job_type='trf', **overrides):
     from . import recovery_harness as H
 
     xml = tmp_path / 'model.xml'
@@ -84,7 +117,7 @@ def _fit_config(tmp_path, law, free, **overrides):
     exp.write_text('# time\tS\tS_SD\n'
                    + '\n'.join('%d\t%g\t1' % (t, 100.0 - t) for t in range(4)) + '\n')
     return H.make_newera_config(
-        tmp_path, str(xml), str(exp), free, 'tc', 'trf', objective='chi_sq',
+        tmp_path, str(xml), str(exp), free, 'tc', job_type, objective='chi_sq',
         random_seed=1234, population_size=1, max_iterations=1, sbml_backend='bngsim',
         **overrides)
 
@@ -107,31 +140,15 @@ def test_fitting_an_initial_value_of_a_declined_model_is_refused_at_setup(tmp_pa
 
 @pytest.mark.bngsim_sbml
 @_needs_sens
-def test_under_ignore_the_first_simulation_ends_the_run_instead(tmp_path):
-    """``sensitivity_fallback = ignore`` skips the setup probe, so the refusal is met at the
-    first evaluation: it must end the run there, not become one more failed point."""
-    from pybnf.pset import FailedSimulationError
+def test_multiple_shooting_on_a_declined_model_is_refused_at_setup(tmp_path):
+    """Fitted on ``k`` alone, but ``job_type = ms`` carries S across each knot, so it asks
+    for S's initial-value column all the same -- after the routings were built."""
     from . import recovery_harness as H
 
-    alg = H.build(_fit_config(tmp_path, _DECLINED_LAW, _K_AND_S0,
-                              sensitivity_fallback='ignore'), 'trf')
-    alg._setup_gradient_path()
-    (model,) = alg.model_list
-    model.param_set = _a_point(alg)
-    try:
-        model.execute(str(tmp_path), 'first', 0)
-    except FailedSimulationError as exc:  # pragma: no cover - the defect
-        pytest.fail('a structural refusal was scored as a failed simulation: %r' % exc)
-    except PybnfError as exc:
-        assert 'initial value' in str(exc) or 'sensitivity_ic' in str(exc)
-    else:  # pragma: no cover
-        pytest.fail('an initial-value column on a declined model simulated')
-
-
-def _a_point(alg):
-    from pybnf.pset import PSet
-    return PSet([v.set_value(v.lower_bound + 0.5 * (v.upper_bound - v.lower_bound))
-                 for v in alg.variables])
+    alg = H.build(_fit_config(tmp_path, _DECLINED_LAW, _K, job_type='ms', ms_segments=2),
+                  'ms')
+    with pytest.raises(PybnfError, match=r"initial-value column\(s\) of S"):
+        alg._setup_gradient_path()
 
 
 @pytest.mark.bngsim_sbml
@@ -157,19 +174,9 @@ def test_a_differentiable_model_with_an_initial_value_is_not_refused(tmp_path):
 
 @pytest.mark.bngsim_sbml
 @_needs_sens
-def test_a_refused_crossing_ends_the_run_rather_than_failing_the_point(tmp_path):
-    """bngsim >= 0.14 may refuse this model at run time (0.17.0 does; 0.16.0 runs it). If it
-    refuses, the refusal must reach the user as a PybnfError."""
-    from pybnf.pset import FailedSimulationError
+def test_multiple_shooting_on_a_differentiable_model_is_not_refused(tmp_path):
     from . import recovery_harness as H
 
-    alg = H.build(_fit_config(tmp_path, _CROSSING_LAW, _K), 'trf')
+    alg = H.build(_fit_config(tmp_path, _ANALYTIC_LAW, _K, job_type='ms', ms_segments=2),
+                  'ms')
     alg._setup_gradient_path()
-    (model,) = alg.model_list
-    model.param_set = _a_point(alg)
-    try:
-        model.execute(str(tmp_path), 'first', 0)
-    except FailedSimulationError as exc:  # pragma: no cover - the defect
-        pytest.fail('a structural refusal was scored as a failed simulation: %r' % exc)
-    except PybnfError as exc:
-        assert 'forward sensitivities' in str(exc)

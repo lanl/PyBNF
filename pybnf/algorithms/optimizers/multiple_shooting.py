@@ -461,6 +461,12 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             raise PybnfError('Multiple shooting found no scored experiment to segment.')
         return specs
 
+    def _initial_value_columns(self, model):
+        """Every carried state's initial-value column, which :meth:`_request_state_sensitivities`
+        adds after the setup check has run -- the check has to see them."""
+        columns = super()._initial_value_columns(model)
+        return columns + [state for state in _state_names(model) if state not in columns]
+
     def _request_state_sensitivities(self, model):
         """Widen this model's forward-sensitivity request to **every carried state**.
 

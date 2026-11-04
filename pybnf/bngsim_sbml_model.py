@@ -459,28 +459,6 @@ def _is_event_sensitivity_refusal(exc):
     return 'sensitivities are not supported' in text and 'events' in text
 
 
-# bngsim 0.16.0's wording for an initial-value sensitivity column on a model whose analytic
-# sensitivity RHS is declined: it builds the Simulator and every run then raises this
-# SimulationError. bngsim 0.17.0 refuses the same request at construction, by type.
-_SENSITIVITY_IC_WITHOUT_RHS = 'sensitivity_ic requires codegen sensitivity rhs'
-
-
-def _is_sensitivity_refusal(exc):
-    """Is ``exc`` bngsim refusing this model's forward-sensitivity request outright?
-
-    ``bngsim.SensitivityUnsupportedError`` by type (an initial-value column on a declined
-    model; a fallback through a moving crossing, lanl/bngsim#414/#416), or 0.16.0's
-    run-time wording for the first case. Like :func:`_is_event_sensitivity_refusal` it is
-    the same at every parameter set, so scoring it as one more failed point only let a fit
-    run to ``inf`` and report success; :meth:`BngsimSbmlModelNoTimeout.execute` ends the run
-    with it instead.
-    """
-    refusal = getattr(bngsim, 'SensitivityUnsupportedError', None)
-    if isinstance(refusal, type) and isinstance(exc, refusal):
-        return True
-    return _SENSITIVITY_IC_WITHOUT_RHS in str(exc).lower()
-
-
 def _mutate_scalar(value, operation, amount):
     if operation == '=':
         return amount
@@ -3048,22 +3026,6 @@ class BngsimSbmlModelNoTimeout(Model):
                                   "a fixed trigger time, a trigger thresholding a fitted "
                                   "constant, or a single relational comparison, all "
                                   "without an execution delay.",
-                                  "Or refit with a gradient-free job_type "
-                                  "(e.g. job_type = de), which needs no sensitivities."],
-                        ) from exc
-                    if (self._sensitivity_request is not None
-                            and _is_sensitivity_refusal(exc)):
-                        # The same verdict for every parameter set, so not a point to back
-                        # off from: scored as a failed simulation, every evaluation of the
-                        # fit failed and it finished at inf with exit status 0.
-                        raise PybnfError(
-                            "Model %s: bngsim cannot compute the forward sensitivities this "
-                            "gradient fit asks for: %s" % (self.name, exc),
-                            hint=["Re-encode the rate law bngsim names in a form it can "
-                                  "differentiate.",
-                                  "Or, if the request includes species initial values, fix "
-                                  "them instead of fitting them: the difference quotient "
-                                  "supplies parameter columns only.",
                                   "Or refit with a gradient-free job_type "
                                   "(e.g. job_type = de), which needs no sensitivities."],
                         ) from exc

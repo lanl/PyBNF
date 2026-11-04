@@ -606,11 +606,17 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         Raises under ``sensitivity_fallback = error``, which is a user asking to be
         stopped, and -- under any policy that probes -- for a model whose request **no run
         can answer**: bngsim refused to build its sensitivity Simulator
-        (``status.refusal``), or its analytic RHS is declined and it asks for an
-        initial-value column, which CVODES' difference quotient cannot supply (it has no
-        parameter to perturb for an initial value). bngsim >= 0.17.0 refuses the latter when
-        the Simulator is built; 0.16.0 builds it and fails every run. Either way the fit used
-        to score every evaluation as a failed simulation and finish at ``inf``, exit 0."""
+        (``status.refusal``), or its analytic RHS is declined and the fit will ask for an
+        initial-value column (:meth:`_initial_value_columns`), which CVODES' difference
+        quotient cannot supply (it has no parameter to perturb for an initial value).
+        bngsim >= 0.17.0 refuses the latter when the Simulator is built; 0.16.0 builds it and
+        fails every run. Either way the fit used to score every evaluation as a failed
+        simulation and finish at ``inf``, exit 0.
+
+        Only here, at job start. A refusal bngsim raises while a simulation *runs* stays a
+        failed point: some depend on the parameter values (a parameter sitting exactly on a
+        kink of ``max()``, which a bound projection lands on), and ending the fit there
+        would stop one that recovers from that point."""
         policy = str(self.config.config.get('sensitivity_fallback', 'warn')).lower()
         if policy == 'ignore' or getattr(self, '_sens_rhs_reported', False):
             return
@@ -628,8 +634,7 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             if getattr(status, 'refusal', None):
                 unanswerable.append((model, status.refusal))
                 continue
-            request = getattr(model, '_sensitivity_request', None)
-            initial_values = list(getattr(request, 'ic', None) or ())
+            initial_values = self._initial_value_columns(model)
             if status.analytic is False and initial_values:
                 unanswerable.append((model, (
                     "its analytic sensitivity right-hand side is declined, and the fit asks "
@@ -675,6 +680,17 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                       "default) and expect roughly one extra right-hand-side "
                       "evaluation per sensitivity column per step.",
                       _FALLBACK_HINT])
+
+    def _initial_value_columns(self, model):
+        """The species initial-value sensitivity columns this fit will ask ``model`` for.
+
+        An ordinary gradient fit asks for exactly what :meth:`_setup_gradient_path` routed.
+        Multiple shooting widens the request later, to every state it carries across a knot,
+        and says so by overriding this, so that the check above sees the request the fit will
+        actually make.
+        """
+        request = getattr(model, '_sensitivity_request', None)
+        return list(getattr(request, 'ic', None) or ())
 
     def _warn_sensitivity_fallback(self, model, status):
         """One model's difference-quotient warning, to the log and to the console.
