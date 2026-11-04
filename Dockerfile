@@ -84,7 +84,7 @@ RUN python -m pip install --no-cache-dir \
       'libroadrunner>=2.5.0' \
       'msgpack>=1.0.6' \
       'numpy>=1.26' \
-      'paramiko>=2.7' \
+      'paramiko>=2.9.3' \
       'pydantic>=2.0.2,<3' \
       'pyparsing>=3.0,<4' \
       'scipy>=1.11.2' \

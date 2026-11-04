@@ -40,27 +40,52 @@ _REQUIREMENT = re.compile(
 
 
 def _floor(specifier):
-    """The lowest version ``specifier`` admits, or None when it sets no lower bound."""
-    for clause in specifier.replace(' ', '').split(','):
+    """The lowest version ``specifier`` admits, or None when it sets no lower bound.
+
+    Raises ValueError for a lower bound that does not name one lowest version: ``>`` (the
+    version it names is excluded), ``===`` (arbitrary string equality, not a version), and a
+    ``!=`` that excludes the floor itself.
+    """
+    clauses = [clause for clause in specifier.replace(' ', '').split(',') if clause]
+    floor = None
+    for clause in clauses:
+        if clause.startswith('==='):
+            raise ValueError(f'"{clause}" is arbitrary equality, not a version to pin')
+        if clause.startswith('>') and not clause.startswith('>='):
+            raise ValueError(f'"{clause}" excludes the version it names, so it has no single '
+                             f'lowest version; write ">=" with the lowest version that works')
         for operator in ('>=', '==', '~='):
             if clause.startswith(operator):
-                return clause[len(operator):]
-    return None
+                floor = clause[len(operator):]
+                break
+        if floor is not None:
+            break
+    if floor is None:
+        return None
+    for clause in clauses:
+        if clause.startswith('!=') and _release(clause[2:]) == _release(floor):
+            raise ValueError(f'"{clause}" excludes the floor {floor} itself')
+    return floor
 
 
 def floor_pins(dependencies):
     """``['numpy>=1.26', 'bngsim[antimony]>=0.17.0,<1']`` -> ``['numpy==1.26', 'bngsim==0.17.0']``.
 
-    Raises ValueError naming every dependency that declares no lower bound.
+    Raises ValueError naming every dependency that declares no lower bound, and every one
+    whose lower bound does not name a single version to pin.
     """
-    pins, unbounded = [], []
+    pins, unbounded, unusable = [], [], []
     for requirement in dependencies:
         text, _, marker = requirement.partition(';')
         match = _REQUIREMENT.match(text.strip())
         if match is None:
             raise ValueError(f'cannot read the requirement {requirement!r}')
         name, specifier = match.groups()
-        floor = _floor(specifier)
+        try:
+            floor = _floor(specifier)
+        except ValueError as error:
+            unusable.append(f'{requirement} ({error})')
+            continue
         if floor is None:
             unbounded.append(requirement)
             continue
@@ -68,10 +93,16 @@ def floor_pins(dependencies):
         if marker.strip():
             pin += f'; {marker.strip()}'
         pins.append(pin)
+    problems = []
     if unbounded:
-        raise ValueError(
+        problems.append(
             'these runtime dependencies declare no lower bound, so there is no floor to '
             'test: ' + ', '.join(unbounded) + '. Give each a ">=" bound in pyproject.toml.')
+    if unusable:
+        problems.append('these runtime dependencies have a lower bound that is not one version '
+                        'to pin: ' + '; '.join(unusable) + '.')
+    if problems:
+        raise ValueError(' '.join(problems))
     return pins
 
 

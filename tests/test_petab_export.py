@@ -1128,8 +1128,11 @@ class TestExportNewNoiseShapesRoundTrip:
         _imp1, pet2, _imp2 = self._round_trip(case, tmp_path)
         assert _petab_validation_errors(pet2 / 'problem.yaml') == []
 
-    @pytest.mark.parametrize('case', list(CASES))
-    @pytest.mark.petab
+    # multisigma's and predsigma's noise formulas compile through the optional petab extra;
+    # fixedsigma's constant sigma does not, so it still runs where petab is absent.
+    @pytest.mark.parametrize('case', [
+        pytest.param(c, marks=pytest.mark.petab) if c in ('multisigma', 'predsigma') else c
+        for c in CASES])
     def test_round_trip_preserves_the_fit(self, case, tmp_path, monkeypatch):
         # The end-to-end oracle: the re-imported conf scores the fixed trajectory identically to
         # the importer's hand-derived NLL, so the multi-token binding and the prediction-dependent
