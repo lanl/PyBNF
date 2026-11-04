@@ -388,6 +388,26 @@ BNGSIM_HAS_EXACT_ATOL = bool(
 )
 
 
+#: BioNetGen's absolute tolerance for an ODE run whose action states none (``run_network``'s
+#: default), which BNG2.pl -- the ``.net`` path's sibling backend -- integrates at exactly.
+BNG2PL_DEFAULT_ATOL = 1e-8
+
+
+def bng2pl_default_atol(module=None):
+    """BNG2.pl's default ``atol``, held exactly, for a ``.net`` ODE run that states none.
+
+    bngsim >= 0.17.0 reads its own default ``1e-8`` as a per-species ceiling off each run's
+    start state, so an unstated tolerance would differ from BNG2.pl's on a model whose
+    species sit below one, move with a fitted initial value or a multiple-shooting knot, and
+    differ between a scalar and a gradient fit. Returns ``ExactAtol(1e-8)`` on such a build
+    and ``None`` (pass nothing; bngsim's default is already exactly 1e-8) on one without
+    ``ExactAtol``, so bngsim 0.16.0 runs as before.
+    """
+    module = bngsim if module is None else module
+    exact = getattr(module, 'ExactAtol', None)
+    return None if exact is None else exact(BNG2PL_DEFAULT_ATOL)
+
+
 def exact_atol(value, module=None, where=None):
     """``value`` as an absolute tolerance bngsim holds every species to exactly.
 

@@ -1757,6 +1757,11 @@ class BngsimModel(NetModel):
         if 'atol' in sim_params:
             run_kwargs['atol'] = _runtime.exact_atol(
                 _eval_numeric(str(sim_params['atol'])), _runtime.bngsim, where=where)
+        elif method == 'ode':
+            # Unstated: BioNetGen's own default, exactly, as BNG2.pl integrates it.
+            default = _runtime.bng2pl_default_atol(_runtime.bngsim)
+            if default is not None:
+                run_kwargs['atol'] = default
         if 'rtol' in sim_params:
             run_kwargs['rtol'] = _eval_numeric(str(sim_params['rtol']))
         explicit_seed = None

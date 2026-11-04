@@ -187,6 +187,12 @@ class SegmentIntegrator:
             # segments of one action would integrate at two tolerances.
             run_kwargs['atol'] = _runtime.exact_atol(run_kwargs['atol'], bngsim,
                                                      where=self._where)
+        else:
+            # Unstated: BNG2.pl's default, exactly, not a ceiling read off this segment's
+            # start state (a fitted knot under job_type = ms).
+            default = _runtime.bng2pl_default_atol(bngsim)
+            if default is not None:
+                run_kwargs['atol'] = default
         if self._timeout is not None:
             run_kwargs['timeout'] = self._timeout
         try:

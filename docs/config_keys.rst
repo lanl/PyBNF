@@ -1701,7 +1701,9 @@ Algorithm Options
   tolerances used for every deterministic (``ode``) simulation of every SBML/Antimony
   model in the fit. For an edition-1 BNGL model, write ``rtol``/``atol`` in the BNGL file's
   ``begin actions`` block instead — that is BioNetGen's own surface for them. (An edition-2
-  model's actions may carry no simulation, #969.)
+  model's actions may carry no simulation, #969.) A BNGL ODE run that states no ``atol`` is
+  integrated at BioNetGen's default, ``1e-8``, held exactly as BNG2.pl holds it, on the
+  bngsim backend too.
 
   These two keys are the fit-wide **default**. Under ``edition >= 2`` a single model can
   state its own instead, on its :ref:`model: <model_decl>` declaration line

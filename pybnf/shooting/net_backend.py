@@ -267,6 +267,12 @@ class NetSegmentBackend(SegmentBackend):
             rt = _runtime()
             kwargs['atol'] = rt.exact_atol(kwargs['atol'], rt.bngsim,
                                            where='Model %s: %s' % (model_name, where))
+        else:
+            # Unstated: BNG2.pl's default, exactly, not a ceiling off each knot's state.
+            rt = _runtime()
+            default = rt.bng2pl_default_atol(rt.bngsim)
+            if default is not None:
+                kwargs['atol'] = default
         try:
             timeout = float(self.timeout)
         except (TypeError, ValueError):

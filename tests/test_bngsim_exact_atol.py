@@ -182,3 +182,48 @@ def test_multiple_shooting_refuses_an_atol_that_does_not_evaluate(monkeypatch):
     owner = types.SimpleNamespace(sim_params={'atol': '1e-8*oops'}, timeout=None)
     with pytest.raises(PybnfError, match=r'does not evaluate to a number'):
         NetSegmentBackend._run_kwargs(owner)
+
+
+# --- no atol=> at all: BNG2.pl's default, exactly ------------------------------------- #
+# bngsim 0.17.0 reads its own unstated 1e-8 as a ceiling off each run's start state. On the
+# 1e-8 decay that is 7.6e-06 relative error where BNG2.pl's 1e-8 gives 6.08e+01 (BNG2.pl
+# 2.9.3 measured S(20) = -1.481247240622e-09, the same as bngsim 0.16.0).
+
+def _unstated(net):
+    action = 'simulate({method=>"ode",t_start=>0,t_end=>%g,n_steps=>40,suffix=>"tc"})' % _T_END
+    model = bngsim_model.BngsimModel(net.stem, [action], [('simulate', 'tc')], [], nf=str(net))
+    model.param_set = pset.PSet([])
+    return model
+
+
+@pytest.mark.bngsim
+def test_a_bngl_action_with_no_atol_integrates_at_bng2pls_default(small_decay_net, tmp_path):
+    data = _unstated(small_decay_net).execute(str(tmp_path), 'x', None)['tc']
+    error = _worst_error(data['time'], data['Stot'])
+    assert error > 1.0, 'an unstated atol was not BNG2.pl\'s exact 1e-8: %.2e off' % error
+
+
+@pytest.mark.bngsim
+def test_a_segment_with_no_atol_integrates_at_bng2pls_default(small_decay_net):
+    integrator = SegmentIntegrator(_unstated(small_decay_net), [])
+    grid = np.linspace(0.0, _T_END, 41)
+    segment = integrator.integrate(integrator.initial_state([]), [], grid[0], grid[-1],
+                                   times=grid[1:-1])
+    rows = np.asarray(segment.data.data, dtype=float)
+    error = _worst_error(rows[:, 0], rows[:, segment.data.cols['Stot']])
+    assert error > 1.0, 'an unstated segment atol was not 1e-8: %.2e off' % error
+
+
+def test_multiple_shooting_with_no_atol_states_bng2pls_default(monkeypatch):
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim',
+                        types.SimpleNamespace(ExactAtol=_ExactAtol))
+    kwargs = NetSegmentBackend._run_kwargs(types.SimpleNamespace(sim_params={}, timeout=None))
+    assert isinstance(kwargs['atol'], _ExactAtol) and kwargs['atol'].value == 1e-8
+
+
+def test_a_build_without_exact_atol_is_passed_nothing(monkeypatch):
+    """bngsim 0.16.0's own default is already exactly 1e-8, so nothing changes there."""
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', types.SimpleNamespace())
+    assert NetSegmentBackend._run_kwargs(
+        types.SimpleNamespace(sim_params={}, timeout=None)) == {}
+    assert _bngsim_caps.bng2pl_default_atol(types.SimpleNamespace()) is None
