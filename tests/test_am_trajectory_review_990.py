@@ -33,6 +33,7 @@ begin seed species
 end seed species
 begin observables
   Molecules Atot A()
+  Molecules Araw A()
 end observables
 begin reaction rules
   A() -> 0  k
@@ -67,8 +68,10 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
     * ``dose``, a parameter_scan of kin to steady state: kin / k = 2 kin;
     * ``pe``, pre-equilibrated under ``pre`` (kin = 1, so A = 2) and measured under ``off``
       (kin = 0), both conditions consumed inline: 2 exp(-t/2);
-    * the measurement formula ``twice = 2*Atot``: twice the recorded Atot wherever Atot is not
-      normalized.
+    * the measurement formula ``twice = 2*Araw``: twice the recorded Atot wherever Atot is not
+      normalized. ``Araw`` counts the same species as ``Atot``; the formula reads it rather than
+      ``Atot`` because a formula that reads a normalized column is refused at load (#1030):
+      under ``slow`` it would be computed from the normalized Atot, not the model output.
 
     No other output suffix may get a file (the off-diagonal ``slowfast``, the bare ``quick``,
     ``pepre`` / ``peoff``). Checked on the worker-scoring path, the master-scoring path and
@@ -98,7 +101,7 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
         'experiment: quick, condition: fast, data: quick.exp',
         'experiment: dose, data: dose.exp, type: parameter_scan',
         'experiment: pe, preequilibrate: pre, condition: off, data: pe.exp',
-        'observable: twice, formula: 2*Atot',
+        'observable: twice, formula: 2*Araw',
         'noise_model = gaussian, sigma = fix_at 1, location = mean',
         'normalization slow.Atot = floor 0.1, init',
         'uniform_var = A0 50 200', 'output_trajectory = Atot, twice',
