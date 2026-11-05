@@ -50,10 +50,14 @@ _spec.loader.exec_module(_manifest)
 EXAMPLES = _manifest.EXAMPLES
 
 
-def _load_conf(example, tmp_path, *, max_iterations=None, population_size=None):
+def _load_conf(example, tmp_path, *, max_iterations=None, population_size=None,
+               best_fit_confirmation=None):
     """Parse a committed real-world conf into a Configuration, output redirected to
     tmp and the RNG pinned. Paths in the conf are relative to the example folder, so
-    we parse from inside it (as tests/test_tutorial_examples.py does)."""
+    we parse from inside it (as tests/test_tutorial_examples.py does).
+
+    ``best_fit_confirmation``, a ``(candidates, replicates)`` pair, overrides the end-of-fit
+    confirmation stage that a stochastic fit runs by default (#659)."""
     text = (example.path / example.conf).read_text()
     home = os.getcwd()
     os.chdir(example.path)
@@ -66,6 +70,8 @@ def _load_conf(example, tmp_path, *, max_iterations=None, population_size=None):
             raw['max_iterations'] = max_iterations
         if population_size is not None:
             raw['population_size'] = population_size
+        if best_fit_confirmation is not None:
+            raw['best_fit_candidates'], raw['best_fit_replicates'] = best_fit_confirmation
         return config.Configuration(raw)
     finally:
         os.chdir(home)
@@ -241,8 +247,16 @@ def test_real_world_runs_through_bngsim(example, tmp_path, monkeypatch):
     H.install(monkeypatch, catch_sim_failures=True)
 
     # Keep the bounded run small: enough to take at least one optimizer step so a best
-    # score exists, but not a full production fit.
-    conf = _load_conf(example, tmp_path, max_iterations=2, population_size=6)
+    # score exists, but not a full production fit. That includes the end-of-fit
+    # confirmation a stochastic fit runs (#659): by default it runs the top 10 parameter
+    # sets 10 more times each, times `smoothing`. For Monine-2010/tlbr (smoothing 3) that
+    # is 300 simulations after a fit of 36. Timed on a dev machine on 2026-11-04, the fit
+    # took 3.9 minutes and the first 181 confirmation simulations 14.8, and the whole test
+    # took 62 to 80 minutes on a hosted runner, most of the recovery tier. Two candidates
+    # run twice still take the stage end to end: a stage that pins a NaN objective fails
+    # the finiteness check below at this budget.
+    conf = _load_conf(example, tmp_path, max_iterations=2, population_size=6,
+                      best_fit_confirmation=(2, 2) if example.stochastic else None)
     fit_type = conf.config['fit_type']
 
     alg = _build(conf, fit_type)
