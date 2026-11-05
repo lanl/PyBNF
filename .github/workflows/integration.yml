@@ -6,8 +6,10 @@ name: integration
 #               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~32 min. Runs
 #               nightly AND on manual dispatch.
 #   recovery -- the `recovery` tier: real parameter-recovery fits through the
-#               bngsim backend (164 tests, 91 min on a hosted runner, measured
-#               2026-11-04). Runs nightly AND on manual dispatch (#1026). It was
+#               bngsim backend (164 tests, 91 min on a hosted runner on
+#               2026-11-04, before #1024 raised one fit's budget; the log's
+#               --durations table has the current figures). Runs nightly AND on
+#               manual dispatch (#1026). It was
 #               dispatch-only from #517 until then, and two of its tests broke
 #               unnoticed in that time (#1024, #1025).
 #
@@ -47,9 +49,13 @@ jobs:
     # Nightly and on dispatch (#1026). #517 kept it dispatch-only until its run
     # time was measured and a flake policy was set. Both are settled:
     #
-    #   * Run time: 91 min for 164 tests on 2026-11-04. --durations below names
-    #     the slowest tests in every log, and the timeout stops a hung test from
-    #     holding the runner for GitHub's 6-hour default.
+    #   * Run time: 91 min for 164 tests on 2026-11-04, before #1024 raised the
+    #     Lotka-Volterra budget. --durations below names the slowest tests in
+    #     every log that finishes. A test that hangs never finishes, so
+    #     faulthandler_timeout dumps the stack of any test still running after
+    #     20 minutes, which names its function in the log, -v lists every case
+    #     that did finish, and the job timeout stops it from holding the runner
+    #     for GitHub's 6-hour default.
     #   * Flakes: the harness runs every fit inline with a synchronous stand-in
     #     for dask and a pinned seed (tests/recovery_harness.py), so on one runner
     #     image and one set of dependency versions each test gives the same answer
@@ -82,12 +88,17 @@ jobs:
           cache-suffix: pybnf-recovery
 
       - name: Run the recovery tier
-        # -m recovery: the ~130 synthetic-data parameter-recovery fits through
+        # -m recovery: the synthetic-data parameter-recovery fits through
         # the backend (test_recovery.py, the tutorial suites, profile-likelihood,
         # the gradient/SBML fits, ...). -n auto parallelizes across the runner's
         # cores -- fewer here than on a dev box, so expect this to be the slow leg.
         # --durations=25 lists the 25 slowest tests at the end of the log.
+        # faulthandler_timeout=1200: a test still running after 20 minutes has
+        # every thread's stack printed, naming its function, without being
+        # stopped. The stack does not name the parametrized case, so -v lists
+        # each case as it finishes and the one that never does stands out. The
+        # slowest test took about 76 s on a dev machine on 2026-11-04.
         #
         # --no-sync: the composite action already populated .venv; do not let
         # `uv run` re-resolve it from pyproject.toml.
-        run: uv run --no-sync pytest -m recovery -n auto --durations=25
+        run: uv run --no-sync pytest -m recovery -n auto -v --durations=25 -o faulthandler_timeout=1200

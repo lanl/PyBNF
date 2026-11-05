@@ -58,7 +58,7 @@ decisions so a failure points at the right layer:
   * ``test_m01_real_run_job_smoke`` -- one fit through the genuine run_job/folders.
 
 The module carries the ``bngsim`` marker for every test; the heavy fits add
-``recovery`` (opt-in), while the three ``newera`` fits carry neither ``recovery`` nor
+``recovery`` (opt-in), while the ``newera`` fits carry neither ``recovery`` nor
 ``slow`` so they run by default wherever bngsim is present (#436).
 """
 import os
@@ -90,7 +90,11 @@ class ModelSpec:
     identifiable: tuple # params asserted to recover (subset of free)
     de_budget: dict
     soft_tol: float = 0.15      # fractional param-recovery tolerance
-    hard_rel_tol: float = 1e-3  # best_score < hard_rel_tol * (sum of data^2)
+    # best_score < hard_rel_tol * (sum of data^2). Each model sets its own from the worst
+    # best score its seed sweep reached, with a wide margin (#1024). At the old shared 1e-3,
+    # the gate sat 5 (m02), 11 (m07) and 14 (m01) orders of magnitude above every passing fit,
+    # so for those models it could not fail and only the parameter gate checked anything.
+    hard_rel_tol: float = 1e-3
     suffix: str = 'ode'
     analytic: tuple = None      # (obs_col, fn(t)->values) closed form, or None
 
@@ -112,6 +116,8 @@ MODELS = {
         obs=('Obs_Tot_S',),
         identifiable=('k__FREE',),
         de_budget=dict(population_size=10, max_iterations=30),   # 100/100 seeds pass (#1024)
+        # Worst best score over those seeds: 1.2e-17 of the data's sum of squares.
+        hard_rel_tol=1e-9,
         analytic=('Obs_Tot_S', lambda t: 10.0 * np.exp(-0.3 * t)),
     ),
     'm02_logistic': ModelSpec(
@@ -122,6 +128,7 @@ MODELS = {
         obs=('Obs_Tot_X',),
         identifiable=('r__FREE', 'K__FREE'),
         de_budget=dict(population_size=16, max_iterations=50),   # 100/100 seeds pass (#1024)
+        hard_rel_tol=1e-6,   # worst over those seeds: 4.0e-9
         analytic=('Obs_Tot_X', _logistic),
     ),
     'm03_Lotka_Volterra': ModelSpec(
@@ -143,7 +150,9 @@ MODELS = {
         # failure, and a correct change to DE's random path (#813) was enough to expose it.
         # Population 60 for 100 iterations: 96/100. This budget: 200/200 (seeds 1-200).
         de_budget=dict(population_size=100, max_iterations=100),
-        soft_tol=0.25, hard_rel_tol=1e-2,   # oscillatory -> harder; looser gates
+        # Oscillatory, so harder: a looser parameter gate, and an objective gate at 1e-3 of
+        # the data's sum of squares, where the worst of those 200 seeds reached 7.0e-5.
+        soft_tol=0.25, hard_rel_tol=1e-3,
     ),
     'm07_SIR': ModelSpec(
         name='m07_SIR',
@@ -153,6 +162,7 @@ MODELS = {
         obs=('Obs_Tot_S', 'Obs_Tot_I', 'Obs_Tot_R'),
         identifiable=('beta_rate__FREE', 'gamma_rate__FREE'),
         de_budget=dict(population_size=16, max_iterations=60),   # 100/100 seeds pass (#1024)
+        hard_rel_tol=1e-9,   # worst over those seeds: 9.8e-15
     ),
 }
 

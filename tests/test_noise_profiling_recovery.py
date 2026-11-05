@@ -165,6 +165,40 @@ def test_profiling_lands_where_the_searched_fit_lands(tmp_path, monkeypatch):
     assert profiled_score == pytest.approx(searched_score, abs=1e-3)
 
 
+def test_the_reported_profiled_noise_is_the_closed_form_mle_at_the_best_rate(tmp_path,
+                                                                          monkeypatch):
+    """``profiled_noise.txt`` is the only place a profiled scale is reported, so it is checked
+    against the closed form, not against a second stochastic search. At the profiled run's
+    best rate the reported scale must be the residual RMS, ``sqrt(mean(r ** 2))``, of the data
+    against ``100 * exp(-k t)``, computed here with numpy alone.
+
+    The score comparisons above cannot do this job. The profiled scale is optimal at every
+    rate, so an error in it moves the objective only at second order: a scale 0.03% off
+    changes the score by about 4e-6, inside their 1e-5 tolerance, and a report 1% off passes
+    their 1% comparison with the searched run's scale. This check is first order. It also
+    checks the profiled scoring path against the closed form across a range of rates, away
+    from the optimum where the other tests look."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+
+    profiled = _fit(tmp_path, 'profiled', {'noise_profiling': 1})
+    k_best = profiled.trajectory.best_fit()['k']
+
+    rows = [line.split() for line in (_LESSON / 'decay.exp').read_text().splitlines()
+            if line.strip() and not line.startswith('#')]
+    data = np.array(rows, dtype=float)
+    residuals = data[:, 1] - 100.0 * np.exp(-k_best * data[:, 0])
+    sigma_mle = float(np.sqrt(np.mean(residuals ** 2)))
+
+    # Measured agreement is ~2e-8; the ODE solver's error in the prediction bounds it.
+    assert _profiled_noise_file(profiled)['noise_level'] == pytest.approx(sigma_mle, rel=1e-6)
+
+    # The profile itself, off the optimum: measured agreement is under 3e-6 over this range.
+    for k in np.linspace(0.3, 0.8, 11):
+        assert _score_at(profiled, {'k': float(k)}) == pytest.approx(
+            _closed_form_objective(float(k)), abs=1e-5), k
+
+
 def test_the_searched_run_writes_no_profiled_noise_file(tmp_path, monkeypatch):
     """The default is an exact no-op down to the artifacts: a fit that profiles nothing must
     not gain a report about it."""
