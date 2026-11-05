@@ -253,8 +253,9 @@ def test_real_world_runs_through_bngsim(example, tmp_path, monkeypatch):
     # is 300 simulations after a fit of 36. Timed on a dev machine on 2026-11-04, the fit
     # took 3.9 minutes and the first 181 confirmation simulations 14.8, and the whole test
     # took 62 to 80 minutes on a hosted runner, most of the recovery tier. Two candidates
-    # run twice still take the stage end to end: a stage that pins a NaN objective fails
-    # the finiteness check below at this budget.
+    # run twice still run the stage. The check below that it wrote its table is what shows
+    # it ran here; test_real_world_stochastic_fit_confirms_its_best_fit checks, on the
+    # faster SSA examples, that it ranks and averages correctly.
     conf = _load_conf(example, tmp_path, max_iterations=2, population_size=6,
                       best_fit_confirmation=(2, 2) if example.stochastic else None)
     fit_type = conf.config['fit_type']
@@ -269,6 +270,14 @@ def test_real_world_runs_through_bngsim(example, tmp_path, monkeypatch):
         f'{example.folder}: best objective is {best!r} -- no parameter set produced a '
         f'finite score through bngsim (fail_count={getattr(alg, "fail_count", "?")})')
 
+    # A stochastic fit ends with the best-fit confirmation stage. Its table is the record
+    # that it ran, at the budget asked for, and chose a winner.
+    if example.stochastic:
+        fields = _confirmation_table(tmp_path)
+        assert fields.get('candidates') == '2' and fields.get('replicates_requested') == '2', (
+            f'{example.folder}: best-fit confirmation table {fields}')
+        assert fields.get('winner'), f'{example.folder}: no confirmed winner in {fields}'
+
     # Optional recovery signal for the synthetic-data examples (see manifest.recover).
     if example.recover:
         rec = H.best_params(alg, tuple(example.recover))
@@ -277,3 +286,88 @@ def test_real_world_runs_through_bngsim(example, tmp_path, monkeypatch):
             assert rel < example.tol, (
                 f'{example.folder}: {p} recovered {rec[p]:g}, expected ~{true:g} '
                 f'({rel * 100:.0f}% off > {example.tol * 100:.0f}%)')
+
+
+def _confirmation_table(tmp_path):
+    """The ``key<TAB>value`` header rows of ``Results/best_fit_confirmation.txt`` (#659), as a
+    dict; the per-candidate rows, which start with a rank, are left out."""
+    table = (tmp_path / 'out' / 'Results' / 'best_fit_confirmation.txt').read_text()
+    return dict(line.split('\t', 1) for line in table.splitlines()
+                if line and not line.startswith('#') and not line[0].isdigit())
+
+
+def _confirmation_params():
+    # The workstation-scale SSA examples only: each takes about ten seconds at this budget.
+    # Monine-2010/tlbr (NF) takes about five minutes, so it is left to the smoke test above.
+    return [p for p in _e2e_params()
+            if p.values[0].stochastic and p.values[0].simulator == 'ssa']
+
+
+@pytest.mark.parametrize('example', _confirmation_params())
+def test_real_world_stochastic_fit_confirms_its_best_fit(example, tmp_path, monkeypatch):
+    """The end-of-fit best-fit confirmation (#659) runs on a real stochastic model through
+    bngsim, and the run reports what it should: every top candidate run again on fresh
+    draws, and the winner and its objective value the ones a by-hand numpy average and
+    ranking of those replicate scores give.
+
+    The smoke test above only checks that the reported objective is finite, which a stage
+    that is skipped, that fails and is swallowed, that ranks or averages wrongly, or that
+    reruns the search's own trajectory instead of a fresh one all pass. This catches each.
+    """
+    H.require_bng2pl()
+    H.install(monkeypatch, catch_sim_failures=True)
+    n_candidates, n_replicates = 2, 2
+    conf = _load_conf(example, tmp_path, max_iterations=2, population_size=6,
+                      best_fit_confirmation=(n_candidates, n_replicates))
+    alg = _build(conf, conf.config['fit_type'])
+
+    # Record what the stage is handed and every replicate score it computes, so the
+    # expected answer can be worked out here without going through its own arithmetic.
+    handed = []
+    run_replicates = alg._run_confirmation_replicates
+
+    def recording_run(client, candidates, replicates):
+        handed.append((list(candidates), replicates))
+        return run_replicates(client, candidates, replicates)
+
+    scored = []
+    score_result = alg.score_result
+
+    def recording_score(res):
+        value = score_result(res)
+        if res.name.startswith('bestfit_check'):
+            scored.append((res.name, value))
+        return value
+
+    monkeypatch.setattr(alg, '_run_confirmation_replicates', recording_run)
+    monkeypatch.setattr(alg, 'score_result', recording_score)
+
+    H.drive(alg)
+
+    assert len(handed) == 1, f'{example.folder}: the confirmation stage did not run'
+    candidates, replicates = handed[0]
+    assert replicates == n_replicates and len(candidates) == n_candidates
+
+    by_candidate = {i: [] for i in range(n_candidates)}
+    for name, value in scored:
+        i = int(name[len('bestfit_check'):].split('_run')[0]) - 1
+        by_candidate[i].append(value)
+    means = []
+    for i, (search_objective, name, _) in enumerate(candidates):
+        values = np.array(by_candidate[i], dtype=float)
+        assert len(values) == n_replicates and np.all(np.isfinite(values)), (
+            f'{example.folder}: {name} replicate scores {values}')
+        # Fresh draws: the replicates differ from each other and from the search's own run.
+        assert len(set(values)) == n_replicates, f'{name}: replicates repeat {values}'
+        assert search_objective not in values, (
+            f'{name}: a replicate reproduced the search value {search_objective}')
+        means.append(values.sum() / len(values))
+
+    expected = int(np.argmin(means))
+    assert alg.trajectory.best_fit_name() == candidates[expected][1]
+    assert alg.trajectory.best_score() == pytest.approx(means[expected], rel=1e-12)
+
+    fields = _confirmation_table(tmp_path)
+    assert fields['candidates'] == str(n_candidates)
+    assert fields['replicates_requested'] == str(n_replicates)
+    assert fields['winner'] == candidates[expected][1]
