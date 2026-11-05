@@ -88,11 +88,20 @@ def _declared_rows(path):
 # in declaration order, and starting_params is applied by declaration order.
 # --------------------------------------------------------------------------- #
 
-_SAMPLER_CONF = (
-    'edition = 2\n'
-    'objective = expression\n'
-    'expression = 0.5*((kcat - 7)/0.1)^2 + 0.5*((Km - 70)/1)^2 + 0.5*((alpha - 0.3)/0.01)^2\n'
-    + _vars_conf(DECLARED) +
+# One negative log-likelihood, written twice: as ``objective = expression`` and as an
+# ``objective = callable`` Python function. The expression goes through the PEtab math
+# translator, so its cases need the optional petab extra (#1023). The callable needs no
+# extra, so the sampler's file orders are still checked where petab is not installed.
+_NLL_EXPRESSION = ('0.5*((kcat - 7)/0.1)^2 + 0.5*((Km - 70)/1)^2 '
+                   '+ 0.5*((alpha - 0.3)/0.01)^2')
+_NLL_CALLABLE_SRC = (
+    'def nll(params, data=None):\n'
+    '    return (0.5 * ((params["kcat"] - 7) / 0.1) ** 2 + 0.5 * ((params["Km"] - 70) / 1) ** 2\n'
+    '            + 0.5 * ((params["alpha"] - 0.3) / 0.01) ** 2)\n')
+OBJECTIVES = [pytest.param('expression', marks=pytest.mark.petab), 'callable']
+
+_SAMPLER_TAIL = (
+    _vars_conf(DECLARED) +
     'starting_params = 7 70 0.3\n'
     'job_type = am\n'
     'max_iterations = 40\n'
@@ -110,6 +119,29 @@ _SAMPLER_CONF = (
     'diagnostics_every = 1000000000\n')
 
 
+def _nll_by_hand(row):
+    """The objective at a ``{name: value}`` row, computed here rather than by PyBNF."""
+    return (0.5 * ((row['kcat'] - 7) / 0.1) ** 2 + 0.5 * ((row['Km'] - 70) / 1) ** 2
+            + 0.5 * ((row['alpha'] - 0.3) / 0.01) ** 2)
+
+
+def _column(path, k):
+    """Column ``k`` of every data row of a result table, as floats."""
+    with open(path) as f:
+        lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    return [float(ln.split()[k]) for ln in lines[1:]]
+
+
+def _sampler_conf(tmp_path, objective):
+    if objective == 'expression':
+        head = 'objective = expression\nexpression = %s\n' % _NLL_EXPRESSION
+    else:
+        target = tmp_path / 'order_nll.py'
+        target.write_text(_NLL_CALLABLE_SRC)
+        head = 'objective = callable\ncallable = %s:nll\n' % target
+    return 'edition = 2\n' + head + _SAMPLER_TAIL
+
+
 def _run_conf(tmp_path, monkeypatch, conf_text):
     from pybnf.parse import load_config
     from pybnf.pybnf import _create_algorithm
@@ -122,11 +154,9 @@ def _run_conf(tmp_path, monkeypatch, conf_text):
     return conf, alg, tmp_path / 'out' / 'Results'
 
 
-# objective = expression goes through the PEtab math translator, so the two sampler
-# tests need the optional petab extra (#1023).
-@pytest.mark.petab
-def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch):
-    _, alg, results = _run_conf(tmp_path, monkeypatch, _SAMPLER_CONF)
+@pytest.mark.parametrize('objective', OBJECTIVES)
+def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch, objective):
+    _, alg, results = _run_conf(tmp_path, monkeypatch, _sampler_conf(tmp_path, objective))
     assert [v.name for v in alg.variables] == DECLARED
 
     # starting_params = 7 70 0.3 is read by declaration order: kcat 7, Km 70, alpha 0.3.
@@ -138,11 +168,19 @@ def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch):
     names, rows = _read_table(results / 'samples.txt', 2)
     assert names == SORTED_IN_FILES
     _assert_each_value_in_the_box_its_header_names(rows, 'samples.txt')
+    # Each row's Ln_probability is the log posterior of the values under their headers:
+    # minus the objective, plus the log density of the three uniform priors.
+    log_prior = -sum(np.log(hi - lo) for lo, hi in BOXES.values())
+    np.testing.assert_allclose(_column(results / 'samples.txt', 1),
+                               [log_prior - _nll_by_hand(r) for r in rows], rtol=1e-9)
+    assert len({tuple(r.values()) for r in rows}) > 1      # the chains moved
 
     # sorted_params_final.txt: Simulation, Obj, then the parameters in sorted order.
     names, rows = _read_table(results / 'sorted_params_final.txt', 2)
     assert names == SORTED_IN_FILES
     _assert_each_value_in_the_box_its_header_names(rows, 'sorted_params_final.txt')
+    np.testing.assert_allclose(_column(results / 'sorted_params_final.txt', 1),
+                               [_nll_by_hand(r) for r in rows], rtol=1e-9, atol=1e-12)
 
     # The credible-interval rows are in declaration order (#932).
     credible = sorted(results.glob('credible68*_final.txt'))
@@ -154,8 +192,8 @@ def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch):
         assert f.readline().split() == DECLARED
 
 
-@pytest.mark.petab
-def test_continue_run_overrides_starting_params(tmp_path, monkeypatch):
+@pytest.mark.parametrize('objective', OBJECTIVES)
+def test_continue_run_overrides_starting_params(tmp_path, monkeypatch, objective):
     """With ``continue_run = 1`` every chain starts from the previous run's
     ``adaptive_files/MLE_params.txt`` (one value per parameter, declaration order), and
     ``starting_params`` is ignored."""
@@ -169,7 +207,8 @@ def test_continue_run_overrides_starting_params(tmp_path, monkeypatch):
     np.savetxt(adaptive / 'MLE_params.txt', previous_mle)
     np.savetxt(adaptive / 'diff.txt', [0.1])
     np.savetxt(adaptive / 'diffMatrix.txt', np.eye(3))
-    (tmp_path / 'order.conf').write_text(_SAMPLER_CONF + 'continue_run = 1\n')
+    (tmp_path / 'order.conf').write_text(
+        _sampler_conf(tmp_path, objective) + 'continue_run = 1\n')
     alg = _create_algorithm(load_config(str(tmp_path / 'order.conf')))
     os.makedirs(alg.res_dir, exist_ok=True)
 
