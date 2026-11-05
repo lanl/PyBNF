@@ -23,7 +23,7 @@ from pybnf import data, objective
 from pybnf.config import Configuration
 from pybnf.objective import likelihood_information_criteria
 from pybnf.parse import ploop
-from pybnf.printing import PybnfError
+from pybnf.printing import DataMismatchError, PybnfError
 from pybnf.measurement.time_error import (
     TruncatedNormalTimeError, UniformTimeError, FixedTimeError, FreeParameterTimeError,
     MarginalizedTimeObjective, build_time_error_spec, build_time_error_objective,
@@ -446,11 +446,19 @@ class TestNoiseColumnCheck:
             obj._check_columns({'time', 'Central', 'Bogus'}, {'time', 'Central'})
         assert 'Bogus' in exc.value.log_message
 
-    def test_estimated_scale_still_rejects_a_leftover_sd_column(self):
-        # A fit that estimates sigma reads no data column, so a stale _SD column is an
-        # error, and the diagnostic names the observable rather than blaming the model.
+    def test_estimated_scale_allows_a_leftover_sd_column(self):
+        # A fit that estimates sigma reads no data column, so its _SD column cannot change
+        # the score. It was refused as a mistake, and is allowed since #1030 so one data file
+        # can serve supplied, fixed and estimated noise fits (lesson 36).
         obj = self._obj(('fit', 's__FREE'))
-        with pytest.raises(PybnfError) as exc:
-            obj._check_columns({'time', 'Central', 'Central_SD'}, {'time', 'Central'})
-        assert 'Central_SD' in exc.value.log_message
-        assert "observable 'Central'" in exc.value.message
+        obj._check_columns({'time', 'Central', 'Central_SD'}, {'time', 'Central'})  # no raise
+
+    def test_unmatched_column_is_refused_on_every_evaluation(self):
+        # The check used to run only with show_warnings, which every job after a fit's first
+        # passed as False, so an unmatched column was dropped from all of them (#817).
+        obj = self._obj(('read_exp_file', '_SD'))
+        sim = data.Data.from_columns(np.array([[0., 1.], [1., 2.]]), ['time', 'Central'])
+        exp = data.Data.from_columns(np.array([[0., 1., 7.], [1., 2., 7.]]),
+                                     ['time', 'Central', 'Typo'])
+        with pytest.raises(DataMismatchError, match='Typo'):
+            obj.evaluate(sim, exp, show_warnings=False)

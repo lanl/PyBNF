@@ -34,7 +34,7 @@ from ..bngsim_model import (
 from ..bngsim_model.classification import (action_lines_run, bngsim_unread_action_options,
                                             runs_protocol_block, runs_simulate_protocol)
 from ..bngsim_model.grid import bng2pl_network_free_refusals, check_output_grids
-from ..printing import print0, print1, print2, PybnfError
+from ..printing import print0, print1, print2, DataMismatchError, PybnfError
 from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
                          replicated_information_criteria)
 from ..budget import format_duration
@@ -1195,9 +1195,15 @@ class Algorithm(ABC):
                     res.score = np.inf
                 else:
                     res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, res.pset, self.config.constraints)
+            except DataMismatchError:
+                # The data and the simulation do not match, the same for every parameter set:
+                # end the run with the message. Scored as ``inf`` here, it gave a gradient,
+                # smoothing or model-parallel fit ``inf`` at every point and still reported a
+                # best fit (#1030).
+                raise
             except Exception:
-                # A failure while normalizing or scoring this one parameter set should
-                # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
+                # Any other failure while normalizing or scoring this one parameter set
+                # penalizes this evaluation, not the whole run. See lanl/PyBNF#388.
                 logger.exception(f'Objective evaluation failed for Result {res.name}')
                 res.score = np.inf
                 print1(f'Objective evaluation failed for Result {res.name}; discarding this parameter set')

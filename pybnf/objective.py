@@ -4,7 +4,7 @@ from .noise import (LN, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, Dat
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
                     PerMeasurementFormulaSigma, PredictionFormulaSigma, RelativeSigma,
                     StudentT)
-from .printing import PybnfError, print1
+from .printing import DataMismatchError, PybnfError, print1
 from .registry import register_objfunc
 from .measurement.linear import (PLACEHOLDER as _LINEAR_PLACEHOLDER, LinearDesign, affine_roles,
                                  formula_symbol_names, solve_group)
@@ -173,6 +173,35 @@ class ObjectiveCalculator:
         
         return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, pset, self.constraints, show_warnings)
 
+
+def _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt=()):
+    """Raise :class:`DataMismatchError` naming every experimental data column the fit does not
+    score, unless it is accounted for.
+
+    A column is accounted for when it is scored (in ``compare_cols``), is in ``exempt`` (a
+    noise column the objective reads), or is the ``<observable>_SD`` companion of a scored
+    observable. The last is allowed even when the noise model does not read it: the
+    ``noise_model`` line already says where the scale comes from, so the column cannot change
+    the score, and one data file can then serve fits with different noise sources, as lesson
+    36's ``decay.exp`` does (#1030). Anything else is a column no simulated output matches,
+    and scoring around it would fit a different problem from the one the data describe
+    (#817), so it ends the run.
+
+    ``available`` is the set of simulated column names the data could have matched, named in
+    the message so a misspelling is easy to see.
+    """
+    scored = set(compare_cols)
+    missed = {column for column in set(exp_cols).difference(scored | set(exempt))
+              if not (column.endswith('_SD') and column[:-3] in scored)}
+    if not missed:
+        return
+    raise DataMismatchError(
+        'The following experimental data columns were not found in the simulation output: '
+        + str(sorted(missed)),
+        'The experimental data has column(s) %s that match no simulated output, so they cannot '
+        'be scored. The simulation provides: %s. Check the spelling of the data column headers '
+        'against the model\'s observable and function names, or map a differently named column '
+        'with an observable: line.' % (', '.join(sorted(missed)), ', '.join(sorted(available))))
 
 
 class ObjectiveFunction:
@@ -552,9 +581,10 @@ class SummationObjective(ObjectiveFunction):
         # byte-identical.
         comparable = set(sim_data.cols) | set(self._per_measurement_models)
         compare_cols = set(exp_data.cols).intersection(comparable)  # Set of columns to compare
-        # Warn if experiment columns are going unused
-        if show_warnings:
-            self._check_columns(exp_data.cols, compare_cols)
+        # Refuse experimental columns that would go unscored. Every evaluation checks, not
+        # only those with show_warnings: the check used to run on the first job alone, so
+        # every later job silently scored just the columns that matched (#817).
+        self._check_columns(exp_data.cols, compare_cols, comparable)
         try:
             compare_cols.remove(indvar)
         except KeyError:
@@ -870,17 +900,16 @@ class SummationObjective(ObjectiveFunction):
         of them this experiment scales). Empty -> byte-identical, no guard fires."""
         return frozenset().union(*self._analytic_scale.values()) if self._analytic_scale else frozenset()
 
-    def _check_columns(self, exp_cols, compare_cols):
+    def _check_columns(self, exp_cols, compare_cols, available=()):
         """
-        Check that all exp_cols are being read in compare_cols; give a warning if not.
+        Refuse any experimental data column that is not scored (see
+        :func:`_refuse_unmatched_columns`).
         :param exp_cols: Iterable of all experimental data column names
         :param compare_cols: Iterable of the names being used
+        :param available: Iterable of the simulated column names, for the message
         :return: None
         """
-        missed = set(exp_cols).difference(set(compare_cols))
-        if len(missed) > 0:
-            raise PybnfError('The following experimental data columns were not found in the simulation output: '
-                             + str(missed))
+        _refuse_unmatched_columns(exp_cols, compare_cols, available)
 
 
 class ColumnSummationObjective(ObjectiveFunction):
@@ -913,9 +942,8 @@ class ColumnSummationObjective(ObjectiveFunction):
         indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
-        # Warn if experiment columns are going unused
-        if show_warnings:
-            self._check_columns(exp_data.cols, compare_cols)
+        # Refuse experimental columns that would go unscored, on every evaluation (#817).
+        self._check_columns(exp_data.cols, compare_cols, sim_data.cols)
         try:
             compare_cols.remove(indvar)
         except KeyError:
@@ -939,17 +967,16 @@ class ColumnSummationObjective(ObjectiveFunction):
         """
         raise NotImplementedError('Subclasses of SummationObjective must override eval_point')
 
-    def _check_columns(self, exp_cols, compare_cols):
+    def _check_columns(self, exp_cols, compare_cols, available=()):
         """
-        Check that all exp_cols are being read in compare_cols; give a warning if not.
+        Refuse any experimental data column that is not scored (see
+        :func:`_refuse_unmatched_columns`).
         :param exp_cols: Iterable of all experimental data column names
         :param compare_cols: Iterable of the names being used
+        :param available: Iterable of the simulated column names, for the message
         :return: None
         """
-        missed = set(exp_cols).difference(set(compare_cols))
-        if len(missed) > 0:
-            raise PybnfError('The following experimental data columns were not found in the simulation output: '
-                             + str(missed))
+        _refuse_unmatched_columns(exp_cols, compare_cols, available)
 
 
 # --- per-point likelihood objfuncs (ADR-0011, ADR-0021) ----------------------
@@ -2463,52 +2490,27 @@ class LikelihoodObjective(SummationObjective):
                 names |= source.required_free_params()
         return names
 
-    def _check_columns(self, exp_cols, compare_cols):
-        """Like the base check, but exempt each observable's data-column noise source
-        (e.g. ``obs_SD``): those are noise-scale columns, not unmatched observables
-        (ADR-0021). With the default chi_sq spec this reduces to the historical
-        ``{obs}_SD`` exemption.
+    def _check_columns(self, exp_cols, compare_cols, available=()):
+        """Like the base check, but also exempt each observable's data-column noise source,
+        whatever its name: those are noise-scale columns, not unmatched observables
+        (ADR-0021). The ``{obs}_SD`` companion of a scored observable is exempt in every
+        objective (:func:`_refuse_unmatched_columns`), so with the default chi_sq spec this
+        adds nothing.
 
-        When a leftover noise column is unaccounted for *because* the observable's
-        noise scale is estimated -- a free parameter, not a data column (the
-        ``sigma = fit`` surface / ``chi_sq_dynamic``) -- the error names that cause
-        instead of the generic "not found in simulation output": an estimated scale
-        reads its sigma from the free parameter, so a per-point ``_SD`` column kept
-        from a fixed-scale fit no longer has a home (the common ``chi_sq`` ->
-        ``chi_sq_dynamic`` mistake -- the SD column should be dropped)."""
+        A leftover ``{obs}_SD`` beside a noise scale the fit fixes or estimates used to be
+        refused here as a mistake. It is allowed now: the noise model says where the scale
+        comes from, so the column cannot change the score, and lesson 36 keeps one data file
+        for its supplied, fixed and estimated noise fits (#1030). The refusal had only ever
+        run on the first job of a worker-scored fit, and on every evaluation of a
+        master-scored one, which scored lesson 36's own lbfgs fit as ``inf`` everywhere."""
         exempt = set()
-        estimated_obs = []   # observables whose scale is estimated (so it reads no data column)
         for col in compare_cols:
             _family, sources = self._spec_for(col)
             for source in sources.values():
                 column = source.exp_column(col)
                 if column is not None:
                     exempt.add(column)
-                elif source.estimated:
-                    estimated_obs.append(col)
-        missed = set(exp_cols).difference(set(compare_cols).union(exempt))
-        if not missed:
-            return
-        # Attribute each missed column that is the per-point noise column a fixed-scale
-        # fit WOULD read for an observable whose scale this fit instead estimates, so the
-        # error explains why an estimated-sigma fit cannot consume a leftover `_SD` column.
-        sd = DataColumnSigma()
-        orphans = {m: obs for m in sorted(missed)
-                   for obs in estimated_obs if m == sd.exp_column(obs)}
-        if orphans:
-            why = '; '.join(
-                "'%s' is the per-point noise column for observable '%s', whose noise scale "
-                "this fit estimates as a free parameter (e.g. sigma = fit, chi_sq_dynamic), "
-                "so sigma is read from that parameter, not the data" % (m, obs)
-                for m, obs in orphans.items())
-            raise PybnfError(
-                'The following experimental data columns were not found in the simulation '
-                'output: ' + str(missed),
-                why + '. Remove the leftover noise column(s) from the experimental data, or '
-                'use a fixed-scale objective (e.g. chi_sq) that reads the per-point scale '
-                'from the data.')
-        raise PybnfError('The following experimental data columns were not found in the simulation output: '
-                         + str(missed))
+        _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt)
 
 
 @register_objfunc('chi_sq')
