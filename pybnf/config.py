@@ -3437,11 +3437,23 @@ class Configuration:
         spec_for = getattr(getattr(self, 'obj', None), '_spec_for', None)
         if spec_for is None:
             return noise
+        overrides = getattr(self.obj, 'overrides', {}) or {}
         for column in data.cols:
             _family, sources = spec_for(column)
             for source in sources.values():
                 read = source.exp_column(column)
                 if read is not None:
+                    if read in overrides and read in data.cols:
+                        # Read as the noise of `column` and given a noise model of its own as an
+                        # observable: two roles for one column. Normalization would treat it as
+                        # one and the scoring as the other, so refuse rather than pick (#1030).
+                        raise PybnfError(
+                            f"Column {read} is both the noise of {column} and an observable",
+                            f"The data column {read} is read as the per-point noise of {column} "
+                            f"by its noise_model, and also has a noise_model of its own, so it is "
+                            f"scored as an observable too. One column cannot be both.",
+                            hint=f"Rename the observable, or read the noise of {column} from a "
+                                 f"column with a different suffix.")
                     noise.add(read)
         return noise
 
@@ -3463,23 +3475,29 @@ class Configuration:
         computed |= set(getattr(self.obj, '_per_measurement_models', {}) or {})
         if not computed:
             return
-        normalized = set()
+        # Per experiment: normalization of one experiment's simulation output never reaches a
+        # formula scored only in another, so only a formula column this experiment scores is
+        # at risk from what this experiment normalizes.
+        from .petab.formula import formula_free_symbols
+        models = list(getattr(measurement, 'models', ()))
+        models += list((getattr(self.obj, '_per_measurement_models', {}) or {}).values())
+        inputs = {model.observable_id: set(formula_free_symbols(model.formula)) for model in models}
+        normalized, readers = set(), {}
         for by_key in self.exp_data.values():
-            for data_key in by_key:
+            for data_key, exp in by_key.items():
                 groups = settings.get(data_key)
                 if not isinstance(groups, list):
                     continue
+                here = set()
                 for _transform, columns in groups:
-                    normalized |= set(columns)
-        # A formula reading a normalized column is computed from the normalized value, which is
-        # not the model output it names: its prediction is silently wrong. Refuse that too.
-        from .petab.formula import formula_free_symbols
-        readers = {}
-        models = list(getattr(measurement, 'models', ()))
-        models += list((getattr(self.obj, '_per_measurement_models', {}) or {}).values())
-        for model in models:
-            for name in normalized.intersection(formula_free_symbols(model.formula)):
-                readers.setdefault(name, set()).add(model.observable_id)
+                    here |= set(columns)
+                normalized |= here
+                # A formula this experiment scores, reading a column it normalizes, is computed
+                # from the normalized value, not the model output it names: silently wrong.
+                for observable_id, reads in inputs.items():
+                    if observable_id in exp.cols:
+                        for name in here & reads:
+                            readers.setdefault(name, set()).add(observable_id)
         if readers:
             name = sorted(readers)[0]
             users = ', '.join(sorted(readers[name]))
@@ -3487,10 +3505,12 @@ class Configuration:
                 f"normalization is set for {name}, which the measurement-layer formula of "
                 f"{users} reads",
                 f"normalization is set for {name}, and the 'observable: ..., formula: ...' "
-                f"line for {users} reads it. Normalization is applied to the simulation output "
-                f"before the measurement layer computes its formulas, so {users} would be "
-                f"computed from the normalized {name}, not the model output the formula names.",
-                hint=f"Remove the normalization from {name}, or normalize inside the formula.")
+                f"line for {users} reads it in an experiment that scores {users}. "
+                f"Normalization is applied to the simulation output before the measurement "
+                f"layer computes its formulas, so {users} would be computed from the normalized "
+                f"{name}, not the model output the formula names.",
+                hint=f"Remove the normalization from {name} in that experiment, or normalize "
+                     f"inside the formula.")
         refused = computed & normalized
         if not refused:
             return

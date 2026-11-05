@@ -278,3 +278,35 @@ def test_a_constraint_on_a_mistyped_observable_stops_the_fit_and_names_it(tmp_pa
     assert run.returncode != 0, run.stdout[-2000:]
     assert 'Obs_Typo' in run.stdout + run.stderr
     assert not list(tmp_path.glob('**/sorted_params_final.txt'))
+
+
+@pytest.mark.bngsim
+def test_a_column_that_is_both_a_noise_column_and_an_observable_is_refused(tmp_path):
+    """``Obs_A_err`` read as ``Obs_A``'s noise (``sigma = read_exp_file _err``) and also given a
+    noise model of its own: normalization would leave it out as a noise column while scoring
+    fits it as an observable, raw prediction against normalized data, with no word (third
+    review of #1030). Refused at load."""
+    H.require_bng2pl()
+    model = (_LESSON / 'decay.bngl').read_text().replace(
+        '  Molecules  Obs_A  A()', '  Molecules  Obs_A  A()\n  Molecules  Obs_A_err  A()')
+    assert 'Obs_A_err' in model
+    (tmp_path / 'decay.bngl').write_text(model)
+    (tmp_path / 'both.exp').write_text(
+        '# time\tObs_A\tObs_A_err\n' + ''.join(
+            '%g\t%g\t%g\n' % (t, 100 * math.exp(-0.5 * t), 100 * math.exp(-0.5 * t))
+            for t in range(6)))
+    text = '\n'.join([
+        'edition = 2', 'model: decay.bngl', 'bngl_backend = bngsim', 'job_type = de',
+        'noise_model = normal, sigma = read_exp_file _err',
+        'noise_model Obs_A_err = normal, sigma = fix_at 1',
+        'experiment: timecourse, data: both.exp', 'normalization = init',
+        'uniform_var = k 0.05 3.0', 'population_size = 4', 'max_iterations = 2',
+        'output_dir = %s' % (tmp_path / 'out')]) + '\n'
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        with pytest.raises(PybnfError, match='both the noise of Obs_A') as raised:
+            config.Configuration(parse.ploop(text.splitlines(keepends=True)))
+    finally:
+        os.chdir(home)
+    assert 'Obs_A_err' in raised.value.message

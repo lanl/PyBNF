@@ -33,7 +33,6 @@ begin seed species
 end seed species
 begin observables
   Molecules Atot A()
-  Molecules Araw A()
 end observables
 begin reaction rules
   A() -> 0  k
@@ -68,10 +67,9 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
     * ``dose``, a parameter_scan of kin to steady state: kin / k = 2 kin;
     * ``pe``, pre-equilibrated under ``pre`` (kin = 1, so A = 2) and measured under ``off``
       (kin = 0), both conditions consumed inline: 2 exp(-t/2);
-    * the measurement formula ``twice = 2*Araw``: twice the recorded Atot wherever Atot is not
-      normalized. ``Araw`` counts the same species as ``Atot``; the formula reads it rather than
-      ``Atot`` because a formula that reads a normalized column is refused at load (#1030):
-      under ``slow`` it would be computed from the normalized Atot, not the model output.
+    * the measurement formula ``twice = 2*Atot``: twice the recorded Atot wherever Atot is not
+      normalized. ``slow`` normalizes Atot and so does not score ``twice`` (refused at load,
+      #1030); the checks below show its normalization does not leak into the others.
 
     No other output suffix may get a file (the off-diagonal ``slowfast``, the bare ``quick``,
     ``pepre`` / ``peoff``). Checked on the worker-scoring path, the master-scoring path and
@@ -81,9 +79,10 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
     R.require_bng2pl()
     t = np.arange(6.0)
     (tmp_path / 'decay.bngl').write_text(_SOURCE_DECAY)
-    (tmp_path / 'slow.exp').write_text('# time Atot twice\n' + ''.join(
-        '%d %g %g\n' % (s, 100 * math.exp(-0.5 * s), 200 * math.exp(-0.5 * s))
-        for s in range(1, 6)))
+    # slow normalizes Atot, so it does not score twice, whose formula reads Atot: that pairing
+    # is refused at load, because the formula would read the normalized value (#1030).
+    (tmp_path / 'slow.exp').write_text('# time Atot\n' + ''.join(
+        '%d %g\n' % (s, 100 * math.exp(-0.5 * s)) for s in range(1, 6)))
     (tmp_path / 'quick.exp').write_text('# time Atot\n' + ''.join(
         '%d %g\n' % (s, 100 * math.exp(-s)) for s in range(1, 6)))
     (tmp_path / 'pe.exp').write_text('# time Atot\n' + ''.join(
@@ -101,7 +100,7 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
         'experiment: quick, condition: fast, data: quick.exp',
         'experiment: dose, data: dose.exp, type: parameter_scan',
         'experiment: pe, preequilibrate: pre, condition: off, data: pe.exp',
-        'observable: twice, formula: 2*Araw',
+        'observable: twice, formula: 2*Atot',
         'noise_model = gaussian, sigma = fix_at 1, location = mean',
         'normalization slow.Atot = floor 0.1, init',
         'uniform_var = A0 50 200', 'output_trajectory = Atot, twice',
