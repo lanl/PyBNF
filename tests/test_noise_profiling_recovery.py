@@ -20,10 +20,13 @@ Driven inline through the faked-dask recovery harness (bngsim real, dask faked, 
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from . import recovery_harness as H
 from .context import config, parse
+from .integration_harness import slim_run_job
+from pybnf.pset import PSet
 from pybnf.registry import FIT_TYPE_REGISTRY
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -87,16 +90,50 @@ def test_profiling_recovers_the_rate_and_reports_the_noise_it_estimated(tmp_path
     assert 2.5 < reported['noise_level'] < 6.0, reported
 
 
+def _score_at(alg, values):
+    """The objective value ``alg`` gives the point ``values``, scored the way its fit scored
+    every point: one job, run and scored by the job's own objective calculator (the harness's
+    ``run_job`` stand-in), so a profiled fit scores it with the scale profiled out."""
+    pset = PSet([variable.set_value(values[variable.name]) for variable in alg.variables])
+    home = os.getcwd()
+    try:
+        (job,) = alg.make_job(pset)
+        return slim_run_job(job).score
+    finally:
+        os.chdir(home)
+
+
+def _closed_form_objective(k, sigma=None):
+    """Lesson 36's objective in closed form, with numpy alone: an independent oracle.
+
+    The model is A -> 0 at rate k from A0 = 100, so it predicts ``100 * exp(-k t)``, and the
+    objective is the Gaussian negative log-likelihood at a constant noise ``sigma``, without
+    the constant ``0.5 * n * log(2 pi)``, which PyBNF's score leaves out. With ``sigma`` None
+    it is profiled: the maximum-likelihood sigma, ``sqrt(mean(r ** 2))``, is used.
+    """
+    rows = [line.split() for line in (_LESSON / 'decay.exp').read_text().splitlines()
+            if line.strip() and not line.startswith('#')]
+    data = np.array(rows, dtype=float)
+    residuals = data[:, 1] - 100.0 * np.exp(-k * data[:, 0])
+    if sigma is None:
+        sigma = np.sqrt(np.mean(residuals ** 2))
+    return len(residuals) * np.log(sigma) + np.sum(residuals ** 2) / (2 * sigma ** 2)
+
+
 def test_profiling_lands_where_the_searched_fit_lands(tmp_path, monkeypatch):
     """The envelope theorem's empirical form: profiling removes a search dimension, it does
     not move the joint optimum. Same conf, one key apart -- so the rate and the noise level
-    must agree, and the profiled run must not score *worse* (its scale is optimal at every
-    point, where the searched run could only sample one).
+    must agree, and so must the best objectives.
 
     These are two independent stochastic searches, each stopped on its own criterion, so the
-    agreement asserted is to a fraction of a percent -- the optimizers' own convergence noise,
-    not the feature's. The *ordering* of the two scores is the exact claim, and it is asserted
-    exactly."""
+    two best points agree only to the optimizers' convergence noise, and so do their scores.
+    The order of the two best scores is NOT exact: the profiled run never evaluates the
+    searched run's rate, and can stop a little further from the optimum (#1025). What is
+    exact is the order at one rate. The profiled objective at a rate is the searched one
+    minimized over the scale, so at the searched run's best rate it can be no higher than the
+    searched run's best score. That is asserted exactly, through the fit's own scoring path.
+
+    The closed form above is the independent check that each score is the right number."""
     H.require_bng2pl()
     H.install(monkeypatch)
 
@@ -105,13 +142,27 @@ def test_profiling_lands_where_the_searched_fit_lands(tmp_path, monkeypatch):
 
     searched_best = searched.trajectory.best_fit()
     profiled_best = profiled.trajectory.best_fit()
+    searched_score = searched.trajectory.best_score()
+    profiled_score = profiled.trajectory.best_score()
 
     assert profiled_best['k'] == pytest.approx(searched_best['k'], rel=1e-2)
     assert _profiled_noise_file(profiled)['noise_level'] == pytest.approx(
         searched_best['noise_level'], rel=1e-2)
-    # Never worse: every point the profiled run scored was scale-optimal, and the searched
-    # run's own best sigma is one the profiled surface already accounts for.
-    assert profiled.trajectory.best_score() <= searched.trajectory.best_score()
+
+    # Each run's best score is the objective it claims to be. The tolerance is the ODE
+    # solver's: PyBNF's simulated trajectory and the exact exponential differ by ~1e-6 here.
+    assert searched_score == pytest.approx(
+        _closed_form_objective(searched_best['k'], searched_best['noise_level']), abs=1e-5)
+    assert profiled_score == pytest.approx(_closed_form_objective(profiled_best['k']), abs=1e-5)
+
+    # The exact claim: the profiled objective at the searched run's best rate.
+    profiled_at_searched_k = _score_at(profiled, {'k': searched_best['k']})
+    assert profiled_at_searched_k == pytest.approx(
+        _closed_form_objective(searched_best['k']), abs=1e-5)
+    assert profiled_at_searched_k <= searched_score
+
+    # The two best scores agree to the optimizers' convergence, in either order.
+    assert profiled_score == pytest.approx(searched_score, abs=1e-3)
 
 
 def test_the_searched_run_writes_no_profiled_noise_file(tmp_path, monkeypatch):
