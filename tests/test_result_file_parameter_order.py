@@ -24,6 +24,7 @@ import os
 import types
 
 import numpy as np
+import pytest
 
 from . import integration_harness as H
 from .context import algorithms, config
@@ -121,6 +122,9 @@ def _run_conf(tmp_path, monkeypatch, conf_text):
     return conf, alg, tmp_path / 'out' / 'Results'
 
 
+# objective = expression goes through the PEtab math translator, so the two sampler
+# tests need the optional petab extra (#1023).
+@pytest.mark.petab
 def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch):
     _, alg, results = _run_conf(tmp_path, monkeypatch, _SAMPLER_CONF)
     assert [v.name for v in alg.variables] == DECLARED
@@ -150,6 +154,7 @@ def test_sampler_files_and_starting_params_order(tmp_path, monkeypatch):
         assert f.readline().split() == DECLARED
 
 
+@pytest.mark.petab
 def test_continue_run_overrides_starting_params(tmp_path, monkeypatch):
     """With ``continue_run = 1`` every chain starts from the previous run's
     ``adaptive_files/MLE_params.txt`` (one value per parameter, declaration order), and
