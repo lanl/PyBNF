@@ -633,8 +633,11 @@ class BayesianAlgorithm(Algorithm):
             v = self.variables[i]
             fname = self.config.config['output_dir']+f'/Results/Histograms/{v.name}{file_ext}.txt'
             # Bin in the parameter's sampling space u -- log10 for a log variable,
-            # identity otherwise; ask the parameter for the transform (#412).
-            histdata = v.to_sampling_space(dat_array[:, i])
+            # identity otherwise; ask the parameter for the transform (#412). From a
+            # contiguous copy: numpy 1.26 on an AVX-512 CPU gives log10 of a strided column
+            # a last bit that depends on where malloc puts the result (see
+            # LiuWestFilter._theta), so the same samples could write different bin edges.
+            histdata = v.to_sampling_space(np.ascontiguousarray(dat_array[:, i]))
             # Label the bin edges with the variable's actual sampling space (log10 / ln /
             # linear) so a natural-log parameter is not mislabeled 'log10' (ADR-0043).
             edge_prefix = f'{v.scale_name}_' if v.log_space else ''

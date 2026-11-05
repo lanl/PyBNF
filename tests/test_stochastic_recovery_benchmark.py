@@ -358,6 +358,20 @@ def test_budgeted_fit_produces_a_complete_record(harness, tmp_path):
     confirmation = harness.BEST_FIT_CANDIDATES * harness.BEST_FIT_REPLICATES * problem.smoothing
     assert rec['simulations_search'] < rec['simulations'] <= (rec['simulations_search'] + confirmation
                                                               + harness.BEST_FIT_REPLICATES)
+    # The bounds above hold with the confirmation stage turned off too, since the
+    # information-criteria replicates alone run after the search. So check the stage's own
+    # record (lanl/PyBNF#1034): it ran at the harness's budget, chose a winner, and its
+    # replicates are among the simulations counted after the search.
+    table = (tmp_path / 'out' / 'Results' / 'best_fit_confirmation.txt').read_text()
+    fields = dict(line.split('\t', 1) for line in table.splitlines()
+                  if line and not line.startswith('#') and not line[0].isdigit())
+    assert fields.get('replicates_requested') == str(harness.BEST_FIT_REPLICATES), fields
+    assert 1 <= int(fields['candidates']) <= harness.BEST_FIT_CANDIDATES, fields
+    # A table whose candidates all failed records the winner as 'none'.
+    assert fields.get('winner') not in (None, '', 'none'), fields
+    assert rec['best_score'] is not None and math.isfinite(rec['best_score'])
+    ran = int(fields['candidates']) * harness.BEST_FIT_REPLICATES * problem.smoothing
+    assert rec['simulations'] - rec['simulations_search'] >= ran
     assert rec['trace'] and rec['trace'][-1][0] == rec['simulations']
     assert all(a <= b for (a, _), (b, _) in zip(rec['trace'], rec['trace'][1:]))
     assert all(set(errs) == set(problem.names) for _, errs in rec['trace'])

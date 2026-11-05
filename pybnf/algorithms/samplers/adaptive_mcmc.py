@@ -1027,9 +1027,13 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.parameter_index_file_input = np.genfromtxt(runs_dir / f'params_{idx}.txt', names = True)
                 for v in self.variables:
                     # Read the seed history into sampling space u via the parameter's
-                    # scale (log10 for a log variable, identity otherwise) (#412).
+                    # scale (log10 for a log variable, identity otherwise) (#412). A field
+                    # of a structured array is strided: transform a contiguous copy, or numpy
+                    # 1.26 on an AVX-512 CPU gives a last bit that depends on where malloc
+                    # puts the result (see LiuWestFilter._theta), and the same seed would
+                    # not draw the same chain.
                     self.parameter_index_file_input[v.name] = v.to_sampling_space(
-                        self.parameter_index_file_input[v.name])
+                        np.ascontiguousarray(self.parameter_index_file_input[v.name]))
                 self.parameter_index_file = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                 self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain
                 self.diffMatrix[idx] = np.matmul(self.parameter_index_file.T, self.parameter_index_file)/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu[idx].T, self.mu[idx])+self.stablizingCov
@@ -1055,9 +1059,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     self.parameter_index_file_input = np.genfromtxt(adaptive_dir / 'combined_params.txt', names = True)
                     for v in self.variables:
                         # Read the seed history into sampling space u via the
-                        # parameter's scale (#412).
+                        # parameter's scale (#412), from a contiguous copy (above).
                         self.parameter_index_file_input[v.name] = v.to_sampling_space(
-                            self.parameter_index_file_input[v.name])
+                            np.ascontiguousarray(self.parameter_index_file_input[v.name]))
                     self.parameter_index_file_range = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                     self.parameter_index_file = self.parameter_index_file_range[start:end]
                     self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 

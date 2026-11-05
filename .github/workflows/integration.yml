@@ -5,11 +5,13 @@ name: integration
 #   slow     -- the 4 statistical-recovery tests against analytical targets
 #               (AnalyticalModel), bngsim-free and BNG2.pl-free, ~32 min. Runs
 #               nightly AND on manual dispatch.
-#   recovery -- the `recovery` tier: ~130 real parameter-recovery fits through
-#               the bngsim backend (over an hour on a dev machine, but ~12 min on
-#               a 2-core hosted runner, #517). DISPATCH-ONLY for now (see the
-#               job's `if:`), so a flake policy can be settled before it goes on
-#               the nightly schedule.
+#   recovery -- the `recovery` tier: real parameter-recovery fits through the
+#               bngsim backend (164 tests, 91 min on a hosted runner on
+#               2026-11-04, before #1024 raised one fit's budget; the log's
+#               --durations table has the current figures). Runs nightly AND on
+#               manual dispatch (#1026). It was
+#               dispatch-only from #517 until then, and two of its tests broke
+#               unnoticed in that time (#1024, #1025).
 #
 # NOTE: the fast bngsim *simulation* suites (true NFsim/RuleMonkey/SBML runs)
 # DO run in hosted CI -- tests.yml installs bngsim from public PyPI (#514).
@@ -44,16 +46,25 @@ jobs:
   recovery:
     runs-on: ubuntu-latest
     name: recovery tier (bngsim fits)
-    # Dispatch-only for now, NOT on the nightly cron. The `slow` job above runs
-    # on both triggers; this one is gated to manual dispatch so a maintainer can
-    # run it once to measure the wall-clock on a 2-core runner (over an hour on a
-    # dev machine) and decide a flake policy for these stochastic fits BEFORE it
-    # is committed to a schedule -- an unmeasured hour-plus job that reds nightly
-    # for tolerance reasons gets ignored, which is worse than not having it
-    # (#517). To put it on the 08:00 nightly, delete this `if:` (the `on:` block
-    # already schedules the workflow); to make it non-blocking instead, add
-    # `continue-on-error: true` here.
-    if: github.event_name == 'workflow_dispatch'
+    # Nightly and on dispatch (#1026). #517 kept it dispatch-only until its run
+    # time was measured and a flake policy was set. Both are settled:
+    #
+    #   * Run time: 91 min for 164 tests on 2026-11-04, before #1024 raised the
+    #     Lotka-Volterra budget. --durations below names the slowest tests in
+    #     every log that finishes. A test that hangs never finishes, so
+    #     faulthandler_timeout dumps the stack of any test still running after
+    #     100 minutes, which names its function in the log, -v lists every case
+    #     that did finish, and the job timeout stops it from holding the runner
+    #     for GitHub's 6-hour default.
+    #   * Flakes: the harness runs every fit inline with a synchronous stand-in
+    #     for dask and a pinned seed (tests/recovery_harness.py), so on one runner
+    #     image and one set of dependency versions each test gives the same answer
+    #     every time. A new red means a code or dependency change, which is what
+    #     the tier is for. A test that varies between identical runs is a defect in
+    #     that test: file it, do not gate the tier again. A seed-pinned test whose
+    #     fit only usually succeeds is the same defect in slow motion, so each one
+    #     records its measured pass rate over many seeds (#1024).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v6
 
@@ -77,11 +88,20 @@ jobs:
           cache-suffix: pybnf-recovery
 
       - name: Run the recovery tier
-        # -m recovery: the ~130 synthetic-data parameter-recovery fits through
+        # -m recovery: the synthetic-data parameter-recovery fits through
         # the backend (test_recovery.py, the tutorial suites, profile-likelihood,
         # the gradient/SBML fits, ...). -n auto parallelizes across the runner's
         # cores -- fewer here than on a dev box, so expect this to be the slow leg.
+        # --durations=25 lists the 25 slowest tests at the end of the log.
+        # faulthandler_timeout=6000: a test still running after 100 minutes has
+        # every thread's stack printed, naming its function, without being
+        # stopped. The stack does not name the parametrized case, so -v lists
+        # each case as it finishes and the one that never does stands out.
+        # The threshold is above any legitimate test: the slowest by far,
+        # test_real_world_runs_through_bngsim[Monine-2010/tlbr], took 34 min on
+        # a dev machine on 2026-11-04, and the whole tier took 91 min here. It
+        # is below the job timeout, so a hang is named before the job is killed.
         #
         # --no-sync: the composite action already populated .venv; do not let
         # `uv run` re-resolve it from pyproject.toml.
-        run: uv run --no-sync pytest -m recovery -n auto
+        run: uv run --no-sync pytest -m recovery -n auto -v --durations=25 -o faulthandler_timeout=6000
