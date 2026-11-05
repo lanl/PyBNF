@@ -80,7 +80,9 @@ def test_am_posterior_diagnostics(tmp_path, monkeypatch):
 
     # --- the §E mechanic: the ArviZ bridge reads am's per-chain params_*.txt files
     #     directly (am writes those, not samples.txt) and returns a usable InferenceData.
-    idata = from_pybnf(conf.config['output_dir'])   # finds A_MCMC/Runs/params_*.txt
+    # Driven in process, the run never copied its .conf into Results/, so the scales come
+    # from the Configuration it ran with; from_pybnf raises rather than guess them (#990).
+    idata = from_pybnf(conf.config['output_dir'], config=conf)   # finds A_MCMC/Runs/params_*.txt
     arr = _posterior_array(idata, NAMES)             # (chain, draw, param)
     assert arr.shape[0] >= 4, f'expected >=4 chains, got shape {arr.shape}'
     # am records only draws (no per-draw log-posterior), so there is no sample_stats.

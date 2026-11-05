@@ -93,6 +93,8 @@ from .samplers.adaptive_mcmc import Adaptive_MCMC as Adaptive_MCMC
 # import time (jax/blackjax load lazily on the run path), so registering it here is safe
 # without the optional pybnf[jax] extra installed.
 from .samplers.hmc import HMCSampler as HMCSampler
+# The Liu–West filter (job_type = lwf), in a family of its own, filter.
+from .filters.liu_west import LiuWestFilter as LiuWestFilter
 # ModelCheck (fit_type 'check') is a utility run -- neither optimizer nor
 # sampler -- so it lives at the algorithms top level (model_check.py).
 from .model_check import ModelCheck as ModelCheck

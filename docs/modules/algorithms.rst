@@ -9,8 +9,8 @@ algorithms. Every fit type is re-exported from the package facade
 (``pybnf.algorithms.<Name>``), but the implementations live in the submodules
 documented below: shared execution primitives in :py:mod:`~pybnf.algorithms.core`
 and :py:mod:`~pybnf.algorithms.base`, gradient-free and gradient-based optimizers
-under ``optimizers``, Bayesian samplers under ``samplers``, and the model-checking
-utility in :py:mod:`~pybnf.algorithms.model_check`.
+under ``optimizers``, Bayesian samplers under ``samplers``, the Liu–West filter under
+``filters``, and the model-checking utility in :py:mod:`~pybnf.algorithms.model_check`.
 
 Core execution
 ==============
@@ -91,6 +91,12 @@ Bayesian samplers
    :members:
 
 .. automodule:: pybnf.algorithms.samplers.hmc
+   :members:
+
+Filters
+========
+
+.. automodule:: pybnf.algorithms.filters.liu_west
    :members:
 
 Model checking

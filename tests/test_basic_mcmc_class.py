@@ -518,6 +518,38 @@ class TestDrivenMcmcRun:
         assert min(algo.iteration) >= algo.max_iterations
         assert 0 <= algo.accepted <= algo.attempts
 
+    def test_a_run_resumed_from_a_backup_taken_before_a_chains_first_result_goes_on(
+            self, tmp_path):
+        """mh chains run independently, so a fast chain can report twice before a slow one
+        reports once, and the run loop's first backup comes after ``get_backup_every()`` =
+        ``backup_every * population_size`` = 2 results. Taken there, it pickles chain 1's
+        empty history, and the record came back unable to take an append: ``-r`` stopped at
+        chain 1's first result with IndexError (#990). Oracle: the resumed algorithm holds
+        one history row per result its chain has had."""
+        import pickle
+        cfg = _make_config(tmp_path, NORMAL_VARS, population_size=2, max_iterations=12,
+                           burn_in=2, sample_every=2, output_hist_every=2,
+                           output_every=10000, step_size=0.2)
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        slow, fast = sorted(algo.start_run(), key=lambda ps: ps.name, reverse=True)
+        assert (slow.name, fast.name) == ('iter0run1', 'iter0run0')
+
+        def report(ps, score):
+            res = algorithms.Result(ps, {}, ps.name)
+            res.score = score
+            return algo.got_result(res)
+
+        [fast] = report(fast, 10.0)
+        pending = report(fast, 9.0)
+        assert algo.get_backup_every() == 2
+        assert [len(h) for h in algo.chain_history] == [2, 0]
+        # backup() pickles (algorithm, pending PSets); -r loads them back.
+        algo, resumed = pickle.loads(pickle.dumps((algo, pending + [slow])))
+        report(resumed[-1], 8.0)
+        assert [len(h) for h in algo.chain_history] == [2, 1]
+        assert [len(h) for h in algo.ln_posterior_history] == [2, 1]
+        assert algo.chain_history[1][0].shape == (3,)
+
 
 # --------------------------------------------------------------------------- #
 # _pset_from_u: the inverse PSet bridge, hoisted onto Algorithm (#412)

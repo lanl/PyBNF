@@ -226,9 +226,10 @@ def _model(name, status):
 def _report(models, policy='warn', n_variables=3):
     """Drive the real reporting code over a stand-in carrying only what it reads.
 
-    ``_report_sensitivity_rhs`` touches ``model_list``, ``variables``, the config and
-    ``_fit_type_label`` -- so binding the two real methods onto a namespace exercises
-    them exactly, with none of the model building an ``Algorithm`` construction needs.
+    ``_report_sensitivity_rhs`` touches ``model_list``, ``variables``, the config,
+    ``_fit_type_label`` and ``_initial_value_columns`` -- so binding the real methods onto a
+    namespace exercises them exactly, with none of the model building an ``Algorithm``
+    construction needs.
     """
     opt = types.SimpleNamespace(
         model_list=models,
@@ -238,6 +239,8 @@ def _report(models, policy='warn', n_variables=3):
     )
     opt._warn_sensitivity_fallback = types.MethodType(
         GradientOptimizer._warn_sensitivity_fallback, opt)
+    opt._initial_value_columns = types.MethodType(
+        GradientOptimizer._initial_value_columns, opt)
     return GradientOptimizer._report_sensitivity_rhs(opt)
 
 
@@ -360,6 +363,8 @@ def test_the_warning_is_spoken_once_per_run_not_once_per_bootstrap_refit(capsys)
     )
     opt._warn_sensitivity_fallback = types.MethodType(
         GradientOptimizer._warn_sensitivity_fallback, opt)
+    opt._initial_value_columns = types.MethodType(
+        GradientOptimizer._initial_value_columns, opt)
     GradientOptimizer._report_sensitivity_rhs(opt)
     assert 'difference quotient' in capsys.readouterr().out
     GradientOptimizer._report_sensitivity_rhs(opt)
@@ -398,12 +403,23 @@ _SBML = """<?xml version="1.0" encoding="UTF-8"?>
 
 # ``k*S`` -- Elementary, differentiated in closed form.
 _ANALYTIC_LAW = '<apply><times/><ci>k</ci><ci>S</ci></apply>'
-# ``k*S*|S-Km|`` -- Functional, and ``abs()`` is on bngsim's underivable list, so the
-# whole model declines. Smooth away from S=Km and cheap to build, which is all this
-# fixture needs: nothing here integrates it.
+# ``k*S*floor(Km)`` -- Functional, and ``floor()`` is a step: its derivative is a delta,
+# which no sensitivity RHS can carry, so every bngsim build declines the whole model. It
+# steps in a *parameter*, not in the state or the clock, so nothing crosses during a run
+# and the difference quotient is correct for the ``k`` column (correct, just slower),
+# which is the variant these tests are about. Cheap to build; nothing here integrates it.
+#
+# This was ``k*S*|S-Km|`` until bngsim 0.17.0, which differentiates a bend (abs, min,
+# max) over the state through the state Jacobian's kink rewrite (lanl/bngsim#1126) and
+# so stopped declining it -- correctly: at rtol = atol = 1e-10 its ``dS/dk`` and
+# ``dS/dS0`` agree with the closed form ``1/S = 1/Km + (1/S0 - 1/Km) exp(-k Km t)`` to
+# 2e-09 and 1e-09 relative (at the default tolerances, to the same 7e-07 as the smooth
+# ``k*S*(S-Km)``). A step has no such rewrite.
 _DECLINED_LAW = ('<apply><times/><ci>k</ci><ci>S</ci>'
-                 '<apply><abs/><apply><minus/><ci>S</ci><ci>Km</ci></apply></apply>'
+                 '<apply><floor/><ci>Km</ci></apply>'
                  '</apply>')
+# The reason bngsim gives for it, on every build this file runs against.
+_DECLINED_CONSTRUCT = 'floor'
 
 
 @pytest.fixture
@@ -430,7 +446,15 @@ def cold_codegen_cache(tmp_path, monkeypatch):
     bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
 
 
-def _sbml_model(tmp_path, law, name):
+def _sbml_model(tmp_path, law, name, ic=('S',)):
+    """The fixture with a sensitivity request: the ``k`` column, plus ``ic``'s.
+
+    A declined model is probed with parameter columns only. An initial-value column has
+    no parameter for CVODES' difference quotient to perturb, so on a declined model it
+    cannot be computed at all: bngsim 0.17.0 refuses it when the Simulator is built, and
+    0.16.0 builds one whose every run then fails. That is a different case from the
+    "correct, just slower" fallback these tests pin.
+    """
     from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout
     from pybnf.pset import FreeParameter, PSet, TimeCourse
 
@@ -441,7 +465,7 @@ def _sbml_model(tmp_path, law, name):
     model = BngsimSbmlModelNoTimeout(
         str(path), str(path), pset=pset,
         actions=(TimeCourse({'time': '10', 'step': '1'}),))
-    model.enable_output_sensitivities(params=['k'], ic=['S'])
+    model.enable_output_sensitivities(params=['k'], ic=list(ic))
     return model
 
 
@@ -484,16 +508,16 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     reason is prose, and it used to be allowed to go missing: the pin ``bngsim>=0.12.2,<1``
     admitted builds on both sides of the upstream change that writes the reason into a note
     beside the cached artifact, so a warm cache could legitimately say nothing. The floor is
-    now ``bngsim>=0.15.0,<1``, which is the release that carries the note, so silence is no
+    now ``bngsim>=0.16.0,<1``, past 0.15.0, the release that brought the note, so silence is no
     longer one of the answers and the warm reason is asserted word for word against the cold
     one.
     """
-    cold = _sbml_model(tmp_path, _DECLINED_LAW, 'declined').analytic_sens_rhs_status()
+    cold = _sbml_model(tmp_path, _DECLINED_LAW, 'declined', ic=()).analytic_sens_rhs_status()
     assert cold.analytic is False
-    assert cold.columns == 2
+    assert cold.columns == 1
     assert cold.reasons, 'a cold codegen cache must surface bngsim\'s own reason'
-    assert 'abs' in cold.reasons[0][0]
-    assert cold.fallback_is_wrong is False   # smooth: correct, just slower
+    assert _DECLINED_CONSTRUCT in cold.reasons[0][0]
+    assert cold.fallback_is_wrong is False   # no crossing: correct, just slower
 
     from pybnf import bngsim_sbml_model
     # A genuinely separate run of the same fit: drop the process-wide engine template
@@ -501,7 +525,7 @@ def test_a_declined_model_is_reported_identically_cold_and_warm(tmp_path,
     # warm. That is the state a user's second `pybnf` invocation is in.
     bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
     bngsim_sbml_model._ENGINE_TEMPLATE_WARM_ATTEMPTED.clear()
-    warm = _sbml_model(tmp_path, _DECLINED_LAW, 'declined2').analytic_sens_rhs_status()
+    warm = _sbml_model(tmp_path, _DECLINED_LAW, 'declined2', ic=()).analytic_sens_rhs_status()
     assert warm.analytic is False, 'the verdict must not depend on the codegen cache'
     assert warm.reasons == cold.reasons, (
         'the floor guarantees the note beside the cached artifact, so a warm cache must '
@@ -553,7 +577,9 @@ def _declined_fit_config(tmp_path, **overrides):
 
     The data grid only has to parse -- nothing here simulates the model, and
     ``_setup_gradient_path`` is reached before the first evaluation, which is the whole
-    point of checking there.
+    point of checking there. Only ``k`` is fitted: fitting ``S``, a species, would add an
+    initial-value column, which a declined model cannot supply at all (see
+    :func:`_sbml_model`).
     """
     from . import recovery_harness as H
 
@@ -564,7 +590,7 @@ def _declined_fit_config(tmp_path, **overrides):
                    + '\n'.join('%d\t%g\t1' % (t, 100.0 - t) for t in range(4)) + '\n')
     return H.make_newera_config(
         tmp_path, str(xml), str(exp),
-        {'k': ('uniform_var', 1e-2, 3.0), 'S': ('uniform_var', 10.0, 300.0)},
+        {'k': ('uniform_var', 1e-2, 3.0)},
         'tc', 'trf', objective='chi_sq', random_seed=1234, population_size=1,
         max_iterations=1, sbml_backend='bngsim', **overrides)
 
@@ -586,7 +612,7 @@ def test_a_real_gradient_setup_warns_before_the_fit_evaluates_anything(
     out = capsys.readouterr().out
     assert 'difference quotient' in out
     assert 'sensitivity columns' in out
-    assert 'abs' in out                      # bngsim's own reason, cold cache
+    assert _DECLINED_CONSTRUCT in out        # bngsim's own reason, cold cache
 
 
 @pytest.mark.bngsim_sbml

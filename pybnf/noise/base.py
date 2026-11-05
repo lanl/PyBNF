@@ -66,6 +66,14 @@ class NoiseModel(ABC):
     #: observation domain is the whole real line, which therefore never excludes anything.
     observation_domain = None
 
+    #: Whether this family scores **counts**: a probability mass function over the non-negative
+    #: integers, with its noise parameters in count units (NegBinomial's dispersion and its
+    #: Poisson part). Such a family has no meaning for a normalized value, which is not a
+    #: count, so the configuration refuses any ``normalization`` of a column it scores (#997).
+    #: Read as a property of the family, not of its class, so a future count family is
+    #: covered by setting it. ``False`` for the continuous families.
+    scores_counts = False
+
     @abstractmethod
     def data_fit(self, prediction, observation, noise, extra=None):
         """The parameter-dependent negative-log-likelihood term for one point.

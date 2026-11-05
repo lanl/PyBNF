@@ -606,6 +606,7 @@ class TestConfigSurface:
         with pytest.raises(printing.PybnfError, match='nothing to profile'):
             _build(tmp_path, _BASE + ['objective = sos', 'noise_profiling = 1'])
 
+    @pytest.mark.petab
     def test_a_prediction_dependent_scale_is_refused_with_the_reason(self, tmp_path):
         with pytest.raises(printing.PybnfError, match='PredictionFormulaSigma'):
             _build(tmp_path, _BASE + [

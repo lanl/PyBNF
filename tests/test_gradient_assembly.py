@@ -673,6 +673,7 @@ def test_cumulative_prediction_sensitivity_differences_rows():
     assert res.least_squares_exact is True
 
 
+@pytest.mark.petab
 def test_per_measurement_scale_offset_chain_rule():
     """Per-measurement scale/offset (ADR-0045): ``pred = scale*Stot + offset`` with ``scale`` an
     estimated free parameter (a NONE-routed observation-layer nuisance) and ``offset`` a numeric
@@ -706,6 +707,7 @@ def test_per_measurement_scale_offset_chain_rule():
     assert res.least_squares_exact is True
 
 
+@pytest.mark.petab
 def test_per_measurement_numeric_tokens_only_touch_model_axis():
     """When both the scale and offset are **numeric** tokens (no free-parameter placeholder),
     the per-measurement formula's only θ-dependence is through the referenced sim column, so the
@@ -753,6 +755,7 @@ def _exp_obs(obs, sigma):
                              ['time', 'obs', 'obs_SD'])
 
 
+@pytest.mark.petab
 def test_measurement_model_chain_rule():
     """A measurement-model observable ``obs = w*Stot + 3`` (ADR-0036, layer H): the materialized
     column is not in the sensitivity tensor, so its ``∂obs/∂θ`` is the formula's chain rule --
@@ -785,6 +788,7 @@ def test_measurement_model_chain_rule():
     assert res.least_squares_exact is True
 
 
+@pytest.mark.petab
 def test_measurement_model_numeric_only_touches_model_axis():
     """A measurement formula with no fit parameter of its own (``obs = 2*Stot + 3``): its only
     θ-dependence is through the referenced sim column, so the gradient touches only the model
@@ -804,6 +808,7 @@ def test_measurement_model_numeric_only_touches_model_axis():
     assert res.least_squares_exact is True
 
 
+@pytest.mark.petab
 def test_capability_gate_now_accepts_measurement_layer():
     """Layer H (#455): a measurement-model materialization layer -- once a whole-objective gate
     clause refusing the gradient outright -- now assembles a finite residual/Jacobian like any
@@ -857,6 +862,7 @@ def _prediction_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1,
     return obj, sim, exp, routing, free, (pred, obs, dk)
 
 
+@pytest.mark.petab
 def test_prediction_sigma_gate_now_accepts():
     """The gradient gate, once refusing every composite estimated scale, now admits a
     prediction-dependent σ (ADR-0079): the assembly returns a finite gradient (no
@@ -868,6 +874,7 @@ def test_prediction_sigma_gate_now_accepts():
     assert res.least_squares_exact is False
 
 
+@pytest.mark.petab
 def test_prediction_sigma_closed_form_terms():
     """The assembled gradient of ``sigma = sd_abs + sd_rel*Stot`` equals the hand-derived
     three-term split (ADR-0079). Per point ``sigma_i = sd_abs + sd_rel*pred_i``,
@@ -905,6 +912,7 @@ def test_prediction_sigma_closed_form_terms():
     assert abs(term_C_k) > 0.1 * abs(term_A_k)
 
 
+@pytest.mark.petab
 def test_prediction_sigma_matches_finite_difference():
     """The arbiter: central-difference PyBNF's OWN loss (σ recomputed each perturbation from the
     source) vs the assembled ``gradient`` for every free parameter (``k`` / ``sd_abs`` / ``sd_rel``),
@@ -929,6 +937,7 @@ def test_prediction_sigma_matches_finite_difference():
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.petab
 def test_prediction_sigma_referencing_other_species_chains_that_sensitivity():
     """The general case: a σ scaling with a model column **other** than the scored observable rides
     *that* column's forward sensitivity, not the residual's (ADR-0079). Here σ = sd_abs + sd_rel*Aux
@@ -966,6 +975,7 @@ def test_prediction_sigma_referencing_other_species_chains_that_sensitivity():
     np.testing.assert_allclose(res.gradient[2], np.sum(dL_dsigma * aux))  # sd_rel column: ∂σ/∂sd_rel=Aux
 
 
+@pytest.mark.petab
 def test_prediction_sigma_efim_fisher_closed_form():
     """The EFIM / expected-Fisher block for a prediction-dependent σ (``fit_type = gntr``, ADR-0080,
     lifting the ADR-0079 deferral). In the natural ``(μ, σ)`` coordinates the Gaussian Fisher is
@@ -1399,6 +1409,7 @@ def test_analytic_scale_factor_derivative_matches_finite_difference(objective_fa
     np.testing.assert_allclose(dc[0], (c_star(h) - c_star(-h)) / (2.0 * h), rtol=1e-6)
 
 
+@pytest.mark.petab
 def test_capability_gate_now_accepts_trajectory_transforms():
     """Layer F (#453): a cumulative observable and a per-measurement observable -- the two
     ``_prediction`` transforms once refused by the gate -- now assemble a residual/Jacobian like
@@ -1488,6 +1499,7 @@ def _formula_sigma_setup(k=0.3, sd_abs=5.0, sd_rel=0.1, scaling=2.0,
     return obj, sim, exp, routing, free, (pred, obs, dk)
 
 
+@pytest.mark.petab
 def test_formula_sigma_gate_now_accepts():
     """The gradient gate, having admitted a prediction-dependent σ (ADR-0079), now also admits the
     PSet-only composite scales (#505): the assembly returns a finite gradient (no
@@ -1499,6 +1511,7 @@ def test_formula_sigma_gate_now_accepts():
     assert res.least_squares_exact is False
 
 
+@pytest.mark.petab
 def test_formula_sigma_closed_form_terms():
     """The assembled gradient of the composite σ = sd_abs + sd_rel*scaling equals the hand-derived
     split (#505) -- :func:`test_prediction_sigma_closed_form_terms` with **term C absent**. Per point
@@ -1533,6 +1546,7 @@ def test_formula_sigma_closed_form_terms():
     assert res.least_squares_exact is False
 
 
+@pytest.mark.petab
 def test_formula_sigma_matches_finite_difference():
     """The arbiter for the composite chain rule: central-difference PyBNF's OWN loss (σ recomputed
     each perturbation from the source) vs the assembled ``gradient`` for every free parameter
@@ -1555,6 +1569,7 @@ def test_formula_sigma_matches_finite_difference():
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.petab
 def test_formula_sigma_single_symbol_matches_free_parameter_sigma():
     """A single-symbol composite formula reduces to a :class:`FreeParameterSigma` **byte-for-byte**
     (#505): σ = ``sig`` is the bare free scale, ``∂σ/∂sig = 1`` -- the same unit-vector column. Guards
@@ -1578,6 +1593,7 @@ def test_formula_sigma_single_symbol_matches_free_parameter_sigma():
     np.testing.assert_array_equal(r_formula.jacobian, r_free.jacobian)
 
 
+@pytest.mark.petab
 def test_formula_sigma_efim_fisher_closed_form():
     """The EFIM / expected-Fisher block for the composite σ (``fit_type = gntr``, #505) -- the
     ADR-0080 outer-product block with ``g_i`` carrying **no** model-parameter entry (no prediction
@@ -1634,6 +1650,7 @@ def _per_measurement_sigma_setup(sd_base=4.0, s_hi=3.0,
     return obj, sim, exp, routing, free, (pred, obs, dk)
 
 
+@pytest.mark.petab
 def test_per_measurement_sigma_gradient_binds_per_row():
     """The per-measurement wrinkle (#505): the placeholder's ``∂σ/∂θ`` depends on what the **row**
     binds. For σ = sd_base + 2*noiseParameter1_Stot with tokens ``[0.5, s_hi, s_hi, 1.0]``, the
@@ -1653,6 +1670,7 @@ def test_per_measurement_sigma_gradient_binds_per_row():
     assert res.least_squares_exact is False
 
 
+@pytest.mark.petab
 def test_per_measurement_sigma_matches_finite_difference():
     """The arbiter for the row-varying binding (#505): FD of PyBNF's own loss (σ recomputed per
     perturbation, each row rebinding its token) vs the assembled gradient. A numeric-token row's σ is
@@ -1674,6 +1692,7 @@ def test_per_measurement_sigma_matches_finite_difference():
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.petab
 def test_per_measurement_sigma_efim_fisher_binds_per_row():
     """The EFIM block for the row-varying composite σ (#505): ``g_i`` carries ∂σ/∂s_hi=2 **only** on
     the rows binding ``s_hi``, so the ``sd_base``↔``s_hi`` coupling comes from those rows alone and the
@@ -2850,6 +2869,7 @@ def test_fd_acceptance_gate_cumulative():
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab
 def test_fd_acceptance_gate_per_measurement():
     """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
     **per-measurement** observable ``y = scale*Stot + offset`` (ADR-0045, layer F #453). Three
@@ -2902,6 +2922,7 @@ def test_fd_acceptance_gate_per_measurement():
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab
 def test_fd_acceptance_gate_prediction_sigma():
     """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay net
     with a **prediction-dependent** noise scale ``sigma = sd_abs + sd_rel*Stot`` (ADR-0075 gradient,
@@ -3683,6 +3704,7 @@ def test_constraint_gradient_refuses_missing_routing():
 # ===================== measurement-model FD oracles (ADR-0036, layer H, #455) ===
 
 @pytest.mark.bngsim
+@pytest.mark.petab
 def test_fd_acceptance_gate_measurement_net():
     """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) for a
     **measurement-model observable** ``obs = w*Stot + 5`` on the analytic-decay net (layer H,
@@ -3783,6 +3805,7 @@ def test_fd_acceptance_gate_sbml_species():
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab
 def test_fd_acceptance_gate_sbml_measurement():
     """The full layer-H seam end to end (#455): a small **SBML model fit** with a
     **measurement-model observable** ``obs = w*A + B`` over the species of ``abc.xml``, ``kAB`` a

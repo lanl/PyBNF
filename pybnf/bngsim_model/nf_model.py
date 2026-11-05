@@ -21,7 +21,7 @@ from ..data import Data
 from ..printing import PybnfError
 from ..pset import Model, _stage_and_rewrite_tfun_files
 from .._seed import resolve_action_seed
-from .net_model import BngsimModel
+from .net_model import BngsimModel, _require_continuation_start
 from .parsing import (
     _collapse_action_line_continuations,
     _parse_simulate_action,
@@ -39,7 +39,8 @@ from .expressions import (
     _evaluate_bngl_params,
     _parse_bngl_param_block,
 )
-from .scan import _resolve_sample_times, _resolve_scan_points
+from .scan import _resolve_scan_points
+from .grid import describe_action, scan_output_grid, simulate_output_grid
 from .output import _write_saved_action_outputs
 from .classification import (
     _normalize_nf_action_method,
@@ -176,20 +177,21 @@ class BngsimNfModel(Model):
         session_backend = _nf_session_backend_for_method(method)
         scan_timeout = _normalize_session_timeout(timeout, session_backend)
 
-        # Explicit output times now ride through the bngsim session API
-        # (NfsimSession/RuleMonkeySession.simulate(sample_times=...), bngsim >= 0.9.52 --
-        # PyBNF #427 / bngsim #184). When present they override the uniform t_start/t_end/
-        # n_steps grid so each scan-point trajectory is sampled at exactly the data's points
-        # (parity with the network-based scan path, net_model._resolve_scan_settings).
-        sample_times = _resolve_sample_times(ps_params)
-
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
-        t_end = float(ps_params.get('t_end', 100))
+        # BNG2.pl runs simulate at each scan point, which requires t_end without sample_times
+        # (grid.py); it used to default to 100 here. The step count only spaces the samples
+        # before the final state each point records, and keeps its default.
+        # Explicit output times ride through the bngsim session API
+        # (NfsimSession/RuleMonkeySession.simulate(sample_times=...), bngsim >= 0.9.52 --
+        # PyBNF #427 / bngsim #184): with sample_times, each point runs on the times a network
+        # method's would (grid.sample_time_rows), from t_start, as the network-based scan path
+        # does (net_model._resolve_scan_settings). It used to start at the first listed time
+        # (#872).
+        sample_times, t_end = scan_output_grid(
+            ps_params, describe_action(self._grid_label(), ps_params, 'parameter_scan'),
+            t_start=t_start, evaluate=float)
         n_steps = int(ps_params.get('n_steps', 1))
-        if sample_times is not None:
-            t_start = sample_times[0]
-            t_end = sample_times[-1]
         suffix = ps_params.get('suffix', 'param_scan')
         print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
         gml = ps_params.get('gml')
@@ -278,7 +280,8 @@ class BngsimNfModel(Model):
         # saveParameters snapshots by label (None: the default slot, which starts as the
         # parameters this run was given); a labelled reset needs its own save first (#830).
         saved_param_inputs = {None: dict(current_param_inputs)}
-        sess = SimpleNamespace(nfsim=None, method=None, gml=None)
+        # ``time`` is the model time as BNG2.pl keeps it: 0 at the start, the end of each run.
+        sess = SimpleNamespace(nfsim=None, method=None, gml=None, time=0.0)
         self._pybnf_current_action_info = None
 
         # Bootstrap seed for sessions that need to be lazily started by a
@@ -414,6 +417,11 @@ class BngsimNfModel(Model):
         sim.initialize(seed_value)
         return sim
 
+    def _grid_label(self):
+        """The model name a grid refusal gives (grid.py); a test double built without
+        ``__init__`` has none, and is named by its class."""
+        return getattr(self, 'name', type(self).__name__)
+
     def _nf_simulate_action(self, sim_params, sess, current_param_overrides, ds,
                             action_index, timeout):
         """Run one simulate() action, starting or switching the NF session as needed.
@@ -429,11 +437,20 @@ class BngsimNfModel(Model):
         # PyBNF #427 / bngsim #184): the new-era experiment: surface outputs at exactly the
         # data's independent-variable points, which the objective matches by ivar. When
         # present, sample_times overrides the uniform t_start/t_end/n_steps grid.
-        sample_times = _resolve_sample_times(sim_params)
-
         t_start = float(sim_params.get('t_start', 0))
-        t_end = float(sim_params.get('t_end', 100))
-        n_steps = int(sim_params.get('n_steps', 100))
+        if 't_start' in sim_params and bool(int(float(sim_params.get('continue', 0)))):
+            _require_continuation_start(
+                describe_action(self._grid_label(), sim_params), t_start,
+                getattr(sess, 'time', 0.0))
+        # The output grid by BNG2.pl's NFsim rules (grid.py): n_steps and t_end > t_start are
+        # required unless sample_times (a bngsim extension) gives the grid. These used to
+        # default to 100 steps and t_end = 100. A sample_times grid has the times a network
+        # method's would (grid.sample_time_rows): it starts at t_start, which the session's
+        # clock advances from, and ends at t_end when the action gives one. It used to start
+        # at the first listed time, reporting the initial state there (#872).
+        sample_times, t_end, n_steps = simulate_output_grid(
+            sim_params, describe_action(self._grid_label(), sim_params), method,
+            t_start=t_start, evaluate=float)
         print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
         suffix = sim_params.get('suffix', 'time_course')
         gml = sim_params.get('gml')
@@ -485,6 +502,7 @@ class BngsimNfModel(Model):
         else:
             result = sess.nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
         ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
+        sess.time = float(t_end) if t_end is not None else sess.time
 
     def _nf_set_concentration_action(self, sc, sess, current_param_overrides, bootstrap_seed):
         """Apply one setConcentration() action, lazily starting a session if needed.

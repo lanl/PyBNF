@@ -268,7 +268,7 @@ def _format_bngl_number(x):
 
     ``repr`` gives the shortest string that round-trips back to the same float, so a
     data point like ``0.0065`` stays ``0.0065`` (not ``0.006500000000001``) when it is
-    re-parsed by BNG2.pl, bngsim, or ``find_t_length``. BioNetGen and bngsim both accept
+    re-parsed by BNG2.pl or bngsim. BioNetGen and bngsim both accept
     decimal and scientific notation.
     """
     return repr(float(x))
@@ -967,6 +967,12 @@ class BNGLModel(Model):
         # nothing else (#900); under edition 2 that is at most the network definition, which it
         # writes back (#969). Protocol lines are not actions and are left out.
         self.action_line_indices = frozenset(skip_lines - protocol_lines)
+        # How many of ``self.suffixes`` the model file itself registers; the configuration's
+        # actions (an experiment, a time_course / param_scan key) are appended after them. Two
+        # file actions that share a suffix are BNG2.pl's own business -- the last one written is
+        # the output, on every backend -- while a configuration action that reuses a suffix is
+        # refused (pybnf.output_keys.refuse_duplicate_action_suffixes, #850).
+        self.file_suffix_count = len(self.suffixes)
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = self._synthesized_generate_network_line()
 
@@ -1155,49 +1161,6 @@ class BNGLModel(Model):
             if match is not None:
                 return act_type, match.group(1)
         return None
-
-    def find_t_length(self):
-        """
-        Builds a dict mapping each simulate action's suffix to the number of output
-        time points minus one, which is used to size the trajectory-output arrays
-        (an array of length ``time + 1`` holds one entry per output row).
-
-        The number of output rows depends on how the simulation length is specified:
-
-        * ``n_steps=>N`` produces ``N + 1`` rows (including ``t_start``), so ``time = N``.
-        * ``sample_times=>[t0,...,tM]`` produces one row per listed time, so
-          ``time = len(sample_times) - 1``.
-
-        :return: dict keyed on suffix string with integer values
-        """
-        # Join line continuations so each action occupies a single line.
-        lines = self.bngl_file_text.replace('\\\n', '').split('\n')
-        timeDict = {}
-        for line in lines:
-            # Skip commented-out lines (including any possible commented-out
-            # actions with n_steps/sample_times in them).
-            if '#' in line or 'simulate' not in line:
-                continue
-            suffix_match = re.search(r"suffix\s*=>\s*['\"](.*?)['\"]", line)
-            if suffix_match is None:
-                continue
-            suffix = suffix_match.group(1)
-
-            sample_match = re.search(r"sample_times\s*=>\s*\[(.*?)\]", line)
-            n_steps_match = re.search(r"n_steps\s*=>\s*(\d+)", line)
-            if sample_match is not None:
-                # One output row per listed sample time.
-                n_times = len([t for t in sample_match.group(1).split(',') if t.strip() != ''])
-                timeDict[suffix] = n_times - 1
-            elif n_steps_match is not None:
-                timeDict[suffix] = int(n_steps_match.group(1))
-            else:
-                raise PybnfError(
-                    "Could not determine the simulation length for the simulate action with "
-                    f"suffix '{suffix}' in model {self.file_path}: the action specifies neither n_steps nor "
-                    "sample_times.")
-
-        return timeDict
 
     def copy_with_param_set(self, pset):
         """
@@ -1655,6 +1618,11 @@ class BNGLModel(Model):
         _mt = float(action.equil_max_time)
         max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
         equil_suffix = f'{action.suffix}_preequil'
+        # The phase is not registered, but the bngsim backends still store its output under
+        # this suffix, so the configuration's output-key check counts it, and names it by its
+        # experiment (pybnf.output_keys, #850).
+        self.phase_outputs = {**(getattr(self, 'phase_outputs', None) or {}),
+                              equil_suffix: action.suffix}
         is_nf = getattr(action, 'method', None) == 'nf'
         self._append_experiment_start()
         for pert in action.equil_perturbations:
@@ -2172,8 +2140,9 @@ class Action:
         One row per explicit output point when the grid is data-derived (ADR-0028
         ``explicit_points``, which always includes the forced ``t=0`` for a time course),
         else the uniform ``n_steps`` grid's row count (``stepnumber + 1``, including
-        ``t_start``). Used to size the per-experiment output arrays
-        (``config.py::_load_experiments`` -> ``_load_t_length`` -> adaptive_mcmc)."""
+        ``t_start``). Each backend's output for the action has this many rows; nothing in
+        PyBNF sizes an array from it any more (``am`` allocates from the output itself, #990),
+        and the tests hold every backend to it."""
         if getattr(self, 'explicit_points', None) is not None:
             return len(self.explicit_points)
         return self.stepnumber + 1
@@ -2248,8 +2217,9 @@ class TimeCourse(Action):
         # output grid from the data's independent-variable column, the time course
         # outputs at exactly those points rather than a uniform n_steps grid. ``t=0``
         # is forced in so integration always starts at the model's baseline -- BNG2.pl's
-        # t_start defaults to 0, but RoadRunner's simulate(times=...) and bngsim's
-        # sample_times path both begin integrating at the FIRST listed time (verified:
+        # t_start defaults to 0 (and the bngsim BNGL bridge follows it, #872), but RoadRunner's
+        # simulate(times=...) and bngsim's Simulator.run(sample_times=...), which the SBML path
+        # calls, both begin integrating at the FIRST listed time (verified:
         # RoadRunner with times=[10,...] returns the initial condition at t=10, not the
         # evolved value), so without a leading 0 a data grid that starts at t>0 would
         # silently produce the wrong trajectory. The extra t=0 output row is harmless to
@@ -2261,9 +2231,23 @@ class TimeCourse(Action):
         self.initial_state_only = False
         if explicit_points is not None:
             pts = sorted({float(p) for p in explicit_points} | {0.0})
-            if pts[-1] <= 0.0 and pts != [0.0]:
-                raise PybnfError('A time_course with explicit output points needs at least one '
-                                 'nonnegative time point, and may contain only t=0.')
+            if pts[0] < 0.0:
+                # Every backend starts the simulation at t = 0 (t_start), the clock the data's
+                # times are read on: BNG2.pl writes no row before it (and neither does the bngsim
+                # BNGL bridge, #872), and RoadRunner and bngsim's SBML path, which start a run at
+                # its first listed time, would start it at the negative time instead and score
+                # every reading against the model at the wrong time (#952).
+                raise PybnfError(
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}, '
+                    'before t = 0, where its simulation starts',
+                    f'The time_course with suffix "{self.suffix}" has data at t = {pts[0]:g}. '
+                    "Its simulation starts at t = 0, and an experiment's times are read on that "
+                    'clock, so no simulation can score the datum: BNG2.pl and the bngsim BNGL '
+                    'bridge write no row before the start, and RoadRunner and bngsim for SBML '
+                    'would start the run at the earliest time instead, scoring every reading at '
+                    'the wrong time. A job imported from a PEtab problem whose period starts '
+                    "before 0 keeps its times on the period's own clock, which the import does "
+                    'not yet shift (lanl/PyBNF#951).')
             self.explicit_points = pts
             self.initial_state_only = pts == [0.0]
             if self.time is None:

@@ -24,8 +24,7 @@ Design (ADR-0055), in brief:
   (e.g. ``log10_k``) so the space is explicit. Linear parameters are unchanged.
   Recovering each parameter's scale needs the run's free parameters: the auto-emit
   path passes the live ``variables``; the standalone path auto-discovers the
-  ``.conf`` copied into ``Results/`` and falls back to natural-space-with-a-warning
-  if it cannot.
+  ``.conf`` copied into ``Results/`` and raises, naming why, if it cannot (#990).
 - **Groups: ``posterior`` + ``sample_stats`` (``lp``), plus an optional
   ``log_likelihood``.** When the run recorded the per-observation log-likelihood
   sidecar (``output_inference_data`` set + a per-point likelihood objfunc, ADR-0056,
@@ -259,16 +258,27 @@ def _parse_loglik(loglik_path):
     return obs_ids, rows
 
 
+_SCALE_HINT = ('Pass config= (a .conf that loads -- from the run\'s own directory, if its model '
+               'and data paths are relative -- or a Configuration) or variables= (the run\'s free '
+               'parameters) to from_pybnf.')
+
+
 def _resolve_variables(results_dir, config, variables):
-    """Return a ``name -> FreeParameter`` map for sampling-space transforms, or
-    ``None`` (with a warning) when the scale cannot be recovered.
+    """Return a ``name -> FreeParameter`` map for the sampling-space transforms.
 
     Precedence: explicit ``variables`` (the auto-emit path, always correct) >
     explicit ``config`` > a ``.conf`` auto-discovered in ``results_dir`` (the
     standalone path; the original conf is copied into ``Results/`` at run start).
-    Any failure to reconstruct degrades to natural space rather than raising -- an
-    archived run whose model files have moved still produces a usable object.
-    """
+
+    When none of them gives the scales -- no ``.conf`` in ``results_dir``, or one that
+    does not load (its model or data files have moved, its paths are relative to a
+    directory this is not run from, a newer PyBNF refuses something in it) -- this
+    raises, naming the cause. It used to fall back to natural space with a log warning,
+    and a log parameter then came back in natural units under its bare name, a
+    plausible object with the wrong parameterization (#990)."""
+    from .config import Configuration
+    from .parse import load_config
+    from .printing import PybnfError
     if variables is not None:
         return {v.name: v for v in variables}
 
@@ -276,26 +286,25 @@ def _resolve_variables(results_dir, config, variables):
     if cfg is None:
         confs = sorted(Path(results_dir).glob('*.conf'))
         if not confs:
-            logger.warning(
-                'No .conf found in %s to recover parameter scales; log-scaled '
-                'parameters will be emitted in NATURAL space (ArviZ diagnostics '
-                'then differ from PyBNF\'s log-space diagnostics.txt). Pass '
-                'config=... or variables=... for sampling-space output.', results_dir)
-            return None
+            raise PybnfError(
+                'No .conf in %s to recover the parameter scales from' % results_dir,
+                'from_pybnf reads each parameter\'s scale (linear, log10 or ln) from the run\'s '
+                'configuration, which a run copies into Results/ when it starts, and %s has none, '
+                'so a log-scaled parameter cannot be told from a linear one.' % results_dir,
+                hint=_SCALE_HINT)
         cfg = confs[0]
-
-    try:
-        from .config import Configuration
-        from .parse import load_config
-        if not isinstance(cfg, Configuration):
-            cfg = load_config(str(cfg))
+    if isinstance(cfg, Configuration):
         return {v.name: v for v in cfg.variables}
-    except Exception:
-        logger.warning(
-            'Could not load a config to recover parameter scales (model files '
-            'missing or unreadable?); log-scaled parameters will be emitted in '
-            'NATURAL space.', exc_info=True)
-        return None
+    try:
+        loaded = load_config(str(cfg))
+    except (PybnfError, OSError) as exc:
+        cause = getattr(exc, 'message', None) or str(exc)
+        raise PybnfError(
+            'Could not load %s to recover the parameter scales: %s' % (cfg, cause),
+            'from_pybnf reads each parameter\'s scale (linear, log10 or ln) from the run\'s '
+            'configuration, and %s did not load: %s' % (cfg, cause),
+            hint=_SCALE_HINT) from exc
+    return {v.name: v for v in loaded.variables}
 
 
 def _posterior_var_name(name, var):
@@ -397,6 +406,9 @@ def from_pybnf(source, *, config=None, variables=None):
         ``log_likelihood`` group (variable ``y`` over an ``obs_id`` axis) is added so
         ``az.loo`` / ``az.waic`` / ``az.compare`` work directly.
     :raises ImportError: if the optional ``arviz`` extra is not installed.
+    :raises PybnfError: if the parameters' scales cannot be recovered: neither ``variables``
+        nor ``config`` is given and ``source`` holds no ``.conf`` that loads, or the
+        configuration does not declare every parameter the run sampled.
     """
     az = _require_arviz()
 
@@ -463,26 +475,31 @@ def from_pybnf(source, *, config=None, variables=None):
                 else:
                     loglik[ci, di, :] = ll
 
+    unknown = [pname for pname in param_names if pname not in var_map]
+    if unknown:
+        # A parameter the run sampled but the configuration does not declare: its scale is
+        # unknown, so its draws cannot be put in sampling space. It used to be emitted in
+        # natural space with a log warning (#990).
+        from .printing import PybnfError
+        raise PybnfError(
+            'The configuration declares no free parameter %s, which %s holds draws of'
+            % (', '.join(unknown), created_from),
+            'from_pybnf reads each parameter\'s scale from the run\'s configuration, and it '
+            'declares no %s, so the draws of %s cannot be put in sampling space. The '
+            'configuration is likely not this run\'s.'
+            % (', '.join(unknown), 'it' if len(unknown) == 1 else 'them'),
+            hint=_SCALE_HINT)
     posterior = {}
-    natural_fallback = []
     for pi, pname in enumerate(param_names):
-        var = var_map.get(pname) if var_map else None
+        var = var_map[pname]
         col = values[:, :, pi]
-        if var is not None and getattr(var, 'log_space', False):
+        if getattr(var, 'log_space', False):
             # Natural -> sampling space (log10 / ln), so ArviZ's diagnostics share
             # PyBNF's parameterization. samples.txt stores natural values.
             col = var.to_sampling_space(col)
-        elif var_map is not None and var is None:
-            natural_fallback.append(pname)
         posterior[_posterior_var_name(pname, var)] = col
 
-    if natural_fallback:
-        logger.warning('Parameters %s were in samples.txt but not in the recovered '
-                       'config; emitted in natural space.', natural_fallback)
-
-    space_clause = ('log parameters are in sampling space (log10 / ln)'
-                    if var_map is not None
-                    else 'log parameters are in NATURAL space (scale could not be recovered)')
+    space_clause = 'log parameters are in sampling space (log10 / ln)'
     loo_clause = (' A log_likelihood group (%d observations) is included, so az.loo / '
                   'az.waic / az.compare work directly; its values are genuine unweighted '
                   'per-point log-densities (not -score).' % n_obs) if have_loglik else ''

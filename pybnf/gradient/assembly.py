@@ -453,11 +453,10 @@ def _iter_scored_points(objective, sim_data, exp_data, routing, index, n_param, 
     and ``∂c*/∂θ`` are properties of the whole series, so they are computed once here and handed
     to every point of the column. A fit that scales nothing walks no extra points.
     """
-    sens = sim_data.output_sensitivities
-    if sens is None:
-        raise GradientNotSupported(
-            "An experiment carries no forward-sensitivity tensor; enable the gradient "
-            "path (apply_routing) on every scored model before assembling the %s." % quantity)
+    sens = _experiment_tensor(
+        sim_data, routing,
+        "An experiment carries no forward-sensitivity tensor; enable the gradient "
+        "path (apply_routing) on every scored model before assembling the %s." % quantity)
 
     indvar = min(exp_data.cols, key=exp_data.cols.get)
     comparable = set(sim_data.cols) | set(objective._per_measurement_models)
@@ -674,6 +673,31 @@ def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index,
                                  linear=linear)
 
 
+def _route_reads_no_column(routing):
+    """Whether ``routing`` reads no native sensitivity column at all: every free parameter's
+    contributions are model-unbound (``NONE``) or pinned to a constant zero factor. Its
+    experiment's prediction then does not move with any free parameter through the model, so
+    its prediction sensitivity is exactly zero, whatever the tensor would have held. Decided on
+    the route's request lists, which a point-dependent factor never empties
+    (:attr:`~pybnf.gradient.routing.RouteContribution.requested`). An object that cannot say is
+    taken to read one."""
+    params = getattr(routing, 'sensitivity_params', None)
+    ic = getattr(routing, 'sensitivity_ic', None)
+    return params is not None and ic is not None and not params and not ic
+
+
+def _experiment_tensor(sim_data, routing, missing):
+    """``sim_data``'s forward-sensitivity tensor, or ``None`` for a route that reads no column.
+
+    A ``.net`` run whose condition's route reads no column requests none (#1002), so its data
+    carries no tensor; every accessor then reads zeros for it. A missing tensor where the route
+    does read a column is refused with ``missing``, as it always was."""
+    sens = sim_data.output_sensitivities
+    if sens is None and not _route_reads_no_column(routing):
+        raise GradientNotSupported(missing)
+    return sens
+
+
 def _sensitivity(sens, selector, contribution, sim_row, free_param):
     """The native forward sensitivity ``d(observable)/d(routed entity)`` at one time row.
 
@@ -725,7 +749,8 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
     objective value can reveal -- the fit just walks a scaled surface -- so it is asserted
     rather than assumed."""
     routing.check_column_multiplicity()
-    _check_axes_are_not_the_same_derivative(sens, routing)
+    if sens is not None:
+        _check_axes_are_not_the_same_derivative(sens, routing)
     norm = sim_data.normalization or {}
     normalized = {}   # col -> the folded chain accessor, built on first use and reused per row
     measurement = getattr(objective, 'measurement', None)
@@ -737,6 +762,8 @@ def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param
         if col_name == indvar:
             return np.zeros(n_param)   # the independent variable does not move with θ
         vec = np.zeros(n_param)
+        if sens is None:
+            return vec     # a route that reads no column (#1002, :func:`_experiment_tensor`)
         selector = _selector_for(sens, col_name)
         for name, route in routing.routes.items():
             total = 0.0
@@ -1114,8 +1141,10 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
         """One (model, suffix)'s ``tensor_sens(col_name, row)`` -- the objective accessor's
         two-argument signature, which is what lets a normalization stage call its predecessor."""
         def tensor_sens(col_name, row):
-            selector = _selector_for(sens, col_name)
             vec = np.zeros(n_param)
+            if sens is None:
+                return vec      # the route reads no column (#1002)
+            selector = _selector_for(sens, col_name)
             for name, route in routing.routes.items():
                 total = 0.0
                 for c in route.contributions:
@@ -1128,20 +1157,27 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
 
     def raw_sens(model, suffix, observable, row):
         sim_data = sim_data_dict[model][suffix]
-        sens = sim_data.output_sensitivities
-        if sens is None:
-            raise GradientNotSupported(
-                "Constraint reads observable '%s' from model '%s' suffix '%s', whose simulation "
-                "carries no forward-sensitivity tensor; enable the gradient path (apply_routing) "
-                "on every model a constraint reads before assembling the constraint gradient."
-                % (observable, model, suffix))
-        if observable == sim_data.indvar:
-            return np.zeros(n_param)
         if (model, suffix) not in routings:
+            if sim_data.output_sensitivities is None:
+                raise GradientNotSupported(
+                    "Constraint reads observable '%s' from model '%s' suffix '%s', whose "
+                    "simulation carries no forward-sensitivity tensor; enable the gradient path "
+                    "(apply_routing) on every model a constraint reads before assembling the "
+                    "constraint gradient." % (observable, model, suffix))
+            if observable == sim_data.indvar:
+                return np.zeros(n_param)
             raise GradientNotSupported(
                 "Constraint reads observable '%s' from model '%s' suffix '%s', but no routing "
                 "was supplied for it; provide an ExperimentRouting for every (model, suffix) a "
                 "constraint reads (routings[(model, suffix)])." % (observable, model, suffix))
+        sens = _experiment_tensor(
+            sim_data, routings[(model, suffix)],
+            "Constraint reads observable '%s' from model '%s' suffix '%s', whose simulation "
+            "carries no forward-sensitivity tensor; enable the gradient path (apply_routing) "
+            "on every model a constraint reads before assembling the constraint gradient."
+            % (observable, model, suffix))
+        if observable == sim_data.indvar:
+            return np.zeros(n_param)
         key = (model, suffix, observable)
         if key not in accessors:
             tensor_sens = tensor_accessor(sens, routings[(model, suffix)])

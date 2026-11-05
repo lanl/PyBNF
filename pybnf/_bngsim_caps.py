@@ -11,6 +11,7 @@ import collections
 import contextlib
 import ctypes
 import importlib.metadata
+import inspect
 import logging
 import os
 import re
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 # timeout= kwarg on every Simulator/Session entry point.
 _BNGSIM_MIN_VERSION = (0, 5, 0)
 _BNGSIM_MAX_MAJOR = 1
+# The gradient path's own floor, above the install floor. The router and its run-time checks
+# are written against the answers bngsim 0.16.0 and later give about derived parameters and
+# initial-condition seeding; a 0.15.x build gives different ones (a derived parameter's
+# override and the save that retires a seed behave differently), and a from-source install
+# can bring one in whatever ``pyproject.toml`` says. A scalar fit only needs the API above.
+_BNGSIM_GRADIENT_MIN_VERSION = (0, 16, 0)
 
 
 def _parse_version(version):
@@ -63,6 +70,22 @@ def _detect_version(module):
 
 def _min_version_str():
     return '%d.%d.%d' % _BNGSIM_MIN_VERSION
+
+
+def gradient_floor_problem():
+    """``''`` when the installed bngsim is new enough for the gradient path, else why not.
+
+    Read at call time, so the version a test installs is the one checked. A version string
+    that does not parse is not assumed new enough: the gradient path's answers depend on it."""
+    floor = '%d.%d.%d' % _BNGSIM_GRADIENT_MIN_VERSION
+    parsed = _parse_version(BNGSIM_VERSION)
+    if parsed is None:
+        return ('the installed bngsim reports version %r, which does not parse, and the '
+                'gradient path needs bngsim %s or later' % (BNGSIM_VERSION, floor))
+    if parsed < _BNGSIM_GRADIENT_MIN_VERSION:
+        return ('the installed bngsim is %s, and the gradient path needs bngsim %s or later'
+                % (BNGSIM_VERSION, floor))
+    return ''
 
 
 def _empty_capabilities():
@@ -156,6 +179,25 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
     BNGSIM_AVAILABLE
     and hasattr(getattr(bngsim, 'Model', None), 'declare_ic_sensitivity')
 )
+
+
+def _set_state_takes_time():
+    """Whether ``Simulator.set_state`` takes ``time=``, so the clock goes back with the state.
+
+    A signature that cannot be read answers no: the call without it is one every build takes."""
+    try:
+        return 'time' in inspect.signature(bngsim.Simulator.set_state).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+# ``Simulator.set_state(state, time=t)`` sets the clock with the state, rewinding the event
+# carry with it; bngsim 0.16.0, the supported floor, takes the state alone. Both still report
+# 0.16.0, so the keyword is the probe. The bridge puts a ``stop_if`` run's last row back with
+# it (#1010). Without it the simulator's clock stays at the run's ``t_end``, which nothing the
+# bridge runs reads: every run gets its start from an explicit ``t_span`` or ``sample_times``
+# (the bridge's own clock), and a network model has no events to carry.
+BNGSIM_SET_STATE_TAKES_TIME = bool(BNGSIM_AVAILABLE and _set_state_takes_time())
 # Forward sensitivities that survive a DISCRETE EVENT -- the jump
 #
 #     s+ = dh/dx . (s- + f-.dt*/dp) + dh/dp - f+.dt*/dp
@@ -203,7 +245,7 @@ BNGSIM_HAS_SCAN_SENS_CARRY = bool(
 #    a real one. It was named here before it existed, on the reasoning that doing so
 #    cost nothing and would start the flag reading the real answer, in BOTH directions,
 #    on the first build that grew one. bngsim 0.15.0 is that build, and the floor is now
-#    0.15.0, so this route fires for every install resolved from PyPI. It publishes the
+#    0.16.0, so this route fires for every install resolved from PyPI. It publishes the
 #    key on every build, so a ``False`` here is an answer rather than a silence.
 #
 #    Routes 2 and 3 are not dead. A floor binds what a resolver installs, not what a
@@ -324,6 +366,126 @@ BNGSIM_HAS_PER_SPECIES_ATOL = bool(
 BNGSIM_HAS_TRACKING_ATOL = bool(
     BNGSIM_AVAILABLE and hasattr(bngsim, 'TrackingAtol')
 )
+
+
+# Whether a Newton (KINSOL) steady state's ``dY_ss/dθ`` carries a parameter's
+# initial-condition seeding through a **conserved total** (lanl/bngsim#704, merged with
+# lanl/bngsim#982). ``A <-> B`` started at ``A0`` relaxes to ``B* = A0 kf/(kf + kr)``, which
+# depends on ``A0`` only through ``A + B``; a build without the fix returns
+# ``dB*/dA0 = 0``. Neither a feature key nor the version identifies it (the build that
+# carries it still declares 0.16.0), so it is answered by running that model once, on first
+# use. ``False`` when the probe cannot run, which keeps the refusal it gates on the safe
+# side.
+_SS_IC_SEEDING_NET = """begin parameters
+    1 A0    10    # Constant
+    2 kf    1     # Constant
+    3 kr    1     # Constant
+end parameters
+begin species
+    1 A() A0
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Bobs                 2
+end groups
+"""
+_SS_IC_SEEDING = None
+
+
+def steady_state_sensitivity_carries_ic_seeding():
+    """Whether a Newton steady state differentiates through a seeded conserved total."""
+    global _SS_IC_SEEDING
+    if _SS_IC_SEEDING is None:
+        _SS_IC_SEEDING = _probe_steady_state_ic_seeding()
+    return _SS_IC_SEEDING
+
+
+def _probe_steady_state_ic_seeding():
+    if not (BNGSIM_AVAILABLE and BNGSIM_HAS_SS_OUTPUT_SENS):
+        return False
+    import os
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 'ss_seed_probe.net')
+            with open(path, 'w') as handle:
+                handle.write(_SS_IC_SEEDING_NET)
+            model = bngsim.Model.from_net(path)
+            result = bngsim.Simulator(model, method='ode').steady_state(
+                sensitivity_params=['A0'])
+            if not result.converged:
+                return False
+            column = result.output_sensitivities(['observable:Bobs'], axis='parameter')
+            return abs(float(column[0][0]) - 0.5) < 1e-6
+    except Exception:
+        return False
+
+
+# Whether a forward-sensitivity column stops differentiating through a derived parameter once
+# a write has overridden it. ``A -> 0`` at ``k2 = 2*k1``, with ``k2`` written to 0.8: ``A`` no
+# longer depends on ``k1``, so ``dA/dk1 = 0``. bngsim 0.16.0 still returns the chain through
+# ``k2``'s expression (``-2 t A``); later development builds return 0. As with the #704 witness,
+# no feature key or version identifies it, so the model is run once, on first use, both as the
+# SBML backend builds a sensitivity Simulator and as the ``.net`` backend does (which asks for
+# ``codegen=True`` outright). ``False`` when the probe cannot run.
+_OVERRIDE_CHAIN_NET = """begin parameters
+    1 k1    0.3    # Constant
+    2 k2    2*k1   # ConstantExpression
+end parameters
+begin species
+    1 A() 10
+end species
+begin reactions
+    1 1 0 k2 #_R1
+end reactions
+begin groups
+    1 Aobs                 1
+end groups
+"""
+_OVERRIDE_CHAIN = None
+
+
+def sensitivity_follows_derived_overrides():
+    """Whether a parameter's column drops the chain through a derived parameter overridden.
+
+    Decided once per process on a one-reaction model (``k2 = 2*k1`` pinned to a number, ``k1``
+    requested), with and without codegen, since a build can differ between the two. bngsim
+    0.16.0 fails it and bngsim ``main`` passes it. A probe that cannot run counts as a failure:
+    the answer only decides whether :func:`pybnf._bngsim_seeding.check_overridden_derived`
+    refuses, and refusing is the safe side."""
+    global _OVERRIDE_CHAIN
+    if _OVERRIDE_CHAIN is None:
+        _OVERRIDE_CHAIN = _probe_derived_override_chain()
+    return _OVERRIDE_CHAIN
+
+
+def _probe_derived_override_chain():
+    if not (BNGSIM_AVAILABLE and BNGSIM_HAS_OUTPUT_SENS):
+        return False
+    import os
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 'override_chain_probe.net')
+            with open(path, 'w') as handle:
+                handle.write(_OVERRIDE_CHAIN_NET)
+            for extra in ({}, {'codegen': True}):
+                model = bngsim.Model.from_net(path)
+                model.set_param('k2', 0.8)
+                result = bngsim.Simulator(
+                    model, method='ode', sensitivity_params=['k1'],
+                    **extra).run(t_span=(0.0, 1.0), n_points=2)
+                column = result.output_sensitivities(['observable:Aobs'], axis='parameter')
+                # The stale chain is -2 t A = -2*1*10*exp(-0.8), about -9.
+                if abs(float(column[-1][0][0])) > 1e-6:
+                    return False
+            return True
+    except Exception:
+        return False
 
 
 def event_sens_min_version():
@@ -551,8 +713,13 @@ _SENS_RHS_UNCOMPENSATED_MARK = 'does not recover'
 
 
 class SensRhsStatus(collections.namedtuple(
-        'SensRhsStatus', 'analytic route reasons columns')):
+        'SensRhsStatus', 'analytic route reasons columns refusal', defaults=(None,))):
     """One model's answer to "is this fit's gradient on the analytic ``∂f/∂p``?" (#606).
+
+    ``refusal`` is bngsim's own message when it refused to build a sensitivity-bearing
+    Simulator for this model at all (:func:`is_sensitivity_refusal`) -- not a fallback that
+    runs slower but a request no run can answer, such as an initial-value column on a
+    model whose analytic RHS is declined. ``None`` otherwise.
 
     ``analytic`` is the tri-state verdict :func:`analytic_sens_rhs_probe` reached
     (``True`` / ``False`` / ``None`` for no opinion) and ``route`` names the evidence
@@ -603,19 +770,42 @@ def probe_sens_rhs(make_simulator, columns=0):
 
     Never raises. A model that cannot be prepared for a sensitivity run reports no
     opinion: this is a diagnostic, and a diagnostic that can end a fit is worse than
-    no diagnostic. Whatever is genuinely wrong surfaces at the first simulation with
-    its own message.
+    no diagnostic. The one exception to "no opinion" is bngsim *refusing* the request
+    (:func:`is_sensitivity_refusal`): that is a verdict, the same at every parameter set,
+    so it comes back as a declined status carrying bngsim's message in ``refusal``, for
+    the caller to act on. It used to be read as no opinion, and the fit then scored every
+    evaluation as a failed simulation and finished at ``inf``.
     """
+    reasons = []
     try:
         with capture_sens_rhs_declines() as reasons:
             sim = make_simulator()
         state, route = analytic_sens_rhs_probe(sim)
         return SensRhsStatus(state, route, list(reasons), int(columns))
-    except Exception:
+    except Exception as exc:
+        if is_sensitivity_refusal(exc):
+            return SensRhsStatus(
+                False, 'bngsim refusing the sensitivity request when the Simulator was built',
+                list(reasons), int(columns), str(exc))
         logger.debug('could not probe the analytic sensitivity RHS', exc_info=True)
         return SensRhsStatus(
             None, 'the model could not be prepared for a sensitivity run', [],
             int(columns))
+
+
+def is_sensitivity_refusal(exc, module=None):
+    """Is ``exc`` bngsim refusing a forward-sensitivity request for this model?
+
+    ``bngsim.SensitivityUnsupportedError`` is that refusal by type: a model whose analytic
+    sensitivity RHS is declined asked for an initial-value column (the difference quotient
+    has no parameter to perturb for one), or one whose fallback would integrate through a
+    moving crossing (lanl/bngsim#414/#416). It depends on the model and the request, never
+    on the parameter set, so it is not a point the optimizer can back off from. ``module`` is
+    the bngsim namespace to read the type from; ``None`` is the real one.
+    """
+    module = bngsim if module is None else module
+    refusal = getattr(module, 'SensitivityUnsupportedError', None)
+    return isinstance(refusal, type) and isinstance(exc, refusal)
 
 
 def analytic_sens_rhs_probe(sim):

@@ -80,11 +80,66 @@ class TestScale:
     @pytest.mark.parametrize("u", [-3.0, -0.5, 0.0, 1.7, 4.2])
     def test_d_inverse_log_bases_agree_under_change_of_base(self, u):
         """The two log scales are one transform in different bases (10**u == exp(u ln 10)),
-        so their derivatives must satisfy the chain rule between them at full float64
-        precision -- a machine-precision oracle the 1e-7 finite differences cannot give.
-        Catches the plausible slip of returning theta without the ln(10) factor."""
-        assert LOG10.d_inverse(u) == pytest.approx(np.log(10.0) * LN.d_inverse(u * np.log(10.0)),
-                                                   rel=1e-15)
+        so their derivatives must satisfy the chain rule between them to within float64
+        rounding -- a machine-precision oracle the 1e-7 finite differences cannot give.
+        Catches the plausible slip of returning theta without the ln(10) factor.
+
+        The bound is what float64 can promise here, not a fixed 1e-15. The error in
+        x = u * ln(10), from rounding ln(10) and the product, moves exp(x) by up to about
+        |x| eps relative: about 10 eps at u = 4.2. exp, pow and the two products by ln(10)
+        add a few eps more.
+
+        On an AVX-512 runner numpy 1.26 sends float64 log and exp to Intel's SVML. There,
+        np.log(10.0) came out 1 ulp below the correctly rounded value. The old fixed
+        rel=1e-15, about 4.5 eps, then failed at u = 4.2 by 6.3 eps relative on a
+        dependency-floors CI run, and passed on other runners.
+
+        ``abs=0`` because pytest.approx otherwise adds abs=1e-12, which would make every
+        u below about 3 looser than its rel says. A missing ln(10) factor is off by a
+        factor of 2.3, far outside this bound."""
+        x = u * np.log(10.0)
+        eps = np.finfo(float).eps
+        assert LOG10.d_inverse(u) == pytest.approx(np.log(10.0) * LN.d_inverse(x),
+                                                   rel=(abs(x) + 8) * eps, abs=0)
+
+    def test_d_inverse_change_of_base_bound_holds_on_a_dense_grid(self):
+        """The (|x| + 8) eps bound above, at 1201 points of u in [-15, 15] instead of five,
+        with no absolute floor. pytest.approx keeps its default abs=1e-12 when only rel is
+        given, so below |theta| ~ 1e3 the parametrized test is looser than its rel says.
+        Every point must sit inside the bound, and the ln(10)-free slip (theta returned
+        as its own derivative) must sit more than 1e13 bounds outside it at every point.
+        The u are Python floats so that 10.0 ** u is the C library's pow, as above."""
+        eps = np.finfo(float).eps
+        ln10 = np.log(10.0)
+        for u in np.linspace(-15.0, 15.0, 1201).tolist():
+            x = u * ln10
+            bound = (abs(x) + 8) * eps
+            lhs, rhs = LOG10.d_inverse(u), ln10 * LN.d_inverse(x)
+            assert abs(lhs - rhs) <= bound * abs(rhs), (u, float((lhs - rhs) / rhs / eps))
+            slip = LOG10.inverse(u)
+            assert abs(slip - rhs) > 1e13 * bound * abs(rhs), u
+
+    @pytest.mark.parametrize("scale", [LOG10, LN])
+    def test_d_inverse_matches_exact_decimal_arithmetic(self, scale):
+        """Independent oracle: ln(10) * 10**u and e**u evaluated in 50-digit decimal
+        arithmetic at the exact double u, with no float64 pow, exp, log or change of base
+        on the oracle side. The float64 result can be off only by its own roundings: the
+        ln(10) constant, pow or exp, and one multiply, so 8 eps relative. A log10 scale
+        is also allowed |u ln 10| eps more, so that the equally correct
+        ln(10) * exp(u ln 10) passes too: rounding u ln 10 shifts that exp by up to
+        |u ln 10| eps. Both are far below a 1e-14 relative slip in the constant."""
+        from decimal import Decimal, localcontext
+        eps = float(np.finfo(float).eps)
+        with localcontext() as ctx:
+            ctx.prec = 50
+            ln10 = Decimal(10).ln()
+            for u in np.linspace(-15.0, 15.0, 601).tolist():
+                if scale is LOG10:
+                    exact, bound = ln10 * (Decimal(u) * ln10).exp(), (abs(u) * 2.303 + 8) * eps
+                else:
+                    exact, bound = Decimal(u).exp(), 8 * eps
+                got = Decimal(float(scale.d_inverse(u)))
+                assert abs(got - exact) <= Decimal(bound) * exact, (u, float((got - exact) / exact) / eps)
 
     def test_linear_d_inverse_is_exactly_one(self):
         """The identity scale's factor is exact 1.0 -- the gradient path leaves a linear

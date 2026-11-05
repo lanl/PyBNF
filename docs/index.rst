@@ -38,6 +38,9 @@ posterior distribution of the free parameters to quantify uncertainty — Adapti
 MCMC (``am``, the recommended sampler), DREAM(ZS), Preconditioned DREAM, parallel
 tempering, and a Hamiltonian Monte Carlo / NUTS reference sampler.
 
+**A forecasting filter**, the :ref:`Liu–West filter <alg-lwf>` (``lwf``), forecasts
+count data row by row as they arrive; its output is a forecasting sample, not a posterior.
+
 **Analysis methods** round out the suite: **model checking** (``check``),
 **profile-likelihood** analysis for identifiability, **optimal experimental
 design** (``design``), which recommends the measurements that would most improve

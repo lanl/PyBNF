@@ -210,6 +210,58 @@ def test_execute_resyncs_ic_only_free_parameter():
     assert high == pytest.approx(2.0 * low)
 
 
+# Written by BioNetGen 2.9.2 from a BNGL model declaring `e 4` and seeding `A() C0`, `B() e`,
+# `C() 2*e`; BNG2.pl's own simulation starts from A = 3, B = 4, C = 8.
+NET_WITH_A_PARAMETER_NAMED_E = """# Created by BioNetGen 2.9.2
+begin parameters
+    1 e              4  # Constant
+    2 k              0.1  # Constant
+    3 C0             3  # Constant
+    4 _InitialConc1  2*e  # ConstantExpression
+end parameters
+begin species
+    1 A() C0
+    2 B() e
+    3 C() _InitialConc1
+end species
+begin reactions
+    1 1 3 k #_R1
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+    3 Ctot                 3
+end groups
+"""
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('name', ['e', 'pi'])
+def test_execute_reads_a_seeding_parameter_named_e_or_pi_as_the_parameter(name, tmp_path):
+    """At e = 7 the seed is A = 3, B = 7, C = 14 by hand and by bngsim alone; the #450 sync
+    read B as math.e. A setConcentration expression reads the same namespace (3*e = 21)."""
+    import re
+
+    import bngsim
+    from pybnf.pset import FreeParameter, PSet
+
+    net = tmp_path / ('named_%s.net' % name)
+    net.write_text(re.sub(r'\be\b', name, NET_WITH_A_PARAMETER_NAMED_E))
+    engine = bngsim.Model.from_net(str(net))
+    engine.set_params({name: 7.0})
+    engine.reset()
+    np.testing.assert_array_equal(engine.get_state(), [3.0, 7.0, 14.0])
+
+    action = 'simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})'
+    pset = PSet([FreeParameter(name, 'uniform_var', 0.0, 100.0, value=7.0)])
+    for actions, seed in (([action], [3.0, 7.0, 14.0]),
+                          (['setConcentration("A()", "3*%s")' % name, action], [21.0, 7.0, 14.0])):
+        model = bngsim_model.BngsimModel(net.stem, actions, [('simulate', 'tc')], [], nf=str(net))
+        model.param_set = pset
+        d = model.execute(str(tmp_path), 'x', None)['tc']
+        np.testing.assert_array_equal(d.data[0, 1:], seed)
+
+
 def test_build_mutant_param_set_resolves_parameter_reference():
     """The shared bngsim net/NF mutant builder resolves a parameter-reference condition value
     (a per-condition estimated initial condition, ADR-0076) from the fit vector: ``S0 = S0_A``

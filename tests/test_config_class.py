@@ -431,53 +431,6 @@ class TestConfig(object):
                                   'normalization': {'bngl_files/p1_5.exp': [('init', [2])],
                                                     'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
 
-    def test_load_t_length_xml_integer_step(self):
-        """_load_t_length should compute step count from time and step for XML models"""
-        c = object.__new__(config.Configuration)
-        c.config = {
-            'models': {'model.xml'},
-            'time_course': [{'suffix': 'tc', 'step': '10', 'time': '100'}],
-            'fit_type': 'de',
-        }
-        result = c._load_t_length()
-        assert result == {'tc': 10}
-
-    def test_load_t_length_xml_float_step(self):
-        """_load_t_length should compute correct step count with float step (#354)"""
-        c = object.__new__(config.Configuration)
-        c.config = {
-            'models': {'model.xml'},
-            'time_course': [{'suffix': 'tc', 'step': '0.5', 'time': '100'}],
-            'fit_type': 'de',
-        }
-        result = c._load_t_length()
-        assert result == {'tc': 200}
-
-    def test_load_t_length_xml_default_step(self):
-        """_load_t_length should default to step=1 when step is not specified"""
-        c = object.__new__(config.Configuration)
-        c.config = {
-            'models': {'model.xml'},
-            'time_course': [{'suffix': 'tc', 'time': '50'}],
-            'fit_type': 'de',
-        }
-        result = c._load_t_length()
-        assert result == {'tc': 50}
-
-    def test_load_t_length_xml_multiple_time_courses(self):
-        """_load_t_length should handle multiple time_course entries for XML models (#354)"""
-        c = object.__new__(config.Configuration)
-        c.config = {
-            'models': {'model.xml'},
-            'time_course': [
-                {'suffix': 'tc1', 'step': '10', 'time': '100'},
-                {'suffix': 'tc2', 'step': '0.5', 'time': '50'},
-            ],
-            'fit_type': 'de',
-        }
-        result = c._load_t_length()
-        assert result == {'tc1': 10, 'tc2': 100}
-
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):
         config.Configuration(dict())

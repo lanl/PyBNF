@@ -369,13 +369,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "verbosity",
     2
    ],
@@ -835,13 +828,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -1317,13 +1303,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "verbosity",
     2
    ],
@@ -1747,13 +1726,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -2329,13 +2301,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -2923,13 +2888,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "verbosity",
     2
    ],
@@ -3469,13 +3427,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "verbosity",
     2
    ],
@@ -3935,13 +3886,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -4417,13 +4361,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "verbosity",
     2
    ],
@@ -4794,13 +4731,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -5214,13 +5144,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -5539,13 +5462,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -5832,13 +5748,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -6187,13 +6096,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -6553,13 +6455,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -6938,13 +6833,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -7347,13 +7235,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -7772,13 +7653,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -8165,13 +8039,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -8577,13 +8444,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -8958,13 +8818,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -9347,13 +9200,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -9728,13 +9574,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -10117,13 +9956,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -10466,13 +10298,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -10808,13 +10633,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -11176,13 +10994,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -11590,13 +11401,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -11990,13 +11794,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -12337,13 +12134,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -12702,13 +12492,6 @@
     ]
    ],
    [
-    "time_length",
-    [
-     "$map",
-     []
-    ]
-   ],
-   [
     "wall_time_fit",
     0
    ],
@@ -13056,13 +12839,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],
@@ -13437,13 +13213,6 @@
     "time_course",
     [
      "$tuple",
-     []
-    ]
-   ],
-   [
-    "time_length",
-    [
-     "$map",
      []
     ]
    ],

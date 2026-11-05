@@ -1,0 +1,42 @@
+# SIR outbreak with a running count of infections:  S + I -> 2 I + C,  I -> R
+# Each infection also adds one C(), so `cases` counts the infections since t = 0 and its
+# increase over a day is that day's new infections (the configuration's cumulative flag).
+# gamma and N are fixed; beta, I0 and the noise model's r are free. I0 acts only through
+# the initial state, so the filter never moves it. The configuration's experiment: line
+# says what to simulate, so the model has no actions block.
+
+begin model
+
+  begin parameters
+    beta    0.6       # transmission rate                [1/day]   <- free (moved)
+    gamma   0.25      # recovery rate                    [1/day]   (fixed)
+    N       50000     # population                       [people]  (fixed)
+    I0      10        # infectious at t = 0              [people]  <- free (never moved)
+    beta_N  beta/N    # per-contact transmission rate
+  end parameters
+
+  begin molecule types
+    S()
+    I()
+    R()
+    C()
+  end molecule types
+
+  begin seed species
+    S()  N-I0
+    I()  I0
+    R()  0
+    C()  0
+  end seed species
+
+  begin observables
+    Molecules  infectious  I()    # infectious now (a prevalence)
+    Molecules  cases       C()    # infections since t = 0 (cumulative)
+  end observables
+
+  begin reaction rules
+    Infection:  S() + I() -> I() + I() + C()  beta_N
+    Recovery:   I() -> R()                    gamma
+  end reaction rules
+
+end model

@@ -8,8 +8,11 @@ Implementation
 --------------
 A new algorithm can be written by creating a class that subclasses the Algorithm class and
 registering it with the ``@register_fit_type`` decorator (from ``pybnf.registry``), which
-names the ``job_type`` code(s) that select it, its family (``optimizer``, ``sampler``, or
-``checker``), a display name, and its config schema (see `Adding configuration options`_)::
+names the ``job_type`` code(s) that select it, its family (``optimizer``, ``sampler``,
+``checker``, ``analysis`` or ``filter``; a new family is one edit each in the ``FitTypeEntry``
+docstring in ``pybnf/registry.py``, the Algorithms section of ``CONTEXT.md`` and
+``test_families_partition_the_codes``), a display name, and its config schema (see
+`Adding configuration options`_)::
 
     from pybnf.registry import register_fit_type
 
@@ -62,13 +65,15 @@ finish). For example::
             return []  # Waiting for synchronization
 
 
-Four additional support methods in the Algorithm superclass may optionally be overridden, depending on the details of the new algorithm, 
-such that the new algorithm is compatible with all features of PyBNF. 
+The following support methods and attributes of the Algorithm superclass may optionally be overridden, depending on the details of the new algorithm,
+such that the new algorithm is compatible with all features of PyBNF.
 
     * ``add_iterations(self,n)`` is required to support adding extra iterations with the ``-r`` flag. This method should add ``n`` iterations to the algorithm's maximum iteration count. The superclass implementation simply adds ``n`` to the attribute ``self.max_iterations``. You should override the method if your algorithm tracks iteration count in a different way. 
     * ``reset(self, bootstrap)`` is required to support bootstrapping. This method should call the superclass method, and then reset the state of the algorithm so that another fitting replicate can be run. 
     * ``get_backup_every(self)`` helps choose when to save a backup of the algorithm. This method should return an integer telling after how many individual simulations we should back up the algorithm. The superclass implementation uses a formula that should work in most cases, but you can override this depending on details of your algorithm. 
-    * ``cleanup(self)`` is used to clean up after an error. This method is called just before PyBNF exits due to an error or keyboard interrupt, and may be used to save any useful files before exiting. 
+    * ``cleanup(self)`` is used to clean up after an error. This method is called just before PyBNF exits due to an error or keyboard interrupt, and may be used to save any useful files before exiting.
+    * ``needs_cluster`` (class attribute, default ``True``) is set ``False`` by a method that submits nothing to workers, so ``main()`` starts no dask cluster for it.
+    * ``resume_refusal`` (class attribute, default ``None``) is a ``(message, hint)`` pair with which ``main()`` refuses ``-r`` for a method that continues some other way, as ``lwf`` does with ``lwf_continue``.
 
 
 

@@ -28,6 +28,9 @@ from .bngsim_antimony_model import (
     BngsimAntimonyModelNoTimeout,
 )
 from .printing import verbosity, print1, PybnfError
+from .output_keys import (
+    output_pairs, refuse_ambiguous_output_keys, refuse_duplicate_action_suffixes,
+    simulation_conditions)
 from .constraint import ConstraintSet
 
 import numpy as np
@@ -36,7 +39,6 @@ import re
 import logging
 import subprocess
 from pathlib import Path
-import roadrunner
 
 
 logger = logging.getLogger(__name__)
@@ -57,8 +59,9 @@ _NO_WALL_TIME_FIT = frozenset({'hmc'})
 # design (#574), which evaluates one supplied best fit and then does arithmetic on the
 # information matrix it produced. The model check reads neither key; the design run passes through
 # the shared Algorithm setup, which does, so it fills in the values that are true of it (one
-# point, evaluated once) itself.
-_NO_SEARCH_RUNS = frozenset({'check', 'design'})
+# point, evaluated once) itself. So does the Liu–West filter (lwf), which assimilates each
+# row once.
+_NO_SEARCH_RUNS = frozenset({'check', 'design', 'lwf'})
 
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
@@ -255,6 +258,8 @@ class Configuration:
         # there (the edition int is already parse-coerced; full validation is later in
         # _check_edition).
         self._user_objfunc = 'objfunc' in d
+        # Raw presence: main() later writes a drawn seed into config['random_seed'].
+        self.random_seed_given = 'random_seed' in d
         _ed = d.get('edition')
         _modern_hint = isinstance(_ed, int) and not isinstance(_ed, bool) and _ed >= 2
         if not self._user_objfunc and not _modern_hint:
@@ -309,6 +314,13 @@ class Configuration:
         # wart is bypassed: a new-era model carries no data on its model line).
         self._load_experiments()
         logger.debug('Loaded experiments')
+        # Every model now has all its actions (legacy, synthesized) and conditions / mutants, so
+        # every output key it can produce is known: refuse two simulations that spell one key a
+        # consumer reads (#850, #833) before anything reads a key back. Postprocessing targets
+        # are read later, so the check runs again once they are loaded.
+        self._check_output_keys_unique()
+        # ...and a datum is at a time its simulation writes a row at, where that is known now.
+        self._refuse_data_without_rows()
         # Deferred until here (post-_load_experiments) so the 'smoothing' misuse check sees the
         # edition-2 models' synthesized simulate/parameter_scan actions -- and thus their
         # `stochastic` flag (#471). Legacy models set the flag at parse time, so the check is
@@ -317,6 +329,9 @@ class Configuration:
         # Same deferral, same reason: the end-of-fit stage that confirms the best fit of a
         # stochastic fit keys off the models' `stochastic` flags (#659).
         self._check_best_fit_confirmation()
+        # Also deferred until the edition-2 experiments are synthesized: a network-free action
+        # that BNG2.pl cannot run, on a model that will be simulated with BNG2.pl (#999).
+        self._refuse_what_bng2pl_cannot_run()
         # New-era observable: column-header overrides (ADR-0028, Chunk 4). Runs after every
         # experimental Data exists (so it can rename columns across all of them) and before
         # the objective is built (so the objective's by-name column match + per-observable
@@ -349,6 +364,9 @@ class Configuration:
             self._check_variable_correspondence()
         logger.debug('Loaded variables')
         self._postprocess_normalization()
+        # A count noise family scores counts, and a normalized value is not one (#997). Read off
+        # the compiled normalization grid and the built objective's per-column families.
+        self._refuse_normalized_counts()
         # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
         # attaches to the (already-built) objective here, after the normalization grid is compiled.
         self._attach_analytic_scale()
@@ -370,7 +388,8 @@ class Configuration:
         self._load_start_point()
         self._check_starting_params()
         self._load_postprocessing()
-        self.config['time_length'] = self._load_t_length()
+        # A postprocessing target is one more key a consumer reads (#850).
+        self._check_output_keys_unique()
         # Off-diagonal cross-product pruning (#484, ADR-0069). Runs last, when exp_data,
         # constraints, and postprocessing are all populated: records per model the full
         # output suffixes any consumer reads, so the backend execute() can skip the
@@ -653,6 +672,28 @@ class Configuration:
         if value is not None:
             edition.validate_edition(value)
 
+    def check_trajectory_output_job_type(self):
+        """Refuse ``output_trajectory`` / ``output_noise_trajectory`` outside ``job_type = am``,
+        the one job type that writes them (#990). Both are global keys, so every other job type
+        accepted them, warned about nothing, and wrote no file.
+
+        Called when a fresh run starts (``pybnf.main``), not when a configuration loads: a
+        configuration is also loaded to read a finished run back (``inference_data.from_pybnf``
+        reloads the run's archived ``.conf`` for its parameter scales), and a run made before
+        this refusal existed, which set the key under ``dream``, was valid when it was made. A
+        run resumed with ``-r`` is not refused either, for the same reason."""
+        named = [k for k in ('output_trajectory', 'output_noise_trajectory') if self.config[k]]
+        job_type = self.config['fit_type']
+        if not named or job_type == 'am':
+            return
+        raise PybnfError(
+            f"{' and '.join(named)} {'is' if len(named) == 1 else 'are'} written only by "
+            f"job_type = am, and this is job_type = {job_type}",
+            f"{' and '.join(named)} {'is' if len(named) == 1 else 'are'} written only by "
+            f"job_type = am (Adaptive MCMC); job_type = {job_type} would ignore "
+            f"{'it' if len(named) == 1 else 'them'} and write no trajectory file.",
+            hint=f"Remove {' and '.join(named)}, or run job_type = am.")
+
     @staticmethod
     def _valid_config_keys(conf_dict):
         """The config keys the chosen fit_type legitimately reads (#401, ADR-0014).
@@ -760,35 +801,6 @@ class Configuration:
             else:
                 return os.path.join(home_dir, directory)
         return '' if directory == '' else directory if directory[0] == '/' else str(Path(home_dir) / directory)
-
-    def _load_t_length(self):
-        # New-era BNGL models carry no ``__FREE`` markers (ADR-0034); suppress the
-        # legacy "no __FREE -> error" guard here too (as ``check`` already does), so
-        # measuring output lengths never trips it.
-        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
-        timeDict = {}
-        for mf in self.config['models']:
-            if re.search(r'\.bngl$', mf):
-                time = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern)).find_t_length()
-                for i,v in time.items():
-                    timeDict[i] = v
-            elif re.search(r'\.(xml|ant)$', mf):
-                for tc in self.config['time_course']:
-                    suffix = tc['suffix']
-                    try:
-                        step = float(tc['step'])
-                    except KeyError:
-                        step = 1.
-                    end_time = float(tc['time'])
-                    timeDict[suffix] = int(np.round(end_time / step))
-        # New-era experiments (ADR-0028) synthesize their actions outside both the model
-        # file and the legacy time_course list, so find_t_length / the xml branch above
-        # never see them. _load_experiments recorded each one's output length (n_points-1),
-        # keyed by the bare experiment suffix; merge it in.
-        timeDict.update(getattr(self, '_experiment_time_length', {}))
-        return timeDict
-        
-                
 
     def _resolve_model_tolerances(self):
         """The per-model CVODE tolerance records, checked and keyed by model file (#586).
@@ -1080,6 +1092,37 @@ class Configuration:
                 'so PyBNF overrides the BNGL seed per replicate.'
                 % (self.config['smoothing'], self.config['stochastic_seed'])
             )
+
+    def _refuse_what_bng2pl_cannot_run(self):
+        """Refuse a BNGL model that will be simulated with BNG2.pl and has a network-free action
+        BNG2.pl cannot run (#999).
+
+        An edition-2 ``method: nf`` experiment writes its data's times as ``sample_times`` (#427),
+        or, as a dose-response, a ``parameter_scan`` with no ``n_steps``. bngsim's NFsim runs
+        both; BNG2.pl's ``simulate_nf`` refuses both, and has no RuleMonkey (``method: rm``) at
+        all (:func:`~pybnf.bngsim_model.grid.bng2pl_network_free_refusals`). Such a model used to
+        be accepted, and every one of its simulations then failed, so the run ended with
+        "Your simulations are failing to run", or exited 0 with an objective of ``inf`` for
+        every parameter set and the cause only in ``FailedSimLogs``.
+
+        Refused here when the configuration itself sends every BNGL model to BNG2.pl, whatever
+        the machine (:func:`~pybnf.algorithms.base.bng2pl_by_configuration`:
+        ``bngl_backend = bionetgen``, and every model under ``job_type = check``). Where
+        ``bngl_backend = auto`` sends a model depends on whether bngsim is installed here, so
+        that is refused as the fit sets its models up (``Algorithm._initialize_models``, before
+        any network generation): the configuration is not wrong, and it still loads, on a
+        machine without bngsim, for a reader that simulates nothing (``from_pybnf`` reloads a
+        finished run's configuration to read its parameter scales). Hand-written actions are
+        read the same way (a trailing ``;`` or comment, ``simulate_nf``), since BNG2.pl refuses
+        them alike."""
+        from .algorithms.base import bng2pl_by_configuration, refuse_what_bng2pl_cannot_run
+        plan = bng2pl_by_configuration(self.config['fit_type'], self.config['bngl_backend'])
+        if plan is None:
+            return
+        for name, model in self.models.items():
+            if isinstance(model, BNGLModel):
+                refuse_what_bng2pl_cannot_run(name, list(model.actions) + list(model.protocol),
+                                              *plan, experiments=self._experiment_data_keys)
 
     def _check_best_fit_confirmation(self):
         """Validate the two best-fit confirmation keys, and tell a fit that needs the stage
@@ -1502,17 +1545,35 @@ class Configuration:
             mut_objects = [Mutation(var, op, float(val)) for var, op, val in mutations]
             mut_set = MutationSet(mut_objects, name)
             self.models[base].add_mutant(mut_set)
-            # Check that the exp files will have simulation outputs
+            # Check that the exp files will have simulation outputs -- of this mutant. A file's
+            # stem is the output it is scored against, so it is resolved from the model's
+            # (action, mutant) pairs: matching the mutant's name inside the stem accepted
+            # xbc.exp under mutant b (as x + b + c) and scored it against the unmutated
+            # action xbc (#850).
             for ex in exps:
                 ename = self._file_prefix(ex, '(exp|con|prop)')
-                base_suffix = re.match(f'.*(?={name})', ename)
                 suffix_choices = [x[1] for x in self.models[base].suffixes]
                 if len(suffix_choices) == 0:
                     raise PybnfError(f"Model {base} has no action suffixes, so I can't have mutant model {name} with "
                                      f"data file {ex} based on that model")
-                if not base_suffix or base_suffix.group(0) not in suffix_choices:
+                producers = [(suffix, condition) for key, suffix, _action, condition
+                             in output_pairs(self.models[base]) if key == ename]
+                if len(producers) == 1 and producers[0][1] is mut_set:
+                    continue
+                if not producers:
                     raise PybnfError(f'Experimental file name {ex} in mutant model {name}. This file name should consist of '
                                      f'the model suffix it corresponds to, followed by the mutant name (e.g. {suffix_choices[0]}{name}.exp)')
+                found = '; '.join(
+                    f"action '{suffix}' " + ('with no mutant' if condition is None
+                                             else f"under mutant '{condition.suffix}'")
+                    for suffix, condition in producers)
+                raise PybnfError(
+                    f"Experimental file {ex} is listed under mutant {name}, but its name '{ename}' is "
+                    f"the output of {found}, not of an action under mutant {name}, so it would be "
+                    f"scored against that simulation.",
+                    hint=f"Name the file for the action it measures followed by the mutant name (e.g. "
+                         f"{suffix_choices[0]}{name}.exp), or list it under the model or mutant it "
+                         f"belongs to.")
             # Stages these exp files to get loaded along with regular model ones
             self._data_map[base] += exps
 
@@ -1661,6 +1722,10 @@ class Configuration:
         # _postprocess_normalization resolves the qualifier through this map. Always
         # defined (even with no experiments) so the resolver can read it unconditionally.
         self._experiment_data_keys = {}
+        # experiment name -> the condition it is measured under ('' for none, and for a
+        # pre-equilibration, whose conditions are applied inline to the model as written), so
+        # the output-key check can tell an experiment's own pair from one it never asked for.
+        self._experiment_conditions = {}
         experiments = [(k[1], v) for k, v in self.config.items()
                        if isinstance(k, tuple) and k[0] == 'experiment']
         if not experiments:
@@ -1687,11 +1752,6 @@ class Configuration:
                 "'experiment:' lines too, or simulate this model with no 'experiment:' line."
                 if legacy else None))
 
-        # Output-row counts (suffix -> n_points - 1) for the synthesized actions, merged
-        # into time_length by _load_t_length (the actions live neither in the model file
-        # nor the legacy time_course list, so find_t_length / the xml branch miss them).
-        self._experiment_time_length = {}
-
         # Conditions a pre-equilibration experiment CONSUMES (applies inline as setParameter,
         # ADR-0052): base model -> set of condition suffixes. Removed from each model's mutant
         # list after the loop so they do not also run as redundant separate simulations.
@@ -1715,6 +1775,8 @@ class Configuration:
             data_key = self._resolve_experiment_data_key(
                 name, model, base, fields.get('condition'), preequilibrate)
             self._experiment_data_keys[name] = (base, data_key)
+            self._experiment_conditions[name] = (
+                fields.get('condition') or '' if preequilibrate is None else '')
             method = fields.get('method', 'ode')
             if preequilibrate is None and fields.get('condition') is not None:
                 regular_conditions.setdefault(base, set()).add(fields['condition'])
@@ -1777,7 +1839,7 @@ class Configuration:
                     scan = {'suffix': name, 'method': method, 'param': stacked.indvar}
                     t_end = fields.get('t_end')
                     if t_end is not None:
-                        scan['time'] = t_end
+                        scan['time'] = self._time_after_start(name, 't_end', t_end)
                     else:
                         scan['steady_state'] = 1
                     action = ParamScan(scan, explicit_points=points)
@@ -1808,12 +1870,6 @@ class Configuration:
                              f"'{base}': t_end={action.time}, n_steps={action.stepnumber}, "
                              f"data key '{data_key}', {len(constraint_files)} constraint file(s)")
 
-            # time_length is keyed by the bare action suffix (the experiment name); the
-            # condition/mutant combinations are formed downstream (adaptive_mcmc). The output is
-            # one row per explicit point for a data-driven action (a time course: one per sample
-            # time including the forced t=0; a scan: one per dose), or n_steps+... for a uniform
-            # grid -- ``Action.output_length`` gives the row count either way.
-            self._experiment_time_length[name] = action.output_length() - 1
 
             # BPSL constraints (.con/.prop) ride along with this experiment's simulation
             # (ADR-0028 addendum): each binds to the experiment's own simulation output
@@ -1840,6 +1896,139 @@ class Configuration:
                     "condition cannot be both; use distinct conditions (ADR-0052).")
             model = self.models[base]
             model.mutants = [m for m in model.mutants if m.suffix not in conds]
+
+    def _check_output_keys_unique(self):
+        """Refuse a model that registers one output suffix twice
+        (:func:`pybnf.output_keys.refuse_duplicate_action_suffixes`), or two of whose simulations
+        produce one output key a consumer reads
+        (:func:`pybnf.output_keys.refuse_ambiguous_output_keys`, #850, #833).
+
+        An output is named by its action suffix (an edition-2 experiment's name) followed by
+        its condition's (an edition-2 ``condition:`` or an edition-1 mutant), so a wildtype
+        experiment ``data`` and an experiment ``dat`` run under a condition ``a`` both produce
+        ``data``. The simulation dict and the loaded data then keep one of the two, and every
+        consumer that reads a key back -- the gradient's routing, the per-condition sensitivity
+        request, multiple shooting, recorded trajectories -- can attribute it to either.
+
+        Edition 1 runs every pair and ``am`` records every key, so every collision is refused.
+        Edition 2 runs a pair only when its key is read (:meth:`_compute_emit_suffixes`), so a
+        collision is refused only on a key :meth:`_consumed_output_keys` lists."""
+        ed = edition.resolve_edition(self.config.get('edition'))
+        declared = getattr(self, '_experiment_conditions', {})
+        # BNG2.pl stores a suffix-less action's output in its own file, never under a suffix.
+        bng2pl = self.config.get('bngl_backend') == 'bionetgen'
+        for base, model in self.models.items():
+            refuse_duplicate_action_suffixes(model, edition=ed)
+            consumed = self._consumed_output_keys(base, model) if ed >= 2 else None
+            refuse_ambiguous_output_keys(
+                model, edition=ed, consumed=consumed, bng2pl=bng2pl,
+                declared={name: cond for name, cond in declared.items()
+                          if self._experiment_data_keys[name][0] == base})
+
+    def _consumed_output_keys(self, base, model):
+        """Every output key of ``model`` something reads: the scored data, every experiment's own
+        output (a constraint-only one too), each constraint's home and cross-references, every
+        postprocessing target loaded so far, and every key of an action no experiment
+        synthesized (a legacy ``time_course`` / ``param_scan`` key, or a model bound the legacy
+        way), which runs under every condition unpruned and ``am`` records. This is the emit
+        set of :meth:`_compute_emit_suffixes` widened to those actions: a key outside it is one
+        no pair is run for (#484), so two pairs that spell it overwrite nothing anyone reads."""
+        consumed = set(self.exp_data.get(base, {}))
+        experiment_names = set()
+        for name, (model_name, data_key) in self._experiment_data_keys.items():
+            if model_name == base:
+                experiment_names.add(name)
+                consumed.add(data_key)
+        consumed |= self._constraint_read_suffixes(base, set(model.get_suffixes()))
+        consumed |= {suffix for (model_name, suffix) in getattr(self, 'postprocessing', {}) or {}
+                     if model_name == base}
+        conditions = simulation_conditions(model)
+        for entry in getattr(model, 'suffixes', None) or []:
+            suffix = entry if isinstance(entry, str) else entry[1]
+            if suffix not in experiment_names:
+                consumed |= {suffix + (c.suffix if c is not None else '') for c in conditions}
+        return consumed
+
+    @staticmethod
+    def _times_text(rows):
+        """The times of an output's rows, for a message: all of them, or the first and last few
+        of a long grid."""
+        shown = ['%g' % t for t in rows]
+        return ', '.join(shown if len(shown) <= 12 else shown[:5] + ['...'] + shown[-5:])
+
+    def _refuse_data_without_rows(self):
+        """Refuse a datum at a time that the output it is scored against has no row at (#872
+        review).
+
+        ``execute`` keeps one output per suffix: the last action that writes it
+        (:func:`~pybnf.bngsim_model.grid.kept_outputs`). When that is a ``simulate`` whose grid
+        is its ``sample_times``, it writes the rows
+        :func:`~pybnf.bngsim_model.grid.sample_time_rows` lists, on BNG2.pl and on the bngsim
+        bridge alike: from ``t_start``, and no later than ``t_end``; one with a step count writes
+        ``t_start`` and its equal steps to ``t_end``. A ``simulate`` with ``continue=>1`` appends
+        its rows to the output of the run before it on the suffix, so a chain of them writes the
+        union of their rows. When those are known as the configuration
+        loads (:func:`~pybnf.bngsim_model.grid.kept_output_rows`), every time of the data
+        scored against the output must be one of them, matched as the objective matches it
+        (equal to within its relative tolerance, ``_sim_row_for``, so a datum a step grid hits
+        to within rounding is matched). Otherwise every evaluation raises, every job is scored
+        as a failed simulation, and the fit ends "Fitting complete" at an objective of inf.
+        Nothing is refused with ``ind_var_rounding = 1``, where the objective takes the nearest
+        row, or with ``time_error``, which integrates over a dense grid the data need not be on;
+        a datum at ``t = inf`` (a steady state) is scored against the last row. Data are matched
+        to an output by key, its condition included
+        (:func:`~pybnf.output_keys.output_pairs`). Not judged: a kept output that is a scan, or
+        whose rows are known only when it runs (a chain among them, when a run in it starts on a
+        clock not known before; see ``kept_outputs``); nor an output a ``postprocess``
+        script is applied to, which may rewrite its times (docs/advanced.rst) -- every output key
+        the script names, and, for an action suffix it names, that action's outputs under every
+        condition too."""
+        from .bngsim_model.grid import kept_outputs
+        from .output_keys import output_pairs
+        if self.config.get('ind_var_rounding', 0) or self._time_error_active():
+            return
+        postprocessed = {suffix for spec in (self.config.get('postprocess') or [])
+                         for suffix in list(spec)[1:]}
+        # BNG2.pl stores a suffix-less action's output in its own file, never under a suffix.
+        bng2pl = self.config.get('bngl_backend') == 'bionetgen'
+        for model in self.models.values():
+            data = self.exp_data.get(model.name) or {}
+            if not isinstance(model, BNGLModel) or not data:
+                continue
+            kept = kept_outputs(model.actions, bng2pl)
+            grids = [(suffix, rows) for suffix, (kind, _params, rows, _chained) in kept.items()
+                     if kind == 'simulate' and rows is not None]
+            for key, suffix, rows, _condition in output_pairs(model, grids):
+                exp = data.get(key)
+                if key in postprocessed or suffix in postprocessed:
+                    continue
+                if exp is None or min(exp.cols, key=exp.cols.get) != 'time':
+                    continue
+                times = np.unique(exp.data[:, exp.cols['time']])
+                missing = [t for t in times if np.isfinite(t)
+                           and not np.any(np.isclose(rows, t, atol=0.))]
+                if not missing:
+                    continue
+                listed = ', '.join('%g' % t for t in missing)
+                kept_by = ('It is the last action that writes "%s", so its output is the one '
+                           'kept.' % suffix)
+                if kept[suffix][3]:
+                    kept_by = ('It is the last action that writes "%s", and continues the runs '
+                               'before it on that suffix (continue=>1), which append their rows '
+                               'into the one output kept: those are the rows of all of them.'
+                               % suffix)
+                raise PybnfError(
+                    'Model %s, simulate action with suffix "%s": the data for "%s" has t = %s, '
+                    'where the action writes no row' % (model.name, suffix, key, listed),
+                    'Model %s, simulate action with suffix "%s" writes rows at t = %s, on BNG2.pl '
+                    'and on the bngsim bridge alike: the run starts at t_start and writes that '
+                    'row, then those of its step count, or of its sample_times after t_start and '
+                    'before the end and then the end (its t_end when it gives one, else its last '
+                    'sample time). %s The data for "%s" has t = %s, which no simulation, on '
+                    'either backend, has a row to score against, so every evaluation would fail. '
+                    'Give the action an output time there (in its sample_times or its step count, '
+                    'and with its t_end past it), or remove the data.'
+                    % (model.name, suffix, self._times_text(rows), kept_by, key, listed))
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
         """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read
@@ -1878,6 +2067,28 @@ class Configuration:
             kind = 'species' if getattr(mut, 'is_species', False) else 'param'
             perts.append((kind, mut.name, mut.value))
         return perts
+
+    @staticmethod
+    def _time_after_start(name, field, value):
+        """``value`` of an experiment's ``t_end:`` (a parameter scan's readout time) or
+        ``equil_t_end:`` (a fixed equilibration's duration), refused unless it is a finite time
+        after t = 0, where the run starts (#952). At or before 0 BNG2.pl integrates nothing --
+        a scan scores every dose at its starting state, and an equilibration is skipped -- while
+        bngsim fails every simulation; either way the fit reports nothing true."""
+        try:
+            time = float(value)
+        except (TypeError, ValueError):
+            raise PybnfError(f"Experiment '{name}': '{field}: {value}' is not a number.")
+        if not (np.isfinite(time) and time > 0):
+            what = ('the time each dose is read, after its run starts at t = 0' if field == 't_end'
+                    else 'how long the equilibration runs before the measured part starts')
+            raise PybnfError(
+                f"Experiment '{name}' has '{field}: {value}', which is not a finite time after 0",
+                f"Experiment '{name}' has '{field}: {value}'. The {field} is {what}, so it must "
+                "be a finite time after 0. At or before 0 BNG2.pl integrates nothing (a scan "
+                "scores every dose at its starting state; an equilibration is skipped), and "
+                "bngsim fails every simulation.")
+        return value
 
     @staticmethod
     def _steady_state_action(name, method, fields):
@@ -1959,6 +2170,8 @@ class Configuration:
         # steady state; it must run its equilibration phase for a FIXED time given by
         # ``equil_t_end:`` (any method may use it; ODE/SSA default to a steady-state solve).
         equil_t_end = fields.get('equil_t_end')
+        if equil_t_end is not None:
+            equil_t_end = self._time_after_start(name, 'equil_t_end', equil_t_end)
         if method == 'nf' and equil_t_end is None:
             raise PybnfError(
                 f"Experiment '{name}' is a network-free (method: nf) pre-equilibration, but NFsim "
@@ -1972,7 +2185,7 @@ class Configuration:
             scan = {'suffix': name, 'method': method, 'param': indvar}
             t_end = fields.get('t_end')
             if t_end is not None:
-                scan['time'] = t_end
+                scan['time'] = self._time_after_start(name, 't_end', t_end)
             else:
                 scan['steady_state'] = 1
             action = ParamScan(scan, explicit_points=points)
@@ -2076,12 +2289,7 @@ class Configuration:
                 continue
             producible = set(model.get_suffixes())
             emit = set(self.exp_data.get(base, {}).keys())
-            for cs in self.constraints:
-                if cs.base_model != base:
-                    continue
-                emit.add(cs.base_suffix)
-                for c in cs.constraints:
-                    emit |= self._constraint_ref_suffixes(c, producible)
+            emit |= self._constraint_read_suffixes(base, producible)
             emit |= {suff for (m, suff) in self.postprocessing if m == base}
             missing = emit - producible
             if missing:
@@ -2092,17 +2300,39 @@ class Configuration:
                     f"so the pair is simulated (lanl/PyBNF#484).")
             self.emit_suffixes[base] = emit
 
-    @staticmethod
-    def _constraint_ref_suffixes(constraint, producible):
+    def _constraint_read_suffixes(self, base, producible):
+        """Every output suffix of model ``base`` a constraint reads: the home ``base_suffix`` of
+        each constraint set on ``base``, and every dotted ``suffix.observable`` reference of
+        **any** constraint set that names one of ``base``'s outputs -- a constraint resolves a
+        dotted reference against every model (:meth:`pybnf.constraint.Constraint.get_key`), so
+        one bound to another model reads this one's output too (#1011 review)."""
+        reads = set()
+        for cs in getattr(self, 'constraints', None) or []:
+            if cs.base_model == base:
+                reads.add(cs.base_suffix)
+            for c in cs.constraints:
+                reads |= self._constraint_ref_suffixes(c, producible)
+        return reads
+
+    #: Every attribute through which a constraint reads an output: its two sides, the
+    #: ``altpenalty`` sides, and the enforcement variables of ``at X=v``, a split ``at``, and
+    #: ``between X=v1, Y=v2`` (:mod:`pybnf.constraint`).
+    _CONSTRAINT_READS = ('quant1', 'quant2', 'alt1', 'alt2', 'atvar', 'atvar1', 'atvar2',
+                         'startvar', 'endvar')
+
+    @classmethod
+    def _constraint_ref_suffixes(cls, constraint, producible):
         """The producible output suffixes one constraint references through a dotted
-        ``suffix.observable`` quantity (its two sides and any ``altpenalty`` sides). A
-        bare observable (no ``.``) resolves to the constraint's own ``base_suffix`` (already
-        unioned by the caller), so only dotted cross-references matter here. Restricting to
-        ``producible`` suffixes keeps a stray token (e.g. a numeric bound that slipped
-        through) from polluting the emit-set; a genuine dotted ref to an off-diagonal cell
-        is kept alive (defensive) rather than silently pruned (#484)."""
+        ``suffix.observable`` quantity: its two sides, any ``altpenalty`` sides, and its
+        enforcement variables (``at EgfTnfInh.Aobs=3`` reads ``EgfTnfInh``). A bare observable
+        (no ``.``) resolves to the constraint's own ``base_suffix`` (already unioned by the
+        caller), so only dotted cross-references matter here. Restricting to ``producible``
+        suffixes keeps a stray token (e.g. a numeric bound that slipped through) from polluting
+        the emit-set; a genuine dotted ref to an off-diagonal cell is kept alive (defensive)
+        rather than silently pruned (#484)."""
         refs = set()
-        for q in (constraint.quant1, constraint.quant2, constraint.alt1, constraint.alt2):
+        for attribute in cls._CONSTRAINT_READS:
+            q = getattr(constraint, attribute, None)
             if isinstance(q, str) and '.' in q:
                 prefix = q.split('.', 1)[0]
                 if prefix in producible:
@@ -2852,9 +3082,8 @@ class Configuration:
                 raise PybnfError('Invalid sbml_integrator {}. Options are: {}.'.format(self.config['sbml_integrator'],
                                                                                    ', '.join(integrators)))
             if self.config['sbml_integrator'] == 'euler':
-                if roadrunner.__version__ < '1.5.1':
-                    raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
-                                     f'have version {roadrunner.__version__}')
+                # Roadrunner's euler integrator needs libroadrunner 1.5.1, which the declared
+                # floor (2.5.0, #1023) now guarantees, so no run-time version check is needed.
                 print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
                        'producing reasonable output.')
             if self.config.get('sbml_ssa_strict', 1) != 1:
@@ -3183,6 +3412,7 @@ class Configuration:
         analytic_scale = self.config.get('analytic_scale')
         if not analytic_scale:
             return
+        self._refuse_scale_for_a_sampler(analytic_scale)
         if not isinstance(self.obj, objective.SummationObjective):
             raise UnknownObjectiveFunctionError(
                 'analytic scale is not available for a column-joint objective',
@@ -3190,7 +3420,202 @@ class Configuration:
                 f"per data point at scoring time, which the column-joint objective "
                 f"'{type(self.obj).__name__}' (kl / wasserstein) does not have. Declare 'scale' "
                 f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
+        self._require_additive_scale(analytic_scale)
         self.obj._analytic_scale = analytic_scale
+
+    def _refuse_normalized_counts(self):
+        """Refuse any normalization of a column that a count noise family scores (#997).
+
+        A count family (``scores_counts``: today ``neg_bin``, from ``objfunc = neg_bin`` /
+        ``neg_bin_dynamic``, ``objective = neg_bin``, or ``noise_model [<obs>] = neg_bin``) is a
+        probability mass function over the non-negative integers, with its dispersion and its
+        Poisson part in count units. ``init`` / ``peak`` / ``zero`` / ``unit`` make the compared
+        values ratios or z-scores and ``floor`` adds a fraction of the maximum to both columns,
+        so none of them is a count any more. The family would score them anyway, through the
+        mass function's continuous (gamma-function) extension, which is not a likelihood, and
+        whose best prediction moves with the normalizing constant; under ``init`` / ``peak``
+        that constant is the simulated series' own, so the noise model would change with the
+        parameter set during the fit.
+
+        Runs on the compiled setting (``{data key: [(transform, [columns])]}``, either
+        edition and every form; the legacy per-file form also keeps each file name as a key,
+        which names no experiment and is skipped). ``scale`` is not in that setting: it is
+        routed to the objective, and :meth:`_require_additive_scale` refuses it on a family
+        with no additive scale, as ``neg_bin`` is, so that case keeps the one message it
+        already had. (``scale`` leaves the data as they are and multiplies the prediction, so
+        on a count family that did have an additive scale it would not be a normalized
+        count.)"""
+        spec_for = getattr(self.obj, '_spec_for', None)
+        if spec_for is None:
+            return      # no per-column noise family (least squares, an analytical objective)
+        settings = self.config.get('normalization')
+        if not isinstance(settings, dict):
+            return
+        refused = {}
+        for by_key in self.exp_data.values():
+            for data_key in by_key:
+                groups = settings.get(data_key)
+                if not isinstance(groups, list):
+                    continue
+                for transform, columns in groups:
+                    name = transform[0] if isinstance(transform, tuple) else transform
+                    for column in columns:
+                        family, _sources = spec_for(column)
+                        if family is not None and family.scores_counts:
+                            refused.setdefault((column, family), {}).setdefault(
+                                name, set()).add(data_key)
+        if not refused:
+            return
+
+        def token_of(family):
+            """The noise_model token(s) a user writes for ``family`` (``neg_bin``)."""
+            return ', '.join(sorted(t for t, make in objective._NOISE_FAMILIES.items()
+                                    if type(make()) is type(family))) or type(family).__name__
+
+        def described(column, family):
+            uses = '; '.join('%s in experiment %s' % (
+                name, ', '.join(self.experiment_label(dk) for dk in sorted(data_keys)))
+                for name, data_keys in sorted(refused[(column, family)].items()))
+            return '%s (%s, scored by %s)' % (column, uses, token_of(family))
+
+        keys = sorted(refused, key=lambda key: key[0])
+        column, family = keys[0]
+        token = token_of(family)
+        normalizations = ', '.join(sorted(refused[keys[0]]))
+        others = ('' if len(keys) == 1 else ' The same holds for %s.'
+                  % '; '.join(described(*key) for key in keys[1:]))
+        raise PybnfError(
+            f"normalization {normalizations} transforms {column}, which the count noise model "
+            f"{token} scores",
+            f"normalization transforms {described(column, family)}. {token} is a count noise "
+            f"model: a probability mass function over the non-negative integers, with its "
+            f"dispersion in count units. A normalized value is not a count, so it would be "
+            f"scored through the mass function's continuous extension, which is not a "
+            f"likelihood, and the best fit would move with the normalizing constant.{others}",
+            hint=f"Fit the counts as counts: remove the normalization from {column}. To relate "
+                 f"a count to a rescaled readout, put the scale in the measurement layer (an "
+                 f"'observable:' formula with a free scale parameter). If the data are not "
+                 f"counts, score {column} with a continuous noise model (normal, lognormal, "
+                 f"...).")
+
+    def experiment_label(self, data_key):
+        """How a message names the experiment of ``data_key``: an edition-2 experiment by its
+        name and condition (``epi2 (condition hi)`` for ``epi2hi``), any other by its data key,
+        which in edition 1 is the data file's name without ``.exp``."""
+        for name, (_base, key) in self._experiment_data_keys.items():
+            if key == data_key and key != name and key.startswith(name):
+                return '%s (condition %s)' % (name, key[len(name):])
+        return data_key
+
+    def _bayesian_sampler(self):
+        """The registry entry of this fit's job type when it is a Bayesian sampler (registry
+        family ``'sampler'``: am, dream, hmc, mh, p_dream, pt), else ``None``.
+
+        A sampler draws from a posterior, which integrates every nuisance over its prior. The
+        three switches that instead maximize a nuisance out -- ``noise_profiling``,
+        ``linear_profiling`` and ``normalization ... = scale`` -- are each refused for every
+        job type this returns, so all three refusals read the one definition (ADR-0108, #996).
+        The Liu-West filter (``lwf``, family ``'filter'``) refuses all three on its own,
+        together with every other normalization."""
+        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
+        return entry if entry is not None and entry.family == 'sampler' else None
+
+    def _refuse_scale_for_a_sampler(self, analytic_scale):
+        """Refuse ``normalization ... = scale`` under a Bayesian sampler (#996).
+
+        ``scale`` replaces each declared series' multiplicative scale by its best fit to the
+        data at every evaluation: a profile, exactly as ``noise_profiling`` and
+        ``linear_profiling`` are, and refused for the same reason. For a Gaussian series
+        ``y_i ~ N(c m_i(theta), sigma_i^2)`` with a flat prior on ``c`` the marginal is the
+        profile times ``sqrt(2 pi / A(theta))``, ``A = sum m_i^2 / sigma_i^2``. ``A`` depends on
+        the parameters through the prediction, so a chain that samples the profile does not
+        sample the posterior the configuration describes. Keyed off the compiled
+        ``analytic_scale``, so every form that can declare ``scale`` -- whole-fit, per
+        observable, per experiment, in either edition -- is covered."""
+        entry = self._bayesian_sampler()
+        if entry is None:
+            return
+        columns = sorted({column for cols in analytic_scale.values() for column in cols})
+        names = ', '.join(columns)
+        # scale profiles one factor per series: each experiment's column (analytic_scale is
+        # keyed by data key), so the free parameters that replace it are one per series too.
+        series = [(column, self.experiment_label(data_key))
+                  for data_key in sorted(analytic_scale)
+                  for column in sorted(analytic_scale[data_key])]
+        listed = '; '.join('%s in experiment %s' % pair for pair in series)
+        fit_type = self.config['fit_type']
+        column = series[0][0]
+        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
+        if len(series) == 1:
+            free = (f"Sample the scale as a free parameter instead: remove scale from the "
+                    f"normalization of {column}, and multiply the model output by a free "
+                    f"parameter, ")
+            free += (f"in the measurement layer: an 'observable:' line whose formula is c * "
+                     f"{column}, with c declared free (e.g. 'loguniform_var = c 1e-3 1e3')."
+                     if modern else
+                     f"in the model: a function c__FREE * {column}, with c__FREE declared free "
+                     f"(e.g. 'loguniform_var = c__FREE 1e-3 1e3'), measured instead.")
+        else:
+            free = (f"Sample the scales as free parameters instead, one for each series scale "
+                    f"profiles: {len(series)} here ({listed}). One parameter shared by them "
+                    f"would be a different model, in which every series has the same scale. "
+                    f"Remove scale from their normalization, and give each series its own "
+                    f"parameter, ")
+            free += (f"in the measurement layer: one 'observable:' line per series, whose "
+                     f"formula multiplies the model output by that series' parameter, with the "
+                     f"series' data column named after the line (e.g. 'observable: "
+                     f"{column}_1, formula: c_1 * {column}' and 'loguniform_var = c_1 1e-3 "
+                     f"1e3', for a column {column}_1 in the data of the first)."
+                     if modern else
+                     "in the model: one function per series that multiplies the observable by "
+                     "that series' __FREE parameter, measured in that series' data.")
+        raise PybnfError(
+            f"normalization scales {names} analytically (scale), which is not available for a "
+            f"Bayesian sampler",
+            f"normalization scales {listed} analytically (scale): at every evaluation it "
+            f"replaces each series' multiplicative scale by its best fit to the data. That is a "
+            f"PROFILE, not a marginal: it maximizes the nuisance out where a posterior "
+            f"integrates it over its prior, and for a Gaussian series the two differ by a "
+            f"factor that depends on the model parameters. Draws from '{fit_type}' "
+            f"({entry.display_name}) would therefore not be posterior draws. noise_profiling "
+            f"and linear_profiling are refused for every sampler for the same reason.",
+            hint=[free, "Or keep scale and fit with an optimizer (for example job_type = de, "
+                        "or lbfgs)."])
+
+    def _require_additive_scale(self, analytic_scale):
+        """Refuse ``scale`` on a column whose noise family has no additive scale (#990).
+
+        The profile is taken in the space the family adds its error in: least squares on a
+        linear scale, the geometric-mean ratio on a log scale (``_scale_mode``, which reads the
+        family's ``additive_on``). A family without one -- ``neg_bin``, whose counts are scored
+        by a probability mass function -- has no such space. It used to be accepted here, and
+        every evaluation then raised ``AttributeError`` inside the objective, which the scoring
+        turned into a failed simulation, so every parameter set was scored as a failure. A
+        least-squares objective has no noise family and profiles linearly, as ``_scale_mode``
+        says."""
+        spec_for = getattr(self.obj, '_spec_for', None)
+        if spec_for is None:
+            return
+        refused = {}
+        for data_key, columns in analytic_scale.items():
+            for column in columns:
+                family, _sources = spec_for(column)
+                if getattr(family, 'additive_on', None) is None:
+                    refused.setdefault((column, type(family).__name__), []).append(data_key)
+        if not refused:
+            return
+        (column, family), data_keys = sorted(refused.items())[0]
+        with_scale = sorted(token for token, make in objective._NOISE_FAMILIES.items()
+                            if getattr(make(), 'additive_on', None) is not None)
+        raise PybnfError(
+            f"normalization scales {column} analytically, but its noise model {family} has no "
+            f"additive scale",
+            f"'scale' profiles a per-series factor in the space the noise model adds its error "
+            f"in: by least squares on a linear scale, by the geometric-mean ratio on a log scale. "
+            f"{column} (experiment {', '.join(sorted(data_keys))}) is scored by {family}, which "
+            f"has no such space, so there is no profile to take.",
+            hint=f"Remove scale from {column}'s normalization, or score it with a noise model "
+                 f"that has an additive scale: {', '.join(with_scale)}.")
 
     def _apply_noise_profiling(self):
         """Resolve ``noise_profiling = 1`` and partition the free parameters (ADR-0108, #562).
@@ -3229,8 +3654,8 @@ class Configuration:
                 f"'{type(self.obj).__name__}' has no per-point noise model to estimate one "
                 f"with. Use a likelihood objective (normal / lognormal / lnnormal / laplace) "
                 f"whose scale is declared 'fit <parameter>'.")
-        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
-        if entry is not None and entry.family == 'sampler':
+        entry = self._bayesian_sampler()
+        if entry is not None:
             raise PybnfError(
                 'noise_profiling is not available for a Bayesian sampler',
                 f"noise_profiling = 1 replaces each estimated noise scale by its maximum-"
@@ -3337,8 +3762,8 @@ class Configuration:
                 f"search as the minimizer of a Gaussian likelihood, but the objective "
                 f"'{type(self.obj).__name__}' has no per-point noise model. Use a linear-scale "
                 f"Gaussian likelihood (chi_sq / normal).")
-        entry = FIT_TYPE_REGISTRY.get(self.config.get('fit_type'))
-        if entry is not None and entry.family == 'sampler':
+        entry = self._bayesian_sampler()
+        if entry is not None:
             raise PybnfError(
                 'linear_profiling is not available for a Bayesian sampler',
                 f"linear_profiling = 1 replaces each linear observable coefficient by its "

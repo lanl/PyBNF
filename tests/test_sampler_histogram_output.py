@@ -486,6 +486,7 @@ def _check_every_credible_file(results):
     pytest.param('hmc', marks=pytest.mark.skipif(
         not _HAS_JAX, reason='needs the optional jax extra (pip install pybnf[jax])')),
 ])
+@pytest.mark.petab
 def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, monkeypatch, job_type):
     """#856 names six job types and two in-run call sites; the reproduction test above
     runs mh and reads only ``_final``. Here every sampler runs with the parameters
@@ -506,6 +507,7 @@ def test_every_sampler_writes_every_interval_from_the_named_column(tmp_path, mon
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize('stop', ['max_iterations', 'rhat'])
+@pytest.mark.petab
 def test_am_failure_in_the_end_of_run_tail_leaves_end_files_through_finalize(
         tmp_path, monkeypatch, stop):
     """The error-exit path main() takes, not a direct cleanup() call: am stops, a step
@@ -551,6 +553,7 @@ def test_am_failure_in_the_end_of_run_tail_leaves_end_files_through_finalize(
     _assert_end_equals_final(results)
 
 
+@pytest.mark.petab
 def test_am_finished_run_resumed_with_more_iterations_keeps_reading_samples_txt(
         tmp_path, monkeypatch):
     """``pybnf -r N`` on a finished am run: the algorithm comes back from

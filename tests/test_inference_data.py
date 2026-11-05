@@ -18,9 +18,17 @@ az = pytest.importorskip('arviz')
 
 from pybnf import inference_data
 from pybnf.inference_data import from_pybnf
+from pybnf.printing import PybnfError
 from pybnf.pset import FreeParameter
 
 pytestmark = pytest.mark.arviz
+
+
+def _linear(*names):
+    """Linear-scale free parameters named ``names``. A synthetic run here has no ``.conf`` to
+    recover its scales from, and ``from_pybnf`` raises when it cannot recover them (#990), so a
+    test that is not about scale recovery states them."""
+    return [FreeParameter(n, 'uniform_var', -1e9, 1e9, value=0.0) for n in names]
 
 
 def _write_samples(path, param_names, rows):
@@ -46,17 +54,17 @@ def two_chain_samples(tmp_path):
     return results, rows
 
 
-def test_basic_shape_and_lp_no_config(two_chain_samples, caplog):
-    """With no config/variables: natural-space posterior, correct chain/draw shape,
-    lp wired from the Ln_probability column."""
+def test_basic_shape_and_lp(two_chain_samples, caplog):
+    """Linear parameters keep their names and values; the chain/draw shape is recovered;
+    lp is wired from the Ln_probability column."""
     results, rows = two_chain_samples
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
 
-    assert set(idata.posterior.data_vars) == {'a', 'k'}  # natural space -> bare names
+    assert set(idata.posterior.data_vars) == {'a', 'k'}  # linear -> bare names
     assert idata.posterior.sizes['chain'] == 2
     assert idata.posterior.sizes['draw'] == 2
 
-    # Posterior values are the raw columns (no scale recovery -> natural space).
+    # Posterior values are the raw columns (linear parameters).
     np.testing.assert_allclose(idata.posterior['a'].values, [[3.0, 3.2], [2.8, 2.9]])
     np.testing.assert_allclose(idata.posterior['k'].values, [[0.1, 0.12], [0.09, 0.11]])
     # lp is the Ln_probability column, chain x draw.
@@ -89,7 +97,7 @@ def test_chain_count_from_run_indices(tmp_path):
             rows.append(('iter%drun%d' % (1000 + 100 * d, c), -1.0 * c, [float(c) + d]))
     _write_samples(results / 'samples.txt', ['x'], rows)
 
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('x'))
     assert idata.posterior.sizes['chain'] == 3
     assert idata.posterior.sizes['draw'] == 4
 
@@ -108,7 +116,7 @@ def test_ragged_chains_truncated_to_min(tmp_path, caplog):
     ]
     _write_samples(results / 'samples.txt', ['x'], rows)
 
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('x'))
     assert idata.posterior.sizes['draw'] == 2  # truncated to the shorter chain
     # Earliest two draws of chain 0 kept (iteration order), chain 1 intact.
     np.testing.assert_allclose(idata.posterior['x'].values, [[1.0, 2.0], [10.0, 20.0]])
@@ -125,7 +133,7 @@ def test_draws_ordered_by_iteration(tmp_path):
     ]
     _write_samples(results / 'samples.txt', ['x'], rows)
 
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('x'))
     np.testing.assert_allclose(idata.posterior['x'].values, [[1.0, 2.0, 3.0]])
 
 
@@ -133,9 +141,9 @@ def test_source_path_variants(two_chain_samples, tmp_path):
     """source accepts a Results/ dir, the samples.txt file, and an output dir
     containing Results/."""
     results, _ = two_chain_samples
-    from_pybnf(results)                       # Results/ dir
-    from_pybnf(results / 'samples.txt')       # the file itself
-    from_pybnf(tmp_path)                       # output dir -> Results/samples.txt
+    from_pybnf(results, variables=_linear('a', 'k'))                       # Results/ dir
+    from_pybnf(results / 'samples.txt', variables=_linear('a', 'k'))       # the file itself
+    from_pybnf(tmp_path, variables=_linear('a', 'k'))                       # output dir -> Results/samples.txt
 
 
 def test_diagnostics_copied_into_attrs(two_chain_samples):
@@ -147,7 +155,7 @@ def test_diagnostics_copied_into_attrs(two_chain_samples):
         f.write('1000\t40000\t1.01\t250.0\t300.0\t1.05\t120.0\t150.0\n')
         f.write('2000\t80000\t1.00\t500.0\t600.0\t1.02\t240.0\t280.0\n')
 
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     attrs = idata.posterior.attrs
     assert attrs['inference_library'] == 'pybnf'
     assert attrs['pybnf_max_rhat'] == pytest.approx(1.02)       # max over params, last row
@@ -173,19 +181,66 @@ def test_conf_autodiscovery_recovers_scale(two_chain_samples, monkeypatch):
     assert set(idata.posterior.data_vars) == {'a', 'log10_k'}
 
 
-def test_conf_load_failure_falls_back_to_natural(two_chain_samples, monkeypatch, caplog):
-    """If a discovered conf cannot be loaded, the bridge degrades to natural space
-    with a warning rather than raising -- an archived run still produces an object."""
+@pytest.mark.parametrize('failure', [
+    PybnfError('Model file sir1.bngl was not found.'),
+    PermissionError(13, 'Permission denied'),
+], ids=['model_moved', 'unreadable'])
+def test_a_conf_that_does_not_load_raises_naming_the_cause(two_chain_samples, monkeypatch,
+                                                           failure):
+    """If the discovered conf cannot be loaded, the scales are unknown and the bridge raises,
+    naming the conf and the cause and saying how to supply them. It used to fall back to
+    natural space with a log warning, which gave a log parameter's draws in natural units
+    under its bare name (#990)."""
     results, _ = two_chain_samples
     (results / 'run.conf').write_text('# unloadable conf\n')
 
     def _boom(path):
-        raise RuntimeError('model file missing')
+        raise failure
 
     monkeypatch.setattr('pybnf.parse.load_config', _boom, raising=True)
-    idata = from_pybnf(results)
-    assert set(idata.posterior.data_vars) == {'a', 'k'}  # natural-space fallback
-    assert any('NATURAL space' in r.message for r in caplog.records)
+    with pytest.raises(PybnfError) as info:
+        from_pybnf(results)
+    assert info.value.log_message.startswith(
+        'Could not load %s to recover the parameter scales: ' % (results / 'run.conf'))
+    assert ('Model file sir1.bngl was not found.' if isinstance(failure, PybnfError)
+            else 'Permission denied') in info.value.log_message
+    assert 'Pass config= ' in info.value.message and 'or variables= ' in info.value.message
+    assert info.value.__cause__ is failure
+
+
+def test_a_configuration_object_supplies_the_scales(two_chain_samples):
+    """``config=`` takes a loaded Configuration, as an in-process run hands it over, and its
+    variables give the scales without a reload."""
+    from pybnf.config import Configuration
+    results, _ = two_chain_samples
+    cfg = object.__new__(Configuration)
+    cfg.variables = [FreeParameter('a', 'uniform_var', 0, 10, value=3.0),
+                     FreeParameter('k', 'loguniform_var', 1e-3, 1e3, value=0.1)]
+    idata = from_pybnf(results, config=cfg)
+    assert set(idata.posterior.data_vars) == {'a', 'log10_k'}
+    np.testing.assert_allclose(idata.posterior['log10_k'].values,
+                               np.log10([[0.1, 0.12], [0.09, 0.11]]))
+
+
+def test_no_conf_and_no_scales_raises(two_chain_samples):
+    """Without a .conf in Results/ and with neither config nor variables, nothing says which
+    parameters are log-scaled, so the bridge raises instead of guessing natural space."""
+    results, _ = two_chain_samples
+    with pytest.raises(PybnfError) as info:
+        from_pybnf(results)
+    assert info.value.log_message == ('No .conf in %s to recover the parameter scales from'
+                                      % results)
+    assert 'Pass config= ' in info.value.message
+
+
+def test_a_sampled_parameter_the_config_does_not_declare_raises(two_chain_samples):
+    """The draws of a parameter the configuration does not declare have no known scale; they
+    used to be emitted in natural space with a log warning (#990)."""
+    results, _ = two_chain_samples
+    with pytest.raises(PybnfError) as info:
+        from_pybnf(results, variables=_linear('a'))
+    assert info.value.log_message == ('The configuration declares no free parameter k, which %s '
+                                      'holds draws of' % (results / 'samples.txt'))
 
 
 def test_empty_samples_raises(tmp_path):
@@ -258,7 +313,7 @@ def test_netcdf_roundtrip(two_chain_samples, tmp_path):
     (the auto-emit path's on-disk artifact)."""
     pytest.importorskip('h5netcdf')
     results, _ = two_chain_samples
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     out = tmp_path / 'inference_data.nc'
     idata.to_netcdf(str(out))
     reloaded = az.from_netcdf(str(out))
@@ -309,7 +364,7 @@ def test_loglik_group_present_with_labels(samples_with_loglik):
     """A sidecar yields a log_likelihood group: var 'y' over the labelled obs_id axis,
     dims chain x draw x obs (the shape az.loo / az.waic / az.compare consume)."""
     results, obs_ids, _ = samples_with_loglik
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     assert 'log_likelihood' in _group_names(idata)
     ll = idata.log_likelihood['y']
     assert dict(ll.sizes) == {'chain': 2, 'draw': 2, 'obs_id': 3}
@@ -334,7 +389,7 @@ def test_loo_and_compare_run_on_bridged_group(tmp_path):
         _write_samples(results / 'samples.txt', ['a', 'k'], rows)
         _write_loglik(results / 'log_likelihood.txt',
                       ['o%d' % i for i in range(5)], ll_rows)
-        return from_pybnf(results)
+        return from_pybnf(results, variables=_linear('a', 'k'))
 
     m1, m2 = build('m1', -2.0), build('m2', -2.4)
     az.loo(m1)                       # PSIS-LOO computes
@@ -345,7 +400,7 @@ def test_loglik_row_alignment(samples_with_loglik):
     """The sidecar's i-th row maps to samples' i-th row, then reshapes by the recovered
     (chain, draw). chain0/draw@iter1100 is sidecar row 2 -> [-1.2, -2.2, -3.2]."""
     results, _, ll_rows = samples_with_loglik
-    y = from_pybnf(results).log_likelihood['y']
+    y = from_pybnf(results, variables=_linear('a', 'k')).log_likelihood['y']
     # chain order = sorted run indices [0,1]; draw order = sorted iters [1000,1100].
     np.testing.assert_allclose(y.values[0, 0, :], ll_rows[0])  # run0 @ iter1000
     np.testing.assert_allclose(y.values[1, 0, :], ll_rows[1])  # run1 @ iter1000
@@ -357,7 +412,7 @@ def test_loglik_absent_when_no_sidecar(two_chain_samples):
     """No sidecar (no output_inference_data, or a non-likelihood objfunc) -> no group,
     so the bridge still works for every other run -- the group is purely additive."""
     results, _ = two_chain_samples
-    assert 'log_likelihood' not in _group_names(from_pybnf(results))
+    assert 'log_likelihood' not in _group_names(from_pybnf(results, variables=_linear('a', 'k')))
 
 
 def test_loglik_width_mismatch_omits_group(samples_with_loglik, caplog):
@@ -366,7 +421,7 @@ def test_loglik_width_mismatch_omits_group(samples_with_loglik, caplog):
     results, obs_ids, ll_rows = samples_with_loglik
     ll_rows[2] = [-1.2, -2.2]  # 2 values where 3 are expected
     _write_loglik(results / 'log_likelihood.txt', obs_ids, ll_rows)
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     assert 'log_likelihood' not in _group_names(idata)
     assert 'omitting the log_likelihood group' in caplog.text
     assert dict(idata.posterior.sizes) == {'chain': 2, 'draw': 2}  # posterior still whole
@@ -376,7 +431,7 @@ def test_loglik_netcdf_roundtrip(samples_with_loglik, tmp_path):
     """The log_likelihood group survives the netCDF round-trip the auto-emit path uses."""
     pytest.importorskip('h5netcdf')
     results, _, _ = samples_with_loglik
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     out = tmp_path / 'idata.nc'
     idata.to_netcdf(str(out))
     reloaded = az.from_netcdf(str(out))
@@ -450,7 +505,7 @@ def test_sampler_writes_aligned_sidecar_that_bridges(tmp_path):
     n_loglik = sum(1 for ln in open(algo.log_likelihood_file) if not ln.startswith('#'))
     assert n_samples == n_loglik == 4
 
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('k'))
     assert 'log_likelihood' in _group_names(idata)
     assert dict(idata.log_likelihood['y'].sizes) == {'chain': 2, 'draw': 2, 'obs_id': 2}
     assert [str(x) for x in idata.log_likelihood.coords['obs_id'].values] == ['m/s/o@x=0', 'm/s/o@x=1']
@@ -519,9 +574,9 @@ def test_am_discovers_params_and_shapes_posterior(am_run):
     param) with values straight from the files, and -- am having no lp -- emits no
     sample_stats group."""
     results, c0, c1 = am_run
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
 
-    assert set(idata.posterior.data_vars) == {'a', 'k'}  # natural space -> bare names
+    assert set(idata.posterior.data_vars) == {'a', 'k'}  # linear -> bare names
     assert idata.posterior.sizes['chain'] == 2           # one chain per params file
     assert idata.posterior.sizes['draw'] == 3            # one draw per file row
     np.testing.assert_allclose(idata.posterior['a'].values,
@@ -552,7 +607,7 @@ def test_am_params_preferred_over_stray_samples_txt(am_run):
     posterior is the 3-draw per-chain record rather than the empty samples.txt."""
     results, _, _ = am_run
     _write_samples(results / 'samples.txt', ['a', 'k'], [])  # header only
-    idata = from_pybnf(results)
+    idata = from_pybnf(results, variables=_linear('a', 'k'))
     assert idata.posterior.sizes['draw'] == 3
     assert idata.posterior.sizes['chain'] == 2
 
@@ -564,7 +619,7 @@ def test_am_ragged_chains_truncated_to_min(tmp_path):
     runs.mkdir(parents=True)
     _write_am_params(runs / 'params_0.txt', ['x'], [[1.0], [2.0], [3.0]])  # 3 draws
     _write_am_params(runs / 'params_1.txt', ['x'], [[10.0], [20.0]])       # 2 draws
-    idata = from_pybnf(tmp_path / 'Results')
+    idata = from_pybnf(tmp_path / 'Results', variables=_linear('x'))
     assert idata.posterior.sizes['draw'] == 2
     np.testing.assert_allclose(idata.posterior['x'].values, [[1.0, 2.0], [10.0, 20.0]])
 
@@ -577,7 +632,7 @@ def test_am_chain_axis_from_file_index(tmp_path):
     for c in (0, 2, 10):
         _write_am_params(runs / ('params_%d.txt' % c), ['x'],
                          [[float(c)], [float(c) + 0.5], [float(c) + 0.9]])
-    idata = from_pybnf(tmp_path / 'Results')
+    idata = from_pybnf(tmp_path / 'Results', variables=_linear('x'))
     assert idata.posterior.sizes['chain'] == 3
     np.testing.assert_allclose(idata.posterior['x'].values[:, 0], [0.0, 2.0, 10.0])
 

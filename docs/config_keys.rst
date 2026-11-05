@@ -170,7 +170,23 @@ Required Keys
       before it did. Only its own ``preequilibrate:`` and ``condition:`` change that, so the
       order of the ``experiment:`` lines never changes a fit. (ADR-0151)
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
-      "model as is").
+      "model as is"). An experiment run under a condition names its output, and its data
+      key, by the experiment's name followed by the condition's name, and a model runs each
+      of its experiments under each of its conditions whenever something reads that run's
+      output (data, a constraint, including its ``at`` / ``between`` variables, or a
+      postprocessing script). So names that spell one output that is read in two ways — an
+      experiment ``data`` with no condition beside an experiment ``dat`` and a condition ``a``
+      of the same model, whether or not any experiment uses ``a`` — are refused at load,
+      naming both. Two pairings nothing reads that happen to spell the same output (``Egf``
+      under ``TnfInh`` and ``EgfTnf`` under ``Inh``) load: they may still run (BNG2.pl and
+      RoadRunner run every pairing, and so does bngsim for ``job_type = check`` or a model
+      with an action no experiment wrote), and a saved simulation file under that name may
+      hold either, but nothing scores or constrains them. Nor may an experiment be named after
+      another's pre-equilibration phase (``x_preequil`` beside an experiment ``x`` with
+      ``preequilibrate:``), whose output is stored under that name. A name that
+      merely ends with a condition's name (``no_inhibition`` beside ``inhibition``) is fine:
+      PyBNF reads each output back from the experiment and condition that produced it, never
+      from its spelling. (ADR-0153)
     * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
       unmeasured **steady state before the measured time course begins** — the PEtab v2
       pre-equilibration protocol. The named condition (and the measurement ``condition:``,
@@ -195,7 +211,9 @@ Required Keys
       ⇒ each dose runs to steady state). For a ``steady_state`` experiment it is instead the
       **max-time bound** on the relaxation, default ``1e6``. Inert for a time course, whose
       grid comes from the data.
-    * **method:** the simulator, default ``ode``.
+    * **method:** the simulator, default ``ode``. A network-free experiment (``nf``, ``rm``)
+      needs BNGsim: BNG2.pl cannot run the action PyBNF writes for it, so it is refused
+      wherever BNG2.pl would simulate it (see :ref:`bngl_backend <bngl_backend>`).
 
   Requires ``edition >= 2``.
 
@@ -286,6 +304,7 @@ Required Keys
     * ``dream`` - :ref:`DREAM <alg-dream>`
     * ``p_dream`` - :ref:`DREAM <alg-dream>` with preconditioning (P-DREAM)
     * ``hmc`` - :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` (analytical / ``expression`` objectives only; requires ``edition >= 2`` and the ``pybnf[jax]`` extra)
+    * ``lwf`` - the :ref:`Liu–West filter <alg-lwf>`, a forecasting filter for count data that arrive one interval at a time (requires ``edition >= 2``)
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -306,8 +325,8 @@ Required Keys
   gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), the
   :ref:`profile-likelihood <gradient_fitting>` identifiability analysis
   (``profile_likelihood``), the :ref:`experimental design <experimental_design>` that
-  says what to measure next (``design``), and the model *checker*
-  (``check``), not just fitting. The value names the specific
+  says what to measure next (``design``), the :ref:`Liu–West filter <alg-lwf>`
+  (``lwf``), and the model *checker* (``check``), not just fitting. The value names the specific
   procedure; the key names the kind of job. Requires :ref:`edition <edition>` ``>= 2``,
   and like the modern objective surface there is **no implicit default** -- the run
   must be named. Under a modern edition the legacy ``fit_type`` key is rejected.
@@ -786,6 +805,90 @@ Other Path Keys
   ``PYBNF_NO_BNGSIM=1`` disables BNGsim auto-selection.
 
   BNGL workflows still need ``bng_command`` when PyBNF must run BNG2.pl to generate ``.net`` or XML files.
+
+  On BNGsim a ``simulate`` action follows BNG2.pl's rules for its output grid: ``n_output_steps`` is
+  ``n_steps``, an action with neither and no ``sample_times`` takes one step, ``n_steps`` takes
+  precedence over ``sample_times``, and ``sample_times`` needs three or more points. An action
+  BNG2.pl refuses is refused with BNG2.pl's message when the model is set up: both ``n_steps`` and
+  ``n_output_steps``, no ``t_end`` without ``sample_times`` (a ``parameter_scan`` too), and, for
+  NFsim, anything but ``n_steps`` with ``t_end`` -- except ``sample_times``, which BNGsim's NFsim
+  takes (two or more points) and BNG2.pl's does not. An action that names an option BNG2.pl reads to
+  decide its rows and the BNGsim bridge does not -- ``argfile``, ``max_sim_steps``,
+  ``output_step_interval``, or, beside ``stop_if``, ``print_on_stop`` other than 1 -- is not
+  supported by the bridge: ``auto`` runs its model on BNG2.pl, and ``bngsim`` refuses it, naming the
+  option. So is ``stop_if`` on a stochastic method (``ssa``, ``psa``): BNG2.pl checks it after
+  every reaction and stops between output times, where the bridge checks it only at output times;
+  and on a steady-state ``parameter_scan``, whose points the bridge solves without it.
+  That holds for an action in a protocol block that a ``simulate_protocol`` action or a
+  ``method=>"protocol"`` scan runs, too, except that PyBNF cannot run such a model on BNG2.pl
+  either: it simulates the model's generated ``.net`` file there, which carries no protocol block
+  (`#926 <https://github.com/lanl/PyBNF/issues/926>`_). So ``auto`` and ``bionetgen`` refuse a model
+  whose protocol block an action runs whenever they would simulate it with BNG2.pl, when the fit
+  sets its models up, and ``bngsim`` refuses one whose protocol names such an option, or that runs
+  it with ``simulate_protocol``, which the bridge does not run.
+
+  The rows of an action with ``sample_times`` are those BNG2.pl's ``run_network`` writes: the run
+  starts at ``t_start`` (0 unless the action says otherwise, or ``continue=>1`` starts it where the
+  previous run ended) and writes that row, then each listed time after ``t_start`` and before the
+  end, then the end -- the action's ``t_end`` when it gives one, below or above the last listed
+  time, else the last listed time. A time listed at or before ``t_start``, or at or after
+  ``t_end``, is not written; times are compared with 15 significant digits, as BNG2.pl writes them
+  for ``run_network``. A ``parameter_scan`` point with ``sample_times`` takes its row at that
+  end. BNGsim's NFsim takes the same rows, and refuses ``continue=>1``, as BNG2.pl's does (it
+  used to ignore it). The output kept for a suffix is the last action that writes it (a run
+  that does not continue writes it afresh, in BNG2.pl as in BNGsim; one with ``continue=>1``
+  appends its rows after its start to the output of the run before it on the suffix, so a chain
+  of them writes the rows of each). When that is a ``simulate``, or a chain of them, whose rows
+  are known as the configuration loads -- their ``sample_times`` or step counts, written as
+  numbers, no ``stop_if`` or ``steady_state``, and each continued run starting where the run
+  before it on the suffix ended -- a datum at a time it does not write is refused then, since no
+  simulation could score it (unless
+  ``ind_var_rounding = 1``, the fit has a ``time_error``, or a ``postprocess`` script, which may
+  rewrite the times, is applied to the output). A
+  grid that starts at a negative ``t_start`` (BNG2.pl stops on it) or ends where it starts
+  (BNG2.pl integrates nothing: it writes the one row at ``t_start``, or, continuing a run, stops)
+  is refused. BNGsim used to integrate from the first listed time, reporting the initial state
+  there, and to run past a ``t_end`` below the last listed time
+  (`#872 <https://github.com/lanl/PyBNF/issues/872>`_). Edition-2 experiments list ``t = 0``
+  first, so their rows are unchanged. An edition-2 time course with data before ``t = 0`` is
+  refused when the configuration loads, on every backend
+  (`#952 <https://github.com/lanl/PyBNF/issues/952>`_): BNG2.pl writes no row there, and RoadRunner
+  and BNGsim for SBML would start the run at the earliest time instead. So are a parameter
+  scan's ``t_end:`` and an ``equil_t_end:`` that are not after 0.
+
+  After a ``simulate``, BNGsim, like BNG2.pl, leaves the model at the time and state of the last
+  row the run wrote: the grid's end, or the row an ODE run stopped at on ``stop_if`` or
+  ``steady_state``, which is where a ``continue=>1`` action starts and what the next action
+  simulates from. It used to keep the state it had integrated to ``t_end`` after a ``stop_if``,
+  and the clock at ``t_end`` after either (`#1010 <https://github.com/lanl/PyBNF/issues/1010>`_).
+  BNGsim stops at the first output time at which the condition holds. On a regular grid that is
+  where BNG2.pl stops too; on a coarse, irregular one BNG2.pl, which checks the condition against
+  the integrator's internal state, can stop one output time earlier. Each point of a
+  ``parameter_scan`` with ``stop_if`` stops on it too, as BNG2.pl's simulate at each point does,
+  and takes its row there; BNGsim used to read each point at ``t_end``. A scan with ``stop_if``
+  that starts from a carried state (a ``simulate`` before it with no ``resetConcentrations()``)
+  is refused when it runs. A gradient fit that continues from a ``stop_if`` stop, directly or
+  from a snapshot of it, is refused, since BNGsim cannot put the derivatives back at the stop
+  row.
+
+  **Network-free experiments need BNGsim.** BNG2.pl's NFsim takes an output grid only as
+  ``t_end`` with ``n_steps`` of 1 or more, and BNG2.pl has no RuleMonkey. An edition-2
+  ``method: nf`` experiment writes its data's times as ``sample_times`` (a dose-response, a
+  ``parameter_scan`` with no ``n_steps``), and ``method: rm`` names RuleMonkey, so BNG2.pl cannot
+  run either. A model with such an action is refused, naming the experiment and BNG2.pl's
+  message, and so is a hand-written network-free action BNG2.pl stops: one with ``sample_times``
+  or no ``n_steps`` (a ``simulate_nf`` too), ``n_steps`` below 1, no ``t_end``, ``continue``, or
+  a method other than ``nf`` in lower case (``NF`` included). The refusal applies wherever the
+  model would be simulated with BNG2.pl: under ``bngl_backend =
+  bionetgen`` and under ``job_type = check`` (which simulates with BNG2.pl whatever this key
+  says) when the configuration loads; under ``auto`` -- when BNGsim is not available (or
+  ``PYBNF_NO_BNGSIM`` is set), its bridge cannot take the model's actions, or the installed build
+  lacks the engine -- when the fit sets its models up, before any simulation; and the same when
+  a BNGsim set-up step fails and ``auto`` would otherwise fall back to BNG2.pl. (A configuration
+  under ``auto`` is not wrong, and still loads on a machine without BNGsim for a reader that
+  simulates nothing, such as ``pybnf.inference_data.from_pybnf`` reloading a finished run's
+  configuration.) Such a model used to be accepted, and every simulation of it failed.
+  (`#999 <https://github.com/lanl/PyBNF/issues/999>`_)
 
   Default: auto
 
@@ -1281,7 +1384,7 @@ Output Options
 .. _output_inference_data:
 
 **output_inference_data**
-  Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. (Adaptive MCMC (``am``) records its draws per chain in ``Results/A_MCMC/Runs/params_*.txt`` rather than ``samples.txt``; the bridge reads those directly, and -- since ``am`` records draws only, not a per-draw log-posterior -- its object carries no ``sample_stats.lp`` group.) Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and (except for ``am``) ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. **For LOO/WAIC model comparison** (ADR-0056), when the fit uses a per-point likelihood objfunc (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ``neg_bin_dynamic``, or the ``objective`` / ``noise_model`` surface), the run also records ``Results/log_likelihood.txt`` and the InferenceData gains a ``log_likelihood`` group, so ``az.loo`` / ``az.waic`` / ``az.compare`` work directly on it. Its values are genuine, *unweighted* per-observation log-densities (not ``-score``). With a non-likelihood objfunc (least-squares, ``kl``, ``direct_pass``, ...) there is no normalized density, so no sidecar is written, the group is omitted, and a one-time note explains that LOO/WAIC needs a likelihood objfunc. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
+  Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. (Adaptive MCMC (``am``) records its draws per chain in ``Results/A_MCMC/Runs/params_*.txt`` rather than ``samples.txt``; the bridge reads those directly, and -- since ``am`` records draws only, not a per-draw log-posterior -- its object carries no ``sample_stats.lp`` group.) Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``, which reads each parameter's scale from the ``.conf`` the run copied into ``Results/``; if that does not load (its model or data paths are relative to the run's directory, or the files have moved), it raises, naming why, and ``config=`` or ``variables=`` supplies the scales instead. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and (except for ``am``) ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. **For LOO/WAIC model comparison** (ADR-0056), when the fit uses a per-point likelihood objfunc (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ``neg_bin_dynamic``, or the ``objective`` / ``noise_model`` surface), the run also records ``Results/log_likelihood.txt`` and the InferenceData gains a ``log_likelihood`` group, so ``az.loo`` / ``az.waic`` / ``az.compare`` work directly on it. Its values are genuine, *unweighted* per-observation log-densities (not ``-score``). With a non-likelihood objfunc (least-squares, ``kl``, ``direct_pass``, ...) there is no normalized density, so no sidecar is written, the group is omitted, and a one-time note explains that LOO/WAIC needs a likelihood objfunc. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
 
   Default: 0
 
@@ -1445,7 +1548,7 @@ Algorithm Options
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
    - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1).
    - ``floor <rho>`` - add a measurement-noise **floor** ``x' = x + rho*max(x)`` (``rho`` a small fraction, default ``0.03``), so a log / relative objective stays finite where a series legitimately touches zero. Applied **identically to the simulated and the experimental** column.
-   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise.
+   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise. Refused when the configuration loads for a column whose noise model has no additive scale to profile in (``neg_bin``), and for every Bayesian sampler (``am``, ``dream``, ``hmc``, ``mh``, ``p_dream``, ``pt``): the optimum is a **profile**, not a marginal, so the draws would not be posterior draws (`#996 <https://github.com/lanl/PyBNF/issues/996>`_), as for ``noise_profiling`` and ``linear_profiling``. To sample the scale, make it a free parameter in the measurement layer (``observable: y, formula: c * y`` with ``c`` declared free).
 
   Normalization is a per-observable *prediction* transform -- a sibling of the per-observable
   :ref:`noise_model <noise_model_key>` / ``cumulative`` surface -- so under a modern
@@ -1477,6 +1580,19 @@ Algorithm Options
   and is discarded only if a ``nan`` falls on a time the data actually measures. A column with
   no measured value at all is left untouched; that simulation is then rejected by scoring, as
   it would be without any normalization.
+
+  **Counts are not normalized.** A column scored by a count noise model (``neg_bin``: the
+  legacy ``objfunc = neg_bin`` / ``neg_bin_dynamic``, ``objective = neg_bin``, or ``noise_model
+  [<observable>] = neg_bin``) takes no normalization of any type. That noise model is a
+  probability mass function over the non-negative integers with its dispersion in count units;
+  a normalized value is not a count, so it would be scored through the function's continuous
+  extension, which is not a likelihood, and the best fit would move with the normalizing
+  constant. The configuration is refused when it loads, naming the column, the normalization
+  and the noise model (`#997 <https://github.com/lanl/PyBNF/issues/997>`_). Fit the counts as
+  counts, and put any rescaling in the measurement layer (an ``observable:`` formula with a free
+  scale parameter). Normalizing another column that a continuous noise model scores is
+  unaffected.
+
   Together with ``objective = lognormal`` the chain ``floor 0.03, scale`` spells the
   "sum of squared log-differences of geometric-mean-normalized trajectories" objective common
   to arbitrary-unit fluorescence / blot fits.
@@ -1676,9 +1792,13 @@ Algorithm Options
 
   Set ``sbml_atol`` to a **number** if your model lives below the ``1e-16`` floor, or if
   you want a different tolerance from the one the derivation picks. A number replaces the
-  whole derivation: it integrates every species at that value, which is also the way to
-  pin the pre-per-species behaviour exactly. ``auto`` and ``tracking`` are not that — they
-  say how far the model's own state may set its tolerance, so the derivation stays on.
+  whole derivation, and PyBNF hands it to bngsim as written. Through bngsim 0.16.0 that
+  integrates every species at that value, which is also the way to pin the pre-per-species
+  behaviour exactly. bngsim 0.17.0 reads a number, like its own default, as a ceiling per
+  species, ``min(number, rtol·max(|x_i(0)|, floor))``: no species is held looser than the
+  number, and one far below it is still resolved. The derived scalar and a BNGL action's
+  ``atol=>`` are read the same way. ``auto`` and ``tracking`` are not that — they say how
+  far the model's own state may set its tolerance, so the derivation stays on.
 
   If what you want is a tolerance for **one species** that the derivation does not
   produce, that is ``species_atol:`` on the :ref:`model: <model_decl>` line rather than
@@ -1716,8 +1836,10 @@ Algorithm Options
 
   bngsim derives ``∂f/∂θ`` in closed form and compiles it, but CVODES takes one
   sensitivity-RHS callback for every column, so a single rate law it cannot
-  differentiate — an ``abs()``/``floor()``/``erf()`` term, a comparison in a place it
-  cannot solve, or simply a derivation that ran out of its build-time budget — declines
+  differentiate — a ``floor()``/``erf()`` term (through bngsim 0.16.0, an ``abs()``,
+  ``min()`` or ``max()`` of the state too; 0.17.0 differentiates those unless they sit under
+  a call, a division or a power), a comparison in a place it cannot solve, or simply a
+  derivation that ran out of its build-time budget — declines
   the analytic path for the **whole model**. CVODES' internal difference quotient carries
   every column instead. That answer is still correct; it costs an extra right-hand-side
   evaluation per column per step, so an ``N``-parameter fit pays roughly ``N`` times the
@@ -1741,6 +1863,14 @@ Algorithm Options
   is unaffected. And the check describes the model at the fit's start point: one step of
   bngsim's codegen reads parameter values, so a model that branches on a fitted threshold
   could in principle change its answer mid-search.
+
+  One case is not a slower answer but no answer: a declined model that the fit asks for an
+  **initial-value** column — a fitted species initial value, or, under ``job_type = ms``,
+  any state carried across a knot. The difference quotient perturbs a parameter, and an
+  initial value has none. Under ``warn`` and ``error`` such a fit is refused at job start,
+  as is one bngsim refuses to build a sensitivity simulator for at all. Fix the initial
+  value, or re-encode the rate law bngsim names, to run a gradient fit. ``ignore`` skips
+  this check with the rest, and the fit then fails every simulation.
 
   Default: warn
 
@@ -1860,6 +1990,10 @@ Algorithm Options
 
   Not available for ``job_type = hmc`` (which samples in process, with no simulation loop
   for the budget to stop) -- naming it there is an error rather than a silent no-op.
+  ``job_type = lwf`` checks the budget before each data row instead, so it may overrun by one row
+  of ``lwf_particles`` segments plus the forecast it still draws, ``lwf_forecast_intervals`` times
+  ``lwf_particles`` segments per independent run, each bounded by ``wall_time_sim``; a run it
+  stops writes its outputs, forecast included, through its last row (see :ref:`alg-lwf-budget`).
 
   Default: 0 (no limit)
 
@@ -2735,9 +2869,20 @@ For Adaptive MCMC
     * ``adaptive = 50000``
   
   
-**output_noise_trajectory (Only for use with neg_bin and neg_bin_dynamic functions)**
-  Calculate and add the negative binomial noise to the specified observables or functions then save the output of the user defined observable or function from the simulation output to a .txt file.
-  
+**output_noise_trajectory**
+  Draw negative binomial counts around the simulated values of the specified observables or
+  functions and save them to a .txt file (``job_type = am``). Each column is drawn from the noise
+  model that scores it (a column no data scores takes the whole-fit noise model): a ``neg_bin``
+  noise model whose dispersion is fixed (``fix_at``), fitted (``fit <parameter>``) or a formula of
+  parameters, at its location (mean or median), and differenced first when the column is declared
+  ``cumulative``. The legacy ``objfunc = neg_bin`` / ``neg_bin_dynamic`` are such noise models, and
+  under them a column whose name contains ``_Cum`` is drawn differenced, as it always has been.
+  Refused when the configuration loads: a column with any other noise model, a dispersion read
+  from the data, and a fit with a ``time_error``, which the draw would ignore. Also refused: a
+  column any experiment normalizes (its prediction is then a normalized value, not an expected
+  count, so counts drawn around it mean nothing -- list it under ``output_trajectory`` instead),
+  and every name and experiment rule of ``output_trajectory`` below applies here too.
+
   Default: None (multiple values can be defined separated by a comma)
   
   Note: output_trajectory and output_noise_trajectory can both be declared in the same configuration file but may       result in slower performance
@@ -2749,8 +2894,37 @@ For Adaptive MCMC
     
 
 **output_trajectory**
-  Save the output of the user defined observable or function from the simulation output to a .txt file.
-  
+  Save the output of the user defined observable or function from the simulation output to a .txt file
+  (``job_type = am`` only; any other job type refuses the key when the run starts). One file per
+  chain is written for every experiment whose simulation has the column, an experiment under a
+  ``condition:`` or an edition-1 mutant included, named
+  ``traj_<experiment suffix><column>_chain_<n>.txt``.
+
+  The trajectory is the simulated column as the objective receives it -- after the experiment's
+  ``normalization`` and any ``postprocess`` script -- with one rule of its own about cumulative
+  columns, which ignores how the objective treats them: a column whose name contains ``_Cum`` is
+  written as its increments (its first value, then the difference between successive rows), and
+  no other column is differenced. So a ``_Cum`` column that the objective scores as it is is
+  written differenced, and an edition-2 column declared ``cumulative`` under another name is
+  written as the cumulative series, not the increments the objective scores. A sample whose
+  scoring failed is not written.
+
+  Refused when the configuration loads: a column normalized with ``scale``, because that factor
+  is profiled against the data inside the objective and is not part of the simulated series; a
+  name that no model observable, function or species, and no measurement formula, defines (the
+  message lists the names it could match); and two experiments whose files would have one name
+  (the file name joins the experiment suffix and the column with nothing between them, and does
+  not name the model). Where the columns cannot be known before a simulation runs -- a
+  ``postprocess`` script, which may add or remove columns, an analytical model, or a function
+  column whose action's ``print_functions`` cannot be read -- the run refuses these at its first
+  simulation instead.
+
+  A run resumed with ``-r`` from a backup made before experiments under a ``condition:`` and
+  edition-1 mutants were recorded records them from then on: each chain's files for them begin
+  with the first move it accepts after the resume, so they are shorter than the other
+  experiments' files and do not line up with them row for row. The resumed run says so, naming
+  those experiments.
+
   Default: None (multiple values can be defined separated by a comma)
   
   Example:
@@ -3043,3 +3217,121 @@ three keys. Requires :ref:`edition <edition>` ``>= 2`` and the ``pybnf[jax]`` ex
   Example:
 
     * ``target_accept = 0.95``
+
+
+.. _lwf_keys:
+
+:ref:`Liu–West filter <alg-lwf>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``job_type = lwf`` filters one time course of counts row by row and forecasts the next intervals;
+its output is a forecasting sample of a model whose free parameters drift, not a posterior (see
+:ref:`alg-lwf`). It requires :ref:`edition <edition>` ``>= 2``, one ``.bngl`` model on the bngsim
+``.net`` path and one ``experiment:`` line with one data file, and the count is declared by the
+whole-fit objective edition 2 requires and the column's own line, with one dispersion::
+
+    noise_model = neg_bin, dispersion = fit r, location = mean
+    noise_model cases = neg_bin, dispersion = fit r, location = mean, cumulative
+
+Edition 2 centres a noise model on its median unless ``location = mean`` is written (ADR-0031); the
+filter draws its forecast counts from the negative binomial with the predicted increment as its
+mean, so it accepts only ``location = mean`` and refuses, rather than warns on, the implicit median.
+``objective = neg_bin_dynamic`` with ``noise_location = mean`` is that whole-fit line with the
+dispersion ``r__FREE``. ``dispersion = fix_at <value>`` on both lines holds the dispersion fixed, and
+the kernel then moves the model's free parameters only. A fixed dispersion must lie between 1e-6
+and 1e12, and a fitted one's prior must not reach below 0 or above 1e12, the range in which the
+forecast draw is right. ``objective = neg_bin`` with
+``neg_bin_r = <value>`` is the whole-fit line ``fix_at <value>``; elsewhere ``neg_bin_r`` is refused,
+since the dispersion is the one the noise_model lines declare. A key the filter does not read is
+reported as unused, as under any job type; ``refine``, ``bootstrap``, ``noise_profiling`` and
+``linear_profiling`` other than 0, the cluster keys, ``starting_params``, and ``normalization``,
+``postprocess`` and the analytical-objective keys ``expression``, ``callable`` and ``data``, which the
+loader would act on before any row is weighed, are refused.
+
+**lwf_particles**
+  The number of particles.
+
+  Default: 4000
+
+  Example:
+
+    * ``lwf_particles = 10000``
+
+**lwf_jitter**
+  The kernel's *h*, strictly between 0 and 1, for each moved parameter without an
+  ``lwf_parameter_jitter`` line: a modelling choice of how fast the free parameters may drift
+  (see :ref:`alg-lwf-sample`). Refused when every moved parameter has its own line, or when the
+  kernel moves no parameter because every free parameter acts only through the initial state.
+
+  Default: 0.15
+
+  Example:
+
+    * ``lwf_jitter = 0.1``
+
+**lwf_parameter_jitter**
+  One free parameter's own *h*. Repeatable, one line per parameter.
+
+  Example:
+
+    * ``lwf_parameter_jitter = beta 0.3``
+
+**lwf_resample_threshold**
+  Resample when the weight ESS falls below this fraction of the particles. In (0, 1].
+
+  Default: 0.5
+
+  Example:
+
+    * ``lwf_resample_threshold = 0.3``
+
+**lwf_forecast_intervals**
+  The number of steps forecast past the last row; 0 writes no forecast.
+
+  Default: 4
+
+  Example:
+
+    * ``lwf_forecast_intervals = 2``
+
+**lwf_bounds**
+  How a parameter with reflecting bounds on both sides moves: ``logit`` moves the logit of its
+  position in the box, ``reflect`` its sampling-space value, folded back into the box.
+
+  Default: logit
+
+  Example:
+
+    * ``lwf_bounds = reflect``
+
+**lwf_independent_runs**
+  The number of independent runs, each from its own prior draw, combined with equal weight (see
+  :ref:`alg-lwf`). Several run on a local cluster of one worker per run, at most the CPUs the job
+  holds; ``parallel_count`` lowers it.
+
+  Default: 1
+
+  Example:
+
+    * ``lwf_independent_runs = 4``
+
+**lwf_state_file**
+  Each run's state file (``_<r>`` before the extension for run *r* of several), relative to the
+  folder PyBNF runs in. A path ``main()`` deletes before a new run (inside ``output_dir``'s
+  ``Results`` or ``Simulations``, say) is refused, as is replacing a file that is not a state file.
+
+  Default: ``lwf_state.npz`` in ``output_dir``
+
+  Example:
+
+    * ``lwf_state_file = state/season.npz``
+
+**lwf_continue**
+  1 continues each run from its state file, assimilating only the rows after those it holds (see
+  :ref:`alg-lwf-continue`); run with ``-o``.
+
+  Default: 0
+
+  Example:
+
+    * ``lwf_continue = 1``

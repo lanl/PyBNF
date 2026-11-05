@@ -28,6 +28,7 @@ import pytest
 
 from pybnf import bngsim_model, pset
 from pybnf.bngsim_model import _runtime
+from pybnf.printing import PybnfError
 
 scipy_integrate = pytest.importorskip('scipy.integrate')
 
@@ -201,16 +202,6 @@ def test_plain_runs_after_a_sensitivity_probe_on_the_base_engine(tmp_path, codeg
     _assert_values_match_the_closed_system(_evaluate(model, tmp_path, 'after_probe'))
 
 
-def _net_codegen_path_present():
-    # Evaluated at collection, so it must not raise where bngsim is absent; the
-    # bngsim marker skips these tests there.
-    try:
-        import bngsim._codegen as cg
-    except ImportError:
-        return False
-    return hasattr(cg, 'generate_rhs_c')
-
-
 def _assert_gradient_matches_finite_differences(ds):
     for suffix, over in CONDITIONS.items():
         sens = ds['tc' + suffix].output_sensitivities
@@ -225,16 +216,21 @@ def _assert_gradient_matches_finite_differences(ds):
             f'of a {scale:.3g} scale')
 
 
-_GRADIENT_XFAIL = pytest.mark.xfail(
-    _net_codegen_path_present(),
-    strict=True,
-    raises=AssertionError,
-    reason="lanl/bngsim#694: this bngsim compiles .net models through its .net codegen path, "
-           "whose sensitivity RHS keeps a pinned derived parameter's chain rule",
-)
+def _gradient_or_the_refusal(evaluate):
+    """The gradient must match central differences where this bngsim differentiates through
+    an overridden derived parameter correctly. Where it keeps the overridden parameter's
+    chain rule instead (bngsim 0.16.0, lanl/bngsim#694), the gradient used to come out wrong
+    here; PyBNF now refuses the run, naming the overridden parameter and the fitted one that
+    feeds it (ADR-0153). ``sensitivity_follows_derived_overrides`` is the one-model witness
+    that tells the two builds apart."""
+    if not _runtime.sensitivity_follows_derived_overrides():
+        with pytest.raises(PybnfError, match=r"overrides derived parameter\(s\) [^,]*'k2'"
+                                             r".*the fitted parameter\(s\) k1 feed"):
+            evaluate()
+        return
+    _assert_gradient_matches_finite_differences(evaluate())
 
 
-@_GRADIENT_XFAIL
 def test_gradient_under_conditions_that_pin_derived_parameters(tmp_path, codegen_env):
     """d/dk1 must follow each condition's own dependency graph: with k2 pinned, k1 reaches
     only Vmax; with Vmax pinned, only k2 and kdeg. A probe first, as a gradient fit does."""
@@ -244,10 +240,9 @@ def test_gradient_under_conditions_that_pin_derived_parameters(tmp_path, codegen
     model.enable_output_sensitivities(params=['k1', 'tau'])
     model.analytic_sens_rhs_status()
     for rep in range(2):
-        _assert_gradient_matches_finite_differences(_evaluate(model, tmp_path, f'g{rep}'))
+        _gradient_or_the_refusal(lambda: _evaluate(model, tmp_path, f'g{rep}'))
 
 
-@_GRADIENT_XFAIL
 def test_gradient_under_pybnf_no_codegen_is_not_served_another_conditions_chain_rule(
         tmp_path, codegen_env):
     """PYBNF_NO_CODEGEN disables the plain build, but a sensitivity run is compiled anyway.
@@ -261,7 +256,7 @@ def test_gradient_under_pybnf_no_codegen_is_not_served_another_conditions_chain_
     model = _model(tmp_path)
     assert not model._codegen_so
     model.enable_output_sensitivities(params=['k1', 'tau'])
-    _assert_gradient_matches_finite_differences(_evaluate(model, tmp_path, 'nocg'))
+    _gradient_or_the_refusal(lambda: _evaluate(model, tmp_path, 'nocg'))
 
 
 def test_copies_do_not_share_an_engine_model_they_mutate(tmp_path, codegen_env):

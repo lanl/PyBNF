@@ -118,7 +118,13 @@ class ChainRecord:
 
     def __setstate__(self, state):
         (used,) = state
-        self._buf = used
+        # An empty record comes back with no buffer, as a new one starts, so its first append
+        # takes the item shape from the value. The pickled empty prefix is a (0,) array: it has
+        # lost the item shape, and doubling a capacity of 0 gives 0, so that append raised
+        # IndexError. An mh or pt chain whose first simulation is still running when the first
+        # backup is written (the chains run independently) is such a record, and ``-r`` then
+        # stopped at that chain's first result (#990).
+        self._buf = used if len(used) else None
         self._n = len(used)
 
 

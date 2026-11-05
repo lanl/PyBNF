@@ -161,6 +161,12 @@ Bayesian inference and uncertainty
 - `45. Model selection <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/45_model_selection>`__
   — which growth law? fit competing models and rank by AIC (multi-model).
 
+Forecasting
+^^^^^^^^^^^
+
+- `50. Liu–West filter <https://github.com/lanl/PyBNF/tree/main/examples/tutorial/50_liu_west_filter>`__
+  — forecast daily counts as they arrive, continuing from a state file (``job_type = lwf``).
+
 PEtab interoperability
 ^^^^^^^^^^^^^^^^^^^^^^
 

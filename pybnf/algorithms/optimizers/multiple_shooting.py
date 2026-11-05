@@ -64,6 +64,7 @@ from pydantic import Field
 from .gradient_base import GradientOptimizer
 from ..multistart_report import NOT_STARTED, StartRecord
 from ...config_schema import PyBNFConfigModel
+from ...output_keys import resolve_output_key
 from ...printing import PybnfError, print0, print1, print2
 from ...registry import register_fit_type
 from ...shooting import (
@@ -460,6 +461,12 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             raise PybnfError('Multiple shooting found no scored experiment to segment.')
         return specs
 
+    def _initial_value_columns(self, model):
+        """Every carried state's initial-value column, which :meth:`_request_state_sensitivities`
+        adds after the setup check has run -- the check has to see them."""
+        columns = super()._initial_value_columns(model)
+        return columns + [state for state in _state_names(model) if state not in columns]
+
     def _request_state_sensitivities(self, model):
         """Widen this model's forward-sensitivity request to **every carried state**.
 
@@ -478,14 +485,27 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         the routings already asked for are kept, so an ordinary route is unaffected. The
         cost is real and inherent -- a full initial-condition axis is one sensitivity system
         per state -- which is the price of carrying the state at a knot.
+
+        The record of which columns each condition's route reads
+        (:func:`pybnf.gradient.routing.apply_routings`) is kept too, with every carried
+        state's initial-condition column added to each condition, since every segment reads
+        them. A fresh request clears the record, and without one each run-time check would
+        compare a segment with the whole union request -- refusing a condition that pins what
+        another condition's column follows (#991).
         """
         request = getattr(model, '_sensitivity_request', None)
         params = list(getattr(request, 'params', None) or [])
         ic = list(getattr(request, 'ic', None) or [])
-        for state in _state_names(model):
+        states = _state_names(model)
+        for state in states:
             if state not in ic:
                 ic.append(state)
+        columns = getattr(model, '_experiment_columns', None)
         model.enable_output_sensitivities(params=params, ic=ic)
+        if columns is not None:
+            model.set_experiment_columns(
+                {condition: (read_params, frozenset(read_ic) | frozenset(states))
+                 for condition, (read_params, read_ic) in columns.items()})
 
     def _make_backend(self, model, suffix):
         """The segment simulator for one scored ``(model, condition)`` pair.
@@ -503,6 +523,7 @@ class MultipleShootingAlgorithm(GradientOptimizer):
             return BngsimSegmentBackend(model, action, mutant, suffix, timeout=timeout)
         sim_params, mutant = self._resolve_net_action(model, suffix)
         self._require_simple_net_action(sim_params, suffix)
+        self._require_fresh_net_start(model, sim_params, suffix)
         return NetSegmentBackend(model, sim_params, mutant, suffix, timeout=timeout)
 
     def _resolve_sbml_action(self, model, suffix):
@@ -511,17 +532,20 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         The same pairing :meth:`~pybnf.bngsim_sbml_model.BngsimSbmlModelNoTimeout.execute`
         makes -- a mutant simulation's output suffix is ``action.suffix + mutant.suffix`` --
         read back so a segment is simulated under exactly the condition the experiment was
-        measured under.
+        measured under. Resolved by :func:`pybnf.output_keys.resolve_output_key`, which refuses
+        a suffix that two pairs spell rather than take the first (#850). The model as written
+        is the backend's own empty ``MutationSet``.
         """
-        for mutant in getattr(model, 'mutants', []) or []:
-            for action in getattr(model, 'actions', []) or []:
-                if getattr(action, 'suffix', None) is None:
-                    continue
-                if action.suffix + mutant.suffix == suffix:
-                    return action, mutant
-        raise PybnfError(
-            "Multiple shooting could not resolve which simulation of model '%s' produces "
-            "the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
+        actions = [(a.suffix, a) for a in getattr(model, 'actions', []) or []
+                   if getattr(a, 'suffix', None) is not None]
+        try:
+            action, mutant = resolve_output_key(model, suffix, actions)
+        except PybnfError as exc:
+            raise PybnfError(
+                "Multiple shooting could not resolve which simulation of model '%s' produces "
+                "the scored output '%s': %s" % (getattr(model, 'name', '?'), suffix,
+                                                exc.message)) from exc
+        return action, mutant if mutant is not None else _model_as_written(model)
 
     def _resolve_net_action(self, model, suffix):
         """The ``(parsed simulate action, condition)`` pair scored under ``suffix``.
@@ -531,26 +555,25 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         ``_execute_actions`` parses it and matched on the same
         ``action suffix + mutant suffix`` key.
 
-        The wildtype is appended rather than assumed present: ``BngsimModel.execute`` runs
-        the base actions *before* its mutant loop rather than as an empty-suffix member of
-        it (which is where the SBML path puts it), so a model with conditions declared still
-        scores its unperturbed run under the bare action suffix.
+        The wildtype is an empty ``MutationSet`` rather than a member of the mutant list:
+        ``BngsimModel.execute`` runs the base actions *before* its mutant loop rather than as
+        an empty-suffix member of it (which is where the SBML path puts it), so a model with
+        conditions declared still scores its unperturbed run under the bare action suffix.
         """
         from ...bngsim_model.parsing import _parse_simulate_action
-        from ...pset import MutationSet
-        conditions = list(getattr(model, 'mutants', []) or [])
-        if not any(getattr(m, 'suffix', '') == '' for m in conditions):
-            conditions.append(MutationSet())
-        for mutant in conditions:
-            for line in getattr(model, 'actions', []) or []:
-                sim_params = _parse_simulate_action(str(line).strip())
-                if sim_params is None:
-                    continue
-                if sim_params.get('suffix', 'time_course') + mutant.suffix == suffix:
-                    return sim_params, mutant
-        raise PybnfError(
-            "Multiple shooting could not resolve which simulate() action of model '%s' "
-            "produces the scored output '%s'." % (getattr(model, 'name', '?'), suffix))
+        actions = []
+        for line in getattr(model, 'actions', []) or []:
+            sim_params = _parse_simulate_action(str(line).strip())
+            if sim_params is not None:
+                actions.append((sim_params.get('suffix', 'time_course'), sim_params))
+        try:
+            sim_params, mutant = resolve_output_key(model, suffix, actions)
+        except PybnfError as exc:
+            raise PybnfError(
+                "Multiple shooting could not resolve which simulate() action of model '%s' "
+                "produces the scored output '%s': %s" % (getattr(model, 'name', '?'), suffix,
+                                                         exc.message)) from exc
+        return sim_params, mutant if mutant is not None else _model_as_written(model)
 
     # --- gates ------------------------------------------------------------- #
     def _require_carryable_state(self, model):
@@ -577,6 +600,95 @@ class MultipleShootingAlgorithm(GradientOptimizer):
                   'SBML model with \'sbml_backend = bngsim\' -- whose species and '
                   'initial-condition sensitivities are what a knot carries.',
                   'Or fit with job_type = gntr, which needs no segment transcription.'])
+
+    def _require_fresh_net_start(self, model, sim_params, suffix):
+        """Refuse a ``.net`` experiment whose scored ``simulate()`` does not start from the
+        model's own state and parameters (#910).
+
+        A segment lane is the model as declared, with the fit vector and the condition applied
+        and nothing else: no earlier action of the list is replayed. The ordinary path runs the
+        whole list, so an earlier ``simulate`` / scan whose end state the scored run inherits,
+        a ``setParameter`` / ``setConcentration`` / ``addConcentration`` it runs under, or a
+        restored snapshot, makes it a different experiment from the one segmented -- the
+        pre-equilibration protocol of #910, or two model-file ``simulate`` lines of one suffix
+        with no reset between them, whose second ``execute`` keeps. The lines before the scored
+        one are walked as the backend runs them: an unlabelled ``resetConcentrations()``
+        returns to the default snapshot (the seed, unless a ``saveConcentrations()`` moved it),
+        a ``resetParameters`` to its snapshot, and the experiment start PyBNF writes before
+        every synthesized experiment (ADR-0151) is such a pair of resets. Anything else that
+        can change the state or the parameters, and any action this cannot read, counts.
+        """
+        import re
+        from ...bngsim_model.parsing import (
+            _collapse_action_line_continuations, _is_reset_concentrations, _is_reset_parameters,
+            _is_save_concentrations, _is_save_parameters, _parse_simulate_action,
+            _snapshot_label)
+        lines = []
+        for raw in getattr(model, 'actions', []) or []:
+            line = _collapse_action_line_continuations(str(raw))
+            line = re.sub(r'#.*$', '', line.strip()).strip()
+            if line:
+                lines.append(line)
+        wanted = sim_params.get('suffix', 'time_course')
+        scored = None
+        for i, line in enumerate(lines):
+            parsed = _parse_simulate_action(line.rstrip(';').strip())
+            if parsed is not None and parsed.get('suffix', 'time_course') == wanted:
+                scored = i          # the last one is the output execute keeps
+        if scored is None:
+            return
+        no_ops = ('generate_network', 'generate_hybrid_model', 'setOption', 'version',
+                  'substanceUnits', 'setModelName', 'visualize')
+        state_by = params_by = None          # the line that last left each changed, if any
+        baseline_by = None                   # what the default snapshot holds, if not the seed
+        # The default parameter slot holds the parameters the run was given, as the backend
+        # seeds it (_initial_parameter_snapshots): an unlabelled resetParameters() with no save
+        # before it returns there.
+        state_saved, params_saved = {}, {None: None}
+        for line in lines[:scored]:
+            if _is_reset_concentrations(line):
+                label = _snapshot_label(line)
+                state_by = baseline_by if label is None else state_saved.get(label, line)
+                continue
+            if _is_save_concentrations(line):
+                label = _snapshot_label(line)
+                if label is None:
+                    baseline_by = state_by
+                else:
+                    state_saved[label] = state_by
+                continue
+            if _is_reset_parameters(line):
+                params_by = params_saved.get(_snapshot_label(line), line)
+                continue
+            if _is_save_parameters(line):
+                params_saved[_snapshot_label(line)] = params_by
+                continue
+            match = re.match(r'(\w+)\s*\(', line)
+            name = match.group(1) if match else ''
+            if name in no_ops or name.startswith('write'):
+                continue
+            if name == 'setParameter':
+                params_by = line
+            elif name in ('setConcentration', 'addConcentration'):
+                state_by = line
+            else:
+                # A simulate or scan advances the state (and a BNG2.pl scan leaves its
+                # parameter at the last dose); anything unread is taken to change both.
+                state_by = line
+                if not name.startswith('simulate'):
+                    params_by = line
+        culprit = state_by or params_by
+        if culprit is None:
+            return
+        raise PybnfError(
+            "Multiple shooting (job_type = ms) restarts experiment '%s' from the model's own "
+            "initial state and parameters, but its action list runs '%s' before the scored "
+            "simulate() with no reset in between, so the run the fit scores starts from what "
+            "that action left: a different experiment from the one segmented (#910)."
+            % (suffix, culprit),
+            hint=['Fit with job_type = gntr, which runs the whole action list.',
+                  'Or give the scored simulate() a fresh start: resetConcentrations() (and '
+                  'resetParameters() after any setParameter) immediately before it.'])
 
     def _require_simple_net_action(self, sim_params, suffix):
         """Refuse a ``.net`` ``simulate()`` action that is not a plain measured time course.
@@ -764,3 +876,13 @@ class MultipleShootingAlgorithm(GradientOptimizer):
         del res
         raise PybnfError('job_type = ms drives its own search and does not use the '
                          'propose/score loop. This is an internal wiring error.')
+
+
+def _model_as_written(model):
+    """The empty ``MutationSet`` a segment of the wildtype runs under: the model's own (the
+    SBML backends list it among their mutants), or a fresh one."""
+    from ...pset import MutationSet
+    for mutant in getattr(model, 'mutants', []) or []:
+        if getattr(mutant, 'suffix', '') == '' and not list(mutant.mutations or ()):
+            return mutant
+    return MutationSet()

@@ -31,6 +31,9 @@ from ..bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
+from ..bngsim_model.classification import (action_lines_run, bngsim_unread_action_options,
+                                            runs_protocol_block, runs_simulate_protocol)
+from ..bngsim_model.grid import bng2pl_network_free_refusals, check_output_grids
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import (ObjectiveCalculator, likelihood_information_criteria,
                          replicated_information_criteria)
@@ -70,6 +73,212 @@ def _bngsim_unavailable_reason():
     if os.environ.get('PYBNF_NO_BNGSIM'):
         return 'PYBNF_NO_BNGSIM is set'
     return BNGSIM_ERROR or 'bngsim is not available'
+
+
+BNGL_BACKEND_BIONETGEN = 'bionetgen'
+
+
+def bng2pl_by_configuration(fit_type, bngl_backend):
+    """``(why, remedy)`` when the configuration itself sends every BNGL model to BNG2.pl, on any
+    machine, or ``None`` (#999):
+
+    * ``job_type = check``: :class:`~pybnf.algorithms.ModelCheck` simulates the configuration's
+      own BNGL models, which run BNG2.pl, whatever ``bngl_backend`` says (it does not set its
+      models up through :meth:`Algorithm._initialize_models`);
+    * ``bngl_backend = bionetgen``.
+
+    The configuration refuses these when it loads. Where ``bngl_backend = auto`` sends a model
+    depends on the machine it runs on (:func:`bng2pl_plan`), so that is refused when the fit
+    sets its models up: the configuration is not wrong, and it still loads, on a machine
+    without bngsim, for a reader that simulates nothing (``from_pybnf`` reloads a finished
+    run's configuration to read its parameter scales)."""
+    if fit_type == 'check':
+        return ('job_type = check simulates every BNGL model with BNG2.pl, whatever '
+                'bngl_backend says',
+                'To score the model on bngsim, which runs network-free experiments on its own '
+                'NFsim and RuleMonkey, make the job a one-generation fit with no free '
+                'parameters: job_type = de, population_size = 4, max_iterations = 1, and '
+                'bngl_backend = bngsim. It reports the objective of the model as written.')
+    if bngl_backend == BNGL_BACKEND_BIONETGEN:
+        return ('bngl_backend = bionetgen simulates it with BNG2.pl',
+                'Set bngl_backend = bngsim, which runs network-free experiments on its own NFsim '
+                'and RuleMonkey (or remove the line: auto picks bngsim when it is installed).')
+    return None
+
+
+def bng2pl_plan(model, fit_type, bngl_backend):
+    """``(why, remedy)`` when the BNGL ``model`` will be simulated by BNG2.pl, as far as that is
+    known before anything runs, or ``None`` when set-up plans to run it on bngsim (#999).
+
+    Mirrors the choice :meth:`Algorithm._initialize_models` makes for the model:
+
+    * what :func:`bng2pl_by_configuration` says (``job_type = check``, ``bionetgen``);
+    * ``bngl_backend = bngsim`` runs it on bngsim, or refuses it at set-up, never BNG2.pl;
+    * ``bngl_backend = auto`` runs a model with network-free actions on bngsim only when bngsim
+      is available, the bridge classifies the actions as network-free (or as the hybrid of a
+      generated network and network-free simulations, for a model that generates its network),
+      and the installed bngsim has each network-free engine they name; otherwise on BNG2.pl.
+
+    A set-up step that fails at run time (writing the XML, starting the bridge) also falls back
+    to BNG2.pl under ``auto``; that cannot be known here, and :meth:`_initialize_models` refuses
+    it after the fact (:func:`refuse_what_bng2pl_cannot_run`)."""
+    configured = bng2pl_by_configuration(fit_type, bngl_backend)
+    if configured is not None or bngl_backend != BNGL_BACKEND_AUTO:
+        return configured
+    actions = list(model.actions)
+    if not _bngsim_runtime_available():
+        return ('bngl_backend = auto simulates it with BNG2.pl, because bngsim is not available '
+                '(%s)' % _bngsim_unavailable_reason(),
+                'Make bngsim available (install it, and unset PYBNF_NO_BNGSIM if it is set): it '
+                'runs network-free experiments on its own NFsim and RuleMonkey.')
+    bridge = classify_actions_for_bngsim(action_lines_run(actions, model.protocol))
+    if not (bridge == BNGSIM_BACKEND_NF
+            or (bridge == BNGSIM_BACKEND_HYBRID and model.generates_network)):
+        return ('bngl_backend = auto simulates it with BNG2.pl, because the bngsim bridge does '
+                'not support this set of actions (bngl_backend = bngsim refuses the model for '
+                'that reason)',
+                'A network-free experiment runs only on bngsim, so the model it is in has to be '
+                'one the bngsim bridge takes.')
+    missing = missing_bngsim_nf_action_support(actions)
+    if missing:
+        return ('bngl_backend = auto simulates it with BNG2.pl, because the installed bngsim has '
+                'no %s support' % ', '.join(missing),
+                'Install a bngsim build with %s support.' % ', '.join(missing))
+    return None
+
+
+def refuse_what_bng2pl_cannot_run(model_name, action_lines, why, remedy, experiments=()):
+    """Raise when BNG2.pl, which ``why`` says will simulate the BNGL model ``model_name``,
+    cannot run one of its network-free ``action_lines`` (its actions and its protocol;
+    :func:`~pybnf.bngsim_model.grid.bng2pl_network_free_refusals`). Each is named by its
+    experiment when its suffix is one of ``experiments`` (the ``experiment:`` names), else by
+    its kind and suffix. Returns quietly when BNG2.pl can run them all (#999)."""
+    refusals = bng2pl_network_free_refusals(action_lines)
+    if not refusals:
+        return
+    named = ['%s (%s)' % ("experiment '%s'" % suffix if suffix in experiments
+                          else '%s action with suffix "%s"' % (kind, suffix), message)
+             for kind, suffix, message, _cause in refusals]
+    causes = '; and '.join(dict.fromkeys(cause for _kind, _suffix, _message, cause in refusals))
+    hints = [remedy]
+    if any(suffix not in experiments for _kind, suffix, _message, _cause in refusals):
+        hints.append('Or write each action the way BNG2.pl runs it: method=>"nf", t_end, and '
+                     'n_steps of 1 or more, with no continue.')
+    raise PybnfError(
+        'Model %s: BNG2.pl cannot run %s' % (model_name, '; '.join(named)),
+        'Model %s: %s, and BNG2.pl cannot run %s. BNG2.pl stops %s with the message in '
+        'parentheses, because %s, so every simulation of the model would fail.'
+        % (model_name, why, '; '.join(named), 'it' if len(named) == 1 else 'each', causes),
+        hint=hints)
+
+
+def bng2pl_drops_protocol(model):
+    """Whether PyBNF's BNG2.pl path cannot run the BNGL ``model`` as written: a model that
+    generates its network runs on BNG2.pl from the generated ``.net`` file (a
+    :class:`~pybnf.pset.NetModel`), which carries no protocol block, so an action that runs the
+    protocol block (a ``simulate_protocol`` action, or a ``parameter_scan`` or ``bifurcate``
+    with ``method=>"protocol"``; :func:`runs_protocol_block`) stops BNG2.pl where it runs it
+    (#926)."""
+    return bool(model.generates_network and model.protocol
+                and runs_protocol_block(model.actions))
+
+
+def refuse_protocol_on_bng2pl(model, why, remedy):
+    """Raise when set-up would simulate the BNGL ``model`` with BNG2.pl, for the reason ``why``,
+    and that cannot run it (:func:`bng2pl_drops_protocol`): every simulation of the model would
+    fail. ``remedy`` says what runs it. Returns quietly otherwise (#1000)."""
+    if not bng2pl_drops_protocol(model):
+        return
+    raise PybnfError(
+        'Model %s: %s, which cannot run its protocol block' % (model.name, why),
+        'Model %s runs its protocol block (a simulate_protocol action, or a parameter_scan or '
+        'bifurcate with method=>"protocol"), and %s. PyBNF simulates a model that generates its '
+        'network with BNG2.pl from the generated .net file, which carries no protocol block, so '
+        'BNG2.pl would stop where the action runs it, and every simulation of the model would '
+        'fail (lanl/PyBNF#926).'
+        % (model.name, why), hint=[remedy])
+
+
+def _unread_options(model):
+    """``[(how an action is named, [option, ...])]`` for each action ``model`` runs that names
+    an option BNG2.pl reads to decide its rows and the bngsim bridge does not (#994, #1000)."""
+    named = [('The action with suffix "%s"' % suffix, options)
+             for suffix, options in bngsim_unread_action_options(model.actions)]
+    if runs_protocol_block(model.actions):
+        named += [('An action in the protocol block', options)
+                  for _suffix, options in bngsim_unread_action_options(model.protocol)]
+    return named
+
+
+def _unread_options_note(model):
+    """What a refusal of ``bngl_backend = bngsim`` says about the options ``model``'s actions
+    name that the bridge does not read, and where else the model can run."""
+    elsewhere = ('bngl_backend = auto or bionetgen runs it on BNG2.pl.'
+                 if not bng2pl_drops_protocol(model) else
+                 "PyBNF's BNG2.pl path cannot run the model either, since it cannot run the "
+                 "model's protocol block (lanl/PyBNF#926), so write the action's t_end and step "
+                 "count into the action itself.")
+    note = ''.join(' %s names %s, which BNG2.pl reads to decide its output rows and the bridge '
+                   'does not%s; %s' % (where, ', '.join(options),
+                                       ' read as BNG2.pl does' if 'stop_if' in options else '',
+                                       elsewhere)
+                   for where, options in _unread_options(model))
+    if runs_simulate_protocol(model.actions):
+        note += (' Its simulate_protocol action runs the protocol block, which the bridge runs '
+                 'only from a parameter_scan with method=>"protocol"; %s'
+                 % ("PyBNF's BNG2.pl path cannot run it either (lanl/PyBNF#926), so write the "
+                    "protocol's steps into the actions block." if bng2pl_drops_protocol(model)
+                    else 'bngl_backend = auto or bionetgen runs it on BNG2.pl.'))
+    return note
+
+
+#: The remedy for a model that runs its protocol block with ``simulate_protocol``: no backend PyBNF
+#: has runs that action, so changing the backend does not help (#1005 review).
+_SIMULATE_PROTOCOL_REMEDY = (
+    'The bngsim bridge does not run a simulate_protocol action, and PyBNF\'s BNG2.pl path drops '
+    "the protocol block: write the protocol's steps into the actions block, or run the protocol "
+    'from a parameter_scan with method=>"protocol", which the bridge runs.')
+
+
+def _bng2pl_reason(model, bngl_backend, bngsim_available, bridge_backend):
+    """``(why, remedy)`` for :func:`refuse_protocol_on_bng2pl` when set-up hands the BNGL
+    ``model``, which generates its network, to BNG2.pl rather than to the bngsim bridge. A model
+    that runs its protocol with ``simulate_protocol`` gets that action's remedy whatever the
+    reason, since the bridge does not run it either."""
+    simulate_protocol = runs_simulate_protocol(model.actions)
+    if bngl_backend == BNGL_BACKEND_BIONETGEN:
+        return ('bngl_backend = bionetgen simulates it with BNG2.pl',
+                _SIMULATE_PROTOCOL_REMEDY if simulate_protocol else
+                'Set bngl_backend = bngsim (or remove the line: auto picks bngsim when it is '
+                'installed), which runs the protocol block.')
+    if not bngsim_available:
+        return ('bngl_backend = auto simulates it with BNG2.pl, because bngsim is not available '
+                '(%s)' % _bngsim_unavailable_reason(),
+                _SIMULATE_PROTOCOL_REMEDY if simulate_protocol else
+                'Make bngsim available (install it, and unset PYBNF_NO_BNGSIM if it is set): it '
+                'runs the protocol block.')
+    if bridge_backend in BNGSIM_SUPPORTED_BNGL_BACKENDS:
+        return ('bngl_backend = auto simulates it with BNG2.pl, because the installed bngsim '
+                'lacks the network-free engine its actions name',
+                'Install a bngsim build with that engine.')
+    unread = _unread_options(model)
+    if unread:
+        remedy = ("Write each such action's t_end and step count into the action itself (and "
+                  "drop a stop_if on a stochastic method or a steady-state scan), so that the "
+                  "bngsim bridge runs the model.")
+        if simulate_protocol:
+            remedy += ' ' + _SIMULATE_PROTOCOL_REMEDY
+    elif simulate_protocol:
+        remedy = _SIMULATE_PROTOCOL_REMEDY
+    else:
+        remedy = ('Change the actions the bngsim bridge does not support (the log file names '
+                  'the model), so that it runs the model.')
+    return ('bngl_backend = auto simulates it with BNG2.pl, because the bngsim bridge does not '
+            'support its actions' + ''.join(
+                ' (%s names %s, which the bridge does not read%s)'
+                % (where[0].lower() + where[1:], ', '.join(options),
+                   ' as BNG2.pl does' if 'stop_if' in options else '')
+                for where, options in unread), remedy)
 
 
 def unusable_score(score):
@@ -166,6 +375,12 @@ class Algorithm(ABC):
     # a method that needs simdata back must opt out of it. The same base-class
     # flag pattern as _is_simplex, so run() never references a leaf subclass.
     requires_master_scoring = False
+
+    # Overridable: False when the method submits nothing to workers, so main() starts no cluster.
+    needs_cluster = True
+
+    # Overridable: ``(message, hint)`` with which main() refuses ``-r`` for this method, or None.
+    resume_refusal = None
 
     # Overridable flag, set True by the generational optimizers (de, cmaes, ss).
     # These propose a whole generation of parameter sets, wait for every simulation
@@ -470,6 +685,19 @@ class Algorithm(ABC):
         :return: list of Model instances
         """
         # Todo: Move to config or BNGL model class?
+        # A model this set-up would hand to BNG2.pl must be one BNG2.pl can run (#999). Refused
+        # first, before any network generation, naming why it goes to BNG2.pl: under auto,
+        # bngsim unavailable, its bridge unable to take the actions, or an engine missing from
+        # the installed build. The experiment names only name a refused action; a stand-in
+        # configuration (the unit tests') has none, and its actions are named by suffix.
+        experiments = getattr(self.config, '_experiment_data_keys', {})
+        for m in self.config.models.values():
+            if isinstance(m, BNGLModel):
+                plan = bng2pl_plan(m, self.config.config.get('fit_type'),
+                                   self.config.config.get('bngl_backend', BNGL_BACKEND_AUTO))
+                if plan is not None:
+                    refuse_what_bng2pl_cannot_run(m.name, list(m.actions) + list(m.protocol),
+                                                  *plan, experiments=experiments)
         home_dir = os.getcwd()
         os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
         logger.debug('Copying list of models')
@@ -491,7 +719,8 @@ class Algorithm(ABC):
         for m in init_model_list:
             bridge_backend = None
             if isinstance(m, BNGLModel):
-                bridge_backend = classify_actions_for_bngsim(m.actions)
+                # The protocol block's lines with the actions, when an action runs it (#1000).
+                bridge_backend = classify_actions_for_bngsim(action_lines_run(m.actions, m.protocol))
             missing_nf_support = ()
             if isinstance(m, BNGLModel) and bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID):
                 missing_nf_support = missing_bngsim_nf_action_support(m.actions)
@@ -500,8 +729,7 @@ class Algorithm(ABC):
                 if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
                     raise PybnfError(
                         f'bngl_backend = bngsim was requested for model {m.name}, but its BNGL actions are not '
-                        'supported by the bngsim bridge.'
-                    )
+                        'supported by the bngsim bridge.' + _unread_options_note(m))
                 if not bngsim_available:
                     raise PybnfError(
                         f'bngl_backend = bngsim was requested for model {m.name}, but {_bngsim_unavailable_reason()}.'
@@ -573,6 +801,10 @@ class Algorithm(ABC):
                         m.name,
                     )
 
+                if use_hybrid or use_bngsim:
+                    # BNG2.pl's rules for each action's output grid (#990 review): refused here,
+                    # outside the fall-back below, since BNG2.pl refuses the same actions.
+                    check_output_grids(m.name, action_lines_run(m.actions, m.protocol))
                 if use_hybrid:
                     # Hybrid path: generate_network already ran; now generate XML
                     # by running BNG2.pl again with generate_network + writeXML
@@ -691,6 +923,11 @@ class Algorithm(ABC):
                                 f'bngl_backend = bngsim was requested for model {m.name}, but bngsim bridge '
                                 f'initialization failed: {exc}'
                             )
+                        refuse_protocol_on_bng2pl(
+                            m, 'bngl_backend = auto could not set it up on bngsim (%s) and would '
+                            'fall back to simulating it with BNG2.pl' % exc,
+                            'Fix what stopped bngsim, or set bngl_backend = bngsim, which stops '
+                            'with that reason instead of falling back.')
                         logger.exception(
                             'Failed to initialize bngsim bridge for model %s. Falling back to NetModel.',
                             m.name,
@@ -699,6 +936,8 @@ class Algorithm(ABC):
                     final_model_list.append(model)
                     final_model_list[-1].bng_command = m.bng_command
                 else:
+                    refuse_protocol_on_bng2pl(m, *_bng2pl_reason(m, bngl_backend, bngsim_available,
+                                                                 bridge_backend))
                     model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
                     final_model_list.append(model)
                     final_model_list[-1].bng_command = m.bng_command
@@ -731,6 +970,8 @@ class Algorithm(ABC):
                     final_model_list.append(m)
                     continue
 
+                # BNG2.pl's rules for each action's output grid (#990 review).
+                check_output_grids(m.name, action_lines_run(m.actions, m.protocol))
                 logger.info(f'Model {m.name} is NF-only; generating XML for bngsim network-free simulation')
 
                 if not os.path.isdir(init_dir):
@@ -864,6 +1105,21 @@ class Algorithm(ABC):
                 logger.info(f'Model {m.name} does not require network generation')
                 final_model_list.append(m)
         os.chdir(home_dir)
+        # A set-up step above that failed under auto and fell back to BNG2.pl (#999): the
+        # foreseeable cases were refused at the top of the loop, so a BNG2.pl model whose
+        # actions BNG2.pl cannot run here got there by such a fallback. It used to leave every
+        # simulation to fail. A BngsimModel is a NetModel by inheritance but runs in process.
+        originals = {m.name: m for m in init_model_list}
+        for model in final_model_list:
+            if not isinstance(model, BNGLModel) or isinstance(model, BngsimModel):
+                continue
+            original = originals[model.name]
+            refuse_what_bng2pl_cannot_run(
+                model.name, list(original.actions) + list(original.protocol),
+                'bngl_backend = auto could not set it up on bngsim (the log file says why) and '
+                'fell back to simulating it with BNG2.pl',
+                'Fix what stopped bngsim, or set bngl_backend = bngsim, which stops with that '
+                'reason instead of falling back.', experiments=experiments)
         # Off-diagonal cross-product pruning (#484, ADR-0069): attach each model's emit-set
         # (the full output suffixes any consumer reads) to the *runtime* model, so the
         # backend execute() simulates only the scored (action, condition) diagonal. Set here
@@ -1281,6 +1537,13 @@ class Algorithm(ABC):
         May be overridden in subclasses that don't use self.max_iterations to track the iteration count
         """
         self.max_iterations += n
+
+    def prepare_resume(self):
+        """Called once on an algorithm reloaded from a backup by ``-r``, before it runs again.
+
+        A no-op here. An algorithm whose backups from an earlier PyBNF hold less than its own
+        do overrides it to fill the gap and to say what the resumed run will do differently
+        (``Adaptive_MCMC.prepare_resume``, #990)."""
 
     def _fold_group_result(self, res):
         """Accumulate one completed sub-result into its JobGroup (smoothing /

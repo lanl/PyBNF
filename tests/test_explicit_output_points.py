@@ -13,6 +13,7 @@ points instead of a uniform grid. This file covers the backend plumbing in
 """
 
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -120,8 +121,7 @@ def test_config_loads_t0_only_experiment_beside_regular_time_course(tmp_path, mo
     actions = cfg.models['abc'].actions
     assert [(a.suffix, a.explicit_points) for a in actions] == [
         ('initial', [0.0]), ('later', [0.0, 1.0, 2.0])]
-    assert cfg.config['time_length']['initial'] == 0
-    assert cfg.config['time_length']['later'] == 2
+    assert [a.output_length() for a in actions] == [1, 3]
 
 
 class TestBnglActionText:
@@ -139,13 +139,14 @@ class TestBnglActionText:
         assert 'suffix=>"egf"' in line
         assert ('simulate', 'egf') in m.suffixes
 
-    def test_time_course_sample_times_round_trips_under_find_t_length(self):
-        # The emitted sample_times must parse back the way find_t_length counts output
-        # rows (one row per sample time), so output-array sizing stays consistent.
+    def test_time_course_emits_one_sample_time_per_output_row(self):
+        # BNG2.pl and bngsim write one row per sample time, so the emitted list has the
+        # action's output_length entries: the 4 data times and the forced t=0.
         m = self._model()
-        m.add_action(pset.TimeCourse({'suffix': 'egf'}, explicit_points=[10, 20, 50, 100]))
-        m.bngl_file_text = m.actions[-1]
-        assert m.find_t_length()['egf'] == 4  # 5 sample times (incl. t=0) -> 5 rows -> length 4
+        tc = pset.TimeCourse({'suffix': 'egf'}, explicit_points=[10, 20, 50, 100])
+        m.add_action(tc)
+        listed = re.search(r'sample_times=>\[(.*?)\]', m.actions[-1]).group(1).split(',')
+        assert len(listed) == tc.output_length() == 5
 
     def test_param_scan_emits_par_scan_vals_and_omits_min_max(self):
         m = self._model()

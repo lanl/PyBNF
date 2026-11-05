@@ -8,6 +8,8 @@ import textwrap
 import tomllib
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_ACTION = REPO_ROOT / '.github' / 'actions' / 'setup-pybnf' / 'action.yml'
@@ -30,11 +32,21 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     # question. It also carries the codegen-cache decline reason PyBNF reads (#647), and, on
     # the refusal side, a RuleMonkey re-vendor that declines a TotalRate rule where RuleMonkey
     # and NFsim genuinely disagree rather than picking a reading.
+    # 0.16.0 is the floor since lanl/PyBNF#991: the gradient router asks bngsim which derived
+    # parameters it holds live and what each fresh run is seeded with, and only from 0.16.0 on
+    # do the answers it gets from a released build and from bngsim main describe the same
+    # columns closely enough that one set of refusals and witnesses covers both; 0.15.x is no
+    # longer a build PyBNF has to keep a gradient path right on.
+    # 0.17.0 is the floor since 1.8.2, the release cut together with it: every fix the
+    # tests above credit to bngsim ``main`` rather than to 0.16.0 is in a released build
+    # from 0.17.0 on, so an install resolved from PyPI gets the answers they assert.
+    # The gradient fit's own run-time gate still names 0.16.0, the oldest build that
+    # code is right on.
     # (0.12.2/0.12.0 bought the carried-state parameter_scan/bifurcate sensitivities of
     # lanl/bngsim#81 and #111 for #532; 0.11.35 the steady-state
     # SteadyStateResult.output_sensitivities of lanl/bngsim#12 for #478; 0.11.34 the native
     # carried-state parameter_scan + named saved states of lanl/bngsim#11 for #474.)
-    assert 'bngsim>=0.15.0,<1' in project['dependencies']
+    assert 'bngsim>=0.17.0,<1' in project['dependencies']
 
 
 def _canonical_name(name):
@@ -457,5 +469,358 @@ def test_the_floor_check_reads_a_requirement_and_orders_versions():
 
     floors = _declared_floors()
     assert floors['petab'] == '0.9'                            # read out of pyproject, not typed
-    assert floors['bngsim'] == '0.15.0'                        # extras stripped
+    assert floors['bngsim'] == '0.17.0'                        # extras stripped
     assert 'h5py' not in floors                                # declared with no lower bound
+
+
+# --------------------------------------------------------------------------- #
+# Dependency floors (#1023)
+# --------------------------------------------------------------------------- #
+DEPENDENCY_FLOORS = REPO_ROOT / 'tools' / 'dependency_floors.py'
+DOCKERFILE = REPO_ROOT / 'Dockerfile'
+
+
+def _load_dependency_floors():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('pybnf_tools_dependency_floors',
+                                                  DEPENDENCY_FLOORS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dependency_floors_pins_each_requirement_at_its_lower_bound():
+    """The constraints the floors leg installs with, on requirements of every shape it meets.
+
+    Written out by hand, not read back from pyproject, so a parser that misreads a shape
+    fails here instead of producing a constraints file that pins the wrong version.
+    """
+    floors = _load_dependency_floors()
+    assert floors.floor_pins([
+        'bngsim[antimony]>=0.17.0,<1',       # extras dropped, ceiling ignored
+        'numpy>=1.26',
+        'pydantic >= 2.0.2, < 3',            # spaces
+        'exact==1.2.3',
+        'compatible~=4.5',
+        'tomli>=2; python_version < "3.11"',  # an environment marker is carried through
+    ]) == [
+        'bngsim==0.17.0',
+        'numpy==1.26',
+        'pydantic==2.0.2',
+        'exact==1.2.3',
+        'compatible==4.5',
+        'tomli==2; python_version < "3.11"',
+    ]
+
+
+def test_dependency_floors_refuses_a_runtime_dependency_with_no_lower_bound():
+    """A dependency with no floor cannot be tested at its floor, so the tool must not pass it
+    over. Left out of the constraints, it would resolve to the newest release and the floors
+    leg would report on a version nobody declared."""
+    floors = _load_dependency_floors()
+    with pytest.raises(ValueError, match=r'no lower bound.*h5py.*scipy<2'):
+        floors.floor_pins(['numpy>=1.26', 'h5py', 'scipy<2'])
+
+
+@pytest.mark.parametrize('requirement, cause', [
+    ('numpy>1.25', 'excludes the version it names'),        # no single lowest version
+    ('numpy===1.26.0', 'arbitrary equality'),               # not a version
+    ('numpy>=1.26,!=1.26.0', 'excludes the floor 1.26'),    # the pin would be unsatisfiable
+])
+def test_dependency_floors_refuses_a_lower_bound_that_is_not_one_version(requirement, cause):
+    """Each of these has a lower bound, but pinning it as ``name==floor`` would pin a version
+    the requirement excludes or one that is not a version at all. Refuse, naming the cause,
+    rather than write a constraints file that tests something nobody declared."""
+    floors = _load_dependency_floors()
+    with pytest.raises(ValueError, match=re.escape(cause)) as raised:
+        floors.floor_pins(['scipy>=1.11.2', requirement])
+    assert requirement in str(raised.value)
+
+
+def test_dependency_floors_check_names_each_package_off_its_floor():
+    """``--check`` is what stops a floors leg whose pins never took from passing on the newest
+    releases, so its comparison is pinned on the cases it has to tell apart."""
+    floors = _load_dependency_floors()
+    installed = {'numpy': '1.26.0', 'scipy': '1.14.1', 'tornado': '6.2'}
+
+    def lookup(name):
+        if name not in installed:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return installed[name]
+
+    assert floors.mismatches(
+        ['numpy==1.26', 'scipy==1.11.2', 'tornado==6.2', 'msgpack==1.0.6'], lookup
+    ) == [('scipy', '1.11.2', '1.14.1'), ('msgpack', '1.0.6', None)]
+    # '1.26' and '1.26.0' are one release, and a marker does not stop the match.
+    assert floors.mismatches(['numpy==1.26.0; python_version >= "3"'], lookup) == []
+
+
+def test_dependency_floors_runs_on_the_real_pyproject_with_the_standard_library_alone():
+    """The floors leg runs the tool with the runner's bare interpreter, before anything is
+    installed. Run it the same way here, and check it pins every runtime dependency once."""
+    result = subprocess.run([sys.executable, '-I', str(DEPENDENCY_FLOORS)],
+                            capture_output=True, text=True, check=True)
+    pins = result.stdout.split()
+    declared = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())['project']['dependencies']
+    assert len(pins) == len(declared)
+    assert sorted(pin.split('==')[0] for pin in pins) == sorted(
+        _split_requirement(requirement)[0] for requirement in declared)
+
+
+def test_the_dockerfile_installs_every_runtime_dependency_at_pyproject_s_range():
+    """The Dockerfile is a third hand-written copy of the runtime dependency list, beside
+    pyproject.toml and the CI action, and nothing compared it with the other two. When #1023
+    raised seven floors that were below anything installable, the Dockerfile still held all
+    seven old values.
+
+    It leaves bngsim out on purpose and installs PyBNF with --no-deps (#414), so bngsim is the
+    one runtime dependency it is allowed to omit.
+    """
+    metadata = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())
+    declared = dict(_split_requirement(r) for r in metadata['project']['dependencies'])
+    declared.pop('bngsim')
+
+    in_dockerfile = _requirements_quoted_in(DOCKERFILE.read_text())
+
+    missing = sorted(name for name in declared if name not in in_dockerfile)
+    assert not missing, f'the Dockerfile does not install these runtime dependencies: {missing}'
+    drifted = {name: (declared[name], in_dockerfile[name])
+               for name in declared if declared[name] != in_dockerfile[name]}
+    assert not drifted, (
+        'the Dockerfile and pyproject.toml disagree about a version range '
+        f'(name: pyproject wants, Dockerfile installs): {drifted}')
+
+
+# --------------------------------------------------------------------------- #
+# Dependency floors: the CI step and the --check command, run rather than read
+# (added in independent review of #1023)
+# --------------------------------------------------------------------------- #
+TESTS_WORKFLOW = REPO_ROOT / '.github' / 'workflows' / 'tests.yml'
+
+_STUB_UV = r'''#!/bin/sh
+# Stands in for uv: record the call, and on `uv venv` create a .venv/bin/python that
+# records its own calls and exits with $STUB_CHECK_EXIT.
+{ echo "CALL uv"; for arg in "$@"; do echo "$arg"; done; } >> "$STUB_LOG"
+if [ "$1" = venv ]; then
+  mkdir -p .venv/bin
+  cat > .venv/bin/python <<'EOF'
+#!/bin/sh
+{ echo "CALL venv-python"; for arg in "$@"; do echo "$arg"; done; } >> "$STUB_LOG"
+exit "${STUB_CHECK_EXIT:-0}"
+EOF
+  chmod +x .venv/bin/python
+fi
+'''
+
+
+def _ci_legs():
+    """Every job/leg in tests.yml that runs the setup-pybnf action, with the inputs it
+    passes, evaluated the way the workflow expressions evaluate them."""
+    import yaml
+    workflow = yaml.safe_load(TESTS_WORKFLOW.read_text())
+    legs = []
+    for job_name, job in workflow['jobs'].items():
+        step = next((s for s in job['steps'] if s.get('uses') == './.github/actions/setup-pybnf'),
+                    None)
+        if step is None:
+            continue
+        matrix_rows = job.get('strategy', {}).get('matrix', {}).get('include', [{}])
+        for row in matrix_rows:
+            def resolve(value, row=row):
+                text = re.sub(r"matrix\.([\w-]+) == '1'",
+                              lambda m: str(str(row.get(m.group(1), '')) == '1'), str(value))
+                match = re.fullmatch(r"\$\{\{ (True|False) && '(\w+)' \|\| '(\w+)' \}\}", text)
+                if match:
+                    return match.group(2) if match.group(1) == 'True' else match.group(3)
+                return re.sub(r'\$\{\{ matrix\.([\w-]+) \}\}',
+                              lambda m: str(row.get(m.group(1), '')), text)
+            inputs = {key: resolve(value) for key, value in step['with'].items()}
+            legs.append(pytest.param(inputs, id='%s-%s' % (job_name, '-'.join(
+                '%s=%s' % kv for kv in sorted(inputs.items()) if kv[0] != 'cache-suffix'))))
+    return legs
+
+
+def _run_install_step(tmp_path, inputs, check_exit=0, pyproject_text=None):
+    """Run the action's 'Create venv and install pybnf' script under GitHub's own bash flags,
+    with a stub uv, in a scratch copy holding the real tools/dependency_floors.py."""
+    import shutil
+    import yaml
+    if shutil.which('bash') is None:
+        pytest.skip('needs bash')
+    action = yaml.safe_load(CI_ACTION.read_text())
+    step = next(s for s in action['runs']['steps']
+                if s.get('name') == 'Create venv and install pybnf')
+    defaults = {name: spec.get('default') for name, spec in action['inputs'].items()}
+    merged = {**defaults, **inputs}
+    script = step['run'].replace('${{ steps.python.outputs.python-path }}', sys.executable)
+
+    work = tmp_path / 'checkout'
+    (work / 'tools').mkdir(parents=True)
+    shutil.copy(DEPENDENCY_FLOORS, work / 'tools' / 'dependency_floors.py')
+    (work / 'pyproject.toml').write_text(
+        pyproject_text if pyproject_text is not None
+        else (REPO_ROOT / 'pyproject.toml').read_text())
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    (bindir / 'uv').write_text(_STUB_UV)
+    (bindir / 'uv').chmod(0o755)
+    (tmp_path / 'step.sh').write_text(script)
+    log = tmp_path / 'calls.log'
+    runner_temp = tmp_path / 'runner_temp'
+    runner_temp.mkdir()
+    env = dict(os.environ, PATH='%s%s%s' % (bindir, os.pathsep, os.environ['PATH']),
+               STUB_LOG=str(log), STUB_CHECK_EXIT=str(check_exit), RUNNER_TEMP=str(runner_temp),
+               BNGSIM=merged['bngsim'], JAX=merged['jax'], FLOORS=merged['dependency-floors'])
+    result = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail',
+                             str(tmp_path / 'step.sh')],
+                            cwd=work, env=env, capture_output=True, text=True)
+    calls = []
+    for line in (log.read_text().splitlines() if log.exists() else []):
+        if line.startswith('CALL '):
+            calls.append([line[5:]])
+        else:
+            calls[-1].append(line)
+    return result, calls, runner_temp
+
+
+@pytest.mark.parametrize('inputs', _ci_legs())
+def test_each_ci_leg_installs_the_floors_exactly_when_it_asks_for_them(tmp_path, inputs):
+    """Run the install step for every leg tests.yml defines, and check what it asks uv for.
+
+    The floors leg must constrain every runtime dependency to the pins the tool derives from
+    pyproject (an independent read here, through ``packaging``), refuse sdists, leave petab
+    out, and run ``--check`` after the last install. Every other leg must do none of that and
+    must still install petab, or the petab-marked tests would skip there too.
+    """
+    from packaging.requirements import Requirement
+    result, calls, runner_temp = _run_install_step(tmp_path, inputs)
+    assert result.returncode == 0, result.stderr
+
+    installs = [c for c in calls if c[:3] == ['uv', 'pip', 'install'] and '--no-deps' not in c]
+    assert len(installs) == 1, calls
+    install = installs[0]
+    names = {Requirement(arg).name for arg in install[3:]
+             if not arg.startswith('-') and re.match(r'[A-Za-z]', arg)
+             and not arg.startswith(str(runner_temp)) and arg != ':all:'}
+    checks = [i for i, c in enumerate(calls)
+              if c[0] == 'venv-python' and c[1:] == ['tools/dependency_floors.py', '--check']]
+    last_install = max(i for i, c in enumerate(calls) if c[:3] == ['uv', 'pip', 'install'])
+
+    floors = inputs.get('dependency-floors') == 'true'
+    assert ('bngsim' in names) == (inputs.get('bngsim', 'true') == 'true')
+    assert ('jax' in names) == (inputs.get('jax') == 'true')
+    if not floors:
+        assert '--constraint' not in install and '--only-binary' not in install
+        assert 'petab' in names, 'a newest-release leg must install petab, or its tests skip'
+        assert not checks
+        return
+
+    assert 'petab' not in names
+    assert install[install.index('--only-binary') + 1] == ':all:'
+    constraints = Path(install[install.index('--constraint') + 1]).read_text().split()
+    declared = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())['project']['dependencies']
+    expected = []
+    for text in declared:
+        requirement = Requirement(text)
+        lower = [s.version for s in requirement.specifier if s.operator in ('>=', '==', '~=')]
+        assert len(lower) == 1, text
+        assert requirement.specifier.contains(lower[0]), text
+        expected.append('%s==%s' % (requirement.name, lower[0]))
+    assert sorted(constraints) == sorted(expected)
+    # Every runtime dependency is named on the command line, so every constraint binds.
+    assert {Requirement(text).name for text in declared} <= names
+    assert checks and checks[-1] > last_install, (
+        'the floors check must run after the last install, or a later install can undo it')
+
+
+def test_the_floors_step_fails_when_the_installed_environment_is_not_the_floors(tmp_path):
+    """The leg's guard against pins that never took is the exit status of ``--check``. Under
+    the bash flags GitHub uses for a composite step, a failing check must fail the step."""
+    result, calls, _ = _run_install_step(tmp_path, {'dependency-floors': 'true'}, check_exit=1)
+    assert result.returncode != 0
+    assert calls[-1] == ['venv-python', 'tools/dependency_floors.py', '--check']
+
+
+def test_the_floors_step_stops_before_installing_when_a_dependency_has_no_floor(tmp_path):
+    """A runtime dependency with no lower bound must stop the leg before anything installs,
+    not write a partial constraints file and test whatever the resolver picks for it."""
+    pyproject = (REPO_ROOT / 'pyproject.toml').read_text().replace(
+        '"msgpack>=1.0.6",', '"msgpack",')
+    assert '"msgpack",' in pyproject
+    result, calls, _ = _run_install_step(tmp_path, {'dependency-floors': 'true'},
+                                         pyproject_text=pyproject)
+    assert result.returncode != 0
+    assert 'msgpack' in result.stderr and 'no lower bound' in result.stderr
+    assert not [c for c in calls if c[:3] == ['uv', 'pip', 'install']]
+
+
+def test_dependency_floors_check_command_exits_on_the_environment_it_runs_in(tmp_path):
+    """``--check`` end to end, as the leg runs it: a subprocess, its exit status and its
+    message, against a pyproject naming packages that are installed here. The unit test above
+    drives ``mismatches`` with a fake lookup; this one goes through ``main`` and the real
+    ``importlib.metadata``."""
+    import shutil
+    pytest_version = importlib.metadata.version('pytest')
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    shutil.copy(DEPENDENCY_FLOORS, tools / 'dependency_floors.py')
+
+    def check(dependencies):
+        (tmp_path / 'pyproject.toml').write_text(
+            '[project]\ndependencies = [%s]\n' % ', '.join('"%s"' % d for d in dependencies))
+        return subprocess.run([sys.executable, str(tools / 'dependency_floors.py'), '--check'],
+                              capture_output=True, text=True)
+
+    at_floor = check(['pytest>=%s' % pytest_version])
+    assert at_floor.returncode == 0, at_floor.stderr
+    assert 'all 1 runtime dependencies are at their declared floors' in at_floor.stdout
+
+    below = check(['pytest>=1.0', 'not-a-real-distribution-xyz>=1.0'])
+    assert below.returncode == 1
+    assert 'pytest is %s, but the declared floor is 1.0' % pytest_version in below.stderr
+    assert 'not-a-real-distribution-xyz is not installed' in below.stderr
+
+
+def test_every_installed_runtime_dependency_imports():
+    """A runtime dependency that is installed must import. The suite can pass without ever
+    importing one -- paramiko is reached only through ``dask ssh`` on a real cluster -- so on
+    the dependency-floors leg a floor that installs but cannot run would go unnoticed.
+
+    Absent is skipped, as the floor guard above skips it (the bngsim-less leg has no bngsim).
+    Present but failing to import is a failure, whatever the reason.
+    """
+    import json
+    declared = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text())['project']['dependencies']
+    by_distribution = {}
+    for top, dists in importlib.metadata.packages_distributions().items():
+        if top.startswith('_'):
+            continue
+        for dist in dists:
+            by_distribution.setdefault(_canonical_name(dist), set()).add(top)
+    modules = {}
+    for requirement in declared:
+        name = _split_requirement(requirement)[0]
+        try:
+            importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        modules[name] = sorted(by_distribution.get(name, ()))
+        assert modules[name], f'{name} is installed but provides no importable top-level module'
+    script = textwrap.dedent('''
+        import importlib, json, sys, traceback
+        failed = {}
+        for dist, tops in json.loads(sys.argv[1]).items():
+            for top in tops:
+                try:
+                    importlib.import_module(top)
+                except BaseException as error:
+                    failed[f'{dist} ({top})'] = f'{type(error).__name__}: {error}'
+        print(json.dumps(failed))
+    ''')
+    result = subprocess.run([sys.executable, '-c', script, json.dumps(modules)],
+                            capture_output=True, text=True, check=True)
+    failed = json.loads(result.stdout.strip().splitlines()[-1])
+    versions = {name: importlib.metadata.version(name) for name in modules}
+    assert not failed, (
+        'installed runtime dependencies that do not import (installed versions %s): %s'
+        % (versions, failed))

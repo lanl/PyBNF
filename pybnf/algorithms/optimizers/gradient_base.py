@@ -57,6 +57,7 @@ from ...gradient import (
     assemble_marginal_time_gradient,
     route_for_model,
 )
+from ...output_keys import resolve_output_key
 from ...printing import PybnfError, print0, print1, print2
 
 # ``DONE`` is the shared multi-start sentinel, re-exported here so a gradient leaf's
@@ -602,13 +603,26 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         warning a hundred times. The refusal is once-only for the same reason -- it has
         already ended the run the first time.
 
-        Never raises except under ``sensitivity_fallback = error``, which is a user
-        asking to be stopped."""
+        Raises under ``sensitivity_fallback = error``, which is a user asking to be
+        stopped, and -- under any policy that probes -- for a model whose request **no run
+        can answer**: bngsim refused to build its sensitivity Simulator
+        (``status.refusal``), or its analytic RHS is declined and the fit will ask for an
+        initial-value column (:meth:`_initial_value_columns`), which CVODES' difference
+        quotient cannot supply (it has no parameter to perturb for an initial value).
+        bngsim >= 0.17.0 refuses the latter when the Simulator is built; 0.16.0 builds it and
+        fails every run. Either way the fit used to score every evaluation as a failed
+        simulation and finish at ``inf``, exit 0.
+
+        Only here, at job start. A refusal bngsim raises while a simulation *runs* stays a
+        failed point: some depend on the parameter values (a parameter sitting exactly on a
+        kink of ``max()``, which a bound projection lands on), and ending the fit there
+        would stop one that recovers from that point."""
         policy = str(self.config.config.get('sensitivity_fallback', 'warn')).lower()
         if policy == 'ignore' or getattr(self, '_sens_rhs_reported', False):
             return
         self._sens_rhs_reported = True
         declined = []
+        unanswerable = []
         for model in self.model_list:
             probe = getattr(model, 'analytic_sens_rhs_status', None)
             if not callable(probe):
@@ -617,6 +631,17 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                 # that cannot supply a gradient at all, so this is not a failure.
                 continue
             status = probe()
+            if getattr(status, 'refusal', None):
+                unanswerable.append((model, status.refusal))
+                continue
+            initial_values = self._initial_value_columns(model)
+            if status.analytic is False and initial_values:
+                unanswerable.append((model, (
+                    "its analytic sensitivity right-hand side is declined, and the fit asks "
+                    "for the initial-value column(s) of %s, which CVODES' difference "
+                    "quotient cannot supply: it has no parameter to perturb for an initial "
+                    "value" % ', '.join(map(str, initial_values)))))
+                continue
             if status.analytic is None:
                 logger.info(
                     "Model %s: cannot tell whether the forward sensitivities run on "
@@ -628,6 +653,18 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
             else:
                 declined.append((model, status))
                 self._warn_sensitivity_fallback(model, status)
+        if unanswerable:
+            raise PybnfError(
+                "Gradient-based fitting (job_type = %s) cannot compute the sensitivities it "
+                "needs for %s." % (
+                    self._fit_type_label(),
+                    '; '.join("model '%s': %s" % (m.name, why) for m, why in unanswerable)),
+                hint=["Re-encode the declined rate law in a form bngsim can differentiate; "
+                      "bngsim's reason is in the message above.",
+                      "Or fix the species initial value(s) instead of fitting them, so the "
+                      "fit asks for parameter columns only, which the difference quotient "
+                      "can supply (more slowly).",
+                      _FALLBACK_HINT])
         if declined and policy == 'error':
             raise PybnfError(
                 "Gradient-based fitting (job_type = %s) was asked to require the "
@@ -643,6 +680,17 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
                       "default) and expect roughly one extra right-hand-side "
                       "evaluation per sensitivity column per step.",
                       _FALLBACK_HINT])
+
+    def _initial_value_columns(self, model):
+        """The species initial-value sensitivity columns this fit will ask ``model`` for.
+
+        An ordinary gradient fit asks for exactly what :meth:`_setup_gradient_path` routed.
+        Multiple shooting widens the request later, to every state it carries across a knot,
+        and says so by overriding this, so that the check above sees the request the fit will
+        actually make.
+        """
+        request = getattr(model, '_sensitivity_request', None)
+        return list(getattr(request, 'ic', None) or ())
 
     def _warn_sensitivity_fallback(self, model, status):
         """One model's difference-quotient warning, to the log and to the console.
@@ -695,18 +743,14 @@ class GradientOptimizer(ConcurrentMultiStartOptimizer):
         """Resolve a scored ``suffix`` to the condition (``MutationSet``) it was
         simulated under, or ``None`` for the wildtype.
 
-        An edition-2 ``condition:`` is a named :class:`~pybnf.pset.MutationSet` added
-        to the model as a mutant (its name is the suffix); a mutant simulation's
-        output suffix carries the mutant's own suffix (``net_model.execute``), so a
-        scored suffix that ends with a known mutant suffix was simulated under that
-        condition. The wildtype experiment touches no mutant and maps to ``None`` (the
-        unperturbed routing, all factors 1)."""
-        best = None
-        for mut in getattr(model, 'mutants', []) or []:
-            ms = getattr(mut, 'suffix', '')
-            if ms and suffix.endswith(ms) and (best is None or len(ms) > len(best.suffix)):
-                best = mut
-        return best
+        A model names each output by its action suffix followed by its condition's suffix,
+        so the condition is read off the one ``(action, condition)`` pair of ``model`` that
+        produces ``suffix`` (:func:`pybnf.output_keys.resolve_output_key`), never off the
+        key's spelling: a wildtype experiment named ``data`` beside a condition ``a`` is the
+        wildtype, whatever it ends with (#850). A key no pair produces, or one two pairs
+        produce, is refused there; configuration refuses the second when it loads. ``self``
+        is not read, so the router's tests can call this on the class."""
+        return resolve_output_key(model, suffix)[1]
 
     # --- per-evaluation assembly ------------------------------------------- #
     def gradient_at(self, res):

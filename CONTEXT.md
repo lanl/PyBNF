@@ -47,7 +47,7 @@ _Avoid_: null parameter, fixed parameter (it is varied during the fit, just not 
 
 **PSet** (Parameter Set):
 One concrete assignment of values to every free parameter — a single point in parameter space that can be simulated and scored.
-_Avoid_: parameter vector, individual, particle, sample, candidate (these are algorithm-specific views of a PSet)
+_Avoid_: parameter vector, individual, particle, sample, candidate (these are algorithm-specific views of a PSet; "particle" is defined for the Liu–West filter only)
 
 **Objective Function** (`objfunc`):
 The scalar measure of disagreement between a PSet's simulated output and the experimental data; PyBNF searches for the PSet that minimizes it (e.g. `chi_sq`, `sos`, `neg_bin`).
@@ -199,10 +199,11 @@ _Avoid_: noise scale (ambiguous with the Noise Parameter), error scale, link fun
 
 ## Algorithms
 
-PyBNF's fit types fall into three families — optimization algorithms, Bayesian
-samplers, and checkers (the `checker` family, currently just `check`); the code,
-configuration, and the registry `family` field treat them distinctly (`mh`,
-`pt`, `am`, `dream`, `p_dream` form the Bayesian group).
+PyBNF's fit types fall into families — optimization algorithms, Bayesian
+samplers, checkers (the `checker` family, currently just `check`), the
+experimental design (`analysis`) and filters (the `filter` family, currently just
+`lwf`); the code, configuration, and the registry `family` field treat them
+distinctly (`mh`, `pt`, `am`, `dream`, `p_dream` form the Bayesian group).
 
 **Optimization Algorithm**:
 A fit type that searches for the single best-fitting PSet. Codes: `de` (Differential Evolution, the default), `ade` (Asynchronous DE), `pso` (Particle Swarm), `ss` (Scatter Search), `sim` (Nelder–Mead Simplex), `powell` (Powell), `cmaes` (CMA-ES). The last three are the start-point **Refiners** (also usable as `refine_method`).
@@ -224,12 +225,16 @@ _Avoid_: parallel DREAM (the "P" is *preconditioned*, not parallel)
 One of DREAM's two proposal mechanisms (ter Braak & Vrugt 2008), projecting archive points onto the line through the current chain state; `snooker_prob` sets how often it is used versus the parallel-direction proposal.
 _Avoid_: snooker move, snooker step
 
+**Liu–West filter** (`job_type = lwf`):
+A job type that assimilates a time course of counts one row at a time. A particle is a PSet together with the model state its earlier values produced and a weight. Each particle carries its own model state; before each row the Liu and West (2001) kernel moves its free parameters, it is weighted by the job's own noise model on the interval's increment, and the population is resampled when the weight ESS (`1 / Σ w²`, not the MCMC ESS) falls below a threshold. Its output is a forecasting sample of a model whose free parameters drift at every row, not a posterior. An Independent Run is one whole filter from its own prior draw (`lwf_independent_runs`). Registry family `filter`.
+_Avoid_: particle filter (unqualified), PF, `pf`; posterior or credible interval (for its output); ESS (unqualified); replicate or chain (for an Independent Run)
+
 **Iteration**:
 One round of an algorithm's main loop and the unit in which a fit's budget is counted (`max_iterations`). Population-based algorithms also call a round a "generation".
 _Avoid_: step, epoch
 
 **Wall-Time Budget** (`wall_time_fit`):
-The total wall-clock seconds a **Fit** may run — the run-level peer of the per-unit-of-work limits `wall_time_sim` (one simulation) and `wall_time_gen` (one network generation). Distinct from `max_iterations`, which counts **Iterations** and is not convertible to wall time without knowing per-iteration cost. When it expires the run loop stops launching work, abandons what is in flight, and **finalizes**: the *same* end-of-fit path a converged run takes, against the best point so far, so a budgeted result is scoreable exactly like a completed one. Only the stop reason differs, and it is written to `Results/stop_reason.txt` — beside the results, never inside them. One budget bounds the whole run — each **Bootstrap** replicate is new work and does not begin once it is spent — and its clock starts at process start, so configuration loading and network generation are inside it (ADR-0093, #529). It is *partitioned*, not spent first-come-first-served: `wall_time_refine_frac` (default 0.1) holds a tail back from the search as the **Refine Reserve**, because a wall-clock-budgeted search would otherwise leave the requested **Refine** nothing to run on (ADR-0107, #564). Implemented as a `FitBudget` object (`pybnf/budget.py`); unbounded is the *absence* of one, not an infinite limit.
+The total wall-clock seconds a **Fit** may run — the run-level peer of the per-unit-of-work limits `wall_time_sim` (one simulation) and `wall_time_gen` (one network generation). Distinct from `max_iterations`, which counts **Iterations** and is not convertible to wall time without knowing per-iteration cost. When it expires the run loop stops launching work, abandons what is in flight, and **finalizes**: the *same* end-of-fit path a converged run takes, against the best point so far, so a budgeted result is scoreable exactly like a completed one. Only the stop reason differs, and it is written to `Results/stop_reason.txt` — beside the results, never inside them. One budget bounds the whole run — each **Bootstrap** replicate is new work and does not begin once it is spent — and its clock starts at process start, so configuration loading and network generation are inside it (ADR-0093, #529). `lwf` checks the budget between rows and forecasts from its last assimilated row; `lwf_continue = 1` finishes the job (algorithms.rst, alg-lwf-budget). It is *partitioned*, not spent first-come-first-served: `wall_time_refine_frac` (default 0.1) holds a tail back from the search as the **Refine Reserve**, because a wall-clock-budgeted search would otherwise leave the requested **Refine** nothing to run on (ADR-0107, #564). Implemented as a `FitBudget` object (`pybnf/budget.py`); unbounded is the *absence* of one, not an infinite limit.
 _Avoid_: timeout (that is `wall_time_sim`'s per-simulation limit), deadline (informal), time limit, iteration budget
 
 **Refine Reserve** (`wall_time_refine_frac`):

@@ -27,7 +27,8 @@ and ``gntr`` the per-datum-score Fisher this assembler also produces (``include_
 
 import numpy as np
 
-from .assembly import GradientResult, _raw_sensitivity_accessor, _sampling_scale_factors
+from .assembly import (GradientResult, _experiment_tensor, _raw_sensitivity_accessor,
+                       _sampling_scale_factors)
 from .errors import GradientNotSupported
 
 
@@ -62,12 +63,11 @@ def assemble_marginal_time_gradient(objective, experiments, free_params, include
     grad = np.zeros(n_param)
     hessian = np.zeros((n_param, n_param)) if include_fisher else None
     for sim_data, exp_data, routing, *_rest in experiments:
-        sens = sim_data.output_sensitivities
-        if sens is None:
-            raise GradientNotSupported(
-                "A time_error experiment carries no forward-sensitivity tensor; enable the gradient "
-                "path (apply_routing) on every scored model before assembling the marginal-time "
-                "gradient.")
+        sens = _experiment_tensor(
+            sim_data, routing,
+            "A time_error experiment carries no forward-sensitivity tensor; enable the gradient "
+            "path (apply_routing) on every scored model before assembling the marginal-time "
+            "gradient.")
         indvar = min(exp_data.cols, key=exp_data.cols.get)
         raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
         contribution = objective.marginal_gradient(

@@ -12,6 +12,7 @@ handle are listed by handle, in the same sequence.
 - William S. Hlavacek
 - Andrew Hu
 - Alexander Ionkov
+- Arpit Jain
 - Yen Ting Lin
 - Abhishek Mallela
 - Ely F. Miller

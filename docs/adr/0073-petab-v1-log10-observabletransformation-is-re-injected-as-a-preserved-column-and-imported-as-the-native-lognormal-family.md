@@ -229,3 +229,29 @@ PyBNF searches that parameter linearly. The objective is unchanged. This is the
 declared-prior counterpart of the bare-scale loss #548 fixed, and it is not addressed here;
 the "Parameter scales are not supported" warning that would have covered it is still
 silenced. None of the benchmark problems above has such a row.
+
+## Addendum (2026-11-04): petab 0.10.0 rescales the noise formula, and the converter undoes it
+
+petab 0.10.0 converts a v1 `log10` observable faithfully in v2's own terms: `log10-normal`
+becomes `log-normal` and the noise formula becomes `log(10) * (<v1 formula>)`, since a normal
+`log10(y)` with sigma is a normal `ln(y)` with `ln(10)` sigma. This decision states the scale
+in the re-injected `observableTransformation` column over the linear base family instead, and
+under that column the v1 sigma is the right one. With petab 0.10.0 the converter therefore
+produced `normal` + `log10` + `log(10) * (sigma)`: a log10 residual whose sigma was `ln 10`
+times the stated one. A numeric sigma imported as `sigma = formula log(10) * (0.1)` with no
+error, where petab 0.9.0 imports `fix_at 0.1`; a placeholder sigma failed at import.
+
+The converter now puts each `log10` observable's v1 `noiseFormula` back
+(`restore_v1_noise_formulas`). It removes exactly the `log(10) * (...)` wrapper petab 0.10.0
+adds, around the v1 formula as petab's own v1 reader prints it, and leaves an unchanged
+formula alone, so the output is the same under petab 0.9 and 0.10. Any other rewrite is
+refused, naming both formulas, rather than carried over: the cell sets sigma. The new
+wording of petab's warning for this case joins the silenced patterns, because the converter
+repairs all of what it describes.
+
+The representation chosen above is kept rather than switching to petab 0.10.0's: it is the
+same on both petab releases pyproject allows, and the importer reads it today. petab 0.10.0
+also converts the v1 priors it used to refuse (`logNormal`, `logLaplace`, a `log10`
+`parameterScaleUniform` / `parameterScaleLaplace`). Nothing changes for them here, since the
+converter rewrites every declared prior from v1; on petab 0.10.0 they are checked by the same
+three oracles as every other prior.

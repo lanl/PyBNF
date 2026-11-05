@@ -11,6 +11,866 @@ release commit, so no two branches edit this file (#800). Add a fragment, as
 [`changelog.d/README.md`](changelog.d/README.md) describes, rather than an entry
 here.
 
+## [v1.8.2] - 2026-11-04
+
+### Added
+- **A condition can declare that it changes nothing: `condition: basal, perturbations: none`
+  (#906, ADR-0150).** Name it in `preequilibrate:` to equilibrate the model as it stands, with
+  free parameters at their trial values, before the measured `condition:` applies. As a measured
+  `condition:` it is read exactly as if `condition:` were omitted. `none` must be the whole
+  perturbation list. PEtab export writes such a pre-equilibration as a period with a blank
+  `conditionId`, or `cond_wildtype` where fit-and-perturbed parameters must be re-pinned.
+- **Differential evolution can now cross a candidate with the member it will replace (#700,
+  ADR-0144).** Set `de_cross_with_target = 1` and, wherever a candidate is not mutated, it
+  keeps the values of the member being replaced, as published differential evolution does,
+  rather than those of the parameter set it was built from; under the `rand` and `best`
+  strategies the old rule can leave a parameter that every member shares unable to move. With
+  the key set, the copy guarantee (#698) moves one parameter to a value neither the candidate's
+  base nor the replaced member holds, and the learned mutation settings judge a success against
+  the replaced member. Off by default under every edition; a configuration that does not set it
+  runs exactly as before.
+- **Two opt-in scatter search settings change how its noise handling defers comparisons it
+  cannot yet settle; both were measured as no better than the default (#696, ADR-0145).**
+  `ss_noise_optimistic = 1` gives a reference slot straight away to whichever side of an
+  undecided parent-versus-child contest leads on the mean, and hands it back if later draws
+  settle the other way. `ss_noise_redraw_budget = N` caps the re-draws a round queues for
+  orderings it cannot settle, keeping open those where a wrong call would cost most and
+  deciding the rest on their means. Both were built after #663 found the deferral to be the
+  whole cost of the noise handling. Both default to 0, and a configuration that sets neither
+  runs exactly as before.
+- **The stochastic recovery benchmark scores a variant against the method it varies (#696).**
+  `run_baseline.py compare <results> --baseline <method>` pairs every (problem, seed) both
+  methods were run from and reports a two-sided sign test on the final parameter error,
+  McNemar's exact test on success, and the error of the reported best at checkpoints through
+  the budget, pooled and per problem. It is the comparison the #660 and #663 studies did by
+  hand, and it reproduces their published tables from the committed records. The statistics
+  live in `protocol.py`, the copy shared with
+  [stochbench](https://github.com/wshlavacek/stochbench).
+- **An observable's scale and offset can be solved out of the search (`linear_profiling = 1`,
+  #671, ADR-0132).** Every free parameter that an `observable: <id>, formula: <expr>` line
+  reads linearly, as a scale, an offset or both, is solved at each evaluation by weighted least
+  squares against the data, jointly with any coefficient sharing its observable or tied across
+  experiments. `lbfgs`, `gntr` and `trf` run with it. The switch is all-or-nothing, and before
+  the run starts it refuses, naming the parameter and the reason: a coefficient that is also a
+  model parameter, is read by a noise source, or enters nonlinearly; a formula affine in each
+  coefficient but not jointly; a non-Gaussian noise family; a log-scale Gaussian other than a
+  single scale of the whole formula; a cumulative or analytically scaled observable; a
+  prediction-dependent sigma; and, with `noise_profiling`, a group whose observables do not
+  share one profiled sigma. It is also refused for the Bayesian samplers, `ms` and `design`. A
+  profiled coefficient still counts in `k`, stays inside its bounds, and is reported in
+  `Results/profiled_linear.txt`, which says when a bound held.
+- **Differential evolution can learn its mutation settings during a run (#667, ADR-0142).**
+  With `de_adapt_mutation = 1`, `de` and `ade` draw each candidate's `mutation_rate` and
+  `mutation_factor` from a short history of the pairs that recently produced a candidate better
+  than the one it was built from, the success-history adaptation of SHADE (Tanabe and Fukunaga
+  2013). The configured values are where the learning starts, and `de_adapt_memory` (default 6)
+  sets how many generations of successes the history remembers. Off by default: a configuration
+  that does not set the key runs exactly as before.
+- **A stochastic parameter recovery benchmark, small version (#663, ADR-0140).**
+  `benchmarks/stochastic_recovery/` holds six published stochastic models (Shahrezaei and Swain
+  2008, Lin and Doering 2016, McKane and Newman 2005, Hlavacek et al. 2001, Munsky et al. 2012,
+  Yang et al. 2008), each with a frozen problem definition, committed synthetic data and a
+  scoring protocol, plus a runner that scores `de`, `ss` and `cmaes`, each with and without its
+  noise handling, at equal simulation budgets, and the baseline results. It makes the
+  stochastic-fitting claims of #659, #660 and #661 measurable, and the full suite #663 asks for
+  is built on it.
+- **Scatter search now refines its best new candidates with a local search, the improvement
+  method of Glover's template (#660 step 1, ADR-0138).** Under `edition = 2`, the best child a
+  round accepts into the reference set starts a Nelder-Mead simplex search that runs alongside
+  the following rounds. Its best point replaces the member it started from if it improved on
+  it, else the worst member if it beats that; otherwise it is archived. `ss_local_search` turns
+  this on or off, `ss_local_max_iterations` bounds each search, and `ss_local_every` and
+  `ss_local_max_running` limit how often searches start and how many run at once. It is off
+  under noise handling. The legacy edition is unchanged.
+- **A stochastic fit now confirms its best fit by running the top parameter sets again
+  (#659).** Each objective value of a stochastic model comes from one noisy simulation, so the
+  best value a fit saw was optimistic and often belonged to a lucky draw, not the best
+  parameter set. A fit with at least one stochastic model now ends by running its top
+  `best_fit_candidates` parameter sets `best_fit_replicates` more times each (10 and 10 by
+  default) and reports the one with the best average. `Results/best_fit_confirmation.txt` lists
+  each candidate's average, its standard error and the value the search recorded. Everything
+  written afterwards (saved simulations, the best-fit model file, the information criteria, a
+  refine's start point, a bootstrap replicate's answer) describes the confirmed set. The stage
+  is on under `edition = 2`. Under the legacy edition it is off, and a fit with a stochastic
+  model says so at startup and names the two keys that turn it on. The search itself is
+  unchanged.
+- **A fit with more than one start now reports how every start did (#658).** It writes
+  `Results/multistart_summary.txt`, one row per start sorted from best to worst objective
+  value, with the objective reached, the steps taken, the simulations used and why the start
+  stopped, and prints a short version at the end of the run, including how many starts came
+  within a tenth of a percent of the best. This covers `trf`, `lbfgs`, `gntr`, `powell`, `sim`,
+  `ms`, the polishing phase of `profile_likelihood`, and `de`, `ade`, `ss` and `pso`. A start
+  still running when the fit ended, or never reached, is listed and labelled as such. A
+  single-start fit writes nothing, and no method searches any differently.
+- **PyBNF can now recommend what to measure next (`job_type = design`, #574, ADR-0129).** A
+  design run scores each candidate measurement (one observable that an experiment already
+  measures, at one time) by what it would add to the expected Fisher information at the best
+  fit, without re-simulating and with any noise model, scale or transform the fit supports.
+  `design_criterion` picks the goal: the average variance of the parameters named by
+  `design_target` (`a`, the default), the volume of the joint confidence region (`d`), or the
+  worst-determined direction (`e`). `design_grid` adds candidate times and `design_t_end`
+  extends them past the last measurement; the measured times are always kept, so the scoring of
+  the data is unchanged. `Results/experimental_design.txt` lists the measurements to make (one
+  listed twice means measure it twice) and each parameter's confidence interval now and after,
+  or says so when even every candidate at once would leave a target undetermined.
+  `profile_likelihood_design = 1` (off by default) ends an identifiability run with the same
+  report, aimed at the parameters it flagged. Both are documented under gradient-based fitting.
+- **`job_type = lwf`, the Liu–West filter: forecast count data that arrive one interval at a
+  time.** At each row it moves the particles' free parameters by the Liu and West (2001) kernel,
+  weighs them by the job's own cumulative `neg_bin` line on the interval's increment, and
+  resamples. Its output, under `Results/LWF/`, is a forecasting sample of a model whose free
+  parameters drift, not a posterior. `lwf_continue = 1` assimilates only new rows from a state
+  file. Every key it does not read is refused by name.
+
+### Changed
+- **`output_trajectory` and `output_noise_trajectory` are refused when a run starts under any
+  job type but `am` (#990).** Only `am` writes them; every other job type accepted them and
+  wrote no file. A finished run whose configuration set them still loads, so it can be read
+  back. The `dream` and `p_dream` sampler-benchmarking examples that set them no longer do, and
+  the `pt409` HIV example asks for `lnV`, which its model defines, instead of `lnVV`.
+- **`pybnf.inference_data.from_pybnf` raises when it cannot recover the parameter scales,
+  instead of returning log parameters in natural space (#990).** With no `config=` or
+  `variables=`, it reads the scales from the `.conf` in `Results/`. When there is none, when it
+  does not load (moved model files, paths relative to another directory), or when it does not
+  declare a sampled parameter, the error names the cause and says to pass `config=` or
+  `variables=`. A log parameter used to come back in natural units under its bare name, with
+  only a log line to say so.
+- **An edition-2 BNGL model that `experiment:` lines simulate may carry only its network
+  definition in its actions (#969, ADR-0152).** `generate_network`, `setOption`,
+  `substanceUnits` and `version` are allowed, each alone on its line with plain values as
+  arguments, since BNG2.pl runs action lines as Perl. Any other action, `setModelName`, or a
+  directive BNG2.pl would read differently from PyBNF stops the job at load, naming the file
+  and line. Move a `setParameter` into a `condition:` and delete leftover `simulate` or
+  `write*` lines. PEtab export and import apply the same check, and the export now refuses a
+  model bound the legacy way beside the experiments. Edition 1 is unchanged. A numbered
+  action line (`1 generate_network(...)`) is now read as BioNetGen reads it (#963).
+- **Changelog entries are staged one file per change under `changelog.d/`, and
+  only the release commit writes `CHANGELOG.md` (#800, #809).** Two open pull
+  requests no longer conflict over the changelog. Write
+  `changelog.d/<issue>.<category>.md`, at most 1,200 characters, and run
+  `python tools/changelog.py check`; `changelog.d/README.md` has the details.
+  `tools/changelog_merge.py`, added earlier in this cycle, is removed.
+- **Scatter search's noise handling defers an undecided contest for three draws, not five
+  (#663, ADR-0141).** `ss_noise_max_draws` now defaults to 3. A conf that sets
+  `ss_noise_max_draws` itself is unchanged.
+- **A stochastic scatter search now gives idle processors another draw of a member whose rank
+  is in doubt (#660 step 4, ADR-0139).** When fewer simulations are in flight than the run can
+  execute at once, the gap is filled with fresh draws of the members the noise cannot order,
+  the draws the round would otherwise make at its end, each within `ss_noise_max_draws`. Set
+  `ss_fill_idle = 0` to turn this off. A deterministic fit, a run whose processor count cannot
+  be read, and a round with nothing idle are unchanged.
+- **Under `edition = 2`, scatter search fills the diverse half of its first reference set by
+  distance rather than at random (#660 step 2, ADR-0137).** Each pick is the candidate farthest
+  from the nearest member already chosen, measured in the parameter sampling space with each
+  parameter divided by its spread over the initial population. The legacy edition keeps the
+  random choice, and `ss_diverse_by_distance` sets it either way.
+- **PyBNF requires Python 3.12 or newer, and the `petab` extra requires petab 0.9 or newer
+  (#591).** petab 0.9.0 is the first release that loads a `language: bngl` model natively,
+  through the `BnglModel` loader PyBNF contributed upstream (PEtab-dev/libpetab-python#508),
+  and it requires Python 3.12. Python 3.11 is no longer supported.
+- **On bngsim 0.17.0, a number given as `sbml_atol`, the scalar PyBNF derives for an SBML
+  model, and a BNGL action's `atol=>` are per-species ceilings.** bngsim 0.17.0 reads a
+  scalar `atol` as `min(atol, rtol*max(|x_i(0)|, floor))` for each species
+  (lanl/bngsim#1420), and PyBNF hands the number over as written, so no species is held
+  looser than it and one far below it is still resolved. Through bngsim 0.16.0 the number
+  held every species exactly. The tolerance docs now say so. The sensitivity-fallback
+  tests decline on `floor()`, since 0.17.0 differentiates `abs()` of the state
+  (lanl/bngsim#1126).
+- **PyBNF now requires bngsim 0.17.0 or later** (`bngsim>=0.17.0,<1`, and the same for the
+  `antimony` extra and the CI install). The gradient routing and its run-time checks are
+  written against the answers bngsim 0.16.0 and later give about derived parameters and
+  initial-condition seeding, and 0.17.0 is the first release carrying every bngsim fix the
+  test suite was validated against; 0.15.x is no longer supported. A gradient-based fit also
+  checks the installed version when it starts, so a build older than 0.16.0 installed from
+  source is refused, naming its version and the minimum.
+
+### Removed
+- **The `pybnf.petab.bngl_model` module, its `BnglModel` adapter, and the `register_bngl()`
+  shim that taught older petab releases to load BNGL models (#591).** petab now loads BNGL
+  models itself, so PEtab's own validator checks a BNGL-model problem without PyBNF;
+  `register_bngl()` was already a no-op on petab 0.9.0. The stand-alone BNGL reader, which the
+  importer and exporter use, stays, as does the parameter-expression evaluator (#666), since
+  petab's own loader does not yet evaluate an expression-valued parameter.
+
+### Fixed
+- **On bngsim, an action after a `simulate` that stops early starts where BNG2.pl's does
+  (#1010).** bngsim checks `stop_if` only after integrating the whole span, so the bridge
+  carried the state at `t_end` into every later action, and its clock read `t_end` after a
+  `stop_if` or `steady_state` stop: a treat-below-a-threshold model scored 502548 where BNG2.pl
+  scores 0.07. The bridge now puts every species back at the stop row and the clock at its time.
+  Each point of a `parameter_scan` with `stop_if` now stops on it too; it was read at `t_end`.
+  A gradient fit that continues from a stop is refused. `stop_if` on `ssa` or `psa`, which
+  BNG2.pl checks after every reaction, or on a steady-state scan, goes to BNG2.pl under
+  `bngl_backend = auto` and is refused under `bngsim`.
+- **A `simulate` with `continue=>1` that shares its suffix with the run before it is one
+  output on bngsim, as on BNG2.pl (#1009).** BNG2.pl appends the continued run to the output
+  of that suffix; the bngsim `.net` path kept only the continued segment, which was silently
+  wrong with `ind_var_rounding = 1` (an objective of 6159 where about 0 was right). It now
+  appends the rows and the forward sensitivities, dropping the repeated start row. A
+  network-free model cannot continue a run, so there the shared suffix is refused at load.
+- **A `.net` condition whose gradient route reads no column now requests none (#1002).** It
+  used to fall back to the whole sensitivity request, so a carried dose-response scan of `kf`
+  under a control condition was refused whenever another condition bound `kf` to a fitted
+  parameter, though nothing in the control reads that column. Its runs now compute no
+  sensitivities, and the gradient assembly reads its share as exactly zero; a missing tensor
+  where the route does read a column is still refused. The initial-condition axis is narrowed
+  the same way.
+- **A protocol-block action that names an option the bngsim bridge does not read is classified
+  with the model's actions (#1000).** A `simulate` in a protocol block, naming `argfile`,
+  `max_sim_steps`, `output_step_interval` or `print_on_stop`, left the model on the bridge, and
+  set-up then refused it saying `auto` picks BNG2.pl for it, which it had not. PyBNF cannot run
+  such a model on BNG2.pl either: it simulates the generated `.net` file there, which carries no
+  protocol block (#926). So `auto` and `bionetgen` now refuse a model whose protocol block a
+  `simulate_protocol` action or a `method=>"protocol"` scan runs whenever they would simulate it
+  with BNG2.pl, saying why; such a model used to fail every simulation. `bngsim` refuses one
+  whose protocol names such an option, or that uses `simulate_protocol`. `print_on_stop=>0`
+  without `stop_if` is no longer sent to BNG2.pl: BNG2.pl reads it only beside `stop_if`.
+- **A network-free experiment that BNG2.pl would simulate is refused instead of failing
+  every simulation (#999).** An edition-2 `method: nf` experiment writes `sample_times` (a
+  dose-response, a `parameter_scan` with no `n_steps`), which BNG2.pl's NFsim refuses, and
+  BNG2.pl has no RuleMonkey (`method: rm`). Under `bngl_backend = bionetgen` such a job ran to
+  "Fitting complete" with every objective `inf`, or stopped on failing simulations. It is now
+  refused, naming the experiment, BNG2.pl's message and its cause, as is a hand-written
+  network-free action BNG2.pl stops (`sample_times`, no `n_steps` or `t_end`, `continue`,
+  `method=>"NF"`, `simulate_nf`): when the configuration loads under `bionetgen` and under
+  `job_type = check`, which simulates with BNG2.pl whatever the backend says; and, under
+  `auto`, when the fit sets its models up, before any simulation, whenever bngsim is
+  unavailable, cannot take the model's actions, or fails to set it up.
+- **A BNGL `simulate` with `n_output_steps`, or with no step count, no longer stops the job
+  from loading (#998).** Every job type measured each BNGL action's output length
+  when the configuration loaded, for a length only `am` read, and refused the job when an
+  action named neither `n_steps` nor `sample_times`, although BNG2.pl takes `n_output_steps` for
+  `n_steps` and defaults to one step. It also read `sample_times` ahead of `n_steps`, which
+  BNG2.pl gives precedence, and skipped any action line with a `#` on it. `am` no longer needs
+  the length (it sizes its trajectory files from the output it records), so the measurement and
+  the effective configuration key `time_length` are gone.
+- **On bngsim, a BNGL `simulate` action follows BNG2.pl's rules for its output grid (#998).** The
+  bridge read `n_steps` and `t_end` with its own defaults, 100 and 100: `n_output_steps=>20` gave
+  101 rows where BNG2.pl writes 21, an action with no step count 101 where BNG2.pl writes 2, and
+  an action without `t_end` ran to t = 100 where BNG2.pl refuses it, so a data time on one
+  backend's grid could be missing from the other's. Removing `find_t_length`, which refused the
+  first two at load by accident, exposed it. `n_output_steps` is now `n_steps`, the default is one
+  step, and what BNG2.pl refuses is refused, with its message, when the model is set up: both step
+  keys, no `t_end` (a `parameter_scan` too), fewer than 3 `sample_times`, and, on NFsim, anything
+  but `n_steps` and `t_end`, except the `sample_times` bngsim's NFsim takes. Edition-2 fits are
+  unchanged.
+- **A BNGL action that takes its arguments from an `argfile`, or names `max_sim_steps`,
+  `output_step_interval` or `print_on_stop=>0`, runs on BNG2.pl under `bngl_backend = auto`
+  (#998).** BNG2.pl reads these to decide the action's output rows and the bngsim bridge does
+  not, so the bridge no longer takes such a model: `auto` falls back to BNG2.pl, and
+  `bngl_backend = bngsim` refuses it, naming the option. An `argfile` action was refused
+  with the claim that BNG2.pl refuses it, which it does not. A `simulate` whose
+  `sample_times` start after `t_start` still differs between the backends, #872.
+- **A column scored by a count noise model takes no normalization (#997).** Any
+  `normalization` (`init`, `peak`, `zero`, `unit`, `floor`) of a column scored by `neg_bin`
+  (`objfunc = neg_bin` / `neg_bin_dynamic`, `objective = neg_bin`, or a `noise_model` line)
+  was accepted, and the normalized values were scored as if they were counts, through the
+  mass function's continuous extension. That is not a likelihood, and the best fit moved
+  with the normalizing constant. The configuration is now refused when it loads, naming the
+  column, the normalization, the experiment and the noise model. `scale` on such a column
+  keeps its refusal from #990. Normalizing a column that a continuous noise model scores,
+  beside an unnormalized count column, still loads. The test is a property of the noise
+  model (`scores_counts`), so a future count family is covered.
+- **`normalization <observable> = scale` is refused for every Bayesian sampler (#996).**
+  `scale` replaces each series' multiplicative scale by its best fit to the data, which is a
+  profile, not a marginal, so `am`, `dream`, `hmc`, `mh`, `p_dream` and `pt` sampled
+  something other than the posterior the configuration describes; for a Gaussian series the
+  two differ by a factor that depends on the parameters. The configuration is now refused
+  when it loads, in either edition and every form (whole-fit, per observable, per
+  experiment), naming each series (column and experiment), as `noise_profiling` and
+  `linear_profiling` already were. To sample the scales, give each series its own free scale
+  parameter in the measurement layer (`observable: y, formula: c * y` for one series), or
+  keep `scale` with an optimizer.
+- **A scored `ss_method=>"newton"` dose-response no longer returns a zero gradient column for
+  a species a conservation law holds.** bngsim does not compute the initial-condition axis on
+  a Newton steady state, and PyBNF filled it with zeros, which is right only for a species in
+  no conservation law: for `A <-> B` the steady state moves with `B(0)` through the conserved
+  total. On bngsim 0.16.0, fitting a derived seed such as `B() Btot` was routed onto that axis
+  and its gradient came back exactly 0. Such a scan is now refused on every build, naming the
+  species. On a build whose Newton solve drops a conserved species' parameter seeding
+  (lanl/bngsim#704), the refusal now also covers a seed set by a `setConcentration` action,
+  not only by the `.net` initializer. The integrate-to-steady-state scan used to drop every
+  point that carried an initial-condition axis and then report "no forward-sensitivity
+  tensor"; it now keeps the axis, and the gradient is right.
+- **`am`'s trajectory outputs cover every experiment, are normalized once, and are refused
+  where they would be wrong (#990).**
+  - An experiment under a `condition:`, or an edition-1 mutant, got no `output_trajectory` or
+    `output_noise_trajectory` file, with no message. It now gets its files; `-r` from an older
+    backup says which files start late.
+  - With `normalization`, the run stopped at its first accepted result (`ValueError`).
+    `output_trajectory` records the normalized series the objective scores. Refused at load: an
+    `output_noise_trajectory` column an experiment normalizes, either output on a `scale` column,
+    a misspelled name (listing the names it could match), and two experiments sharing a file.
+  - `normalization = scale` on a noise model with no additive scale (`neg_bin`) is refused at
+    load, instead of failing every evaluation.
+  - `am` no longer stops when a chain's first simulation fails or is penalized, or under
+    `local_objective_eval = 1` or `smoothing > 1`.
+  - `-r` no longer stops with `IndexError` when an `mh` or `pt` chain had no result at the
+    backup it resumes from.
+- **A `neg_bin` noise model scores, differentiates and draws a large dispersion for the right
+  mean.** The score clipped `r/(r + m)` at `1 - 1e-10`, a floor of `r × 1e-10` on the expected
+  count that grew with the dispersion, so from about `r = 1e7` on every expected count below it
+  was scored as the floor (at `fix_at 1e12`, as Poisson(100)).
+  - **Score:** the floor is capped at `1e-7`; above `r` ≈ `1e3` the score is accurate to `1e-10`
+    for counts up to `r/1e6`. Up to `r` ≈ `1e3` scores are unchanged to the bit.
+  - **Gradient:** the dispersion gradient, wrong in sign at `1e12`, follows a series there.
+  - **Draws:** `am`'s `output_noise_trajectory` now draws the right mean; up to `r` ≈ `1e3` its
+    draws are unchanged.
+  - **Median location:** a median the search cannot reach raises, naming the dispersion.
+  - **Filter:** `job_type = lwf` takes a dispersion up to `1e12`, instead of `1e6`.
+- **`am`'s `output_noise_trajectory` draws from each column's own noise model.** Under
+  edition 2 the draw was gated on the legacy `objfunc`, which edition 2 does not have, so every
+  `traj_noise_*` file was all zeros, with no message. Each column is now drawn from the
+  `neg_bin` noise model that scores it (its fixed, fitted or formula dispersion, its mean or
+  median location, and its `cumulative` flag). A column with any other noise model, including
+  the default `chi_sq`, a dispersion read from the data, and a fit with a `time_error` are
+  refused when the configuration loads. Legacy `objfunc = neg_bin` / `neg_bin_dynamic` draws are
+  unchanged. Each trajectory column is matched to its buffers exactly: a column whose name is
+  inside another's (`cases` in `epicases2`) wrote that one's rows twice, and an
+  `output_trajectory` column named `*_Cum` stopped the run at its first record.
+- **An edition-2 time course with data before t = 0 is refused when the configuration loads,
+  on every backend (#952).** Its simulation starts at t = 0. BNG2.pl writes no row before that,
+  so every simulation failed, and RoadRunner and bngsim started the run at the earliest datum
+  instead, scoring every reading at the wrong time. A parameter scan's `t_end:` and an
+  `equil_t_end:` that are not after 0 are refused too: BNG2.pl integrated nothing for them, and
+  bngsim failed every simulation. A job imported from a PEtab problem whose period starts before
+  0 is refused with a pointer to #951, which keeps such times unshifted.
+- **The bngsim `.net` backend compiles its ODE right-hand side once per model, and no longer
+  re-loads the `.net` file on every evaluation (#937, ADR-0148).** Every per-evaluation copy of
+  a model re-loaded the file and re-ran codegen, and every `Simulator` asked for codegen, which
+  a bngsim with lanl/bngsim#803 answers by recomputing its cache key. An evaluation of a large
+  model is now many times faster on either bngsim. PyBNF no longer calls bngsim's deprecated
+  `prepare_codegen` or passes `net_path`. A sensitivity run now always asks bngsim to compile
+  against the model as it stands, so under `PYBNF_NO_CODEGEN` a condition that pins a derived
+  parameter no longer gets the base condition's chain rule (lanl/bngsim#708).
+- **When a run fails after `am` has stopped, the error-exit cleanup writes the `_end`
+  histograms and credible intervals, as it does for mh, pt, dream and p_dream (#936).** `am`
+  used to point its samples file at `combined_params.txt` when it stopped, and the histogram
+  step cannot read that file, so the cleanup failed and wrote nothing.
+- **`job_type = ms` on a `.net` model refuses an experiment it would segment wrongly (#910).**
+  A segment starts from the model's own state and parameters and replays no other action, so
+  an experiment whose scored `simulate()` follows a pre-equilibration, a `setParameter` or
+  `setConcentration`, an earlier run whose end state it inherits, or a restored snapshot,
+  with no reset in between, was fitted and certified as a different experiment, silently.
+  It is now refused when the fit sets up, naming the action, as the documentation said; a
+  plain experiment, and one after `resetConcentrations()` / `resetParameters()`, still runs.
+- **PEtab export with `inline_functions=True` now writes a BNGL function body with the value
+  BioNetGen gives it (#908).** The body was read as PEtab math, so `-k^2` (BNGL: `(-k)^2`) and
+  `a^b^c` (BNGL: `(a^b)^c`) were exported as formulas with different values and no error. The
+  body is now read with BioNetGen's grammar and checked against it numerically; a construct
+  with no exact PEtab reading, or whose value depends on the simulator, such as `rint`,
+  `time()`, `(-2)^x` or an `if()` whose condition is not a comparison, is refused.
+- **A PEtab import now applies the value of a parameter the table fixes (#907).** A
+  `parameters.tsv` row with `estimate = false` fixes a model parameter at its `nominalValue`,
+  but the import ignored the row and the job simulated the model file's value. The value is now
+  written into PyBNF's copy of the model, marked with a comment, listed in the conf header and
+  printed. A fixed row PEtab forbids, or one PyBNF cannot apply exactly, is refused.
+- **A PEtab v2 problem that equilibrates the model as is before measuring now imports with that
+  pre-equilibration (#906).** A `time = -inf` period with a blank `conditionId` used to import
+  as no pre-equilibration, so the experiment started from the seed species. It now imports as
+  `preequilibrate:` a synthesized `perturbations: none` condition named `unperturbed`. A condition
+  whose rows only re-pin fit parameters at their own values imports as a `none` condition too.
+  Where PEtab reads such a period differently, the import refuses it and names the parameter.
+  Re-import problems written this way.
+- **PEtab import keeps a `cond_wildtype` condition that sets real targets (#905).** It imports
+  as condition `cond_wildtype`; only the exporter's base, made of surrogate pins, is dropped.
+  The exporter now refuses a condition named `wildtype`. Before, such a condition was dropped
+  and its experiment fitted against the unperturbed model.
+- **PEtab import reads a dose experiment from all its periods, not its last row (#904).** A
+  dose after a pre-equilibration (the shape `petab1to2` writes) imports as a pre-equilibrated
+  scan, and an experiment applying two conditions at once is refused, naming both. Before, the
+  pre-equilibration or the other condition was dropped.
+- **PEtab import keeps every replicate of a dose-response experiment (#903).** Repeated
+  measurements at one dose now import as `<name>.exp`, `<name>_rep2.exp`, ..., as time-course
+  replicates already did. Before, only the last replicate reached the fit. Every data file now
+  gets a name no other experiment's file has, so an experiment named `s_rep2` is no longer
+  fitted to the replicate of an experiment `s`.
+- **The PEtab importer reads every file a `problem.yaml` lists under a table key (#902).** It
+  used to read only the first, so a problem that split its measurements or parameters over
+  several files was fitted to part of its data, with the later files' parameters left fixed. An
+  id defined in two places is now refused. The one-line `[a.tsv, b.tsv]` list form, which read
+  as no condition, experiment or mapping table at all, is read, and a shape the reader cannot
+  read (an unknown key, a file name where a list belongs) is refused instead of skipped.
+- **PEtab export writes the job's `generate_network` cap into the exported BNGL model (#901).**
+  A model capped from the conf used to export uncapped, so PEtab consumers built a different or
+  unbounded network.
+- **PEtab export refuses a BNGL model whose hand-written actions change what the fit's
+  experiments start from, such as `setParameter` or `saveConcentrations` (#900).** It used to
+  drop them silently; leftover `simulate` and `write*` lines are still dropped.
+- **PEtab export refuses a job with a `postprocess` script (#899).** It used to write a problem
+  that scores the untransformed simulations.
+- **PEtab export refuses `noise_location = mean` on an `lnnormal` fit (#898).** It used to
+  write the mean-centred fit as PEtab's median log-normal, byte-identical to the median job. A
+  `mean` on a linear Gaussian or Laplace, where the mean is the median, now exports by either
+  spelling.
+- **In a multi-model job, the PEtab export computes a relative condition on a fixed parameter
+  from the condition's own model (#897).** It used the first declared model that defines the
+  parameter, so the exported problem could have a different best fit. A multi-model condition
+  with no `model:`, or applied to another model's experiment, is now refused, as the fitter
+  does.
+- **The PEtab export keeps an experiment's `equil_t_end:` (#896).** A fixed-duration
+  equilibration was exported as PEtab's steady-state (`-inf`) period, a different protocol from
+  the one the fit scores. It now exports as a leading period at time `-equil_t_end` and imports
+  back as `equil_t_end:`. A model that reads the simulation time is refused, because PEtab runs
+  that period on `[-T, 0]` while PyBNF runs it on `[0, T]`.
+- **PEtab export pairs every replicate's dose-response measurements with the dose they were
+  measured at (#895).** A second `data:` file's rows were paired with the first file's doses by
+  row position, so reordered or missing doses were exported against the wrong doses, and an
+  extra dose raised a bare `IndexError`. The dose axis is now every dose any replicate
+  measures. A dose the fitter itself cannot match is refused, with the file and dose named.
+- **A column-mean sigma (`ave_norm_sos`, `sigma = column_mean`) now exports to PEtab as each
+  experiment's own mean (#894).** The fit scales each experiment by its own mean, but the
+  export wrote one mean pooled over all experiments, so the exported problem had a different
+  optimum. When the experiments' means differ, each measurement row now carries its own
+  experiment's mean. The import restores `column_mean` only when every value matches its
+  experiment's mean.
+- **`petab1to2_preserve_scale` converts every declared PEtab v1 prior to a v2 prior with the
+  same distribution (#893).** A `log10` `parameterScaleNormal` prior used to import with its
+  mean and sd divided by ln 10 (six priors in `Schwen_PONE2014`, others in `Isensee_JCB2018`,
+  `Raimundez_PCB2020` and `Bachmann_MSB2011`), and a natural-log `parameterScaleUniform` with
+  its bounds on the wrong scale, both silently. petab1to2 warnings the converter does not
+  repair now reach the caller, and a dropped non-default initialization prior is named.
+- **PEtab export now simulates a dose-response at the estimate of a parameter that is fit and
+  perturbed by a condition elsewhere in the job (#892).** Each dose condition set only the
+  swept parameter, so PEtab ran every dose at the parameter's model-file value. Each dose
+  condition now pins it to its estimate. A pre-equilibrated dose-response in such a job, until
+  now refused, exports too, except for three combinations that are still refused with a
+  message.
+- **On bngsim, a BNGL action with `sample_times` now writes BNG2.pl's rows (#872).** The bridge
+  started the run at the first listed time, so with `sample_times=>[10,20,30]` it reported the
+  initial state at t = 10 and shifted every row: a `de` fit of a decay recovered twice the true
+  rate, with no warning. It also ran past a `t_end` below the last listed time. The run now
+  starts at `t_start`, writes that row, the listed times before the end and the end, and, as
+  BNG2.pl does, compares times to 15 significant digits: a data time given with more digits
+  moves by about one part in 1e15, so an objective can change in its 16th digit. The same holds
+  for NFsim and both `parameter_scan` paths. Data at a time the output kept for its suffix does
+  not write is refused at load, rather than failing every simulation, unless a `postprocess`
+  script, which may rewrite the times, is applied to it. A grid that starts below 0 or ends where
+  it starts is refused, as is `continue=>1` on NFsim.
+- **Bayesian fits now report each parameter's credible intervals and histogram from that
+  parameter's own samples (#856).** In `credible*.txt` and `Histograms/`, every parameter whose
+  place in the declaration differed from its place in alphabetical order was reported from
+  another parameter's samples, binned on the wrong parameter's scale. This affected `mh`, `pt`,
+  `am`, `dream`, `p_dream` and `hmc`. `samples.txt`, R-hat, ESS and `inference_data.nc` were
+  correct, so intervals from earlier runs can be recomputed from `samples.txt`. A `samples.txt`
+  whose columns are not exactly the fit's free parameters is now refused.
+- **A gradient fit no longer routes a wildtype experiment through a condition its name ends
+  with (#850).** The condition each scored output ran under was read off its name, so a
+  wildtype experiment `data` beside a condition `a` (or `no_inhibition` beside `inhibition`)
+  got that condition's chain-rule factors. `lbfgs`, `trf` and `gntr` then stopped at a wrong
+  point and reported convergence: x = 0.29399 at objective 27.61 instead of 0.3 at 22.0. Each
+  output is now resolved from the action and condition that produced it, in the gradient
+  path and in multiple shooting. A configuration in which two simulations spell one output
+  that is read (`data` as written and `dat` under `a`) is refused when it loads, naming both;
+  in edition 2 two pairings nothing reads still load (they may run, but nothing reads
+  them). That also covers two
+  experiments whose data keys collide (#833).
+- **More ways one simulation's output replaced another's are refused at load (#850).**
+  An experiment named `x_preequil` beside a pre-equilibrated experiment `x` was scored
+  against `x`'s unmeasured equilibration phase, silently for steady-state data. An edition-1
+  data file listed under mutant `b` whose name merely contains `b` (`xbc.exp`) was scored
+  against the unmutated action `xbc`. Two actions with one suffix (a legacy `time_course` key
+  reusing an experiment's name) kept whichever ran last. Two pairings that spell a key only a
+  constraint's `at` / `between` variable, or another model's constraint, reads are refused as
+  well. What BNG2.pl does with a model file still loads: two model-file actions of one kind,
+  the later one's output kept, and a `simulate` with `continue=>1` resuming the run before it
+  under the same suffix (refused on a network-free model, which cannot continue).
+- **Each experiment declared on a BNGL model starts from the model as written, so the order of
+  the `experiment:` lines no longer changes a fit (#830, #831, #869, #875; ADR-0151).** A
+  pre-equilibration's condition, a pre-equilibrated scan's saved state, or the last dose of a
+  BNG2.pl scan stayed in force for every experiment after it; on bngsim a condition run started
+  under the base run's parameters, and network-free experiments shared one live session.
+  Parameters and seed species are now restored before every experiment.
+- **Island differential evolution (`de`) no longer ends the fit when two candidates land on one
+  point, or stalls trying to keep them apart (#812).** `de` filed each in-flight candidate
+  under its parameter values, so two candidates at one point shared one record. In the initial
+  population that ended the fit with a `KeyError`, after crediting one slot with another's
+  score; with every parameter pinned (`uniform_var = x 5 5`, which is accepted, #808) it
+  happened every time. Among proposals, the nudge #775 added to keep coinciding candidates
+  apart rounded away on a linear parameter with a large value (the #721 bug) and the fit
+  stopped with no error or log line. Candidates are now filed by name, as `ade` does and #811
+  made `pso` do (#807 is this bug in `pso`), and the nudge is gone. `ade` also no longer drops
+  a learned-mutation record when two candidates coincide (#730). A fit whose candidates never
+  coincide runs exactly as before, and a single-island run's simulation folders keep their
+  names.
+- **A particle swarm (`pso`) no longer loses a particle, credits a score to the wrong particle,
+  or hangs when two particles land on the same position (#807, #721).** At the start, two
+  identical draws (a risk with one or two parameters in a narrow box at large magnitude, or
+  with every parameter pinned, as `uniform_var = x 5 5` allows, filed as #808) either silently
+  left a particle out of the swarm for the rest of the run or stopped the run with `KeyError`.
+  Later in a run, a collision on a linear parameter above about 1e10 made the fit loop forever
+  (#721). A fit whose particles never share a position runs exactly as before. One that does
+  now carries on, each particle gets its own result, and every particle sits exactly where the
+  velocity update puts it: the nudge of up to 1e-6 that moved one of two colliding particles,
+  and the error it could raise mid-fit, are gone.
+- **A parameter with no finite box under `initialization_distribution = bounds` is now refused
+  with its own numbers, the key that caused it, and what to do (#799).** The message used to
+  give the bounds in sampling space (`-12.0` for `lower: 1e-12` on a log10 scale), never named
+  `initialization_distribution`, offered no remedy, and printed twice. It now gives the bounds
+  in the parameter's own units, names the open side, and suggests either a finite bound on that
+  side or removing `initialization_distribution = bounds` to draw from the prior. The remedies
+  are hints, so the log line stays the bare diagnosis (#527). The refusal for a prior with no
+  bounds now reads the same way, and a `gamma_var` is asked only for an upper bound. For a
+  half-bounded parameter, which #777 made work, removing the key is usually the right remedy.
+  `docs/config_keys.rst` now documents the requirement. The same configurations are accepted
+  and refused as before.
+- **A CMA-ES restart now draws its new start point from `initialization_distribution`, like
+  every other start point PyBNF draws (#797).** Restarts always drew from the prior, so with
+  `initialization_distribution = bounds` and a narrow prior every restart landed in the prior's
+  bulk rather than across the declared box, probing the same basin each time. The concurrent
+  multi-start was fixed for the same fault in #583. A fit that does not set the key restarts
+  exactly as before, random stream included. The documentation now says which distribution a
+  restart draws from, instead of calling it a uniform draw across the box.
+- **PyBNF reads an SBML initial assignment instead of the placeholder value it supersedes
+  (#795, ADR-0147).** When an SBML entity had both a `value` attribute and an initial
+  assignment, PyBNF read the attribute, so a fit could be scored with a number the model never
+  starts from, and a relative `condition:` on such a parameter exported a wrong value to
+  `conditions.tsv`. An assignment over numbers alone now replaces the attribute. One computed
+  from other entities is substituted into the measurement formulas that read it, so it tracks
+  the fit; if it reads something that changes during the simulation, it is refused, naming what
+  changes. A species stays a simulation output and only loses its stale initial value. An
+  assignment rule's target no longer reports a leftover `value` either, and a
+  `sigma = prediction_formula` noise formula now sees the same entities a measurement formula
+  does. The refusal for a relative condition with no nominal value now names the parameter, in
+  either language. No model shipped with PyBNF is affected.
+- **A simulation folder that cannot be created is no longer retried 1000 times under new names,
+  and the reason now reaches the log (#791).** A missing parent folder, a read-only or full
+  filesystem, a permission denial or a stale mount each cost 1000 attempts and 1001 warning
+  lines per job, and the final message did not say why. Only a folder that already exists is
+  now retried under a new name; any other failure stops the job at once with `Job <id> failed
+  because it was unable to write to the Simulations folder: could not create <path>: <strerror>
+  (errno <n>)`. The troubleshooting docs now point at the output directory rather than the
+  model for this failure.
+- **MCMC checkpointing no longer re-saves the chain history as millions of small arrays every
+  iteration (#789).** At the default of one checkpoint per iteration, that made the cost of a
+  run grow with the square of `max_iterations`. Each chain's history is now one growing array,
+  which makes a checkpoint about half the size and, at 40,000 iterations, 258 times faster to
+  write; memory use also falls by about half. The draws are the same, R-hat and ESS are
+  byte-identical (including through the handling added for #787), and a run resumed from a
+  backup written before this change still works.
+- **DREAM's outlier reset no longer lets a chain be compared against a copy of itself (#787).**
+  Resetting an outlier chain copies a donor chain's history over it, and R-hat and ESS read
+  that copied window, so R-hat read low, toward declaring a convergence that had not happened,
+  and ESS counted the copied draws twice. Diagnostics computed before iteration twice `burn_in`
+  read the copy, which is the whole sampling phase of every shipped `dream` and `p_dream`
+  benchmark conf. The diagnostics now start no earlier than where the chains they compare
+  resume their own history, counting only the replicas they read (#782), and
+  `Results/diagnostics_meta.json` reports that point as `history_starts_at`. Samplers that
+  never overwrite a chain (`mh`, `pt`, `am`, `hmc`, and `dream` with no outlier) are unchanged,
+  and a run resumed from an older backup still works.
+- **Parallel tempering's R-hat and ESS now describe only the replicas that carry the posterior
+  (#782).** Only the max-beta replicas reach `samples.txt`, but the diagnostics mixed in every
+  tempered replica on the beta ladder, so R-hat carried a floor set by `beta_range`, and ESS
+  (and with it `ess_per_eval`) overstated the posterior draws. Other samplers are unchanged.
+  With the default `reps_per_beta = 1`, R-hat is a split R-hat over one chain, which cannot see
+  a chain that never left one mode; the reported line now says how many chains it compared,
+  e.g. `Max R-hat: 1.0034 (split, 1 chain)`, and a warning is printed only when
+  `rhat_threshold > 0` makes the run stop on it. A new `Results/diagnostics_meta.json`, also
+  surfaced by `pybnf.inference_data.from_pybnf`, records which chains were compared;
+  `diagnostics.txt` is unchanged. For a between-chain R-hat, raise `reps_per_beta` and
+  `population_size` together, e.g. `reps_per_beta = 2` with `population_size = 16`: raising
+  `reps_per_beta` alone shortens the ladder.
+- **A half-bounded prior no longer hands CMA-ES its shape parameter as a search width (#777,
+  ADR-0118 amendment).** For a prior bounded on one side only (`lower: 1e-12, upper: inf`),
+  CMA-ES took the gap between the prior's two parameters, such as a gamma's shape and scale, as
+  that coordinate's starting width. That is not a length in the parameter's units and could be
+  far too large, so the run spent generations shrinking its step. An open side now takes the
+  truncated prior's central 80% interval in the parameter's sampling space. A coordinate
+  bounded on both sides is unchanged. `docs/priors.rst` and `docs/config_keys.rst` now say
+  which width a half-bounded prior gets, and that writing both bounds is how to state a range.
+- **`fit_type = am` now writes the marginal histograms and the credible intervals it had been
+  silently skipping (#771).** Every adaptive MCMC run, at any number of parameters, left
+  `Results/Histograms` empty and reported no credible interval, although its samples were fine,
+  and it accepted `credible_intervals`, `hist_bins` and `output_hist_every` without effect.
+  These files are now written on the usual schedule and once more at the end of a run that
+  reaches `max_iterations`. Other samplers were not affected.
+- **A Bayesian fit with one free parameter, or one constraint, now gets its histograms,
+  credible intervals and constraint report instead of silently getting none (#769).** The fit
+  ran and wrote its samples, but the summaries read a single-column file back as empty, so
+  `Results` lacked the credible intervals and the log said `No samples collected`. A run that
+  had recorded exactly one sample was treated the same way. A file holding only its header is
+  still skipped. This affected `mh`, `pt`, `dream` and `p_dream`; two or more parameters, and
+  two or more constraints, always worked.
+- **A fit with exactly one free parameter no longer crashes partway through burn-in under the
+  whitened DREAM proposal (#767).** `p_dream`, and `dream` with `proposal = whitened`, stopped
+  with `ValueError: diag requires an array of at least two dimensions` at the first
+  preconditioner update, which by default comes halfway through burn-in, leaving
+  `Results/samples.txt` with only its header. Such a fit now runs to completion with
+  preconditioning active, and samples the flat-box target of #709 as it should. Plain `dream`,
+  `proposal = kalman`, and fits with two or more parameters were never affected.
+- **An adaptive-MCMC (`am`) run no longer ends in `FileNotFoundError` when it combines the
+  per-chain trajectory files and one was never written (#760).** With `population_size > 1` and
+  `output_trajectory` set, the crash came after all the sampling was done, in two cases: a name
+  no simulation produced a column for (#755), and a run that converges inside the adaptive
+  window, before any trajectory is written, which needs no mistake by the user. A missing file
+  is now skipped, and the run says once which keys and chains are missing from the combined
+  output and names the two possible causes; a key with no files at all leaves no empty combined
+  file. Also fixed: a chain that recorded exactly one iteration of trajectory had it written
+  transposed into the combined file.
+- **A recorded adaptive-MCMC sample is written whatever its values, so a trajectory that sits
+  at zero is no longer dropped from the output file (#758).** Every all-zero row was skipped,
+  so `traj_<key>_chain_<n>.txt` silently lost exactly the samples where the observable was
+  switched off, such as an absent species under a knockout, and a band or mean taken from it
+  was biased; when every sample was zero, no file appeared. A row is now written if it was
+  recorded, whatever its values, and a name that matched no column is still never written
+  (#755). The parameter-sample output had the same test for an all-zero parameter vector,
+  reachable when a lower bound is zero, and is fixed the same way.
+- **An `output_trajectory` name that no simulation produces a column for is now reported once,
+  instead of silently producing no file (#755).** This covers `output_trajectory` and
+  `output_noise_trajectory` (`fit_type = am`). A typo used to leave `Results/A_MCMC/Runs/` with
+  fewer `traj_*.txt` files than the conf asked for and no explanation. The first completed
+  simulation now warns, naming every configured name it has no column for and listing the
+  columns it does have. The missing message is why #751, which turned
+  `output_trajectory = A,B,C` into the single name `ABC`, went unnoticed. A trajectory that is
+  zero across the whole recorded window was dropped the same way; that is fixed separately
+  (#758).
+- **A key that takes several values accepts commas between them, and no longer reads a trailing
+  comment as more values (#751).** This covers `profile_likelihood_params`,
+  `output_trajectory`, `output_noise_trajectory`, `design_target`, `design_observables`,
+  `worker_nodes`, `postprocess` and `qualitative_scale`. `A, B`, `A,B`, `A , B` and `A B` now
+  give the same list. Before, `profile_likelihood_params = K_par, Kf` was refused for naming a
+  parameter `K_par,`, and `k1 k2 # profile these` was read as five parameter names. Adaptive
+  MCMC read `A,B` in the two `output_*` keys as one name, `AB`, and skipped that trajectory
+  without a message.
+- **A profiled noise scale and a profiled linear coefficient are averaged over the same
+  simulations of the best fit as the log-likelihood (#743, ADR-0131 corrected).** Under
+  `noise_profiling = 1` or `linear_profiling = 1`, `Results/profiled_noise.txt` and
+  `Results/profiled_linear.txt` are the only place these estimates appear. A run of the best
+  fit that could not be scored contributed the previous evaluation's values, `at_bound` flag
+  included, and a run dropped from the log-likelihood for scoring a different number of points
+  still contributed its own; both gave a wrong reported value. Now a run's profiled values
+  count only when its log-likelihood does. When no simulation of the best fit can be scored,
+  neither file is written, and the log says why and names the parameters it is not reporting. A
+  fit that profiles nothing, or whose runs all scored, is unchanged.
+- **`information_criteria.txt` reports how many simulations of the best fit were run beside how
+  many produced a usable log-likelihood, so an average over 3 of 10 runs no longer reads as an
+  average over 3 of 3 (#741, ADR-0131 amended).** A run that fails is left out of the mean,
+  which is then optimistic and could win an AIC comparison between models on that basis. The
+  file now carries `replicates_requested` beside `replicates` and says in words how many runs
+  produced nothing and that the mean is optimistic; the console says the same, even when only
+  one run survived. The averaging is unchanged, and unlike #720 no minimum number of successful
+  runs is required.
+- **A `time_error` fit is refused by the PEtab export instead of being written as an exact-time
+  one (#738).** A `time_error` clause on a `noise_model` line says the reported measurement
+  times are not exact, and PEtab cannot express that. The export ignored the clause and wrote
+  the measurements at their nominal times, so a round-tripped job was fitted with a different
+  statistical model, silently. It is now refused, as `cumulative` already was.
+- **A `U`-tagged free parameter is refused by the PEtab export instead of being written as a
+  hard-bounded one (#736, ADR-0025).** `uniform_var = v 0 10 U` and its `loguniform_var` twin
+  use the box only to draw starting points, and the search may leave it; PEtab bounds are hard
+  limits, so the export silently turned an unbounded fit into a bounded one on re-import. The
+  error says to drop the tag to export the box as real bounds. Untagged and `B`-tagged
+  parameters export as before, and import is unchanged. This is the same kind of silent drop as
+  #719 and #733.
+- **PEtab export now includes free parameters declared with edition-2 `parameter:` records
+  (#733).** They were silently left out of the exported problem, and a job declared only that
+  way was refused with "No exportable free parameters found". Truncated priors were hit
+  hardest, since the importer writes them as records: a PEtab problem with bounded priors
+  imported fine and exported without those parameters. A record now meets the same refusals as
+  a positional declaration: a no-prior point start, a natural-log sampling scale, a
+  three-parameter family such as `student_t`, and log forms PEtab defines for no family.
+  `initial_value:` is exported as the start point and refused if it disagrees with a
+  `start_point` line, and an out-of-box one is now reported as a PyBNF error rather than "an
+  unknown error".
+- **The best-fit confirmation stage no longer picks a parameter set that fails most of its
+  replicate runs (#720, ADR-0146).** It averaged only the runs that produced a value, so a
+  candidate that failed nine runs of ten was ranked on its one survivor and could beat one that
+  succeeded every time; the winner then fed the saved simulations, best-fit model, information
+  criteria, refine start and bootstrap answer. A candidate can now win only when more than half
+  of its runs that came back produced a usable value. The others rank below every confirmed
+  candidate and are marked by a new `confirmed` column and an `unconfirmed` line. If none is
+  confirmed, the search's own pick stands and the report and log say the simulations are
+  failing. The console reports the winner's failed runs and how many candidates were not
+  confirmed, its line about a changed answer says whether a worse average or unreliability
+  decided it, and `winner_runs` and `winner_failed` join the report.
+- **The PEtab export writes the fit's start point, so a round trip no longer moves the fit back
+  to a sampled draw (#719).** Since #583 PyBNF imports a PEtab `nominalValue` as a
+  `start_point` line, but the export wrote no `nominalValue` column and never read
+  `start_point` lines. A native conf's `start_point` now exports as that parameter's
+  `nominalValue`, and a PEtab problem survives import, export and re-import with its start
+  point intact. The column is written only when some parameter declares a start, so a job
+  without one exports the same four-column table as before. A `start_point` outside its
+  parameter's box, or naming a parameter no exported declaration covers, is refused at export.
+- **A constraint on a normalized observable is differentiated on the column its penalty is
+  actually scored on (#718).** In a gradient fit (`job_type = lbfgs`, `trf` or `gntr`) where a
+  `.con` or `.prop` constraint reads an observable that has a `normalization`, the constraint's
+  gradient was taken on the raw column while its penalty was scored on the normalized one. Each
+  gradient component was wrong by a different factor, the `gntr` constraint curvature carried
+  the error squared, and the fit still reported a converged result. The constraint gradient now
+  applies the normalization as the objective's gradient does, including a chain of methods and
+  a constraint that reads another suffix's observable, and its z-score reductions use only the
+  column's measured rows (#726, #727). A constraint on an observable with no normalization is
+  unchanged.
+- **Parallel tempering (`pt`) records each iteration of a chain once, instead of recording the
+  iteration after a replica exchange twice (#710).** The duplicate put an extra draw in
+  `samples.txt` and an extra row in `log_likelihood.txt`, and gave double weight in
+  `Results/Histograms/*.txt` and the credible intervals, with nothing in the output to say so.
+  A run was affected whenever `(k*exchange_every + 1) % sample_every == 0` for some k, for
+  example at every exchange under `sample_every = 1`; the defaults never meet it. Removing
+  duplicate rows cannot repair an affected run, since the two rows carry no distinguishing
+  label and may hold different points: re-run the fit. `exchange_every = 1` also works now; it
+  used to abort at the first exchange with "I seem to have gone from one replica exchange to
+  the next replica exchange without proposing a single valid move".
+- **Adaptive MCMC (`am`) no longer under-samples along the walls of the box: a proposal that
+  leaves it is rejected, not redrawn (#709).** Redrawing until a proposal landed inside, then
+  accepting it by the plain Metropolis ratio, thinned the chain out along every bound, which is
+  where a credible interval's edge sits when a parameter presses against it. Now the move is
+  rejected with no simulation run, and the current point is recorded again. Expect a lower
+  acceptance rate near a bound (at `verbosity = 2` it is printed with the number of proposals
+  that left the box), a shorter adapted step there, which settles instead of growing without
+  limit as it could, and fewer simulations than iterations. A run that never proposes outside
+  the box is unchanged to the bit; one that does follows a different chain from the same
+  `random_seed`. A one-parameter chain can no longer drop out of its generation silently and
+  leave the run waiting. `mh`, `pt`, `dream` and `p_dream` were not affected.
+- **A proposal within a rounding of a parameter's bound no longer ends the fit (#706, #750).**
+  Folding an out-of-box optimizer or sampler proposal back into the box could return a value a
+  hair outside it, and the run stopped with "Sorry, an unknown error occurred"; on a box such
+  as `[1e-09, 1e+09]` it could instead come back a hundredfold from where it was proposed. On a
+  log scale, merely reaching a bound was enough. Differential evolution hit this in tutorial
+  lesson 25 (#703), and `job_type = profile_likelihood` could not finish on any problem where a
+  parameter pressed its bound (#750). The folded value is now clipped into the box, so a
+  parameter may take a bound's value exactly.
+- **Tutorial lesson 25 no longer claims its single plasma curve determines all three rates, and
+  its check no longer depends on one lucky seed (#703).** The curve's objective has two minima
+  in `k_transit` and `k_abs`. The README now explains what one curve can and cannot determine,
+  and what second experiment would separate the rates. The check accepts either minimum, with
+  `k_elim` within 3%, from seeds 1234, 1 and 2, and a new test rejects a fit that ends between
+  them, such as the early stop of #648. Its single-seed form had been broken by changes to
+  differential evolution in #698 and #700. The lesson's configuration now polishes with
+  `refine_method = trf`. Tutorial checks can now list other minima and several seeds.
+- **Differential evolution no longer proposes a candidate that is an exact copy of the
+  parameter set it was built from, under `edition = 2` (#698, ADR-0143).** Nothing guaranteed
+  that any parameter moved, and in `ade` the copies multiplied until the population was one
+  parameter set and the run stopped, reporting convergence. At least one parameter that the
+  donors' difference moves is now always mutated, including under `de_adapt_mutation = 1`. The
+  legacy edition keeps the original proposal draw for draw, and `de_force_mutation` sets the
+  guarantee either way. Tutorial lessons 24, 25 and 44 now run more iterations to reach their
+  documented values.
+- **The information criteria of a stochastic fit no longer come from a single simulation
+  (#676).** At the end of a stochastic fit the best fit is now simulated `best_fit_replicates`
+  times at fresh seeds, and `Results/information_criteria.txt` takes AIC, BIC and AICc from the
+  mean log-likelihood, the same average `Results/best_fit_confirmation.txt` reports (ADR-0131).
+  The file gains a `replicates` line and a `log_likelihood_standard_error` line; each criterion
+  carries twice that error, so two models whose AIC values differ by less have not been told
+  apart. A deterministic fit, a legacy-edition fit, a fit whose seed policy pins every
+  trajectory, a fit whose wall-time budget is spent, and the periodic checkpoint keep one
+  simulation, and the new lines read `1` and `n/a`.
+- **CMA-ES no longer ranks a stochastic model's population on single noisy simulations (#661,
+  ADR-0135).** When the noise was comparable to the differences between candidates, the ranking
+  was partly random, pulling the search in arbitrary directions and shrinking a step size that
+  should not have shrunk. Each generation now re-simulates a few candidates at fresh seeds to
+  measure how reliable the ranking is (Hansen et al. 2009). While it is unreliable, every
+  candidate is simulated more times, up to `cmaes_noise_max_evals`, and ranked on its average,
+  and the step size is held up. `cmaes_noise_handling = 0` turns this off. A deterministic fit
+  is unchanged. Scatter search can reuse the same measurement (#660).
+- **Scatter search no longer archives a lucky draw as a local minimum (#660 step 3,
+  ADR-0136).** For a stochastic model each objective value is one draw, so a member whose draw
+  was lucky could not be beaten and was retired into the archive the run reports as its best
+  results. When running a parameter set again would give a different answer, each reference-set
+  member is now ranked on the mean of its draws, and a comparison the noise leaves in doubt
+  waits while both sides are simulated again, up to `ss_noise_max_draws` draws each; a member
+  counted as stuck is drawn again too. `ss_noise_handling = 0` turns this off. A deterministic
+  fit is unchanged.
+- **The startup parallelism report now describes how busy a fit will be once under way, not
+  just its first round (#655).** For scatter search it counted the initialization round of
+  `init_size` parameter sets, so a large fit could be told most of its processors would sit
+  idle and to lower `population_size`, when it was about to use nearly all of them. The report
+  now uses each algorithm's steady-state count (scatter search's population pairs, profile
+  likelihood's directional tracks), scaled by `smoothing` and `parallelize_models`, and notes
+  when the first round differs instead of warning about it. Its advice names the setting each
+  fit reads: `n_starts` for Powell and simplex, and for profile likelihood only how many
+  processors to reserve. `init_size` is now documented in the cluster guide, and the
+  documentation's table of simulations per fit type reads `profile_likelihood` rather than the
+  invalid `pl`.
+- **A gradient fit no longer counts twice the seed of an amount species in a compartment whose
+  size is not 1, when the parameter that seeds it is also read by a rate law.** The SBML and
+  Antimony backends reported such a species to the router as not seeded on the parameter's
+  own sensitivity column, on a measurement from before both columns were read into PyBNF's
+  units and bngsim divided that seed by the volume. The router then added the
+  initial-condition term on top of a column that already carried it; for `S = 100*k` with
+  `k` a rate constant the gradient came back about 2x on bngsim 0.16.0. The backend now
+  reports what bngsim seeds.
+- **A gradient fit no longer counts the chain through an SBML parameter `initialAssignment`
+  twice.** bngsim keeps such a parameter (`beta = R0*g/N`) tracking its inputs, so their own
+  sensitivity columns already carry it; PyBNF added the derived parameter's column on top.
+  That was harmless only while bngsim reported that column as zero, and on bngsim builds
+  with lanl/bngsim#941 the gradient came back 2x to 4x too large. The router now asks the
+  model which derived parameters it keeps live, the derived value is no longer written back
+  where bngsim already holds it (a write one ulp off had overridden the expression), and a
+  run model that disagrees with its experiment's routing stops the fit with the parameter
+  named. A write to a parameter or species the model's own `initialAssignment` defines (a
+  free parameter, a condition, a scan or an equilibration condition) is refused on the
+  gradient path when the same experiment also changes something an `initialAssignment`
+  reads, since the assignment then overwrites the write.
+- **A gradient fit keeps the dependence of a species' initial value on the parameters it is
+  defined from.** PyBNF saves an initial state as the reset target in several places: every
+  `.net` evaluation at its start, each dose of a scan, each `saveConcentrations()` in the
+  actions, and an SBML/Antimony evaluation that writes a species. On bngsim builds with
+  lanl/bngsim#982 a saved state carries no parameter seeding, so a free parameter such as
+  `S0` in `S() S0`, or one an `initialAssignment` reads, got a gradient column of exactly
+  zero for its initial-value term. PyBNF now reads the seeding before each such save and
+  declares it again after every reset back to it, a multiple-shooting knot is declared as
+  depending on no parameter (bngsim releases before #982 had seeded it), and a run whose
+  seeding differs from the routing's stops with the species and parameter named; a species
+  the evaluation itself set, such as by a condition, is left out of that comparison.
+- **A `setConcentration` amount written over a parameter is now differentiated at the values
+  the parameter has when it runs.** PyBNF replaced every parameter in the amount by its value
+  in the `.net` file, constants included. So `Atot*dose` after `setParameter("dose",3)` gave
+  `Atot` a gradient column a third of the true one, and the same amount before a scan over
+  `dose` used the file's `dose` at every point. On bngsim 0.16.0, an amount such as
+  `Atot*(dose-1)` that is zero at the file's value also let a Newton scan run that should
+  have been refused. Only derived parameters that still follow their expression are
+  expanded now, and the row is evaluated at the run's own values: the scanned dose, an
+  earlier `setParameter`, the fitted values. A seed that is zero at one dose is kept, so the
+  steady-state refusal does not depend on it. An amount reading a parameter that a condition
+  sets to a constant is no longer refused as reading a fitted parameter.
+- **A gradient fit that overrides a derived parameter is refused where bngsim would
+  differentiate through the expression the override replaced.** When a fitted value, a
+  condition, a `setParameter` action, a scan or a pre-equilibration measurement condition
+  writes a number to `k2 = 2*k1`, `k1` no longer moves `k2`. bngsim 0.16.0 still puts the
+  chain through `k2` into `k1`'s column: about 20x too large when `k2` was fitted beside `k1`.
+  A one-model check run once per process now decides whether the installed bngsim does this.
+  Where it does, such a run on the `.net`, SBML and Antimony backends and in multiple
+  shooting stops and names the parameter. A relative condition such as `Btot * 2` on a
+  derived parameter whose inputs are fitted is refused at load on every build. Its value
+  moves with those inputs, but it is written as a number, so no gradient column carries that
+  dependence.
+- **A `.net` gradient fit asks each condition's runs for only the sensitivity columns that
+  condition's experiments read.** The request used to be the union over every experiment, so
+  a condition that binds `kf` to a fitted parameter made every other condition differentiate
+  `kf` too. bngsim cannot scan a parameter it is differentiating, so a carried (no reset)
+  dose-response scan of `kf` in the wildtype was refused, though nothing there reads that
+  column. It now runs, and its gradient matches central differences. Each run also computes
+  fewer sensitivity columns.
+- **A gradient fit refuses a scored parameter scan over a parameter it differentiates.** The
+  scan writes its own value to the swept parameter at every dose, so the loss does not move
+  with the fitted value, but the gradient column for it is the derivative at the dose. For a
+  fitted `kr`, the assembled gradient was -472.32 where a central difference gives 0. Such a
+  scan, `.net` or SBML, over a fitted parameter or over one a condition binds a fitted
+  parameter to, is now refused at load, naming the scan and the parameter.
+- **A bngsim model parameter named `e`, `pi`, `log`, `atan2`, `ceil`, `floor` or `pow` is now
+  read as the parameter, as BNG2.pl and bngsim read it, not as the math name**, in a species
+  initializer of a `.net` model, a `setConcentration` expression and a network-free model's
+  parameter block, where a fit could start from a wrong initial condition or derived parameter.
+- **A bootstrap replicate of a multiple-shooting fit (`job_type = ms`) no longer reports a
+  start belonging to the replicate before it.** Starts accumulated across replicates, so a
+  later replicate could report a start fitted to different resampled data as the one behind
+  `Results/continuity_defects.txt` and the best stage trace.
+- **A `neg_bin` noise model at `location = mean` scores a negative prediction as the expected
+  count 0**, as the median location already clamps its target. A prediction below `-r` (a
+  falling cumulative output, say) was scored wrongly, and one of exactly `-r` divided by zero.
+  No score of a prediction above `-r` changes. The adaptive sampler's output noise trajectory
+  draws its negative-binomial noise from the same clamped mean, and writes it under NumPy 2,
+  which refused the one-element array it assigned to each row.
+- **Converting a PEtab v1 problem with petab 0.10.0 no longer inflates a log10 observable's
+  sigma by ln 10.** petab 0.10.0 writes a v1 `log10` observable's noise formula as
+  `log(10) * (<formula>)`, which is right for the natural-log noise family petab writes but
+  wrong under the `observableTransformation = log10` column that
+  `petab1to2_preserve_scale` restores. A log10 observable with a numeric sigma then imported
+  with a sigma 2.3 times the stated one, with no error. The converter now puts the v1 noise
+  formula back, and refuses any other rewrite of it, so the noise formula is the same under
+  petab 0.9 and 0.10.
+
 ## [v1.8.1] - 2026-08-23
 
 ### Fixed

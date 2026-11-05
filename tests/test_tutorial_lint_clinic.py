@@ -30,6 +30,11 @@ from pathlib import Path
 
 import pytest
 
+# Skipped when petab is absent, not when it is broken: a petab that is installed but fails
+# to import fails the module below, as conftest.py's petab marker does (#1023).
+if importlib.util.find_spec('petab') is None:
+    pytest.skip('these tests need the optional pybnf[petab] extra', allow_module_level=True)
+
 from petab.v2 import Problem
 from petab.v2.lint import lint_problem, ValidationIssueSeverity
 

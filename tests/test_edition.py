@@ -494,8 +494,9 @@ time_course = model: abc, time: 500, step: 10, suffix: abc_data
     # forced t=0), the legacy one a uniform n_steps grid -- the intended difference.
     assert mod.models['abc'].actions[0].explicit_points is not None
     assert leg.models['abc'].actions[0].explicit_points is None
-    # time_length is populated for the synthesized action (the am-sampler trajectory path).
-    assert mod.config['time_length']['abc_data'] == len(mod.models['abc'].actions[0].explicit_points) - 1
+    # One output row per explicit point.
+    assert (mod.models['abc'].actions[0].output_length()
+            == len(mod.models['abc'].actions[0].explicit_points))
 
 
 @pytest.mark.roadrunner
@@ -577,8 +578,8 @@ wall_time_sim = 0
     # the swept-axis data is bound under the experiment name, scored at steady state.
     assert c.exp_data['abc']['dose'].indvar == 'kAB'
     assert c.mapping['abc'] == {'dose'}
-    # one output row per dose (no t=0 baseline) -> the adaptive_mcmc array-length invariant.
-    assert c.config['time_length']['dose'] == len(doses) - 1
+    # one output row per dose (no t=0 baseline).
+    assert action.output_length() == len(doses)
 
 
 @pytest.mark.roadrunner

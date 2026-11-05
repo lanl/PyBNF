@@ -111,12 +111,20 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
     return PSet(mut_param_list)
 
 
+# The names in the namespace below that BNG2.pl refuses as a parameter name ("Cannot use
+# built-in function name 'exp' as a parameter name", BioNetGen 2.9.2). No model BNG2.pl accepts
+# defines one, so each always means the built-in. The namespace's other names -- e, pi, log,
+# atan2, ceil, floor, pow -- are ordinary parameter names to BNG2.pl (its constants are _e and
+# _pi), and where a model defines one, BNG2.pl and bngsim read the parameter, so it wins here too.
+_BNG_RESERVED_EVAL_NAMES = frozenset({
+    'exp', 'log10', 'log2', 'sqrt', 'abs', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+    'min', 'max', 'if', 'rint',
+})
+
+
 def _build_safe_eval_namespace(seed=None):
     """Build a safe expression-evaluation namespace for .net math."""
-    # Start from seed so that builtin math names always take precedence.
-    # BNG2.pl reserves these names; no valid model should shadow them.
-    ns = dict(seed) if seed else {}
-    ns.update({
+    ns = {
         'exp': math.exp,
         'log': math.log,
         'log10': math.log10,
@@ -143,8 +151,11 @@ def _build_safe_eval_namespace(seed=None):
         # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
         # so match BNG to keep PyBNF's expression evaluation faithful.
         'rint': lambda x: math.floor(x + 0.5),
-        '__builtins__': {},
-    })
+    }
+    if seed:
+        ns.update((name, value) for name, value in seed.items()
+                  if name not in _BNG_RESERVED_EVAL_NAMES)
+    ns['__builtins__'] = {}
     return ns
 
 
@@ -259,19 +270,23 @@ def _net_param_definitions(net_lines):
     return definitions
 
 
-def _intervention_expression_reads(expr, definitions):
+def _intervention_expression_reads(expr, definitions, derived=None):
     """The parameter ids an intervention expression reads, transitively through ``definitions``.
 
     A cheap over-approximation (bare token matching, as :func:`_parse_net_rhs_symbols` uses):
     its only job is to answer "can a differentiated parameter possibly reach this value?".
     When the answer is no -- the overwhelmingly common case for a wash to ``0`` or a dose
     written in fixed constants -- the intervention's ``∂x(0)/∂θ`` row is exactly zero and no
-    expression has to be parsed at all.
+    expression has to be parsed at all. ``derived``, when given, limits the expansion to the
+    derived parameters that still track their expression at this point (an overridden one is a
+    number, which reads nothing).
     """
     names = set(_TOKEN.findall(str(expr)))
     worklist = list(names)
     while worklist:
         name = worklist.pop()
+        if derived is not None and name not in derived:
+            continue
         for ref in _TOKEN.findall(definitions.get(name, '')):
             if ref not in names:
                 names.add(ref)
@@ -279,7 +294,16 @@ def _intervention_expression_reads(expr, definitions):
     return names
 
 
-def _intervention_seed_row(expr, targets, definitions, param_values):
+def _is_number(text):
+    """Whether a ``.net`` parameter definition is a plain number (a constant, not derived)."""
+    try:
+        float(str(text).strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _intervention_seed_row(expr, targets, definitions, param_values, derived=None):
     """``[d(expr)/d(target)]`` for a mid-protocol species assignment, one entry per target.
 
     The row a ``setConcentration`` intervention contributes to the carried forward-sensitivity
@@ -288,17 +312,26 @@ def _intervention_seed_row(expr, targets, definitions, param_values):
     accumulated. Derived parameters are inlined first (:func:`derivative.substitute`), so a
     dose written over a derived volume differentiates through it.
 
+    Only *derived* parameters are inlined -- ``derived``, the ones that track their expression
+    at this point, or, when not given, those whose ``.net`` definition is not a plain number.
+    Every other id stays a symbol and is read from ``param_values``, the values at the point the
+    intervention runs: a scanned dose, a ``setParameter`` before it, the fitted values. Inlining
+    a constant's ``.net`` number instead differentiated ``Atot*dose`` at the file's ``dose``
+    whatever the scan or the protocol had set it to.
+
     Raises :class:`~pybnf.gradient.derivative.NotDifferentiable` when the expression -- or a
     definition on the path from it to a target -- lies outside the arithmetic grammar, or when
     the derivative reads a symbol ``param_values`` does not define. The caller turns that into
     a refusal; a guessed row would be a silently wrong gradient.
     """
     targets = list(targets)
-    if not _intervention_expression_reads(expr, definitions) & set(targets):
+    if derived is None:
+        derived = {name for name, text in definitions.items() if not _is_number(text)}
+    if not _intervention_expression_reads(expr, definitions, derived) & set(targets):
         return [0.0] * len(targets)
 
     def resolve(name):
-        if name in targets or name not in definitions:
+        if name in targets or name not in derived or name not in definitions:
             return None
         return derivative.from_python_expression(definitions[name])
 
@@ -345,6 +378,52 @@ def _parse_net_rhs_symbols(net_lines):
     return frozenset(names)
 
 
+# A number or a name in a .net expression; the number first, so the e of 1e-9 is no name.
+_NET_NUMBER_OR_NAME = re.compile(r'(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|([A-Za-z_]\w*)')
+_NET_SPECIES_ROW = re.compile(r'\d+\s+\S+\s+(.+)$')
+
+
+def _net_names(text):
+    """The names a .net expression or line reads, numbers left out."""
+    return {m.group(1) for m in _NET_NUMBER_OR_NAME.finditer(text) if m.group(1)}
+
+
+def initial_state_only_ids(net_lines, ids):
+    """The ids among ``ids``, in order, that act on a .net model only through its initial state:
+    the id, or a parameter derived from it, appears in a ``species`` initializer, and neither
+    appears on any line outside the ``parameters`` and ``species`` blocks (an unfamiliar block
+    counts as acting later). A method that carries each particle's state gains nothing by
+    changing such an id later.
+    """
+    blocks = _net_blocks(net_lines)
+    reads = {name: _net_names(expr) for name, expr in _net_param_definitions(net_lines).items()}
+    seeds = set()
+    for line in blocks.get('species', ()):
+        row = _NET_SPECIES_ROW.match(line)
+        seeds |= _net_names(row.group(1) if row else line)
+    acts_later = set()
+    for block, lines in blocks.items():
+        if block not in ('parameters', 'species'):
+            for line in lines:
+                acts_later |= _net_names(line)
+    found = []
+    for name in ids:
+        reach = _derived_closure(name, reads)
+        if reach & seeds and not reach & acts_later:
+            found.append(name)
+    return tuple(found)
+
+
+def _derived_closure(name, reads):
+    """``name`` and every parameter whose definition reads it, directly or through another."""
+    reach, grew = {name}, True
+    while grew:
+        new = {p for p, deps in reads.items() if p not in reach and deps & reach}
+        reach |= new
+        grew = bool(new)
+    return reach
+
+
 def _parse_bngl_param_block(model_lines):
     """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
     params = []
@@ -378,13 +457,6 @@ def _parse_bngl_param_block(model_lines):
     return params
 
 
-_BUILTIN_EVAL_NAMES = frozenset({
-    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
-})
-
-
 def _evaluate_bngl_params(param_exprs, input_overrides=None):
     """Evaluate ordered BNGL parameter expressions top-to-bottom."""
     if input_overrides is None:
@@ -416,8 +488,7 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                     f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
-        # Don't let parameter values shadow builtin math functions
-        if name not in _BUILTIN_EVAL_NAMES:
+        if name not in _BNG_RESERVED_EVAL_NAMES:
             ns[name] = value
         result[name] = value
 

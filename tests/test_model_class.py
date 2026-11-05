@@ -295,18 +295,6 @@ class TestModel:
         for a in m0.actions:
             assert re.search('setOption', a) is None
 
-    def test_find_t_length_n_steps(self):
-        # n_steps=>N gives N+1 output rows, so the stored length is N.
-        m0 = pset.BNGLModel(self.file1)
-        assert m0.find_t_length() == {'p1_5': 50}
-
-    def test_find_t_length_sample_times(self):
-        # Regression for issue #390: a simulate action using sample_times=>[...]
-        # instead of n_steps must not raise IndexError. With M listed times the
-        # simulation produces M output rows, so the stored length is M-1.
-        m = pset.BNGLModel(self.file7)
-        assert m.find_t_length() == {'p1_5': 5}
-
     def test_network_check(self):
         model0 = pset.BNGLModel(self.file1)
         assert model0.generates_network
