@@ -239,6 +239,7 @@ def _lesson36_conf_text(extra_lines, data_name='decay.exp', conf='estimated_sigm
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab   # an observable: formula line compiles through the petab extra
 def test_normalizing_a_measurement_layer_column_is_refused_at_load(tmp_path):
     """An ``observable: ..., formula: ...`` column exists only once scoring computes it, after
     normalization has run, so every evaluation failed with KeyError and the fit finished at

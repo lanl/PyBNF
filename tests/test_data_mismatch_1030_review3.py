@@ -25,6 +25,7 @@ _K = 0.5
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab   # an observable: formula line compiles through the petab extra
 def test_normalizing_an_input_in_one_experiment_leaves_a_formula_scored_elsewhere(tmp_path):
     H.require_bng2pl()
     shutil.copy(os.path.join(_LESSON, 'decay.bngl'), tmp_path)

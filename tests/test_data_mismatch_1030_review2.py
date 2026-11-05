@@ -68,6 +68,7 @@ def _score(conf, t):
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab   # an observable: formula line compiles through the petab extra
 def test_a_formula_does_not_silently_read_a_normalized_observable(tmp_path):
     """Either refuse the combination at load, or score Obs_A2 from the raw observable."""
     H.require_bng2pl()
@@ -76,8 +77,10 @@ def test_a_formula_does_not_silently_read_a_normalized_observable(tmp_path):
     try:
         conf = _load(tmp_path, ['time', 'Obs_A', 'Obs_A2'], [t, y / y[0], 2 * y],
                      ['observable: Obs_A2, formula: 2*Obs_A', 'normalization Obs_A = init'])
-    except PybnfError:
-        return   # refused at load: acceptable
+    except PybnfError as e:
+        # refused at load: acceptable, but only for this reason, not any load error
+        assert 'Obs_A' in e.message and 'formula' in e.message, e.message
+        return
     raw = 100 * np.exp(-_K * t)
     expected = np.sum((y / y[0] - raw / raw[0]) ** 2) / 2 + np.sum((2 * y - 2 * raw) ** 2) / 2
     assert _score(conf, t) == pytest.approx(expected, rel=1e-9)
