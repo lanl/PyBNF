@@ -276,7 +276,9 @@ def test_real_world_runs_through_bngsim(example, tmp_path, monkeypatch):
         fields = _confirmation_table(tmp_path)
         assert fields.get('candidates') == '2' and fields.get('replicates_requested') == '2', (
             f'{example.folder}: best-fit confirmation table {fields}')
-        assert fields.get('winner'), f'{example.folder}: no confirmed winner in {fields}'
+        # A table whose candidates all failed records the winner as 'none'.
+        assert fields.get('winner') not in (None, '', 'none'), (
+            f'{example.folder}: no confirmed winner in {fields}')
 
     # Optional recovery signal for the synthetic-data examples (see manifest.recover).
     if example.recover:
