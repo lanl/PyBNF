@@ -3445,8 +3445,10 @@ class Configuration:
                 if read is not None:
                     if read in overrides and read in data.cols:
                         # Read as the noise of `column` and given a noise model of its own as an
-                        # observable: two roles for one column. Normalization would treat it as
-                        # one and the scoring as the other, so refuse rather than pick (#1030).
+                        # observable: two roles for one column, refused here with the cause.
+                        # Without an override of its own the same conflict is refused when the
+                        # column is first scored (LikelihoodObjective._check_columns), where the
+                        # simulated outputs are known (#1030).
                         raise PybnfError(
                             f"Column {read} is both the noise of {column} and an observable",
                             f"The data column {read} is read as the per-point noise of {column} "

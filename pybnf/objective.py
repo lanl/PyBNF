@@ -2505,13 +2505,27 @@ class LikelihoodObjective(SummationObjective):
         for its supplied, fixed and estimated noise fits (#1030). The refusal had only ever
         run on the first job of a worker-scored fit, and on every evaluation of a
         master-scored one, which scored lesson 36's own lbfgs fit as ``inf`` everywhere."""
-        exempt = set()
+        exempt, noise_of = set(), {}
         for col in compare_cols:
             _family, sources = self._spec_for(col)
             for source in sources.values():
                 column = source.exp_column(col)
                 if column is not None:
                     exempt.add(column)
+                    noise_of.setdefault(column, col)
+        # A column read as one observable's noise that the simulation also outputs is scored as
+        # an observable as well: one data column in two roles, which normalization and scoring
+        # would treat differently (#1030 review). Refuse it with the cause.
+        dual = sorted(exempt & set(compare_cols))
+        if dual:
+            column = dual[0]
+            raise DataMismatchError(
+                'Column %s is both the noise of %s and a scored observable' % (column, noise_of[column]),
+                'The data column %s is read as the per-point noise of %s by its noise_model, and the '
+                'simulation also outputs %s, so it is scored as an observable too. One column '
+                'cannot be both.' % (column, noise_of[column], column),
+                hint='Rename the observable, or read the noise of %s from a column with a different '
+                     'suffix.' % noise_of[column])
         _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt, indvar)
 
 
