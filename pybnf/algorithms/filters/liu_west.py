@@ -1052,10 +1052,18 @@ class LiuWestFilter(Algorithm):
         return _Population(u=u, state=state, weights=weights)
 
     def _theta(self, u):
-        """Parameter values from sampling space, clipped into each parameter's box."""
+        """Parameter values from sampling space, clipped into each parameter's box.
+
+        Each column is transformed from a contiguous copy. A column of ``u`` is a strided view,
+        and numpy 1.26 on an AVX-512 CPU then gives a result that depends on memory addresses as
+        well as values. It sends ``10.0 ** x`` and ``exp(x)`` to SVML only after an overlap check,
+        and that check takes a strided input to run ``stride * length`` bytes, past the end of
+        ``u``. When malloc places the result right after ``u``, the C library's ``pow`` runs
+        instead, and the last bit of about a quarter of the values differs. Two runs over the same
+        particles would then write different files."""
         theta = np.empty_like(u)
         for j, v in enumerate(self.variables):
-            theta[:, j] = v.from_sampling_space(u[:, j])
+            theta[:, j] = v.from_sampling_space(np.ascontiguousarray(u[:, j]))
         return np.clip(theta, self._theta_lo, self._theta_hi)
 
     # -- one update ------------------------------------------------------------------------
