@@ -174,7 +174,7 @@ class ObjectiveCalculator:
         return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, pset, self.constraints, show_warnings)
 
 
-def _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt=()):
+def _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt=(), indvar=None):
     """Raise :class:`DataMismatchError` naming every experimental data column the fit does not
     score, unless it is accounted for.
 
@@ -188,11 +188,13 @@ def _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt=()):
     (#817), so it ends the run.
 
     ``available`` is the set of simulated column names the data could have matched, named in
-    the message so a misspelling is easy to see.
+    the message so a misspelling is easy to see. ``indvar``, the independent variable, counts
+    as scored but has no ``_SD`` companion: a ``time_SD`` column is refused like any other.
     """
     scored = set(compare_cols)
+    observables = scored - {indvar}
     missed = {column for column in set(exp_cols).difference(scored | set(exempt))
-              if not (column.endswith('_SD') and column[:-3] in scored)}
+              if not (column.endswith('_SD') and column[:-3] in observables)}
     if not missed:
         return
     raise DataMismatchError(
@@ -584,7 +586,7 @@ class SummationObjective(ObjectiveFunction):
         # Refuse experimental columns that would go unscored. Every evaluation checks, not
         # only those with show_warnings: the check used to run on the first job alone, so
         # every later job silently scored just the columns that matched (#817).
-        self._check_columns(exp_data.cols, compare_cols, comparable)
+        self._check_columns(exp_data.cols, compare_cols, comparable, indvar)
         try:
             compare_cols.remove(indvar)
         except KeyError:
@@ -900,7 +902,7 @@ class SummationObjective(ObjectiveFunction):
         of them this experiment scales). Empty -> byte-identical, no guard fires."""
         return frozenset().union(*self._analytic_scale.values()) if self._analytic_scale else frozenset()
 
-    def _check_columns(self, exp_cols, compare_cols, available=()):
+    def _check_columns(self, exp_cols, compare_cols, available=(), indvar=None):
         """
         Refuse any experimental data column that is not scored (see
         :func:`_refuse_unmatched_columns`).
@@ -909,7 +911,7 @@ class SummationObjective(ObjectiveFunction):
         :param available: Iterable of the simulated column names, for the message
         :return: None
         """
-        _refuse_unmatched_columns(exp_cols, compare_cols, available)
+        _refuse_unmatched_columns(exp_cols, compare_cols, available, indvar=indvar)
 
 
 class ColumnSummationObjective(ObjectiveFunction):
@@ -943,7 +945,7 @@ class ColumnSummationObjective(ObjectiveFunction):
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
         # Refuse experimental columns that would go unscored, on every evaluation (#817).
-        self._check_columns(exp_data.cols, compare_cols, sim_data.cols)
+        self._check_columns(exp_data.cols, compare_cols, sim_data.cols, indvar)
         try:
             compare_cols.remove(indvar)
         except KeyError:
@@ -967,7 +969,7 @@ class ColumnSummationObjective(ObjectiveFunction):
         """
         raise NotImplementedError('Subclasses of SummationObjective must override eval_point')
 
-    def _check_columns(self, exp_cols, compare_cols, available=()):
+    def _check_columns(self, exp_cols, compare_cols, available=(), indvar=None):
         """
         Refuse any experimental data column that is not scored (see
         :func:`_refuse_unmatched_columns`).
@@ -976,7 +978,7 @@ class ColumnSummationObjective(ObjectiveFunction):
         :param available: Iterable of the simulated column names, for the message
         :return: None
         """
-        _refuse_unmatched_columns(exp_cols, compare_cols, available)
+        _refuse_unmatched_columns(exp_cols, compare_cols, available, indvar=indvar)
 
 
 # --- per-point likelihood objfuncs (ADR-0011, ADR-0021) ----------------------
@@ -2490,7 +2492,7 @@ class LikelihoodObjective(SummationObjective):
                 names |= source.required_free_params()
         return names
 
-    def _check_columns(self, exp_cols, compare_cols, available=()):
+    def _check_columns(self, exp_cols, compare_cols, available=(), indvar=None):
         """Like the base check, but also exempt each observable's data-column noise source,
         whatever its name: those are noise-scale columns, not unmatched observables
         (ADR-0021). The ``{obs}_SD`` companion of a scored observable is exempt in every
@@ -2510,7 +2512,7 @@ class LikelihoodObjective(SummationObjective):
                 column = source.exp_column(col)
                 if column is not None:
                     exempt.add(column)
-        _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt)
+        _refuse_unmatched_columns(exp_cols, compare_cols, available, exempt, indvar)
 
 
 @register_objfunc('chi_sq')

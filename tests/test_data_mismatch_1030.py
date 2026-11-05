@@ -213,3 +213,68 @@ def test_lesson_36_fits_each_noise_source_on_both_scoring_paths(tmp_path, monkey
     assert best['k'] == pytest.approx(k_ls, rel=1e-4), (conf, job_type, best['k'], k_ls)
     assert alg.trajectory.best_score() == pytest.approx(_expected_objective(conf, ssr, n),
                                                         abs=1e-3), (conf, job_type)
+
+
+# --------------------------------------------------------------------------- #
+# From independent review: the other ways a mismatch reached scoring
+# --------------------------------------------------------------------------- #
+def test_the_independent_variable_has_no_sd_companion():
+    """``time`` is scored, but ``time_SD`` is not its noise column: refused like any other."""
+    exp = _data(['time', 'A', 'time_SD'], [[0., 1., 1.], [1., 2., 1.]])
+    with pytest.raises(DataMismatchError, match='time_SD'):
+        objective.SumOfSquaresObjective().evaluate(_SIM, exp)
+
+
+def test_normalizing_a_column_the_simulation_lacks_names_it():
+    """Normalization ran before the column check and raised a bare KeyError, which both scoring
+    paths recorded as a failed evaluation, so the check never ran (#1030 review)."""
+    sim = _data(['time', 'A'], [[0., 2.], [1., 4.]])
+    with pytest.raises(DataMismatchError, match='Atypo'):
+        sim.normalize([('init', ['A', 'Atypo'])])
+
+
+def _lesson36_conf_text(extra_lines, data_name='decay.exp', conf='estimated_sigma.conf'):
+    lines = (_LESSON / conf).read_text().replace('data: decay.exp', 'data: ' + data_name)
+    return lines + '\n' + '\n'.join(extra_lines) + '\n'
+
+
+@pytest.mark.bngsim
+def test_normalizing_a_measurement_layer_column_is_refused_at_load(tmp_path):
+    """An ``observable: ..., formula: ...`` column exists only once scoring computes it, after
+    normalization has run, so every evaluation failed with KeyError and the fit finished at
+    ``inf``. The combination is refused when the configuration loads."""
+    H.require_bng2pl()
+    shutil.copy(_LESSON / 'decay.bngl', tmp_path)
+    rows = (_LESSON / 'decay.exp').read_text().splitlines()
+    rows = [rows[0] + '\tObs_A2'] + ['%s\t%s' % (r, 2 * float(r.split()[1]))
+                                      for r in rows[1:] if r.strip()]
+    (tmp_path / 'meas.exp').write_text('\n'.join(rows) + '\n')
+    text = _lesson36_conf_text(['observable: Obs_A2, formula: 2*Obs_A', 'normalization = init'],
+                               data_name='meas.exp')
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        raw = parse.ploop(text.splitlines(keepends=True))
+        raw['output_dir'] = str(tmp_path / 'out')
+        with pytest.raises(PybnfError, match='measurement layer computes') as raised:
+            config.Configuration(raw)
+    finally:
+        os.chdir(home)
+    assert 'Obs_A2' in raised.value.message
+
+
+@pytest.mark.bngsim
+def test_a_constraint_on_a_mistyped_observable_stops_the_fit_and_names_it(tmp_path):
+    """``Constraint.get_key`` raised a plain PybnfError while scoring, so ``de`` scored every
+    point ``inf`` and finished (#1030 review)."""
+    H.require_bng2pl()
+    conf = _lesson36_copy(tmp_path, 'estimated_sigma.conf', 'de')
+    (tmp_path / 'typo.prop').write_text('Obs_Typo < 10 at time=0\n')
+    with open(conf, 'a') as f:
+        f.write('experiment: qual, data: typo.prop, t_end: 5, n_steps: 50\n')
+    run = subprocess.run([sys.executable, '-m', 'pybnf', '-c', str(conf)], cwd=tmp_path,
+                         capture_output=True, text=True, timeout=600,
+                         env=dict(os.environ, PYTHONPATH=str(_REPO_ROOT)))
+    assert run.returncode != 0, run.stdout[-2000:]
+    assert 'Obs_Typo' in run.stdout + run.stderr
+    assert not list(tmp_path.glob('**/sorted_params_final.txt'))

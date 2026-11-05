@@ -367,6 +367,7 @@ class Configuration:
         # A count noise family scores counts, and a normalized value is not one (#997). Read off
         # the compiled normalization grid and the built objective's per-column families.
         self._refuse_normalized_counts()
+        self._refuse_normalized_measurement_columns()
         # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
         # attaches to the (already-built) objective here, after the normalization grid is compiled.
         self._attach_analytic_scale()
@@ -3422,6 +3423,44 @@ class Configuration:
                 f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
         self._require_additive_scale(analytic_scale)
         self.obj._analytic_scale = analytic_scale
+
+    def _refuse_normalized_measurement_columns(self):
+        """Refuse normalization of a column that the measurement layer computes (#1030).
+
+        An ``observable: <id>, formula: <expr>`` column (ADR-0036), and a row-varying one
+        (ADR-0045), exists only once the objective evaluates the measurement layer during
+        scoring. Normalization runs on the simulated data before that, so it cannot find the
+        column: every evaluation raised ``KeyError``, was scored as a failed simulation, and
+        the fit finished with an objective of ``inf`` everywhere. Refuse the combination here,
+        with the cause, rather than let it reach scoring.
+        """
+        settings = self.config.get('normalization')
+        if not isinstance(settings, dict):
+            return
+        measurement = getattr(self.obj, 'measurement', None)
+        computed = {m.observable_id for m in getattr(measurement, 'models', ())}
+        computed |= set(getattr(self.obj, '_per_measurement_models', {}) or {})
+        if not computed:
+            return
+        refused = set()
+        for by_key in self.exp_data.values():
+            for data_key in by_key:
+                groups = settings.get(data_key)
+                if not isinstance(groups, list):
+                    continue
+                for _transform, columns in groups:
+                    refused |= computed.intersection(columns)
+        if not refused:
+            return
+        names = ', '.join(sorted(refused))
+        raise PybnfError(
+            f"normalization is set for {names}, which the measurement layer computes",
+            f"normalization is set for {names}, an 'observable: ..., formula: ...' column. "
+            f"Normalization is applied to the simulation output before the measurement layer "
+            f"computes its formula columns, so it cannot normalize one, and PyBNF does not "
+            f"support the combination.",
+            hint=f"Remove the normalization from {names}, or put the scaling in the formula "
+                 f"itself, for example with a free scale parameter.")
 
     def _refuse_normalized_counts(self):
         """Refuse any normalization of a column that a count noise family scores (#997).

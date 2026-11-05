@@ -6,7 +6,7 @@ import numpy as np
 import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
-from .printing import PybnfError
+from .printing import DataMismatchError, PybnfError
 
 
 logger = logging.getLogger(__name__)
@@ -923,7 +923,19 @@ class Data:
         else:
             for mi, cols_i in method:
                 if type(cols_i[0]) == str:
-                    # Convert to int indices
+                    # Convert to int indices. A column this data does not have is a data column
+                    # no simulated output matches: the same for every parameter set, so it is a
+                    # DataMismatchError, which ends the run, not a KeyError, which the scoring
+                    # paths record as one failed evaluation each time (#1030).
+                    missing = sorted(c for c in cols_i if c not in self.cols)
+                    if missing:
+                        raise DataMismatchError(
+                            'Normalization was requested for columns not found in the simulation '
+                            'output: ' + str(missing),
+                            'Normalization is set for %s, but the simulation provides no column of '
+                            'that name (it provides %s). Check the spelling of the data column '
+                            'headers against the model\'s observable and function names.'
+                            % (', '.join(missing), ', '.join(sorted(self.cols))))
                     cols_i = [self.cols[c] for c in cols_i]
                 normalize_once(mi, cols_i)
 
