@@ -4,7 +4,7 @@ data into the fit
 """
 
 
-from .printing import PybnfError
+from .printing import DataMismatchError, PybnfError
 import pyparsing as pp
 import numpy as np
 import re
@@ -453,20 +453,23 @@ class Constraint:
         """
         if not isinstance(q, str):
             return None
+        # Every refusal below compares a name in the constraint file with the simulation
+        # output, which is the same for every parameter set, so each is a DataMismatchError
+        # and ends the run rather than scoring the evaluation as failed (#1030).
         if '.' not in q:
             if self.base_model not in sim_data_dict:
-                raise PybnfError(f'Constraint file is associated with model {self.base_model}, but that model was not found')
+                raise DataMismatchError(f'Constraint file is associated with model {self.base_model}, but that model was not found')
             if self.base_suffix not in sim_data_dict[self.base_model]:
-                raise PybnfError(f"Constraint file {self.base_suffix}.prop refers to suffix '{self.base_suffix}' in model '{self.base_model}', but that model does not "
+                raise DataMismatchError(f"Constraint file {self.base_suffix}.prop refers to suffix '{self.base_suffix}' in model '{self.base_model}', but that model does not "
                                  "produce output with that suffix")
             if q not in sim_data_dict[self.base_model][self.base_suffix].cols:
-                raise PybnfError(f"Observable '{q}' specified in constraint file was not found in the output of model "
+                raise DataMismatchError(f"Observable '{q}' specified in constraint file was not found in the output of model "
                                  f"'{self.base_model}', suffix '{self.base_suffix}'")
             return (self.base_model, self.base_suffix, q)
         else:
             parts = q.split('.')
             if len(parts) > 2:
-                raise PybnfError(f'Parsing constraint variable {q}',
+                raise DataMismatchError(f'Parsing constraint variable {q}',
                                  "Parsing constraint variable %s - The format should be 'suffix.Observable' Should "
                                  "not contain multiple '.' characters.")
             options = []
@@ -474,13 +477,13 @@ class Constraint:
                 if parts[0] in sim_data_dict[m]:
                     options.append(m)
             if len(options) == 0:
-                raise PybnfError(f"Could not find any experimental data corresponding to the suffix '{parts[0]}' specified "
+                raise DataMismatchError(f"Could not find any experimental data corresponding to the suffix '{parts[0]}' specified "
                                  "in your constraint file")
             if len(options) > 1:
-                raise PybnfError(f"Suffix '{parts[0]}' in your constraint file appears in multiple model files. Please "
+                raise DataMismatchError(f"Suffix '{parts[0]}' in your constraint file appears in multiple model files. Please "
                                  "change your suffix names so it isn't ambiguous")
             if parts[1] not in sim_data_dict[options[0]][parts[0]].cols:
-                raise PybnfError(f"Obserable '{q}' in constraint file - The output with suffix {parts[0]} does not contain an "
+                raise DataMismatchError(f"Obserable '{q}' in constraint file - The output with suffix {parts[0]} does not contain an "
                                  f"observable {parts[1]}")
             return (options[0], parts[0], parts[1])
 

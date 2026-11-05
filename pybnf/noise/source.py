@@ -24,7 +24,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ..printing import PybnfError
+from ..printing import DataMismatchError
 
 # A PEtab per-measurement placeholder symbol (``observableParameter1_*`` /
 # ``noiseParameter1_*``): in a row-varying noiseFormula it stands for the *row's* token
@@ -120,8 +120,9 @@ class DataColumnSigma(SigmaSource):
         try:
             idx = exp_data.cols[column]
         except KeyError:
-            # Todo: Check for this and throw the error before all the workers get created.
-            raise PybnfError(f'Column {column} not found',
+            # A structural mismatch, the same for every parameter set, so it ends the run rather
+            # than scoring this one evaluation as failed (#1030).
+            raise DataMismatchError(f'Column {column} not found',
                  f"Column {column} was not found in the experimental data. A noise model that reads its "
                  f"scale from the data requires a {column} column corresponding to {col_name}, giving the "
                  "per-point noise scale (e.g. the standard deviation) of that variable. ")
@@ -430,7 +431,7 @@ class PerMeasurementFormulaSigma(SigmaSource):
     def _row_bindings(exp_data, col_name):
         table = getattr(exp_data, 'measurement_params', None)
         if not table or col_name not in table:
-            raise PybnfError(
+            raise DataMismatchError(
                 f"A row-varying noise formula for '{col_name}' needs a per-measurement "
                 f"binding table, but none is attached to the experimental data. The "
                 f"experiment must declare 'measurement_params: <file>.tsv' (ADR-0045).")
@@ -444,7 +445,7 @@ class PerMeasurementFormulaSigma(SigmaSource):
         try:
             return bindings[placeholder][exp_row]
         except (KeyError, IndexError):
-            raise PybnfError(
+            raise DataMismatchError(
                 f"The per-measurement binding table for '{col_name}' has no value for "
                 f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
 
@@ -619,7 +620,7 @@ class PredictionFormulaSigma(SigmaSource):
         try:
             idx = sim_data.cols[name]
         except KeyError:
-            raise PybnfError(
+            raise DataMismatchError(
                 f"A prediction-dependent noise formula for '{col_name}' references "
                 f"'{name}', which is neither a declared free parameter nor a simulated "
                 f"output column. A prediction_formula σ scales with a model entity the "

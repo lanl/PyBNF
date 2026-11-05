@@ -27,7 +27,7 @@ import re
 
 import numpy as np
 
-from ..printing import PybnfError
+from ..printing import DataMismatchError
 
 # A PEtab per-measurement placeholder symbol (``observableParameter1_*`` / ``noiseParameter1_*``):
 # in a row-varying observableFormula it stands for the *row's* scale/offset token, read from the
@@ -118,7 +118,7 @@ class MeasurementModel:
                 args.append(float(self.constants[name]))
             else:
                 # Validation at compile time should make this unreachable; keep it pointed.
-                raise PybnfError(
+                raise DataMismatchError(
                     f"Measurement model '{self.observable_id}' references '{name}', which is "
                     f"neither a simulation-output column ({sorted(data.cols)}) nor a fit/"
                     f"model parameter. The measurement model cannot be evaluated.")
@@ -167,7 +167,7 @@ class MeasurementModel:
                 contribs.append(('constant', None))
             else:
                 # Validation at compile time should make this unreachable; keep it pointed.
-                raise PybnfError(
+                raise DataMismatchError(
                     f"Measurement model '{self.observable_id}' references '{name}', which is "
                     f"neither a simulation-output column ({sorted(data.cols)}) nor a fit/model "
                     f"parameter. The measurement model cannot be differentiated.")
@@ -271,7 +271,7 @@ class PerMeasurementModel:
                 args.append(float(self.constants[name]))
             else:
                 # Validation at compile time should make this unreachable; keep it pointed.
-                raise PybnfError(
+                raise DataMismatchError(
                     f"Per-measurement model '{self.observable_id}' references '{name}', which "
                     f"is neither a placeholder, a simulation-output column ({sorted(sim_data.cols)}), "
                     f"nor a fit/model parameter. The measurement model cannot be evaluated.")
@@ -323,7 +323,7 @@ class PerMeasurementModel:
                 contribs.append(('constant', None))
             else:
                 # Validation at compile time should make this unreachable; keep it pointed.
-                raise PybnfError(
+                raise DataMismatchError(
                     f"Per-measurement model '{self.observable_id}' references '{name}', which "
                     f"is neither a placeholder, a simulation-output column ({sorted(sim_data.cols)}), "
                     f"nor a fit/model parameter. The measurement model cannot be differentiated.")
@@ -344,7 +344,7 @@ class PerMeasurementModel:
     def _row_bindings(exp_data, col_name):
         table = getattr(exp_data, 'measurement_params', None)
         if not table or col_name not in table:
-            raise PybnfError(
+            raise DataMismatchError(
                 f"A row-varying observable formula for '{col_name}' needs a per-measurement "
                 f"binding table, but none is attached to the experimental data. The "
                 f"experiment must declare 'measurement_params: <file>.tsv' (ADR-0045).")
@@ -358,7 +358,7 @@ class PerMeasurementModel:
         try:
             return bindings[placeholder][exp_row]
         except (KeyError, IndexError):
-            raise PybnfError(
+            raise DataMismatchError(
                 f"The per-measurement binding table for '{col_name}' has no value for "
                 f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
 
@@ -412,7 +412,7 @@ class MeasurementLayer:
     @staticmethod
     def _add_column(data, name, column):
         if name in data.cols:
-            raise PybnfError(
+            raise DataMismatchError(
                 f"Measurement model '{name}' would shadow an existing simulation-output "
                 f"column of the same name (columns: {sorted(data.cols)}). Rename the "
                 f"observable so its materialized column does not collide (ADR-0036).")

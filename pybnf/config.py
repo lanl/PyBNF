@@ -367,6 +367,7 @@ class Configuration:
         # A count noise family scores counts, and a normalized value is not one (#997). Read off
         # the compiled normalization grid and the built objective's per-column families.
         self._refuse_normalized_counts()
+        self._refuse_normalized_measurement_columns()
         # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
         # attaches to the (already-built) objective here, after the normalization grid is compiled.
         self._attach_analytic_scale()
@@ -3423,6 +3424,108 @@ class Configuration:
         self._require_additive_scale(analytic_scale)
         self.obj._analytic_scale = analytic_scale
 
+    def _noise_columns_of(self, data):
+        """The columns of ``data`` that a noise model reads as a per-point scale, not as an
+        observable: every ``<obs>_SD``, and any column a ``noise_model`` source reads from the
+        data, such as ``<obs>_err`` under ``sigma = read_exp_file _err``.
+
+        Whole-fit and per-file normalization leave these out. Normalization transforms the
+        simulation output, which has no such column, so including one failed every evaluation,
+        and the error named a missing simulated column, not the cause (#1030).
+        """
+        noise = {c for c in data.cols if c.endswith('_SD')}
+        spec_for = getattr(getattr(self, 'obj', None), '_spec_for', None)
+        if spec_for is None:
+            return noise
+        overrides = getattr(self.obj, 'overrides', {}) or {}
+        for column in data.cols:
+            _family, sources = spec_for(column)
+            for source in sources.values():
+                read = source.exp_column(column)
+                if read is not None:
+                    if read in overrides and read in data.cols:
+                        # Read as the noise of `column` and given a noise model of its own as an
+                        # observable: two roles for one column, refused here with the cause.
+                        # Without an override of its own the same conflict is refused when the
+                        # column is first scored (LikelihoodObjective._check_columns), where the
+                        # simulated outputs are known (#1030).
+                        raise PybnfError(
+                            f"Column {read} is both the noise of {column} and an observable",
+                            f"The data column {read} is read as the per-point noise of {column} "
+                            f"by its noise_model, and also has a noise_model of its own, so it is "
+                            f"scored as an observable too. One column cannot be both.",
+                            hint=f"Rename the observable, or read the noise of {column} from a "
+                                 f"column with a different suffix.")
+                    noise.add(read)
+        return noise
+
+    def _refuse_normalized_measurement_columns(self):
+        """Refuse normalization of a column that the measurement layer computes (#1030).
+
+        An ``observable: <id>, formula: <expr>`` column (ADR-0036), and a row-varying one
+        (ADR-0045), exists only once the objective evaluates the measurement layer during
+        scoring. Normalization runs on the simulated data before that, so it cannot find the
+        column: every evaluation raised ``KeyError``, was scored as a failed simulation, and
+        the fit finished with an objective of ``inf`` everywhere. Refuse the combination here,
+        with the cause, rather than let it reach scoring.
+        """
+        settings = self.config.get('normalization')
+        if not isinstance(settings, dict):
+            return
+        measurement = getattr(self.obj, 'measurement', None)
+        computed = {m.observable_id for m in getattr(measurement, 'models', ())}
+        computed |= set(getattr(self.obj, '_per_measurement_models', {}) or {})
+        if not computed:
+            return
+        # Per experiment: normalization of one experiment's simulation output never reaches a
+        # formula scored only in another, so only a formula column this experiment scores is
+        # at risk from what this experiment normalizes.
+        from .petab.formula import formula_free_symbols
+        models = list(getattr(measurement, 'models', ()))
+        models += list((getattr(self.obj, '_per_measurement_models', {}) or {}).values())
+        inputs = {model.observable_id: set(formula_free_symbols(model.formula)) for model in models}
+        normalized, readers = set(), {}
+        for by_key in self.exp_data.values():
+            for data_key, exp in by_key.items():
+                groups = settings.get(data_key)
+                if not isinstance(groups, list):
+                    continue
+                here = set()
+                for _transform, columns in groups:
+                    here |= set(columns)
+                normalized |= here
+                # A formula this experiment scores, reading a column it normalizes, is computed
+                # from the normalized value, not the model output it names: silently wrong.
+                for observable_id, reads in inputs.items():
+                    if observable_id in exp.cols:
+                        for name in here & reads:
+                            readers.setdefault(name, set()).add(observable_id)
+        if readers:
+            name = sorted(readers)[0]
+            users = ', '.join(sorted(readers[name]))
+            raise PybnfError(
+                f"normalization is set for {name}, which the measurement-layer formula of "
+                f"{users} reads",
+                f"normalization is set for {name}, and the 'observable: ..., formula: ...' "
+                f"line for {users} reads it in an experiment that scores {users}. "
+                f"Normalization is applied to the simulation output before the measurement "
+                f"layer computes its formulas, so {users} would be computed from the normalized "
+                f"{name}, not the model output the formula names.",
+                hint=f"Remove the normalization from {name} in that experiment, or normalize "
+                     f"inside the formula.")
+        refused = computed & normalized
+        if not refused:
+            return
+        names = ', '.join(sorted(refused))
+        raise PybnfError(
+            f"normalization is set for {names}, which the measurement layer computes",
+            f"normalization is set for {names}, an 'observable: ..., formula: ...' column. "
+            f"Normalization is applied to the simulation output before the measurement layer "
+            f"computes its formula columns, so it cannot normalize one, and PyBNF does not "
+            f"support the combination.",
+            hint=f"Remove the normalization from {names}, or put the scaling in the formula "
+                 f"itself, for example with a free scale parameter.")
+
     def _refuse_normalized_counts(self):
         """Refuse any normalization of a column that a count noise family scores (#997).
 
@@ -4561,7 +4664,8 @@ class Configuration:
         for m in self.exp_data:
             for dk in self.exp_data[m]:
                 d = self.exp_data[m][dk]
-                cols = [c for c in d.cols if d.cols[c] != 0 and not c.endswith('_SD')]
+                noise = self._noise_columns_of(d)
+                cols = [c for c in d.cols if d.cols[c] != 0 and c not in noise]
                 all_observables.update(cols)
                 exp_name = dk_to_name.get((m, dk), dk)
                 # Resolve each column's chain (most specific rule wins), preserving column order.
@@ -4663,7 +4767,8 @@ class Configuration:
                 # so that simulation columns used only by .prop constraints are not normalized.
                 checkval(val)
                 exp_cols = [c for c in self.exp_data[m][suff].cols
-                            if self.exp_data[m][suff].cols[c] != 0 and not c.endswith('_SD')]
+                            if self.exp_data[m][suff].cols[c] != 0
+                            and c not in self._noise_columns_of(self.exp_data[m][suff])]
                 if not exp_cols:
                     continue
                 val = [(val, exp_cols)]

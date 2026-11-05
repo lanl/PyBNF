@@ -46,3 +46,17 @@ class PybnfError(RuntimeError):
         self.message = user_message if user_message else log_message
         for h in self.hints:
             self.message += '\n  -> ' + h
+
+
+class DataMismatchError(PybnfError):
+    """A mismatch between the experimental data and what the fit simulates or reads, found
+    while scoring: a data column no simulated output matches, or a column, binding table or
+    model entity that a noise model needs and the data or simulation does not have.
+
+    It is a property of the setup, not of the parameter set being scored, so every evaluation
+    would meet it. The scoring paths therefore let it end the run with its message, where any
+    other error from scoring one parameter set is recorded as a failed evaluation and the fit
+    goes on (#388). Before this class existed both paths recorded it as a failed evaluation,
+    so a fit could finish having scored only the columns that matched, or nothing at all
+    (lanl/PyBNF#817, #1030).
+    """

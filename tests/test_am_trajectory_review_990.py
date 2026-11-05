@@ -68,7 +68,8 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
     * ``pe``, pre-equilibrated under ``pre`` (kin = 1, so A = 2) and measured under ``off``
       (kin = 0), both conditions consumed inline: 2 exp(-t/2);
     * the measurement formula ``twice = 2*Atot``: twice the recorded Atot wherever Atot is not
-      normalized.
+      normalized. ``slow`` normalizes Atot and so does not score ``twice`` (refused at load,
+      #1030); the checks below show its normalization does not leak into the others.
 
     No other output suffix may get a file (the off-diagonal ``slowfast``, the bare ``quick``,
     ``pepre`` / ``peoff``). Checked on the worker-scoring path, the master-scoring path and
@@ -78,9 +79,10 @@ def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, sco
     R.require_bng2pl()
     t = np.arange(6.0)
     (tmp_path / 'decay.bngl').write_text(_SOURCE_DECAY)
-    (tmp_path / 'slow.exp').write_text('# time Atot twice\n' + ''.join(
-        '%d %g %g\n' % (s, 100 * math.exp(-0.5 * s), 200 * math.exp(-0.5 * s))
-        for s in range(1, 6)))
+    # slow normalizes Atot, so it does not score twice, whose formula reads Atot: that pairing
+    # is refused at load, because the formula would read the normalized value (#1030).
+    (tmp_path / 'slow.exp').write_text('# time Atot\n' + ''.join(
+        '%d %g\n' % (s, 100 * math.exp(-0.5 * s)) for s in range(1, 6)))
     (tmp_path / 'quick.exp').write_text('# time Atot\n' + ''.join(
         '%d %g\n' % (s, 100 * math.exp(-s)) for s in range(1, 6)))
     (tmp_path / 'pe.exp').write_text('# time Atot\n' + ''.join(

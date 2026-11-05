@@ -32,7 +32,7 @@ from distributed import as_completed as as_completed
 
 from ..data import Data
 from ..pset import FailedSimulationError
-from ..printing import print0, print1, PybnfError
+from ..printing import print0, print1, DataMismatchError, PybnfError
 
 # Preserve the original module logger name (was ``getLogger(__name__)`` when
 # these functions lived in ``pybnf/algorithms.py``) so log routing stays
@@ -366,8 +366,8 @@ class Job:
             # reads the reason. Swallowed here (the generic arm below), it became one
             # "unknown error" per evaluation and a fit that "finished" with ``inf`` at every
             # start -- how a stale gradient guard presented in #532. The SCORING arm further
-            # down deliberately keeps swallowing: a per-point objective failure penalizes
-            # that point rather than the run (#388).
+            # down re-raises only a DataMismatchError (#1030): any other objective failure
+            # penalizes that point rather than the run (#388).
             if debug:
                 self._copy_log_files(failed_logs_dir)
             raise
@@ -404,10 +404,19 @@ class Job:
                             res.score = np.inf
                             logger.warning(f'Simulation corresponding to Result {res.name} contained NaNs or Infs')
                             logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
+                except DataMismatchError:
+                    # The data and the simulation do not match (an unscored data column, a
+                    # missing noise column). That is the same for every parameter set, so
+                    # re-raise: ``result_from_completed`` ends the run with the message, where
+                    # scoring it as one failed evaluation left every later job to score only
+                    # the columns that matched (#817, #1030).
+                    if debug:
+                        self._copy_log_files(failed_logs_dir)
+                    raise
                 except Exception:
-                    # A failure while normalizing or scoring this one parameter set
-                    # (e.g. a PybnfError from mismatched simulation/exp columns) should
-                    # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
+                    # Any other failure while normalizing or scoring this one parameter set
+                    # (a noise model undefined at this prediction, for one) penalizes this
+                    # evaluation rather than the run. See lanl/PyBNF#388.
                     if debug:
                         self._copy_log_files(failed_logs_dir)
                     self.jlogger.exception(f'Objective evaluation failed during job {self.job_id}')

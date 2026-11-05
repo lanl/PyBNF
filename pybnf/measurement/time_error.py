@@ -314,8 +314,8 @@ class MarginalizedTimeObjective(SummationObjective):
         indvar = min(exp_data.cols, key=exp_data.cols.get)          # column 0 = independent var (time)
         comparable = set(sim_data.cols) | set(self._per_measurement_models)
         compare_cols = set(exp_data.cols).intersection(comparable)
-        if show_warnings:
-            self._check_columns(exp_data.cols, compare_cols)
+        # On every evaluation, as SummationObjective.evaluate does (#817, #1030).
+        self._check_columns(exp_data.cols, compare_cols, comparable, indvar)
         compare_cols.discard(indvar)
 
         tau_grid = np.asarray(sim_data[indvar], dtype=float)        # quadrature nodes = the stored grid

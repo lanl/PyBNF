@@ -23,7 +23,7 @@ from scipy import stats
 from pybnf import data, noise, objective
 from pybnf.config import Configuration
 from pybnf.parse import ploop
-from pybnf.printing import PybnfError
+from pybnf.printing import DataMismatchError, PybnfError
 
 
 def _mkdata(lines):
@@ -289,34 +289,39 @@ class TestFullPipeline:
 
 
 class TestEstimatedScaleColumnDiagnostic:
-    """``_check_columns`` names the *cause* when a leftover per-point ``_SD`` column is
-    unaccounted for because the fit estimates its noise scale (a free parameter, not a
-    data column -- ``chi_sq_dynamic`` / ``sigma = fit``). Without the diagnostic the user
-    saw only the generic "not found in simulation output", which points at the simulation
-    rather than the contradictory data/noise spec (the common ``chi_sq`` ->
-    ``chi_sq_dynamic`` mistake of keeping the ``_SD`` column)."""
+    """What ``_check_columns`` does with a per-point ``_SD`` column the noise model does not
+    read, and with a column no simulated output matches (#1030, #817).
 
-    def test_estimated_sigma_orphan_sd_column_names_the_cause(self):
-        obj = _modern({'objective': 'chi_sq_dynamic'})
-        # sim has time + Stot; exp additionally carries a stale Stot_SD column.
-        with pytest.raises(PybnfError) as exc:
-            obj._check_columns({'time', 'Stot', 'Stot_SD'}, {'time', 'Stot'})
-        e = exc.value
-        assert 'Stot_SD' in e.log_message            # still names the offending column
-        assert "observable 'Stot'" in e.message      # attributes it to the observable
-        assert 'estimates' in e.message              # explains: scale is estimated
-        assert 'chi_sq' in e.message                 # points at the fixed-scale alternative
+    A leftover ``{obs}_SD`` beside a scale the fit estimates (``chi_sq_dynamic`` /
+    ``sigma = fit``) was refused here as the common ``chi_sq`` -> ``chi_sq_dynamic`` mistake.
+    It is allowed now: the noise model says where the scale comes from, so the column cannot
+    change the score, and lesson 36 uses one data file for its supplied, fixed and estimated
+    noise fits. A column that matches no simulated output, ``_SD`` or not, is still refused,
+    with a ``DataMismatchError`` that the scoring paths let end the run."""
 
-    def test_unknown_column_keeps_the_generic_message(self):
-        # A genuinely unmatched column is not an estimated-scale orphan -> no false
-        # attribution; the user message is the plain (== log) generic one.
+    def test_estimated_sigma_leftover_sd_column_is_allowed(self):
         obj = _modern({'objective': 'chi_sq_dynamic'})
-        with pytest.raises(PybnfError) as exc:
-            obj._check_columns({'time', 'Stot', 'Bogus'}, {'time', 'Stot'})
+        # sim has time + Stot; exp additionally carries a Stot_SD column it does not read.
+        obj._check_columns({'time', 'Stot', 'Stot_SD'}, {'time', 'Stot'})  # no raise
+
+    def test_unknown_column_is_refused_naming_it_and_what_was_available(self):
+        obj = _modern({'objective': 'chi_sq_dynamic'})
+        with pytest.raises(DataMismatchError) as exc:
+            obj._check_columns({'time', 'Stot', 'Bogus'}, {'time', 'Stot'},
+                               {'time', 'Stot', 'Itot'})
         e = exc.value
         assert 'Bogus' in e.log_message
-        assert e.message == e.log_message
+        assert 'Bogus' in e.message and 'Itot' in e.message   # what it could have matched
         assert 'estimates' not in e.message
+
+    def test_sd_column_of_an_unscored_observable_is_still_refused(self):
+        # Only the _SD companion of a SCORED observable is allowed; Typo and Typo_SD both
+        # match nothing, which is #817's mistyped-header case.
+        obj = _modern({'objective': 'chi_sq_dynamic'})
+        with pytest.raises(DataMismatchError, match='Typo'):
+            obj._check_columns({'time', 'Stot', 'Typo', 'Typo_SD'}, {'time', 'Stot'})
+        with pytest.raises(DataMismatchError, match='Typo_SD'):
+            obj._check_columns({'time', 'Stot', 'Typo_SD'}, {'time', 'Stot'})
 
     def test_fixed_scale_chi_sq_still_exempts_the_sd_column(self):
         # Regression guard: a fixed-scale fit reads its sigma from the _SD column, so the
