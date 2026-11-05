@@ -39,7 +39,6 @@ import re
 import logging
 import subprocess
 from pathlib import Path
-import roadrunner
 
 
 logger = logging.getLogger(__name__)
@@ -3083,9 +3082,8 @@ class Configuration:
                 raise PybnfError('Invalid sbml_integrator {}. Options are: {}.'.format(self.config['sbml_integrator'],
                                                                                    ', '.join(integrators)))
             if self.config['sbml_integrator'] == 'euler':
-                if roadrunner.__version__ < '1.5.1':
-                    raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
-                                     f'have version {roadrunner.__version__}')
+                # Roadrunner's euler integrator needs libroadrunner 1.5.1, which the declared
+                # floor (2.5.0, #1023) now guarantees, so no run-time version check is needed.
                 print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
                        'producing reasonable output.')
             if self.config.get('sbml_ssa_strict', 1) != 1:

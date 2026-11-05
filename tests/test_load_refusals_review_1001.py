@@ -252,6 +252,7 @@ _SWITCHES = {
 _SAMPLER_REFUSAL = re.compile(r'is not available for a Bayesian sampler$')
 
 
+@pytest.mark.petab
 def test_scale_is_refused_for_the_job_types_the_profiling_switches_are(tmp_path, monkeypatch):
     """#996 says ``scale`` is refused "for the same set of job types" as ``noise_profiling``
     and ``linear_profiling``. Load the same job under every registered job type with each

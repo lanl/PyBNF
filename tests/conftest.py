@@ -53,6 +53,10 @@ def _marker_skip_reasons():
         reasons['roadrunner'] = 'libroadrunner is not installed'
     if shutil.which('BNG2.pl') is None:
         reasons['bionetgen'] = 'BNG2.pl is not on PATH'
+    # Absent, not broken: a petab that is installed but fails to import still fails the
+    # tests that need it, rather than skipping them.
+    if importlib.util.find_spec('petab') is None:
+        reasons['petab'] = 'the optional petab extra is not installed (pip install pybnf[petab])'
 
     return reasons
 

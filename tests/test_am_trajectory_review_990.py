@@ -54,6 +54,7 @@ def _written(runs, name):
                                      ['local_objective_eval = 1'],
                                      ['smoothing = 2']],
                          ids=['worker', 'master', 'smoothing'])
+@pytest.mark.petab
 def test_every_experiment_shape_is_recorded_as_scored(tmp_path, monkeypatch, scoring):
     """A' = kin - k A, A(0) = A0, k = 0.5, with A0 the fitted parameter. Five experiment
     shapes on one model, and what each must hold in closed form, whatever A0 the chain is at:

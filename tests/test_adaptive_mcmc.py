@@ -1749,6 +1749,7 @@ def test_the_cum_name_differences_the_draw_only_under_the_legacy_objfuncs_own_sp
 
 
 @pytest.mark.bngsim
+@pytest.mark.petab
 def test_a_formula_dispersion_draws_at_its_value_at_the_chains_point(tmp_path, monkeypatch):
     """`dispersion = formula 2*r` has one value per parameter set. Oracle: scipy.stats.nbinom on
     the same seed at r = 2 * 7.5."""
