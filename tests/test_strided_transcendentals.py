@@ -23,6 +23,8 @@ input is computed exactly. Each test checks the promise itself, and also lists e
 call it saw, so a failure names the call site.
 """
 
+import glob
+import math
 import os
 import traceback
 from types import SimpleNamespace
@@ -33,6 +35,7 @@ import pytest
 from pybnf.algorithms.filters import liu_west as lw
 from pybnf.priors import scale as scale_module
 
+from . import integration_harness as IH
 from . import lwf_harness as C
 from . import recovery_harness as H
 from .context import algorithms, pset
@@ -65,7 +68,9 @@ class _HistoryDependent:
         self.strided.append('%s from %s:%d' % (label, os.path.basename(caller.filename),
                                                caller.lineno))
         out = np.array(out, dtype=float)
-        moved = (np.arange(out.size) + len(self.strided)) % 2 == 0
+        # Which elements move depends on the whole call count, not only its parity, so two runs
+        # that made different numbers of strided calls almost surely disagree somewhere.
+        moved = np.random.default_rng(len(self.strided)).random(out.size) < 0.5
         out.reshape(-1)[moved] = np.nextafter(out.reshape(-1)[moved], np.inf)
         return out
 
@@ -101,7 +106,9 @@ def test_the_stand_in_moves_a_strided_result_and_leaves_a_contiguous_one(monkeyp
     assert stand_in.strided == []
     moved = scale_module.LOG10.inverse(u[:, 2])
     assert not np.array_equal(moved, exact)
-    assert np.all(np.abs(moved - exact) <= np.spacing(exact))
+    # The nudge is one ulp; on an AVX-512 CPU with numpy 1.26 the real strided result may
+    # itself be an ulp or so off the contiguous one, which is the defect being modelled.
+    assert np.all(np.abs(moved - exact) <= 4 * np.spacing(exact))
     assert len(stand_in.strided) == 1
 
 
@@ -162,3 +169,58 @@ def test_sampler_histograms_do_not_depend_on_what_came_before(tmp_path, monkeypa
     edges = np.histogram(np.log10(np.ascontiguousarray(rows[:, 1])), bins=10)[1]
     lines = first['k1_a.txt'].decode().splitlines()[1:]
     assert np.array_equal([float(line.split()[0]) for line in lines], edges[:-1])
+
+
+def _am_run(tmp_path, monkeypatch, sub):
+    """A short ``am`` run over two log-uniform parameters, past the step at which ``am``
+    seeds its adaptive covariance from its own ``params_<i>.txt``."""
+    IH.install(monkeypatch)
+    target, data = IH.write_target(tmp_path, IH.gaussian_spec([1.0, 2.0], [1.0, 1.0]))
+    conf = IH.make_config(tmp_path, 'am', target, data, 2, bounds=(0.01, 100.0),
+                          var_type='loguniform_var', burn_in=80, sample_every=2,
+                          rhat_threshold=0, output_hist_every=10 ** 9, hist_bins=10,
+                          output_dir=str(tmp_path / sub), random_seed=4321,
+                          population_size=3, max_iterations=240, adaptive=60, num_bins=10,
+                          credible_intervals=[68], step_size=0.6)
+    alg = algorithms.Adaptive_MCMC(conf)
+    IH.drive(alg)
+    return alg, conf.config['output_dir']
+
+
+def test_am_draws_the_same_chain_from_the_same_seed(tmp_path, monkeypatch):
+    """``random_seed`` promises the same draws. ``am`` seeds its adaptive covariance from the
+    log of a column of its own parameter file; the second run reaches that step after a
+    different number of strided calls, so a strided transform would draw another chain."""
+    stand_in = _HistoryDependent(monkeypatch)
+    _, first = _am_run(tmp_path, monkeypatch, 'a')
+    _, second = _am_run(tmp_path, monkeypatch, 'b')
+    assert stand_in.strided == [], (
+        'am computed a transcendental of a strided array: %s' % sorted(set(stand_in.strided)))
+    assert np.array_equal(IH.read_samples(first, 2), IH.read_samples(second, 2))
+
+
+@pytest.mark.arviz
+def test_inference_data_puts_the_same_draws_in_sampling_space_every_time(tmp_path, monkeypatch):
+    """``from_pybnf`` takes log10 of each log parameter's draws, a slice of a (chain, draw,
+    parameter) array. Two conversions of one run must give the same posterior."""
+    from pybnf.inference_data import from_pybnf
+    alg, out = _am_run(tmp_path, monkeypatch, 'a')
+    stand_in = _HistoryDependent(monkeypatch)
+    first = from_pybnf(os.path.join(out, 'Results'), variables=alg.variables)
+    second = from_pybnf(os.path.join(out, 'Results'), variables=alg.variables)
+    assert stand_in.strided == [], (
+        'from_pybnf computed a transcendental of a strided array: %s'
+        % sorted(set(stand_in.strided)))
+    for name in first.posterior.data_vars:
+        assert np.array_equal(first.posterior[name].values, second.posterior[name].values)
+    # Oracle: the posterior holds log10 of the parameter values am wrote, taken here by hand
+    # one value at a time.
+    from pybnf.inference_data import _posterior_var_name
+    runs = sorted(glob.glob(os.path.join(out, 'Results', 'A_MCMC', 'Runs', 'params_*.txt')))
+    assert runs
+    for v in alg.variables:
+        written = [x for path in runs
+                   for x in np.atleast_1d(np.genfromtxt(path, names=True)[v.name])]
+        drawn = np.sort(first.posterior[_posterior_var_name(v.name, v)].values.ravel())
+        by_hand = np.sort([math.log10(float(x)) for x in written])
+        np.testing.assert_allclose(drawn, by_hand, rtol=4 * np.finfo(float).eps, atol=0)

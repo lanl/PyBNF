@@ -495,8 +495,11 @@ def from_pybnf(source, *, config=None, variables=None):
         col = values[:, :, pi]
         if getattr(var, 'log_space', False):
             # Natural -> sampling space (log10 / ln), so ArviZ's diagnostics share
-            # PyBNF's parameterization. samples.txt stores natural values.
-            col = var.to_sampling_space(col)
+            # PyBNF's parameterization. samples.txt stores natural values. From a
+            # contiguous copy: numpy 1.26 on an AVX-512 CPU gives log10 of a strided slice
+            # a last bit that depends on where malloc puts the result (see
+            # LiuWestFilter._theta).
+            col = var.to_sampling_space(np.ascontiguousarray(col))
         posterior[_posterior_var_name(pname, var)] = col
 
     space_clause = 'log parameters are in sampling space (log10 / ln)'
