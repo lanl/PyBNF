@@ -2960,9 +2960,13 @@ For Adaptive MCMC
 
   Prefer :ref:`start_point <start_point>` for new configurations. It is read by every ``job_type``, it is
   matched by **name** rather than by position — ``starting_params`` is positional against declaration
-  order, while every result file PyBNF writes is alphabetical, so round-tripping a result row back into
-  it silently permutes the values — and it is validated against the declared bounds. Note also that
-  ``continue_run = 1`` overrides ``starting_params`` entirely.
+  order, while ``samples.txt``, ``sorted_params*.txt`` and ``bootstrapped_parameter_sets.txt`` sort their
+  parameter columns by name, case-sensitively (``kcat``, ``Km``, ``alpha`` are written ``Km``, ``alpha``,
+  ``kcat``), so round-tripping a result row back into it silently permutes the values — and it is
+  validated against the declared bounds. It is not a drop-in replacement for a sampler, though:
+  ``start_point`` pins only the first chain and the others start from independent draws, while
+  ``starting_params`` sets every chain. Note also that ``continue_run = 1`` overrides
+  ``starting_params`` entirely.
 
   Default: None
 
