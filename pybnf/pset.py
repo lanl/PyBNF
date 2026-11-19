@@ -79,6 +79,32 @@ def _strip_action_line_index(text):
     return _ACTION_LINE_INDEX.sub('', text, count=1)
 
 
+# A quoted string in an action statement: BNG2.pl reads one as BNGL text.
+_QUOTED_TEXT = re.compile(r'"[^"]*"|\'[^\']*\'')
+
+
+def _refuse_unquoted_power(statement, line_number, model_file):
+    """Refuse an action whose unquoted arguments hold ``^`` or ``**``.
+
+    BNG2.pl runs an action as Perl. A quoted argument is BNGL text, which BNG2.pl evaluates as
+    BNGL arithmetic, so ``"10^3"`` is 1000. An unquoted one is Perl arithmetic, where ``^`` is
+    bitwise exclusive or: ``10^3`` is 9 and ``10^-2`` is about 1.8e19, with no error, on BNG2.pl
+    and on any backend that copies it. ``**`` is a power in Perl but groups from the right, so
+    ``2**3**2`` is 512 there and 64 in BNGL. No author means either, so the model is refused,
+    on every backend, rather than run with a number nobody wrote.
+    """
+    if '^' not in statement and '**' not in statement:
+        return
+    bare = _QUOTED_TEXT.sub('', statement)
+    if '^' in bare or '**' in bare:
+        raise ModelError(
+            "The action on line %d of %s, %s, has an unquoted ^ or **. BNG2.pl runs an "
+            "unquoted action argument as Perl, where ^ is bitwise exclusive or, so 10^3 is 9 "
+            "there, and where ** groups differently from BNGL. Put the expression in quotes, "
+            "as in \"10^3\", so that it is read as BNGL arithmetic, or write the number, as "
+            "in 1e3." % (line_number, model_file, ' '.join(statement.split())))
+
+
 # The directives an edition-2 model may carry, as the one call a line holds (#969).
 _DIRECTIVE_CALL = re.compile(r'(generate_network|setOption|substanceUnits|version)\s*\(')
 
@@ -856,6 +882,7 @@ class BNGLModel(Model):
             statement = line.strip()
             if in_action_block or in_no_block or in_protocol_block:
                 statement = _strip_action_line_index(statement)
+                _refuse_unquoted_power(statement, min(indices) + 1, bngl_file)
 
             # Make sure setOption (if present) doesn't get passed to the actions block
             if re.match(r'(setOption|setModelName|substanceUnits|version)', statement):

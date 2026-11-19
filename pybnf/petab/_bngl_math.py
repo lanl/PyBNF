@@ -47,10 +47,9 @@ NFsim); three findings shape the refusals:
   simulated at all. They are refused as malformed rather than given a meaning no simulator
   gives them.
 
-Relationship to :mod:`pybnf.petab._bngl_expr` (#681): that module evaluates a *parameters*
-block with the same grammar, and it is the staging copy of an upstream libpetab port that
-#681 will delete. This module does not import it and does not depend on it, so that
-deletion is unaffected. The two differ where parameters and functions differ: a parameter
+Relationship to :mod:`pybnf._bngl_expr` (#681): that module evaluates a *parameters*
+block, quoted action arguments and network-file initial amounts with the same grammar, for
+the bngsim bridges. This module does not import it and does not depend on it. The two differ where parameters and functions differ: a parameter
 is evaluated by BNG2.pl's Perl (so ``**`` works and ``-2^2`` is 4), while a function is
 evaluated by a simulator reading the network file. The differential test that runs random
 bodies through both lives in ``tests/test_petab_bngl_expr.py`` and goes with that file.

@@ -51,7 +51,6 @@ from .parsing import (
 # bngsim-free). Re-exported here so the model classes resolve the bare names and
 # the facade (and tests) keep resolving pybnf.bngsim_model.<name>.
 from .expressions import (
-    _build_safe_eval_namespace as _build_safe_eval_namespace,
     _eval_numeric as _eval_numeric,
     _eval_model_expression as _eval_model_expression,
     _model_param_values as _model_param_values,

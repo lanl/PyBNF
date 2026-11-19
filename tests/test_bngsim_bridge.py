@@ -1059,8 +1059,9 @@ def test_bngsim_nf_model_resolves_free_params_embedded_in_arithmetic(monkeypatch
 
 def test_evaluate_bngl_params_raises_on_unresolved_name():
     """An expression referencing an unknown name must fail loudly rather
-    than silently substituting 0.0 (regression for #389 hardening)."""
-    with pytest.raises(ValueError, match='could not evaluate param'):
+    than silently substituting 0.0 (regression for #389 hardening). It is a PybnfError,
+    which ends the run, since every evaluation would hit it."""
+    with pytest.raises(printing.PybnfError, match='could not evaluate param'):
         bngsim_model._evaluate_bngl_params(
             [('k', 'mystery_token * 2')],
             input_overrides={},

@@ -45,7 +45,8 @@ from .parsing import (
     _snapshot_label,
 )
 from .expressions import (
-    _build_safe_eval_namespace,
+    _bngl_failure,
+    _bngl_value,
     _eval_numeric,
     _eval_model_expression,
     _build_mutant_param_set,
@@ -2019,24 +2020,22 @@ class BngsimModel(NetModel):
             except Exception:
                 pass
 
-        ns = _build_safe_eval_namespace(param_values)
         for species_name, expr_text in self._net_species_initializers:
+            # An initial amount that cannot be re-derived, or set, used to be logged at debug
+            # level and skipped, which left the species at its value from the previous
+            # parameters: a wrong starting state with no error.
             try:
-                value = float(eval(expr_text, ns))  # noqa: S307
-            except Exception:
-                logger.debug(
-                    "BngsimModel: could not re-evaluate initial concentration %s = %r",
-                    species_name,
-                    expr_text,
-                )
-                continue
+                value = _bngl_value(expr_text, param_values)
+            except ValueError as exc:
+                raise _bngl_failure(
+                    exc, "Model %s: the initial amount of %s, %r, cannot be evaluated from the "
+                    "current parameters: %s" % (self.name, species_name, expr_text, exc)) from exc
             try:
                 model.set_concentration(species_name, value)
-            except Exception:
-                logger.debug(
-                    "BngsimModel: could not set initial concentration for %s",
-                    species_name,
-                )
+            except Exception as exc:
+                raise PybnfError(
+                    "Model %s: bngsim did not accept the initial amount %g for %s: %s"
+                    % (self.name, value, species_name, exc)) from exc
         model.save_concentrations()
         return rows
 

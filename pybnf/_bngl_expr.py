@@ -37,13 +37,14 @@ Expressions are therefore tokenized and parsed here rather than handed to
 ``eval``, which would import Python's precedence and operator meanings along
 with the obvious injection problem.
 
-This module is deliberately self-contained: stdlib only, and no imports from
-the rest of PyBNF, so that it can move to ``libpetab-python``. Its consumer, the
-local ``BnglModel`` adapter, was retired in #591 once petab 0.9.0 shipped the
-loader upstream, and petab's native ``BnglModel`` does not yet evaluate an
-expression-valued parameter (``get_parameter_value`` raises
-``NotImplementedError`` and ``get_free_parameter_ids_with_values`` skips it), so
-this evaluator is the staging copy for that upstream port (#666, #420 Step B).
+This is PyBNF's one evaluator for BNGL math that PyBNF computes itself rather
+than leaving to a simulator: the parameters block on the network-free bngsim
+bridge, quoted action arguments and ``simulate``/``parameter_scan`` settings,
+and the initial amounts the ``.net`` bridge re-derives. Those sites used to
+call Python's ``eval``, which read ``10^5`` as 15 and ``10^-12`` as -2. It is
+stdlib only, with no imports from the rest of PyBNF, so the network-free
+bridge can use it without pulling in the PEtab layer. (It began in
+``pybnf/petab/`` as #666's evaluator for PEtab parameter values.)
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ import math
 import re
 
 __all__ = [
+    "BnglArithmeticError",
     "BnglExpressionError",
     "CircularParameterError",
     "evaluate_expression",
@@ -62,6 +64,13 @@ __all__ = [
 
 class BnglExpressionError(ValueError):
     """A parameter expression could not be parsed or evaluated."""
+
+
+class BnglArithmeticError(BnglExpressionError):
+    """A well-formed expression whose value is undefined at these inputs: a division by zero,
+    or a power or function outside its domain. Unlike a syntax error or an unknown name, it
+    can depend on the parameter values, so a caller may treat it as one failed evaluation
+    rather than as a broken model."""
 
 
 class CircularParameterError(BnglExpressionError):
@@ -171,10 +180,12 @@ class _Parser:
     the left fold is what makes ``2^3^2`` come out as 64.
     """
 
-    def __init__(self, tokens: list[tuple[str, str]], text: str, lookup):
+    def __init__(self, tokens: list[tuple[str, str]], text: str, lookup,
+                 refuse_signed_power: bool = False):
         self._tokens = tokens
         self._text = text
         self._lookup = lookup
+        self._refuse_signed_power = refuse_signed_power
         self._pos = 0
 
     def parse(self) -> float:
@@ -249,7 +260,7 @@ class _Parser:
             elif self._accept("/"):
                 divisor = self._parse_power()
                 if divisor == 0:
-                    raise BnglExpressionError(f"Division by zero in {self._text!r}")
+                    raise BnglArithmeticError(f"Division by zero in {self._text!r}")
                 # True division throughout: BNGL has no integer division, and
                 # Python's / on two ints would still be float, but being
                 # explicit keeps that from depending on operand types.
@@ -260,23 +271,36 @@ class _Parser:
     def _parse_power(self) -> float:
         # Left associative, and a signed operand belongs to the base rather than
         # to the whole power: BNG2.pl gives -2^2 == 4 and 2^3^2 == 64.
-        value = self._parse_unary()
+        value = self._parse_power_operand()
         while self._accept("^"):
-            exponent = self._parse_unary()
+            exponent = self._parse_power_operand()
             try:
                 value = float(value ** exponent)
             except (ArithmeticError, ValueError) as e:
                 # 0^-1, an overflow, or a negative base raised to a fractional
                 # power (which Python answers with a complex number).
-                raise BnglExpressionError(
+                raise BnglArithmeticError(
                     f"Cannot raise {value!r} to the power {exponent!r} in "
                     f"{self._text!r}: {e}"
                 ) from e
             except TypeError as e:  # complex result from a negative fractional base
-                raise BnglExpressionError(
+                raise BnglArithmeticError(
                     f"Cannot raise {value!r} to the power {exponent!r} in "
                     f"{self._text!r}"
                 ) from e
+        return value
+
+    def _parse_power_operand(self) -> float:
+        signed = self._peek() == ("op", "-")
+        value = self._parse_unary()
+        if signed and self._refuse_signed_power and self._peek() == ("op", "^"):
+            raise BnglExpressionError(
+                f"{self._text!r} puts a minus sign directly before a power, which BioNetGen "
+                "reads two ways: BNG2.pl's own arithmetic gives -2^2 as (-2)^2 = 4, while "
+                "run_network and bngsim, which simulate the network file BNG2.pl writes, "
+                "give -(2^2) = -4. Add parentheses to say which is meant, as in (-2)^2 or "
+                "-(2^2)."
+            )
         return value
 
     def _parse_unary(self) -> float:
@@ -331,18 +355,28 @@ class _Parser:
                 f"Wrong number of arguments to {name!r} in {self._text!r}"
             ) from e
         except ArithmeticError as e:
-            raise BnglExpressionError(
+            raise BnglArithmeticError(
                 f"{name}() could not be evaluated in {self._text!r}: {e}"
             ) from e
         except ValueError as e:
-            raise BnglExpressionError(
+            raise BnglArithmeticError(
                 f"{name}() is undefined for its argument in {self._text!r}: {e}"
             ) from e
 
 
-def evaluate_expression(text: str, symbols: dict[str, float]) -> float:
-    """Evaluate one BNGL expression against already-resolved ``symbols``."""
-    return _Parser(_tokenize(text), text, lambda n: _resolve_known(n, symbols, text)).parse()
+def evaluate_expression(text: str, symbols: dict[str, float], *,
+                        refuse_signed_power: bool = False) -> float:
+    """Evaluate one BNGL expression against already-resolved ``symbols``.
+
+    With ``refuse_signed_power``, a minus sign written directly before a power (``-2^2``,
+    ``-k^2``, ``10^-2^2``) is an error rather than ``(-2)^2``. BNG2.pl's Perl reads it that
+    way, but the simulators that run the network file it writes (run_network's muParser and
+    bngsim) read ``-(2^2)``, so a caller computing a value for a simulation cannot know which
+    one the model's author meant. A signed exponent that ends the power, as in ``10^-12``, is
+    read the same way by all of them and is accepted.
+    """
+    return _Parser(_tokenize(text), text, lambda n: _resolve_known(n, symbols, text),
+                   refuse_signed_power).parse()
 
 
 def _resolve_known(name: str, symbols: dict[str, float], text: str) -> float:
