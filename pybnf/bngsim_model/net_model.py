@@ -415,6 +415,8 @@ def _stop_condition_problem(condition, observables):
         if match is None:
             return 'uses %r, which bngsim reads as Python' % condition[pos:].strip()[:12]
         pos = match.end()
+        if match.group('num') is not None and re.match(r'0\d', match.group('num')):
+            return 'writes %s with a leading zero, which Python cannot read' % match.group('num')
         name = match.group('name')
         if name is not None and name not in observables:
             return 'reads %s, which is not an observable' % name
@@ -523,14 +525,20 @@ class BngsimModel(NetModel):
         """
         names = set(self._engine_model.species_names)
         for line in action_lines:
-            match = _SPECIES_ACTION.match(line)
-            if match is not None and match.group(2) not in names:
-                raise PybnfError(
-                    'Model %s: %s names the species %s, which is not in the network under that '
-                    'name. BNG2.pl matches it as a pattern, but bngsim needs the name exactly as '
-                    'the network file writes it.' % (self.name, line.strip(), match.group(2)),
-                    hint='Write the species as it appears in the .net file, or run the model '
-                         'with bngl_backend = bionetgen.')
+            text = _collapse_action_line_continuations(str(line)).strip()
+            match = _SPECIES_ACTION.match(text)
+            if match is None:
+                continue
+            # bngsim lists a fixed species without the $ the network file writes, and accepts
+            # it either way.
+            species = match.group(2)
+            if species in names or species.replace('$', '', 1) in names:
+                continue
+            raise PybnfError(
+                'Model %s: %s names the species %s, which is not in the network under that name. '
+                'BNG2.pl matches it as a pattern, but bngsim needs the name exactly as the '
+                'network file writes it. Write the species as it appears in the .net file, or '
+                'run the model with bngl_backend = bionetgen.' % (self.name, text, species))
 
     def _refuse_unreadable_stop_conditions(self, action_lines):
         """Refuse a stop_if that bngsim would not read as run_network reads it.
@@ -540,10 +548,11 @@ class BngsimModel(NetModel):
         observables, species and ``time`` at each row; a row it cannot evaluate is logged at
         debug level and passed over. So ``Atot<exp(3.45)`` or ``Atot<N0/3`` never fired, and
         the run went on to t_end with no error (#1051). Only a condition over observables,
-        ``time``, numbers, arithmetic and one comparison reads the same in both, so anything
-        else is refused here: under ``bngl_backend = auto`` the model then runs on BNG2.pl.
+        numbers, arithmetic and one comparison reads the same in both (BNG2.pl refuses
+        ``time``), so anything else is refused here: under ``bngl_backend = auto`` the model
+        then runs on BNG2.pl.
         """
-        observables = set(self._engine_model.observable_names) | {'time'}
+        observables = set(self._engine_model.observable_names)
         for line in action_lines:
             text = _collapse_action_line_continuations(str(line)).strip()
             for parse in (_parse_simulate_action, _parse_parameter_scan_action,

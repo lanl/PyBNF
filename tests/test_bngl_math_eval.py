@@ -271,16 +271,36 @@ def test_a_species_name_bngsim_cannot_find_is_refused_when_the_bridge_is_built(a
         DECAY_NET.stem, [action.replace('"S"', '"S()"')], [], [], nf=str(DECAY_NET))
 
 
+@pytest.mark.bngsim
+def test_the_species_check_reads_a_continued_line_and_a_fixed_species():
+    """A setConcentration split over two lines with a backslash is checked like any other, and a
+    fixed species written as the network writes it ($S()) is accepted, as bngsim accepts it."""
+    with pytest.raises(PybnfError, match='not in the network'):
+        bngsim_model.BngsimModel(DECAY_NET.stem, ['setConcentration("S", \\\n 50)'], [], [],
+                                 nf=str(DECAY_NET))
+    bngsim_model.BngsimModel(DECAY_NET.stem, ['setConcentration("$S()", 50)'], [], [],
+                             nf=str(DECAY_NET))
+
+
+@pytest.mark.parametrize('key', ['"n_steps"', "'n_steps'", 'n_steps'])
+def test_a_quoted_key_is_read_as_bng2pl_reads_it(key):
+    """Perl, and so BNG2.pl, reads "n_steps"=>4 as n_steps=>4. The bridge kept the quotes on the
+    key and ignored the setting."""
+    params = parsing._parse_simulate_action('simulate({method=>"ode",t_end=>8,%s=>4})' % key)
+    assert params['n_steps'] == '4'
+
+
 @pytest.mark.parametrize('condition, problem', [
-    ('Stot<10', None), ('Stot < 1e1', None), ('time>5', None), ('(Stot-1)/2 >= 0.5', None),
+    ('Stot<10', None), ('Stot < 1e1', None), ('Stot>0.5', None), ('(Stot-1)/2 >= 0.5', None),
     ('Stot<exp(3.45)', 'not an observable'), ('Stot<S0/3', 'not an observable'),
+    ('time>5', 'not an observable'), ('Stot>010', 'leading zero'),
     ('Stot>1 && Stot<5', 'reads as Python'), ('1<Stot<5', 'chains comparisons'),
 ])
 def test_which_stop_conditions_bngsim_reads_as_run_network_does(condition, problem):
     """bngsim evaluates a stop condition as Python over the observables and time, and passes
     over a row it cannot evaluate. Only what reads the same in run_network's BNGL is let
     through to it."""
-    found = net_model._stop_condition_problem(condition, {'Stot', 'time'})
+    found = net_model._stop_condition_problem(condition, {'Stot'})
     if problem is None:
         assert found is None
     else:

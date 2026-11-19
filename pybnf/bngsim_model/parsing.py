@@ -112,7 +112,12 @@ def _parse_action_dict(action_line, action_name, key_aliases=None):
             )
             continue
         key_text, value_text = item.split('=>', 1)
-        key = aliases.get(key_text.strip(), key_text.strip())
+        # Perl, and so BNG2.pl, reads "n_steps"=>4 as n_steps=>4. A quoted key used to keep its
+        # quotes here, so the setting was silently ignored (#1051).
+        key_text = key_text.strip()
+        if len(key_text) >= 2 and key_text[0] == key_text[-1] and key_text[0] in ('"', "'"):
+            key_text = key_text[1:-1].strip()
+        key = aliases.get(key_text, key_text)
         params[key] = _parse_action_value(value_text)
     return params
 
