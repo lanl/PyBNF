@@ -34,7 +34,7 @@ import numpy as np
 import pytest
 
 import pybnf.bngsim_model as bngsim_model
-from pybnf.bngsim_model import expressions, parsing
+from pybnf.bngsim_model import expressions, net_model, parsing
 from pybnf.printing import PybnfError
 from pybnf.pset import BNGLModel, FailedSimulationError, FreeParameter, ModelError, PSet
 
@@ -259,6 +259,49 @@ def test_a_scan_point_recomputes_a_quoted_set_concentration(tmp_path, carried):
         scan('[0.3,1]')
 
 
+@pytest.mark.bngsim
+@pytest.mark.parametrize('action', ['setConcentration("S", 50)', 'addConcentration("S", 5)'])
+def test_a_species_name_bngsim_cannot_find_is_refused_when_the_bridge_is_built(action):
+    """BNG2.pl finds ``S`` as the species ``S()``; bngsim needs the exact name. The action used
+    to be logged and skipped while running. Refusing it when the bridge is built is where
+    bngl_backend = auto falls back to BNG2.pl, which runs it as written."""
+    with pytest.raises(PybnfError, match='not in the network'):
+        bngsim_model.BngsimModel(DECAY_NET.stem, [action], [], [], nf=str(DECAY_NET))
+    bngsim_model.BngsimModel(  # the network's own name is accepted
+        DECAY_NET.stem, [action.replace('"S"', '"S()"')], [], [], nf=str(DECAY_NET))
+
+
+@pytest.mark.parametrize('condition, problem', [
+    ('Stot<10', None), ('Stot < 1e1', None), ('time>5', None), ('(Stot-1)/2 >= 0.5', None),
+    ('Stot<exp(3.45)', 'not an observable'), ('Stot<S0/3', 'not an observable'),
+    ('Stot>1 && Stot<5', 'reads as Python'), ('1<Stot<5', 'chains comparisons'),
+])
+def test_which_stop_conditions_bngsim_reads_as_run_network_does(condition, problem):
+    """bngsim evaluates a stop condition as Python over the observables and time, and passes
+    over a row it cannot evaluate. Only what reads the same in run_network's BNGL is let
+    through to it."""
+    found = net_model._stop_condition_problem(condition, {'Stot', 'time'})
+    if problem is None:
+        assert found is None
+    else:
+        assert problem in found
+
+
+@pytest.mark.bngsim
+def test_a_stop_condition_bngsim_cannot_read_is_refused_when_the_bridge_is_built(tmp_path):
+    """``Stot<S0/3`` stops BNG2.pl at the first row where 100 exp(-0.3 t) < 100/3, t = 4 here
+    by hand (ceil(ln(3) / 0.3)). bngsim never stopped, because S0 is not bound in its eval."""
+    action = 'simulate({method=>"ode",t_end=>20,n_steps=>20,stop_if=>"%s",suffix=>"tc"})'
+    with pytest.raises(PybnfError, match='S0, which is not an observable'):
+        bngsim_model.BngsimModel(DECAY_NET.stem, [action % 'Stot<S0/3'], [('simulate', 'tc')],
+                                 [], nf=str(DECAY_NET))
+    model = bngsim_model.BngsimModel(
+        DECAY_NET.stem, [action % 'Stot<100/3'], [('simulate', 'tc')], [], nf=str(DECAY_NET))
+    model.param_set = PSet([])
+    data = model.execute(str(tmp_path), 'stop', 60)['tc']
+    assert data.data[-1, data.cols['time']] == math.ceil(math.log(3) / 0.3)
+
+
 # ---------------------------------------------------- initial amounts on the .net bridge
 @pytest.mark.bngsim
 @pytest.mark.parametrize('r', [2.0, 3.0])
@@ -431,6 +474,7 @@ def _load(tmp_path, actions):
     'simulate({method=>"ode",t_end=>8,n_steps=>2,atol=>"10^-10"})',
     'parameter_scan({parameter=>"k",par_min=>"10^-2",par_max=>1,n_scan_pts=>2,t_end=>1})',
     'setConcentration("A()", "2**3")',
+    'simulate({method=>"ode",t_end=>8,n_steps=>2,stop_if=>"Atot<2^5"})',
 ])
 def test_action_math_bng2pl_does_not_read_as_bngl_is_refused(tmp_path, action):
     """BNG2.pl runs an unquoted argument as Perl, where 10^3 is 9 (bitwise XOR) and log is
@@ -461,6 +505,8 @@ def test_an_unquoted_power_in_a_protocol_block_is_refused(tmp_path):
     'begin actions\nparameter_scan({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,'
     't_start=>"2^0",t_end=>"2^3"})\nend actions',
     'simulate({method=>"ode",t_end=>10*60,n_steps=>2})',
+    'begin actions\nsimulate({method=>"ode","t_end"=>"2^3",n_steps=>2,suffix=>"x^2"})\n'
+    'saveConcentrations("pre^wash")\nend actions',
 ])
 def test_a_quoted_power_or_a_comment_is_accepted(tmp_path, actions):
     _load(tmp_path, actions)

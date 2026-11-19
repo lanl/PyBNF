@@ -89,7 +89,14 @@ _UNQUOTED_CALL = re.compile(r'(?:=>|[,(+\-*/])\s*([A-Za-z_]\w*)\s*\(')
 # hands every other quoted setting on as text (#1051).
 _EVALUATED_SLOT = re.compile(
     r'(?:^\s*(?:setParameter|setConcentration|addConcentration)\s*\(\s*'
-    r'(?:"[^"]*"|\'[^\']*\')\s*,\s*|\bt_(?:start|end)\s*=>\s*)$')
+    r'(?:"[^"]*"|\'[^\']*\')\s*,\s*|\b["\']?t_(?:start|end)["\']?\s*=>\s*)$')
+# What precedes a quoted string that is a name rather than a number: a suffix, prefix, method
+# or file setting, or the label of a save or reset action. A ^ there is only a character.
+_TEXT_SLOT = re.compile(
+    r'(?:\b["\']?(?:suffix|prefix|method|file)["\']?\s*=>\s*'
+    r'|^\s*(?:save|reset)(?:Concentrations|Parameters)\s*\(\s*)$')
+# A stop_if setting, which run_network reads as an expression and bngsim does not (#1051).
+_STOP_IF_SLOT = re.compile(r'\b["\']?stop_if["\']?\s*=>\s*$')
 
 
 def _refuse_unreadable_action_math(statement, line_number, model_file):
@@ -127,10 +134,18 @@ def _refuse_unreadable_action_math(statement, line_number, model_file):
                    % call.group(1))
     else:
         for quoted in _QUOTED_TEXT.finditer(statement):
-            if '^' in quoted.group() and not _EVALUATED_SLOT.search(statement[:quoted.start()]):
-                problem = ('has a ^ in a quoted setting that BNG2.pl does not evaluate. It hands '
-                           'the text to run_network, which reads "10^-10" as 10')
-                break
+            before = statement[:quoted.start()]
+            if '^' not in quoted.group() or _EVALUATED_SLOT.search(before) \
+                    or _TEXT_SLOT.search(before):
+                continue
+            if _STOP_IF_SLOT.search(before):
+                problem = ('has a ^ in stop_if. run_network reads the condition as an '
+                           'expression, where ^ is a power, but the bngsim bridge hands it to '
+                           'bngsim, whose stop condition reads ^ as exclusive or')
+            else:
+                problem = ('has a ^ in a quoted setting that BNG2.pl does not evaluate. It '
+                           'hands the text to run_network, which reads "10^-10" as 10')
+            break
     if problem is not None:
         raise ModelError(
             "The action on line %d of %s, %s, %s. Quote a BNGL expression only in the value of "

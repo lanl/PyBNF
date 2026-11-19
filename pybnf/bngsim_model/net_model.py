@@ -401,6 +401,33 @@ def _attach_codegen(engine_model):
                or getattr(engine_model, '_codegen_c_source', '') or '')
 
 
+# One token of a stop condition that bngsim (Python) and run_network (BNGL) read alike.
+_STOP_TOKEN = re.compile(
+    r'\s*(?:(?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?P<name>[A-Za-z_]\w*)'
+    r'|(?P<cmp><=|>=|==|!=|<|>)|(?P<op>[-+*/()]))')
+
+
+def _stop_condition_problem(condition, observables):
+    """Why bngsim would read ``condition`` differently from run_network, or ``None``."""
+    pos, comparisons = 0, 0
+    while condition[pos:].strip():
+        match = _STOP_TOKEN.match(condition, pos)
+        if match is None:
+            return 'uses %r, which bngsim reads as Python' % condition[pos:].strip()[:12]
+        pos = match.end()
+        name = match.group('name')
+        if name is not None and name not in observables:
+            return 'reads %s, which is not an observable' % name
+        if match.group('cmp') is not None:
+            comparisons += 1
+    if comparisons > 1:
+        return 'chains comparisons, which Python and BNGL group differently'
+    return None
+
+
+# The species a setConcentration or addConcentration action names (its first, quoted argument).
+_SPECIES_ACTION = re.compile(r'\s*(setConcentration|addConcentration)\s*\(\s*["\']([^"\']+)["\']')
+
 class BngsimModel(NetModel):
     """In-process simulation model using the optional bngsim engine."""
 
@@ -477,10 +504,63 @@ class BngsimModel(NetModel):
             self._net_path = nf
             self._engine_model = _runtime.bngsim.Model.from_net(nf)
             self._codegen_so = _attach_codegen(self._engine_model)
+            self._refuse_unmatched_species(list(acts) + list(self._protocol))
+            self._refuse_unreadable_stop_conditions(list(acts) + list(self._protocol))
         elif ls is not None:
             raise ValueError('BngsimModel requires nf so the .net path is stable')
         else:
             raise ValueError('Must provide nf')
+
+    def _refuse_unmatched_species(self, action_lines):
+        """Refuse a setConcentration or addConcentration whose species bngsim cannot find.
+
+        BNG2.pl finds the species such an action names as a pattern, so ``A(y,x)`` finds
+        ``A(x,y)`` and ``EGF`` finds ``EGF()``. bngsim matches the name exactly. Such an action
+        used to be logged as a warning and skipped when it ran, so the model ran from the wrong
+        amounts with no error (#1051). Refusing it here, when the bridge is built, sends the
+        model to BNG2.pl under ``bngl_backend = auto``, and stops the run under an explicit
+        ``bngl_backend = bngsim``.
+        """
+        names = set(self._engine_model.species_names)
+        for line in action_lines:
+            match = _SPECIES_ACTION.match(line)
+            if match is not None and match.group(2) not in names:
+                raise PybnfError(
+                    'Model %s: %s names the species %s, which is not in the network under that '
+                    'name. BNG2.pl matches it as a pattern, but bngsim needs the name exactly as '
+                    'the network file writes it.' % (self.name, line.strip(), match.group(2)),
+                    hint='Write the species as it appears in the .net file, or run the model '
+                         'with bngl_backend = bionetgen.')
+
+    def _refuse_unreadable_stop_conditions(self, action_lines):
+        """Refuse a stop_if that bngsim would not read as run_network reads it.
+
+        run_network evaluates a stop condition as an expression over the model (``^`` a power,
+        parameters and functions available). bngsim compiles it as Python and binds only the
+        observables, species and ``time`` at each row; a row it cannot evaluate is logged at
+        debug level and passed over. So ``Atot<exp(3.45)`` or ``Atot<N0/3`` never fired, and
+        the run went on to t_end with no error (#1051). Only a condition over observables,
+        ``time``, numbers, arithmetic and one comparison reads the same in both, so anything
+        else is refused here: under ``bngl_backend = auto`` the model then runs on BNG2.pl.
+        """
+        observables = set(self._engine_model.observable_names) | {'time'}
+        for line in action_lines:
+            text = _collapse_action_line_continuations(str(line)).strip()
+            for parse in (_parse_simulate_action, _parse_parameter_scan_action,
+                          _parse_bifurcate_action):
+                params = parse(text)
+                if params is None or params.get('stop_if') is None:
+                    continue
+                condition = str(params['stop_if']).strip().strip('"').strip("'")
+                problem = _stop_condition_problem(condition, observables)
+                if problem is not None:
+                    raise PybnfError(
+                        'Model %s: the stop_if condition "%s" %s. bngsim evaluates a stop '
+                        'condition over the observables alone, as Python, and passes over a row '
+                        'it cannot evaluate, so the run would not stop where BNG2.pl stops it.'
+                        % (self.name, condition, problem),
+                        hint='Write the condition over observables and numbers, or run the '
+                             'model with bngl_backend = bionetgen.')
 
     def copy_with_param_set(self, pset):
         """Return a shallow copy with a cloned engine model and new PSet."""
