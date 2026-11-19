@@ -181,11 +181,11 @@ class _Parser:
     """
 
     def __init__(self, tokens: list[tuple[str, str]], text: str, lookup,
-                 refuse_signed_power: bool = False):
+                 source: str | None = None):
         self._tokens = tokens
         self._text = text
         self._lookup = lookup
-        self._refuse_signed_power = refuse_signed_power
+        self._source = source
         self._pos = 0
 
     def parse(self) -> float:
@@ -271,9 +271,18 @@ class _Parser:
     def _parse_power(self) -> float:
         # Left associative, and a signed operand belongs to the base rather than
         # to the whole power: BNG2.pl gives -2^2 == 4 and 2^3^2 == 64.
-        value = self._parse_power_operand()
+        value = self._parse_power_operand(base=True)
+        chained = False
         while self._accept("^"):
-            exponent = self._parse_power_operand()
+            if chained and self._source == "network":
+                raise BnglExpressionError(
+                    f"{self._text!r}, read from a network file, chains powers without "
+                    "parentheses. run_network and bngsim, which simulate network files, group "
+                    "them from the right (2^3^2 is 512), and BNGL groups them from the left "
+                    "(64). Add parentheses, as BNG2.pl does when it writes one."
+                )
+            chained = True
+            exponent = self._parse_power_operand(base=False)
             try:
                 value = float(value ** exponent)
             except (ArithmeticError, ValueError) as e:
@@ -290,16 +299,27 @@ class _Parser:
                 ) from e
         return value
 
-    def _parse_power_operand(self) -> float:
+    def _parse_power_operand(self, base: bool) -> float:
         signed = self._peek() == ("op", "-")
+        literal = signed and self._pos + 1 < len(self._tokens) \
+            and self._tokens[self._pos + 1][0] == "number"
         value = self._parse_unary()
-        if signed and self._refuse_signed_power and self._peek() == ("op", "^"):
+        if not signed or self._peek() != ("op", "^"):
+            return value
+        if self._source == "network":
             raise BnglExpressionError(
-                f"{self._text!r} puts a minus sign directly before a power, which BioNetGen "
-                "reads two ways: BNG2.pl's own arithmetic gives -2^2 as (-2)^2 = 4, while "
-                "run_network and bngsim, which simulate the network file BNG2.pl writes, "
-                "give -(2^2) = -4. Add parentheses to say which is meant, as in (-2)^2 or "
-                "-(2^2)."
+                f"{self._text!r}, read from a network file, puts a minus sign directly before "
+                "a power. run_network and bngsim, which simulate network files, read -2^2 as "
+                "-(2^2) = -4, and BNGL reads it as (-2)^2 = 4. Add parentheses, as BNG2.pl "
+                "does when it writes one."
+            )
+        if self._source == "bngl" and base and literal:
+            raise BnglExpressionError(
+                f"{self._text!r} raises a negative number to a power, which BioNetGen reads "
+                "two ways. BNG2.pl's arithmetic gives -2^2 as (-2)^2 = 4, but BNG2.pl copies "
+                "the text unchanged into the network file it writes, and run_network and "
+                "bngsim read it there as -(2^2) = -4. Add parentheses to say which is meant, "
+                "as in (-2)^2 or -(2^2)."
             )
         return value
 
@@ -365,18 +385,25 @@ class _Parser:
 
 
 def evaluate_expression(text: str, symbols: dict[str, float], *,
-                        refuse_signed_power: bool = False) -> float:
+                        source: str | None = None) -> float:
     """Evaluate one BNGL expression against already-resolved ``symbols``.
 
-    With ``refuse_signed_power``, a minus sign written directly before a power (``-2^2``,
-    ``-k^2``, ``10^-2^2``) is an error rather than ``(-2)^2``. BNG2.pl's Perl reads it that
-    way, but the simulators that run the network file it writes (run_network's muParser and
-    bngsim) read ``-(2^2)``, so a caller computing a value for a simulation cannot know which
-    one the model's author meant. A signed exponent that ends the power, as in ``10^-12``, is
-    read the same way by all of them and is accepted.
+    The value is always BNG2.pl's arithmetic. ``source`` says where the text comes from, for a
+    caller computing a value a simulation will use, and refuses the forms that BioNetGen's
+    simulators read differently from that arithmetic:
+
+    * ``None``: no refusals (BNG2.pl's own reading, as the PEtab layer wants).
+    * ``"bngl"``: model or action text that BNG2.pl reads. BNG2.pl writes most expressions into
+      the network file with parentheses (``-a^2`` as ``(-a)^2``, ``2^3^2`` as ``(2^3)^2``), so
+      the simulators agree with it. A negative number as the base of a power is the exception:
+      ``-2^2`` is copied unchanged, and run_network and bngsim read it as ``-(2^2)``. It is
+      refused.
+    * ``"network"``: text read from a network file, which run_network and bngsim read with
+      their own grammar. A minus sign directly before a power, and a chain of powers without
+      parentheses, are refused, since BNG2.pl never writes either.
     """
     return _Parser(_tokenize(text), text, lambda n: _resolve_known(n, symbols, text),
-                   refuse_signed_power).parse()
+                   source).parse()
 
 
 def _resolve_known(name: str, symbols: dict[str, float], text: str) -> float:

@@ -15,10 +15,13 @@ The oracle throughout is BNG2.pl 2.9.3 itself:
   installed, so the table cannot drift from BioNetGen.
 * An unquoted action argument is Perl to BNG2.pl, where ``^`` is XOR (``10^3`` is 9). Nobody
   means that, so PyBNF refuses an unquoted ``^`` or ``**`` when it loads the model.
-* A minus sign directly before a power is read two ways inside BioNetGen itself.
+* A negative number raised to a power is read two ways inside BioNetGen itself.
   ``test_bionetgen_reads_a_minus_before_a_power_two_ways`` shows it: BNG2.pl's arithmetic gives
-  ``-2^2`` as 4, and the network simulators give -4. PyBNF cannot know which the author meant,
-  so wherever it evaluates BNGL math itself, it refuses the expression and asks for parentheses.
+  ``-2^2`` as 4, but it copies the text into the network file, where the simulators give -4.
+  PyBNF cannot know which the author meant, so it refuses the expression and asks for
+  parentheses. BNG2.pl brackets every other signed or chained power when it writes the file,
+  so those are read as BNG2.pl reads them, except in text taken from a network file, which is
+  read by run_network and bngsim with their own grammar.
 """
 
 import math
@@ -229,6 +232,33 @@ def test_net_bridge_runs_quoted_bngl_arguments(tmp_path):
     assert stot[-1] == pytest.approx(1000.0 * math.exp(-0.8), rel=1e-5)
 
 
+@pytest.mark.bngsim
+@pytest.mark.parametrize('carried', [False, True], ids=['from the seed', 'from a carried state'])
+def test_a_scan_point_recomputes_a_quoted_set_concentration(tmp_path, carried):
+    """A setConcentration expression is re-evaluated at each parameter_scan point, on both scan
+    paths: from the seed, and from the state a simulate left (bngsim's on_point hook). Where it
+    is undefined (k = 1 here) that point is a failed simulation. The carried-state path used
+    to log it and skip it, leaving the species at its carried amount. Either way S starts each
+    point at 1/(k-1)+10, so S(1) = (1/(k-1)+10) exp(-k)."""
+    def scan(values):
+        actions = ['setConcentration("S()", "1/(k-1)+10")']
+        if carried:
+            actions.append('simulate({method=>"ode",t_end=>0.5,n_steps=>1,suffix=>"pre"})')
+        actions.append('parameter_scan({parameter=>"k",par_scan_vals=>%s,t_end=>1,n_steps=>1,'
+                       'suffix=>"scan"})' % values)
+        suffixes = [('simulate', 'pre')] * carried + [('parameter_scan', 'scan')]
+        model = bngsim_model.BngsimModel(
+            DECAY_NET.stem, actions, suffixes, [], nf=str(DECAY_NET))
+        model.param_set = PSet([])
+        return model.execute(str(tmp_path), 'scan', 60)['scan'].data
+
+    data = scan('[0.3,2]')
+    for k, s_end in data:
+        assert s_end == pytest.approx((1 / (k - 1) + 10) * math.exp(-k), rel=1e-5)
+    with pytest.raises(FailedSimulationError, match='parameter_scan point'):
+        scan('[0.3,1]')
+
+
 # ---------------------------------------------------- initial amounts on the .net bridge
 @pytest.mark.bngsim
 @pytest.mark.parametrize('r', [2.0, 3.0])
@@ -283,12 +313,16 @@ def test_initial_amount_refresh_reads_bngl():
 @pytest.mark.parametrize('initializers, params, refuse, error', [
     ([('A()', 'not_a_parameter')], {'R': 3.0}, (), PybnfError),
     ([('A()', '-R^2')], {'R': 3.0}, (), PybnfError),
+    ([('A()', '2^R^2')], {'R': 3.0}, (), PybnfError),
     ([('A()', '1/(R - 3)')], {'R': 3.0}, (), FailedSimulationError),
     ([('A()', 'R')], {'R': 3.0}, ('A()',), PybnfError),
-], ids=['unknown name', 'minus before a power', 'undefined at this point', 'not accepted'])
+], ids=['unknown name', 'minus before a power', 'chained powers', 'undefined at this point',
+        'not accepted'])
 def test_initial_amount_refresh_fails_loudly(initializers, params, refuse, error):
     """An initial amount that could not be re-derived or set used to be logged at debug level
-    and skipped, so the species kept its value from the previous parameter set."""
+    and skipped, so the species kept its value from the previous parameter set. A minus before
+    a power and a chain of powers are refused because the file's own readers, run_network and
+    bngsim, read them differently from BNGL (bngsim gives 2^3^2 as 512)."""
     model = _FakeEngineModel(params, refuse)
     with pytest.raises(error):
         _refresher(initializers)._sync_species_initial_concentrations(model)
@@ -318,12 +352,20 @@ def test_bionetgen_reads_a_minus_before_a_power_two_ways(tmp_path):
     assert np.loadtxt(tmp_path / 'minus.cdat', ndmin=2)[0, 1] == -4.0
 
 
-@pytest.mark.parametrize('text, symbols', [
-    ('"-2^2"', {}), ('10^-2^2', {}), ('-k^2', {'k': 3.0}), ('exp(-k^2)', {'k': 3.0}),
-], ids=['quoted', 'signed exponent', 'name', 'inside a call'])
-def test_a_minus_sign_before_a_power_is_refused(text, symbols):
-    with pytest.raises(ValueError, match='parentheses'):
-        expressions._eval_numeric(text, symbols)
+@pytest.mark.parametrize('text', ['"-2^2"', '2*-3^2', '-2.5^2', 'exp(-1^2)'])
+def test_a_negative_number_raised_to_a_power_is_refused(text):
+    """The one form BNG2.pl copies into the network file unchanged, where it reads -4."""
+    with pytest.raises(PybnfError, match='parentheses'):
+        expressions._eval_numeric(text)
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('-k^2', 9.0), ('-(2)^2', 4.0), ('-exp(0)^2', 1.0), ('10^-2^2', 1e-4), ('2^3^2', 64.0),
+])
+def test_signs_and_chains_bng2pl_brackets_are_read_as_bng2pl_reads_them(text, expected):
+    """BNG2.pl writes these into the network file with parentheses, as (-k)^2, (-2)^2,
+    (-exp(0))^2, (10^-2)^2 and (2^3)^2 (checked with BNG2.pl 2.9.3), so every reader agrees."""
+    assert expressions._eval_numeric(text, {'k': 3.0}) == pytest.approx(expected)
 
 
 def test_a_minus_sign_before_a_power_in_the_parameters_block_ends_the_run():
@@ -331,7 +373,7 @@ def test_a_minus_sign_before_a_power_in_the_parameters_block_ends_the_run():
     the run with the reason. A plain error there was scored as one failed simulation per
     evaluation, and the fit carried on with nothing but failures."""
     with pytest.raises(PybnfError, match='parentheses'):
-        expressions._evaluate_bngl_params([('k', '3'), ('a', '-k^2')])
+        expressions._evaluate_bngl_params([('k', '3'), ('a', '-2^2')])
 
 
 def test_an_undefined_value_is_one_failed_simulation():
@@ -383,10 +425,18 @@ def _load(tmp_path, actions):
     'simulate({method=>"ode",t_end=>10^1,n_steps=>2})',
     'simulate({method=>"ode",t_end=>2**3,n_steps=>2})',
     'generate_network({overwrite=>1,max_iter=>2^4})',
+    'simulate({method=>"ode",t_end=>log(100),n_steps=>2})',
+    'setConcentration("A()", 2*exp(1))',
+    'simulate({method=>"ode",t_end=>8,n_steps=>"2^3"})',
+    'simulate({method=>"ode",t_end=>8,n_steps=>2,atol=>"10^-10"})',
+    'parameter_scan({parameter=>"k",par_min=>"10^-2",par_max=>1,n_scan_pts=>2,t_end=>1})',
+    'setConcentration("A()", "2**3")',
 ])
-def test_an_unquoted_power_in_an_action_is_refused(tmp_path, action):
-    """BNG2.pl runs an unquoted argument as Perl, where 10^3 is 9 (bitwise XOR). Every backend
-    loads the model through BNGLModel, so the refusal covers BNG2.pl and bngsim alike."""
+def test_action_math_bng2pl_does_not_read_as_bngl_is_refused(tmp_path, action):
+    """BNG2.pl runs an unquoted argument as Perl, where 10^3 is 9 (bitwise XOR) and log is
+    Perl's. A quoted setting other than t_start and t_end goes to run_network as text, which
+    reads "10^-10" as 10. And run_network and bngsim reject **. Every backend loads the model
+    through BNGLModel, so the refusal covers BNG2.pl and bngsim alike."""
     with pytest.raises(ModelError) as info:
         _load(tmp_path, 'begin actions\n' + action + '\nend actions')
     message = str(info.value)
@@ -405,9 +455,12 @@ def test_an_unquoted_power_in_a_protocol_block_is_refused(tmp_path):
 
 @pytest.mark.parametrize('actions', [
     'begin actions\nsetConcentration("A()", "10^3")\nend actions',
-    "begin actions\nsetParameter('k', '2**3')\nend actions",
+    "begin actions\nsetParameter('k', '2^3')\nend actions",
+    "begin actions\naddConcentration('A()', '10^2')\nend actions",
     'begin actions\nsimulate({method=>"ode",t_end=>"2^3",n_steps=>2}) # 2^3 is 8\nend actions',
-    'simulate({method=>"ode",t_end=>10,n_steps=>2})',
+    'begin actions\nparameter_scan({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,'
+    't_start=>"2^0",t_end=>"2^3"})\nend actions',
+    'simulate({method=>"ode",t_end=>10*60,n_steps=>2})',
 ])
 def test_a_quoted_power_or_a_comment_is_accepted(tmp_path, actions):
     _load(tmp_path, actions)
@@ -416,7 +469,8 @@ def test_a_quoted_power_or_a_comment_is_accepted(tmp_path, actions):
 # ------------------------------------------- what BNG2.pl rejects is rejected, not guessed
 def test_a_double_star_is_a_power():
     """BNG2.pl's arithmetic reads ``**`` as ``^``. (run_network and bngsim reject it in a network
-    file, so it can never give them a different number.)"""
+    file, and BNGLModel refuses it in an action, so it reaches the bridges only from a
+    parameters block, as BNG2.pl's XML value.)"""
     assert expressions._eval_numeric('"2**3"') == 8.0
     assert expressions._evaluate_bngl_params([('a', '2**3'), ('b', 'a**2')]) == {'a': 8.0, 'b': 64.0}
 
@@ -425,6 +479,7 @@ def test_a_double_star_is_a_power():
 def test_names_bngl_does_not_have_are_errors(text):
     """Python's eval accepted these. BNGL has no ``log``, ``pow`` or ``floor`` function and no
     ``pi`` constant (its natural log is ``ln`` and its constant is ``_pi()``), and BNG2.pl
-    rejects them, so they are errors rather than plausible numbers."""
-    with pytest.raises(ValueError):
+    rejects them, so they are errors rather than plausible numbers. A PybnfError ends the run:
+    every job would hit it."""
+    with pytest.raises(PybnfError):
         expressions._eval_numeric(text)

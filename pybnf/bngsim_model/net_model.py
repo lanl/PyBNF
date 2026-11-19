@@ -1495,22 +1495,24 @@ class BngsimModel(NetModel):
                 # is declared rather than re-installed (#538). No-op off the gradient path.
                 carried = self._capture_carried_sensitivity_seed(model)
                 own_row = self._capture_own_sensitivity_row(species_name, carried)
-                applied = False
+                # A value that could not be computed or set used to be logged as a warning and
+                # the action skipped, so the species kept its old amount with no error (#1051).
                 try:
                     conc_value = _eval_model_expression(conc_expr, model)
+                except ValueError as exc:
+                    raise _bngl_failure(
+                        exc, 'Model %s: setConcentration("%s", "%s") cannot be evaluated: %s'
+                        % (self.name, species_name, conc_expr, exc)) from exc
+                try:
                     model.set_concentration(species_name, conc_value)
-                    concentration_overrides[species_name] = conc_expr
-                    applied = True
-                except Exception:
-                    logger.warning(
-                        "setConcentration(%s, %s) failed",
-                        species_name,
-                        conc_expr,
-                    )
-                if applied:
-                    self._restore_carried_sensitivity_seed(
-                        model, carried, species_name, conc_expr, own_row=own_row)
-                    state.assigned.add(species_name)
+                except Exception as exc:
+                    raise PybnfError(
+                        'Model %s: bngsim did not accept setConcentration("%s", "%s"): %s'
+                        % (self.name, species_name, conc_expr, exc)) from exc
+                concentration_overrides[species_name] = conc_expr
+                self._restore_carried_sensitivity_seed(
+                    model, carried, species_name, conc_expr, own_row=own_row)
+                state.assigned.add(species_name)
                 continue
 
             ac = _parse_add_concentration(line)
@@ -2025,7 +2027,7 @@ class BngsimModel(NetModel):
             # level and skipped, which left the species at its value from the previous
             # parameters: a wrong starting state with no error.
             try:
-                value = _bngl_value(expr_text, param_values)
+                value = _bngl_value(expr_text, param_values, source='network')
             except ValueError as exc:
                 raise _bngl_failure(
                     exc, "Model %s: the initial amount of %s, %r, cannot be evaluated from the "
@@ -2056,10 +2058,13 @@ class BngsimModel(NetModel):
         seed = self._sync_species_initial_concentrations(point_model, per_action=True)
         active_overrides = concentration_overrides or {}
         for species_name, expr in active_overrides.items():
-            point_model.set_concentration(
-                species_name,
-                _eval_model_expression(expr, point_model),
-            )
+            try:
+                point_value = _eval_model_expression(expr, point_model)
+            except ValueError as exc:
+                raise _bngl_failure(
+                    exc, 'Model %s: at a parameter_scan point, setConcentration("%s", "%s") '
+                    'cannot be evaluated: %s' % (self.name, species_name, expr, exc)) from exc
+            point_model.set_concentration(species_name, point_value)
         if active_overrides:
             point_model.save_concentrations()
         point_model.reset()
@@ -2444,13 +2449,20 @@ class BngsimModel(NetModel):
             # "dose*(NA*Vecf)")) is titrated per point. Species NOT named here
             # keep their carried snapshot value (the pre-equilibrated state).
             for species_name, expr in overrides.items():
+                # Logged and skipped before #1051, which left the species at its carried value.
                 try:
-                    point_model.set_concentration(
-                        species_name, _eval_model_expression(expr, point_model))
-                except Exception:
-                    logger.warning(
-                        "BngsimModel: scan on_point setConcentration(%s, %s) failed",
-                        species_name, expr)
+                    value = _eval_model_expression(expr, point_model)
+                except ValueError as exc:
+                    raise _bngl_failure(
+                        exc, 'Model %s: at a parameter_scan point, setConcentration("%s", "%s") '
+                        'cannot be evaluated: %s' % (self.name, species_name, expr, exc)) from exc
+                try:
+                    point_model.set_concentration(species_name, value)
+                except Exception as exc:
+                    raise PybnfError(
+                        'Model %s: at a parameter_scan point, bngsim did not accept '
+                        'setConcentration("%s", "%s"): %s'
+                        % (self.name, species_name, expr, exc)) from exc
 
         n_points = len(s.sample_times) if s.sample_times is not None else 2
         scan_kwargs = dict(

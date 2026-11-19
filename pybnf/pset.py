@@ -79,30 +79,64 @@ def _strip_action_line_index(text):
     return _ACTION_LINE_INDEX.sub('', text, count=1)
 
 
-# A quoted string in an action statement: BNG2.pl reads one as BNGL text.
+# A quoted string in an action statement.
 _QUOTED_TEXT = re.compile(r'"[^"]*"|\'[^\']*\'')
+# A function call where an argument stands: after ``=>``, a comma, an opening parenthesis or an
+# arithmetic operator, in a statement whose quoted strings have been blanked.
+_UNQUOTED_CALL = re.compile(r'(?:=>|[,(+\-*/])\s*([A-Za-z_]\w*)\s*\(')
+# What precedes a quoted string that BNG2.pl evaluates as BNGL arithmetic: the value of
+# setParameter, setConcentration or addConcentration, or a t_start or t_end setting. BNG2.pl
+# hands every other quoted setting on as text (#1051).
+_EVALUATED_SLOT = re.compile(
+    r'(?:^\s*(?:setParameter|setConcentration|addConcentration)\s*\(\s*'
+    r'(?:"[^"]*"|\'[^\']*\')\s*,\s*|\bt_(?:start|end)\s*=>\s*)$')
 
 
-def _refuse_unquoted_power(statement, line_number, model_file):
-    """Refuse an action whose unquoted arguments hold ``^`` or ``**``.
+def _refuse_unreadable_action_math(statement, line_number, model_file):
+    """Refuse action arithmetic that BNG2.pl does not read as BNGL arithmetic.
 
-    BNG2.pl runs an action as Perl. A quoted argument is BNGL text, which BNG2.pl evaluates as
-    BNGL arithmetic, so ``"10^3"`` is 1000. An unquoted one is Perl arithmetic, where ``^`` is
-    bitwise exclusive or: ``10^3`` is 9 and ``10^-2`` is about 1.8e19, with no error, on BNG2.pl
-    and on any backend that copies it. ``**`` is a power in Perl but groups from the right, so
-    ``2**3**2`` is 512 there and 64 in BNGL. No author means either, so the model is refused,
-    on every backend, rather than run with a number nobody wrote.
+    BNG2.pl runs an action as Perl. It evaluates a quoted string as BNGL arithmetic in the
+    value of ``setParameter``, ``setConcentration`` and ``addConcentration`` and in ``t_start``
+    and ``t_end``, so ``"10^3"`` is 1000 there. Everything else is read differently, with no
+    error, on BNG2.pl and on any backend that copies it:
+
+    * an unquoted argument is Perl arithmetic, where ``^`` is bitwise exclusive or (``10^3``
+      is 9) and ``log`` and ``int`` are Perl's functions;
+    * a quoted setting such as ``atol=>"10^-10"`` is passed to run_network as text, which reads
+      it only up to the ``^``, as 10;
+    * ``**`` is a power to BNG2.pl's arithmetic, but run_network and bngsim reject it in the
+      network file BNG2.pl writes.
+
+    No author means any of these, and none occurs in the 1,420 models of the test corpora, so
+    the model is refused, on every backend, with the fix in the message.
     """
-    if '^' not in statement and '**' not in statement:
+    if '^' not in statement and '*' not in statement and '(' not in statement:
         return
-    bare = _QUOTED_TEXT.sub('', statement)
-    if '^' in bare or '**' in bare:
+    bare = _QUOTED_TEXT.sub('""', statement)
+    call = _UNQUOTED_CALL.search(bare)
+    problem = None
+    if '**' in statement:
+        problem = ('uses **, which BNG2.pl reads as a power but run_network and bngsim reject '
+                   'in the network file BNG2.pl writes. Write ^, inside quotes')
+    elif '^' in bare:
+        problem = ('has an unquoted ^. BNG2.pl runs an unquoted argument as Perl, where ^ is '
+                   'bitwise exclusive or, so 10^3 is 9 there')
+    elif call is not None:
+        problem = ('calls %s() in an unquoted argument. BNG2.pl runs that as Perl, whose '
+                   'functions are not BNGL\'s (log is the natural logarithm, int truncates)'
+                   % call.group(1))
+    else:
+        for quoted in _QUOTED_TEXT.finditer(statement):
+            if '^' in quoted.group() and not _EVALUATED_SLOT.search(statement[:quoted.start()]):
+                problem = ('has a ^ in a quoted setting that BNG2.pl does not evaluate. It hands '
+                           'the text to run_network, which reads "10^-10" as 10')
+                break
+    if problem is not None:
         raise ModelError(
-            "The action on line %d of %s, %s, has an unquoted ^ or **. BNG2.pl runs an "
-            "unquoted action argument as Perl, where ^ is bitwise exclusive or, so 10^3 is 9 "
-            "there, and where ** groups differently from BNGL. Put the expression in quotes, "
-            "as in \"10^3\", so that it is read as BNGL arithmetic, or write the number, as "
-            "in 1e3." % (line_number, model_file, ' '.join(statement.split())))
+            "The action on line %d of %s, %s, %s. Quote a BNGL expression only in the value of "
+            "setParameter, setConcentration or addConcentration, or in t_start or t_end, where "
+            "BNG2.pl evaluates it, or write the number, as in 1e3."
+            % (line_number, model_file, ' '.join(statement.split()), problem))
 
 
 # The directives an edition-2 model may carry, as the one call a line holds (#969).
@@ -882,7 +916,7 @@ class BNGLModel(Model):
             statement = line.strip()
             if in_action_block or in_no_block or in_protocol_block:
                 statement = _strip_action_line_index(statement)
-                _refuse_unquoted_power(statement, min(indices) + 1, bngl_file)
+                _refuse_unreadable_action_math(statement, min(indices) + 1, bngl_file)
 
             # Make sure setOption (if present) doesn't get passed to the actions block
             if re.match(r'(setOption|setModelName|substanceUnits|version)', statement):

@@ -225,8 +225,12 @@ def differentiate(node, target):
 
 # --- front ends ------------------------------------------------------------------- #
 def from_python_expression(text):
-    """Parse a BNGL/.net arithmetic expression (Python-compatible, as PyBNF already
-    evaluates it) into a tree. Raises :class:`NotDifferentiable` outside the grammar."""
+    """Parse a .net or action arithmetic expression into a tree, with Python's grammar.
+    Raises :class:`NotDifferentiable` outside it. ``^``, BNGL's power, is not in it, so an
+    expression with ``^`` is refused rather than read as Python's exclusive or. ``**``, which
+    Python groups from the right and BNGL from the left, never reaches here: run_network and
+    bngsim reject it in a network file, and a model loads only without it in its actions
+    (#1051)."""
     try:
         tree = ast.parse(str(text).strip(), mode='eval').body
     except SyntaxError as e:

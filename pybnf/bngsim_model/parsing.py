@@ -256,11 +256,18 @@ def _snapshot_label(action_line):
 
 
 def _parse_set_concentration_nf(action_line):
-    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None."""
+    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None.
+
+    The whole quoted value is the expression. The pattern used to stop at the first space or
+    closing parenthesis, so "2 * 10^3" did not match at all (and the network-free bridge then
+    skipped the action at debug level) and "N0*(1+1)" was cut to "N0*(1+1" (#1051).
+    """
     match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*["\']?([^"\')\s]+)["\']?\s*\)',
-        action_line,
+        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*'
+        r'(?:"([^"]*)"|\'([^\']*)\'|([^"\']+?))\s*\)\s*;?\s*$',
+        action_line.split('#', 1)[0],
     )
     if match:
-        return match.group(1), match.group(2)
+        expr = next(g for g in match.groups()[1:] if g is not None)
+        return match.group(1), expr.strip()
     return None

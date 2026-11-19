@@ -22,17 +22,18 @@ from ..printing import PybnfError
 from ..pset import FreeParameter, PSet
 
 
-def _bngl_value(text, symbols=None):
+def _bngl_value(text, symbols=None, source='bngl'):
     """``text`` evaluated as BNGL arithmetic against ``symbols`` (name -> number).
 
     BNGL, not Python: ``^`` is a power and groups from the left, ``ln`` is the natural
     logarithm, ``_pi()`` and ``_e()`` are the constants, and ``rint`` rounds half up. A name
     BNGL does not have (``log``, ``pow``, ``floor``, ``pi``) is an error, as it is in BNG2.pl.
-    So is a minus sign directly before a power, which BioNetGen itself reads two ways (see
-    :func:`pybnf._bngl_expr.evaluate_expression`). Raises :class:`BnglExpressionError`, a
-    ``ValueError``.
+    ``source`` is ``'bngl'`` for model and action text and ``'network'`` for text read from a
+    network file. Each refuses the forms BioNetGen's simulators read differently from BNGL
+    (see :func:`pybnf._bngl_expr.evaluate_expression`), such as ``-2^2``. Raises
+    :class:`BnglExpressionError`, a ``ValueError``.
     """
-    return evaluate_expression(text, dict(symbols or {}), refuse_signed_power=True)
+    return evaluate_expression(text, dict(symbols or {}), source=source)
 
 
 def _bngl_failure(exc, message):
@@ -54,16 +55,26 @@ def _eval_numeric(expr_str, extra_ns=None):
     """A numeric action argument (``setParameter``'s value, ``t_end=>...``) as a number.
 
     Surrounding quotes are removed and the text is read as BNGL arithmetic, which is how
-    BNG2.pl reads a quoted argument. An unquoted argument is Perl to BNG2.pl, and the one
-    place Perl and BNGL disagree on numbers (``^``, which is exclusive or in Perl) is refused
-    when the model loads (:class:`pybnf.pset.BNGLModel`), so it never reaches here.
+    BNG2.pl reads a quoted value of ``setParameter``, ``setConcentration``,
+    ``addConcentration``, ``t_start`` and ``t_end``. An unquoted argument is Perl to BNG2.pl,
+    where ``^`` is exclusive or and ``log`` and ``int`` are Perl's functions. So when the model
+    loads, :class:`pybnf.pset.BNGLModel` refuses an unquoted ``^``, ``**`` or function call,
+    and a quoted ``^`` anywhere BNG2.pl does not evaluate it. What reaches here is either
+    plain arithmetic, which Perl and BNGL read alike, or a quoted BNGL expression.
     """
     text = expr_str.strip().strip('"').strip("'")
     try:
         return float(text)
     except (ValueError, TypeError):
         pass
-    return _bngl_value(text, extra_ns)
+    try:
+        return _bngl_value(text, extra_ns)
+    except BnglExpressionError as exc:
+        # A PybnfError ends the run with the reason. A plain error here was scored as one
+        # failed simulation per job, with "unknown error", and the fit went on.
+        raise _bngl_failure(
+            exc, 'The action argument %s cannot be evaluated: %s' % (expr_str.strip(), exc)
+        ) from exc
 
 
 def _model_param_values(model):
