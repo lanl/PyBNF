@@ -45,7 +45,8 @@ from .parsing import (
     _snapshot_label,
 )
 from .expressions import (
-    _build_safe_eval_namespace,
+    _bngl_failure,
+    _bngl_value,
     _eval_numeric,
     _eval_model_expression,
     _build_mutant_param_set,
@@ -400,6 +401,35 @@ def _attach_codegen(engine_model):
                or getattr(engine_model, '_codegen_c_source', '') or '')
 
 
+# One token of a stop condition that bngsim (Python) and run_network (BNGL) read alike.
+_STOP_TOKEN = re.compile(
+    r'\s*(?:(?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?P<name>[A-Za-z_]\w*)'
+    r'|(?P<cmp><=|>=|==|!=|<|>)|(?P<op>[-+*/()]))')
+
+
+def _stop_condition_problem(condition, observables):
+    """Why bngsim would read ``condition`` differently from run_network, or ``None``."""
+    pos, comparisons = 0, 0
+    while condition[pos:].strip():
+        match = _STOP_TOKEN.match(condition, pos)
+        if match is None:
+            return 'uses %r, which bngsim reads as Python' % condition[pos:].strip()[:12]
+        pos = match.end()
+        if match.group('num') is not None and re.match(r'0\d', match.group('num')):
+            return 'writes %s with a leading zero, which Python cannot read' % match.group('num')
+        name = match.group('name')
+        if name is not None and name not in observables:
+            return 'reads %s, which is not an observable' % name
+        if match.group('cmp') is not None:
+            comparisons += 1
+    if comparisons > 1:
+        return 'chains comparisons, which Python and BNGL group differently'
+    return None
+
+
+# The species a setConcentration or addConcentration action names (its first, quoted argument).
+_SPECIES_ACTION = re.compile(r'\s*(setConcentration|addConcentration)\s*\(\s*["\']([^"\']+)["\']')
+
 class BngsimModel(NetModel):
     """In-process simulation model using the optional bngsim engine."""
 
@@ -476,10 +506,70 @@ class BngsimModel(NetModel):
             self._net_path = nf
             self._engine_model = _runtime.bngsim.Model.from_net(nf)
             self._codegen_so = _attach_codegen(self._engine_model)
+            self._refuse_unmatched_species(list(acts) + list(self._protocol))
+            self._refuse_unreadable_stop_conditions(list(acts) + list(self._protocol))
         elif ls is not None:
             raise ValueError('BngsimModel requires nf so the .net path is stable')
         else:
             raise ValueError('Must provide nf')
+
+    def _refuse_unmatched_species(self, action_lines):
+        """Refuse a setConcentration or addConcentration whose species bngsim cannot find.
+
+        BNG2.pl finds the species such an action names as a pattern, so ``A(y,x)`` finds
+        ``A(x,y)`` and ``EGF`` finds ``EGF()``. bngsim matches the name exactly. Such an action
+        used to be logged as a warning and skipped when it ran, so the model ran from the wrong
+        amounts with no error (#1051). Refusing it here, when the bridge is built, sends the
+        model to BNG2.pl under ``bngl_backend = auto``, and stops the run under an explicit
+        ``bngl_backend = bngsim``.
+        """
+        names = set(self._engine_model.species_names)
+        for line in action_lines:
+            text = _collapse_action_line_continuations(str(line)).strip()
+            match = _SPECIES_ACTION.match(text)
+            if match is None:
+                continue
+            # bngsim lists a fixed species without the $ the network file writes, and accepts
+            # it either way.
+            species = match.group(2)
+            if species in names or species.replace('$', '', 1) in names:
+                continue
+            raise PybnfError(
+                'Model %s: %s names the species %s, which is not in the network under that name. '
+                'BNG2.pl matches it as a pattern, but bngsim needs the name exactly as the '
+                'network file writes it. Write the species as it appears in the .net file, or '
+                'run the model with bngl_backend = bionetgen.' % (self.name, text, species))
+
+    def _refuse_unreadable_stop_conditions(self, action_lines):
+        """Refuse a stop_if that bngsim would not read as run_network reads it.
+
+        run_network evaluates a stop condition as an expression over the model (``^`` a power,
+        parameters and functions available). bngsim compiles it as Python and binds only the
+        observables, species and ``time`` at each row; a row it cannot evaluate is logged at
+        debug level and passed over. So ``Atot<exp(3.45)`` or ``Atot<N0/3`` never fired, and
+        the run went on to t_end with no error (#1051). Only a condition over observables,
+        numbers, arithmetic and one comparison reads the same in both (BNG2.pl refuses
+        ``time``), so anything else is refused here: under ``bngl_backend = auto`` the model
+        then runs on BNG2.pl.
+        """
+        observables = set(self._engine_model.observable_names)
+        for line in action_lines:
+            text = _collapse_action_line_continuations(str(line)).strip()
+            for parse in (_parse_simulate_action, _parse_parameter_scan_action,
+                          _parse_bifurcate_action):
+                params = parse(text)
+                if params is None or params.get('stop_if') is None:
+                    continue
+                condition = str(params['stop_if']).strip().strip('"').strip("'")
+                problem = _stop_condition_problem(condition, observables)
+                if problem is not None:
+                    raise PybnfError(
+                        'Model %s: the stop_if condition "%s" %s. bngsim evaluates a stop '
+                        'condition over the observables alone, as Python, and passes over a row '
+                        'it cannot evaluate, so the run would not stop where BNG2.pl stops it.'
+                        % (self.name, condition, problem),
+                        hint='Write the condition over observables and numbers, or run the '
+                             'model with bngl_backend = bionetgen.')
 
     def copy_with_param_set(self, pset):
         """Return a shallow copy with a cloned engine model and new PSet."""
@@ -1494,22 +1584,24 @@ class BngsimModel(NetModel):
                 # is declared rather than re-installed (#538). No-op off the gradient path.
                 carried = self._capture_carried_sensitivity_seed(model)
                 own_row = self._capture_own_sensitivity_row(species_name, carried)
-                applied = False
+                # A value that could not be computed or set used to be logged as a warning and
+                # the action skipped, so the species kept its old amount with no error (#1051).
                 try:
                     conc_value = _eval_model_expression(conc_expr, model)
+                except ValueError as exc:
+                    raise _bngl_failure(
+                        exc, 'Model %s: setConcentration("%s", "%s") cannot be evaluated: %s'
+                        % (self.name, species_name, conc_expr, exc)) from exc
+                try:
                     model.set_concentration(species_name, conc_value)
-                    concentration_overrides[species_name] = conc_expr
-                    applied = True
-                except Exception:
-                    logger.warning(
-                        "setConcentration(%s, %s) failed",
-                        species_name,
-                        conc_expr,
-                    )
-                if applied:
-                    self._restore_carried_sensitivity_seed(
-                        model, carried, species_name, conc_expr, own_row=own_row)
-                    state.assigned.add(species_name)
+                except Exception as exc:
+                    raise PybnfError(
+                        'Model %s: bngsim did not accept setConcentration("%s", "%s"): %s'
+                        % (self.name, species_name, conc_expr, exc)) from exc
+                concentration_overrides[species_name] = conc_expr
+                self._restore_carried_sensitivity_seed(
+                    model, carried, species_name, conc_expr, own_row=own_row)
+                state.assigned.add(species_name)
                 continue
 
             ac = _parse_add_concentration(line)
@@ -2019,24 +2111,22 @@ class BngsimModel(NetModel):
             except Exception:
                 pass
 
-        ns = _build_safe_eval_namespace(param_values)
         for species_name, expr_text in self._net_species_initializers:
+            # An initial amount that cannot be re-derived, or set, used to be logged at debug
+            # level and skipped, which left the species at its value from the previous
+            # parameters: a wrong starting state with no error.
             try:
-                value = float(eval(expr_text, ns))  # noqa: S307
-            except Exception:
-                logger.debug(
-                    "BngsimModel: could not re-evaluate initial concentration %s = %r",
-                    species_name,
-                    expr_text,
-                )
-                continue
+                value = _bngl_value(expr_text, param_values, source='network')
+            except ValueError as exc:
+                raise _bngl_failure(
+                    exc, "Model %s: the initial amount of %s, %r, cannot be evaluated from the "
+                    "current parameters: %s" % (self.name, species_name, expr_text, exc)) from exc
             try:
                 model.set_concentration(species_name, value)
-            except Exception:
-                logger.debug(
-                    "BngsimModel: could not set initial concentration for %s",
-                    species_name,
-                )
+            except Exception as exc:
+                raise PybnfError(
+                    "Model %s: bngsim did not accept the initial amount %g for %s: %s"
+                    % (self.name, value, species_name, exc)) from exc
         model.save_concentrations()
         return rows
 
@@ -2057,10 +2147,13 @@ class BngsimModel(NetModel):
         seed = self._sync_species_initial_concentrations(point_model, per_action=True)
         active_overrides = concentration_overrides or {}
         for species_name, expr in active_overrides.items():
-            point_model.set_concentration(
-                species_name,
-                _eval_model_expression(expr, point_model),
-            )
+            try:
+                point_value = _eval_model_expression(expr, point_model)
+            except ValueError as exc:
+                raise _bngl_failure(
+                    exc, 'Model %s: at a parameter_scan point, setConcentration("%s", "%s") '
+                    'cannot be evaluated: %s' % (self.name, species_name, expr, exc)) from exc
+            point_model.set_concentration(species_name, point_value)
         if active_overrides:
             point_model.save_concentrations()
         point_model.reset()
@@ -2445,13 +2538,20 @@ class BngsimModel(NetModel):
             # "dose*(NA*Vecf)")) is titrated per point. Species NOT named here
             # keep their carried snapshot value (the pre-equilibrated state).
             for species_name, expr in overrides.items():
+                # Logged and skipped before #1051, which left the species at its carried value.
                 try:
-                    point_model.set_concentration(
-                        species_name, _eval_model_expression(expr, point_model))
-                except Exception:
-                    logger.warning(
-                        "BngsimModel: scan on_point setConcentration(%s, %s) failed",
-                        species_name, expr)
+                    value = _eval_model_expression(expr, point_model)
+                except ValueError as exc:
+                    raise _bngl_failure(
+                        exc, 'Model %s: at a parameter_scan point, setConcentration("%s", "%s") '
+                        'cannot be evaluated: %s' % (self.name, species_name, expr, exc)) from exc
+                try:
+                    point_model.set_concentration(species_name, value)
+                except Exception as exc:
+                    raise PybnfError(
+                        'Model %s: at a parameter_scan point, bngsim did not accept '
+                        'setConcentration("%s", "%s"): %s'
+                        % (self.name, species_name, expr, exc)) from exc
 
         n_points = len(s.sample_times) if s.sample_times is not None else 2
         scan_kwargs = dict(

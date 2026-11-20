@@ -158,17 +158,15 @@ def test_rint_matches_bng_floor_half_up(x):
     """BNG defines rint as floor(x + 0.5) (round half toward +inf; see
     BioNetGen Perl2/Expression.pm), so PyBNF's expression evaluation must do the
     same to stay faithful to the engine."""
-    ns = bngsim_model._build_safe_eval_namespace()
-    assert ns['rint'](x) == math.floor(x + 0.5)
+    assert bngsim_model._eval_numeric('rint(x)', {'x': x}) == math.floor(x + 0.5)
 
 
 def test_rint_diverges_from_python_round_on_ties():
     """Pin the concrete divergence from Python's round() (round half to even),
     which is the regression this guards against."""
-    ns = bngsim_model._build_safe_eval_namespace()
-    assert ns['rint'](2.5) == 3   # round(2.5) == 2
-    assert ns['rint'](0.5) == 1   # round(0.5) == 0
-    assert ns['rint'](-1.5) == -1  # round(-1.5) == -2
+    assert bngsim_model._eval_numeric('rint(2.5)') == 3   # round(2.5) == 2
+    assert bngsim_model._eval_numeric('rint(0.5)') == 1   # round(0.5) == 0
+    assert bngsim_model._eval_numeric('rint(x)', {'x': -1.5}) == -1  # round(-1.5) == -2
 
 
 # --------------------------------------------------------------------------- #

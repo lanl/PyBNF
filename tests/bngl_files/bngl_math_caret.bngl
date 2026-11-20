@@ -1,0 +1,43 @@
+# BNGL arithmetic that Python's eval reads differently: ^ is a power here and bitwise XOR in
+# Python, ^ groups from the left, and ln and _e() are BNGL's names. BNG2.pl 2.9.3 wrote
+# bngl_math_caret.xml from this file, and the value it computed for each parameter is the
+# oracle in tests/test_bngl_math_eval.py. k is 10^0 = 1, which Python reads as 10.
+begin model
+
+begin parameters
+  p_exp     2
+  a_pow     10^5
+  a_neg     10^-12
+  a_scaled  3*10^-4
+  a_tiny    2^-126
+  a_spaced  25 * 10 ^ -9
+  a_chain   2^3^2
+  a_ref     10^p_exp
+  a_rint    rint(2.5)
+  a_ln      ln(_e())
+  N0        1000
+  k         10^0
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  N0
+end seed species
+
+begin observables
+  Molecules Atot A()
+end observables
+
+begin reaction rules
+  A() -> 0  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  writeXML()
+end actions

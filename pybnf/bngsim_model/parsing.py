@@ -112,7 +112,12 @@ def _parse_action_dict(action_line, action_name, key_aliases=None):
             )
             continue
         key_text, value_text = item.split('=>', 1)
-        key = aliases.get(key_text.strip(), key_text.strip())
+        # Perl, and so BNG2.pl, reads "n_steps"=>4 as n_steps=>4. A quoted key used to keep its
+        # quotes here, so the setting was silently ignored (#1051).
+        key_text = key_text.strip()
+        if len(key_text) >= 2 and key_text[0] == key_text[-1] and key_text[0] in ('"', "'"):
+            key_text = key_text[1:-1].strip()
+        key = aliases.get(key_text, key_text)
         params[key] = _parse_action_value(value_text)
     return params
 
@@ -256,11 +261,18 @@ def _snapshot_label(action_line):
 
 
 def _parse_set_concentration_nf(action_line):
-    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None."""
+    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None.
+
+    The whole quoted value is the expression. The pattern used to stop at the first space or
+    closing parenthesis, so "2 * 10^3" did not match at all (and the network-free bridge then
+    skipped the action at debug level) and "N0*(1+1)" was cut to "N0*(1+1" (#1051).
+    """
     match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*["\']?([^"\')\s]+)["\']?\s*\)',
-        action_line,
+        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*'
+        r'(?:"([^"]*)"|\'([^\']*)\'|([^"\']+?))\s*\)\s*;?\s*$',
+        action_line.split('#', 1)[0],
     )
     if match:
-        return match.group(1), match.group(2)
+        expr = next(g for g in match.groups()[1:] if g is not None)
+        return match.group(1), expr.strip()
     return None

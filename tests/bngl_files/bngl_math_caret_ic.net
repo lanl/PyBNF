@@ -1,0 +1,19 @@
+# Written by hand, in the format BioNetGen writes, with initial amounts given inline. BNG2.pl
+# 2.9.3 would write each of these as a named _InitialConc parameter instead, but an older or
+# hand-made network file can carry the expression itself. BNGL reads 10^R as a power (100 at
+# R = 2) and 2^3 as 8. Python's eval read them as 10 XOR R and 2 XOR 3 = 1.
+begin parameters
+    1 R    2  # Constant
+    2 k    0.1  # Constant
+end parameters
+begin species
+    1 A() 10^R
+    2 B() 2^3
+end species
+begin reactions
+    1 1 0 k #_R1
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+end groups

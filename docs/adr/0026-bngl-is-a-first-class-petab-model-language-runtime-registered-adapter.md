@@ -68,7 +68,7 @@ in BNGL:
 
 > **Superseded by issue #666 (PR #673):** both rows now *evaluate* an expression RHS.
 > A parameters block is arithmetic over other parameters, so resolving it needs no
-> network generation — see `pybnf.petab._bngl_expr`. `get_parameter_value` returns the
+> network generation — see `pybnf.petab._bngl_expr` (now `pybnf._bngl_expr`, #1051). `get_parameter_value` returns the
 > number (or a `ValueError` naming why it could not be computed), and
 > `get_free_parameter_ids_with_values()` returns every parameter it can resolve,
 > warning about the rest instead of dropping them in silence.

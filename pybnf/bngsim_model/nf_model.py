@@ -35,6 +35,8 @@ from .parsing import (
     _snapshot_label,
 )
 from .expressions import (
+    _bngl_failure,
+    _bngl_value,
     _build_mutant_param_set,
     _evaluate_bngl_params,
     _parse_bngl_param_block,
@@ -520,17 +522,24 @@ class BngsimNfModel(Model):
         if expr_text in current_param_overrides:
             count = int(round(current_param_overrides[expr_text]))
         else:
+            # BNGL arithmetic over the current parameters ("2*10^3", "L0*f"), as BNG2.pl reads a
+            # quoted argument. A bare name the parameters block does not hold may still be a
+            # session parameter. Anything else used to log a warning and skip the action,
+            # which left the species at its old count with no error.
             try:
-                count = int(round(float(expr_text)))
-            except ValueError:
-                try:
-                    count = int(round(sess.nfsim.get_parameter(expr_text)))
-                except Exception:
-                    logger.warning(
-                        "BngsimNfModel: cannot evaluate '%s' for setConcentration",
-                        expr_text,
-                    )
-                    return
+                count = int(round(_bngl_value(expr_text, current_param_overrides)))
+            except ValueError as exc:
+                value = None
+                if re.fullmatch(r'[A-Za-z_]\w*', expr_text):
+                    try:
+                        value = float(sess.nfsim.get_parameter(expr_text))
+                    except Exception:
+                        value = None
+                if value is None:
+                    raise _bngl_failure(
+                        exc, 'Model %s: setConcentration("%s", "%s") cannot be evaluated: %s'
+                        % (self.name, species_pattern, expr_text, exc)) from exc
+                count = int(round(value))
 
         mol_type = species_pattern.split('(')[0]
         current = sess.nfsim.get_molecule_count(mol_type)

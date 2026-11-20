@@ -21,7 +21,7 @@ import subprocess
 import pytest
 
 from pybnf.petab._bngl import parse_model
-from pybnf.petab._bngl_expr import (
+from pybnf._bngl_expr import (
     BnglExpressionError,
     CircularParameterError,
     evaluate_expression,

@@ -1,35 +1,80 @@
 """Pure expression / parameter evaluation for the bngsim_model package.
 
-Safe numeric/model-expression evaluation (no builtins), BNGL parameter-block and
-.net species-initializer parsing, and mutant param-set construction. No simulator
-dependency, so this module is importable and unit-testable on the bngsim-less CI
-tier (the safe-eval namespace is the ROB-5 rint home).
+BNGL math the bridges compute themselves (action arguments, the network-free parameters
+block, re-derived initial amounts), BNGL parameter-block and .net species-initializer
+parsing, and mutant param-set construction. No simulator dependency, so this module is
+importable and unit-testable on the bngsim-less CI tier.
+
+All of that math goes through :func:`_bngl_value`, which reads it as BioNetGen does. It used
+to go through Python's ``eval``, where ``^`` is bitwise exclusive or: ``10^5`` was 15 and
+``10^-12`` was -2, with no error.
 """
 
 
-import math
 import re
 
 import numpy as np
 
+from .._bngl_expr import BnglArithmeticError, BnglExpressionError, evaluate_expression
 from ..gradient import derivative
 from ..gradient.routing import IC, SeedTerm
 from ..printing import PybnfError
 from ..pset import FreeParameter, PSet
 
 
-def _eval_numeric(expr_str, extra_ns=None):
-    """Safely evaluate a numeric expression from BNGL action args.
+def _bngl_value(text, symbols=None, source='bngl'):
+    """``text`` evaluated as BNGL arithmetic against ``symbols`` (name -> number).
 
-    Handles plain numbers, arithmetic expressions, and standard math functions.
+    BNGL, not Python: ``^`` is a power and groups from the left, ``ln`` is the natural
+    logarithm, ``_pi()`` and ``_e()`` are the constants, and ``rint`` rounds half up. A name
+    BNGL does not have (``log``, ``pow``, ``floor``, ``pi``) is an error, as it is in BNG2.pl.
+    ``source`` is ``'bngl'`` for model and action text and ``'network'`` for text read from a
+    network file. Each refuses the forms BioNetGen's simulators read differently from BNGL
+    (see :func:`pybnf._bngl_expr.evaluate_expression`), such as ``-2^2``. Raises
+    :class:`BnglExpressionError`, a ``ValueError``.
+    """
+    return evaluate_expression(text, dict(symbols or {}), source=source)
+
+
+def _bngl_failure(exc, message):
+    """The error to raise when model math the bridge evaluates during a simulation fails.
+
+    A value that is undefined at this parameter set (a division by zero, a power or function
+    outside its domain) is one failed simulation, as an integrator failure is. Anything else
+    (an unknown name, a syntax error, a minus sign before a power) is a property of the model
+    that every evaluation will hit, so it is a :class:`PybnfError`, which ends the run with
+    the reason instead of scoring each job as a failure.
+    """
+    from ..pset import FailedSimulationError
+    if isinstance(exc, BnglArithmeticError):
+        return FailedSimulationError(message)
+    return PybnfError(message)
+
+
+def _eval_numeric(expr_str, extra_ns=None):
+    """A numeric action argument (``setParameter``'s value, ``t_end=>...``) as a number.
+
+    Surrounding quotes are removed and the text is read as BNGL arithmetic, which is how
+    BNG2.pl reads a quoted value of ``setParameter``, ``setConcentration``,
+    ``addConcentration``, ``t_start`` and ``t_end``. An unquoted argument is Perl to BNG2.pl,
+    where ``^`` is exclusive or and ``log`` and ``int`` are Perl's functions. So when the model
+    loads, :class:`pybnf.pset.BNGLModel` refuses an unquoted ``^``, ``**`` or function call,
+    and a quoted ``^`` anywhere BNG2.pl does not evaluate it. What reaches here is either
+    plain arithmetic, which Perl and BNGL read alike, or a quoted BNGL expression.
     """
     text = expr_str.strip().strip('"').strip("'")
     try:
         return float(text)
     except (ValueError, TypeError):
         pass
-    ns = _build_safe_eval_namespace(extra_ns)
-    return float(eval(text, ns))  # noqa: S307
+    try:
+        return _bngl_value(text, extra_ns)
+    except BnglExpressionError as exc:
+        # A PybnfError ends the run with the reason. A plain error here was scored as one
+        # failed simulation per job, with "unknown error", and the fit went on.
+        raise _bngl_failure(
+            exc, 'The action argument %s cannot be evaluated: %s' % (expr_str.strip(), exc)
+        ) from exc
 
 
 def _model_param_values(model):
@@ -45,8 +90,7 @@ def _model_param_values(model):
 
 def _eval_model_expression(expr, model):
     """Evaluate a BNGL action expression against current model parameters."""
-    ns = _build_safe_eval_namespace(_model_param_values(model))
-    return float(eval(expr, ns))  # noqa: S307
+    return _bngl_value(expr, _model_param_values(model))
 
 
 def _nominal_param_value(engine_model, name):
@@ -109,54 +153,6 @@ def _build_mutant_param_set(param_set, mut, engine_model=None):
         for pname in params
     ]
     return PSet(mut_param_list)
-
-
-# The names in the namespace below that BNG2.pl refuses as a parameter name ("Cannot use
-# built-in function name 'exp' as a parameter name", BioNetGen 2.9.2). No model BNG2.pl accepts
-# defines one, so each always means the built-in. The namespace's other names -- e, pi, log,
-# atan2, ceil, floor, pow -- are ordinary parameter names to BNG2.pl (its constants are _e and
-# _pi), and where a model defines one, BNG2.pl and bngsim read the parameter, so it wins here too.
-_BNG_RESERVED_EVAL_NAMES = frozenset({
-    'exp', 'log10', 'log2', 'sqrt', 'abs', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
-    'min', 'max', 'if', 'rint',
-})
-
-
-def _build_safe_eval_namespace(seed=None):
-    """Build a safe expression-evaluation namespace for .net math."""
-    ns = {
-        'exp': math.exp,
-        'log': math.log,
-        'log10': math.log10,
-        'log2': math.log2,
-        'sqrt': math.sqrt,
-        'abs': abs,
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'asin': math.asin,
-        'acos': math.acos,
-        'atan': math.atan,
-        'atan2': math.atan2,
-        'pi': math.pi,
-        'e': math.e,
-        'ceil': math.ceil,
-        'floor': math.floor,
-        'min': min,
-        'max': max,
-        'pow': pow,
-        'if': lambda cond, t, f: t if cond else f,
-        # BNG defines rint as floor(x + 0.5) (round half toward +inf; see
-        # BioNetGen Perl2/Expression.pm), NOT Python's round() which is
-        # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
-        # so match BNG to keep PyBNF's expression evaluation faithful.
-        'rint': lambda x: math.floor(x + 0.5),
-    }
-    if seed:
-        ns.update((name, value) for name, value in seed.items()
-                  if name not in _BNG_RESERVED_EVAL_NAMES)
-    ns['__builtins__'] = {}
-    return ns
 
 
 def _parse_net_species_initializers(net_lines):
@@ -458,17 +454,15 @@ def _parse_bngl_param_block(model_lines):
 
 
 def _evaluate_bngl_params(param_exprs, input_overrides=None):
-    """Evaluate ordered BNGL parameter expressions top-to-bottom."""
+    """Evaluate ordered BNGL parameter expressions top-to-bottom, as BNGL arithmetic."""
     if input_overrides is None:
         input_overrides = {}
 
-    ns = _build_safe_eval_namespace()
-    # Seed the namespace with the input overrides (the PSet, keyed by free-
-    # parameter name) so free-parameter tokens embedded inside arithmetic
-    # expressions -- e.g. `kaf = kaf__FREE/(NA*Vo)` -- resolve correctly.
-    # The two fast-path branches below still short-circuit the whole-RHS and
-    # name-keyed cases, so behavior for `k_o = k_o__FREE` is unchanged.
-    ns.update({k: float(v) for k, v in input_overrides.items()})
+    # Seed the symbols with the input overrides (the PSet, keyed by free-parameter name) so
+    # free-parameter tokens embedded inside arithmetic expressions -- e.g.
+    # `kaf = kaf__FREE/(NA*Vo)` -- resolve correctly. The two fast-path branches below still
+    # short-circuit the whole-RHS and name-keyed cases, so `k_o = k_o__FREE` is unchanged.
+    symbols = {k: float(v) for k, v in input_overrides.items()}
     result = {}
 
     for name, expr in param_exprs:
@@ -478,18 +472,16 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
             value = float(input_overrides[name])
         else:
             try:
-                value = float(eval(expr, ns))  # noqa: S307
-            except Exception as exc:
-                # With the namespace seeded above, an unresolved name almost
-                # certainly indicates a real model/config error. Silently
-                # substituting 0.0 turns a missing parameter into a wrong
-                # answer (a zeroed rate constant), so fail loudly instead.
-                raise ValueError(
-                    f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
+                value = _bngl_value(expr, symbols)
+            except BnglExpressionError as exc:
+                # With the symbols seeded above, an unresolved name indicates a real model or
+                # config error. Silently substituting 0.0 turns a missing parameter into a
+                # wrong answer (a zeroed rate constant), so fail loudly (_bngl_failure).
+                raise _bngl_failure(
+                    exc, f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
-        if name not in _BNG_RESERVED_EVAL_NAMES:
-            ns[name] = value
+        symbols[name] = value
         result[name] = value
 
     return result

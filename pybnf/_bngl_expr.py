@@ -37,13 +37,14 @@ Expressions are therefore tokenized and parsed here rather than handed to
 ``eval``, which would import Python's precedence and operator meanings along
 with the obvious injection problem.
 
-This module is deliberately self-contained: stdlib only, and no imports from
-the rest of PyBNF, so that it can move to ``libpetab-python``. Its consumer, the
-local ``BnglModel`` adapter, was retired in #591 once petab 0.9.0 shipped the
-loader upstream, and petab's native ``BnglModel`` does not yet evaluate an
-expression-valued parameter (``get_parameter_value`` raises
-``NotImplementedError`` and ``get_free_parameter_ids_with_values`` skips it), so
-this evaluator is the staging copy for that upstream port (#666, #420 Step B).
+This is PyBNF's one evaluator for BNGL math that PyBNF computes itself rather
+than leaving to a simulator: the parameters block on the network-free bngsim
+bridge, quoted action arguments and ``simulate``/``parameter_scan`` settings,
+and the initial amounts the ``.net`` bridge re-derives. Those sites used to
+call Python's ``eval``, which read ``10^5`` as 15 and ``10^-12`` as -2. It is
+stdlib only, with no imports from the rest of PyBNF, so the network-free
+bridge can use it without pulling in the PEtab layer. (It began in
+``pybnf/petab/`` as #666's evaluator for PEtab parameter values.)
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ import math
 import re
 
 __all__ = [
+    "BnglArithmeticError",
     "BnglExpressionError",
     "CircularParameterError",
     "evaluate_expression",
@@ -62,6 +64,13 @@ __all__ = [
 
 class BnglExpressionError(ValueError):
     """A parameter expression could not be parsed or evaluated."""
+
+
+class BnglArithmeticError(BnglExpressionError):
+    """A well-formed expression whose value is undefined at these inputs: a division by zero,
+    or a power or function outside its domain. Unlike a syntax error or an unknown name, it
+    can depend on the parameter values, so a caller may treat it as one failed evaluation
+    rather than as a broken model."""
 
 
 class CircularParameterError(BnglExpressionError):
@@ -171,10 +180,12 @@ class _Parser:
     the left fold is what makes ``2^3^2`` come out as 64.
     """
 
-    def __init__(self, tokens: list[tuple[str, str]], text: str, lookup):
+    def __init__(self, tokens: list[tuple[str, str]], text: str, lookup,
+                 source: str | None = None):
         self._tokens = tokens
         self._text = text
         self._lookup = lookup
+        self._source = source
         self._pos = 0
 
     def parse(self) -> float:
@@ -249,7 +260,7 @@ class _Parser:
             elif self._accept("/"):
                 divisor = self._parse_power()
                 if divisor == 0:
-                    raise BnglExpressionError(f"Division by zero in {self._text!r}")
+                    raise BnglArithmeticError(f"Division by zero in {self._text!r}")
                 # True division throughout: BNGL has no integer division, and
                 # Python's / on two ints would still be float, but being
                 # explicit keeps that from depending on operand types.
@@ -260,23 +271,56 @@ class _Parser:
     def _parse_power(self) -> float:
         # Left associative, and a signed operand belongs to the base rather than
         # to the whole power: BNG2.pl gives -2^2 == 4 and 2^3^2 == 64.
-        value = self._parse_unary()
+        value = self._parse_power_operand(base=True)
+        chained = False
         while self._accept("^"):
-            exponent = self._parse_unary()
+            if chained and self._source == "network":
+                raise BnglExpressionError(
+                    f"{self._text!r}, read from a network file, chains powers without "
+                    "parentheses. run_network and bngsim, which simulate network files, group "
+                    "them from the right (2^3^2 is 512), and BNGL groups them from the left "
+                    "(64). Add parentheses, as BNG2.pl does when it writes one."
+                )
+            chained = True
+            exponent = self._parse_power_operand(base=False)
             try:
                 value = float(value ** exponent)
             except (ArithmeticError, ValueError) as e:
                 # 0^-1, an overflow, or a negative base raised to a fractional
                 # power (which Python answers with a complex number).
-                raise BnglExpressionError(
+                raise BnglArithmeticError(
                     f"Cannot raise {value!r} to the power {exponent!r} in "
                     f"{self._text!r}: {e}"
                 ) from e
             except TypeError as e:  # complex result from a negative fractional base
-                raise BnglExpressionError(
+                raise BnglArithmeticError(
                     f"Cannot raise {value!r} to the power {exponent!r} in "
                     f"{self._text!r}"
                 ) from e
+        return value
+
+    def _parse_power_operand(self, base: bool) -> float:
+        signed = self._peek() == ("op", "-")
+        literal = signed and self._pos + 1 < len(self._tokens) \
+            and self._tokens[self._pos + 1][0] == "number"
+        value = self._parse_unary()
+        if not signed or self._peek() != ("op", "^"):
+            return value
+        if self._source == "network":
+            raise BnglExpressionError(
+                f"{self._text!r}, read from a network file, puts a minus sign directly before "
+                "a power. run_network and bngsim, which simulate network files, read -2^2 as "
+                "-(2^2) = -4, and BNGL reads it as (-2)^2 = 4. Add parentheses, as BNG2.pl "
+                "does when it writes one."
+            )
+        if self._source == "bngl" and base and literal:
+            raise BnglExpressionError(
+                f"{self._text!r} raises a negative number to a power, which BioNetGen reads "
+                "two ways. BNG2.pl's arithmetic gives -2^2 as (-2)^2 = 4, but BNG2.pl copies "
+                "the text unchanged into the network file it writes, and run_network and "
+                "bngsim read it there as -(2^2) = -4. Add parentheses to say which is meant, "
+                "as in (-2)^2 or -(2^2)."
+            )
         return value
 
     def _parse_unary(self) -> float:
@@ -331,18 +375,35 @@ class _Parser:
                 f"Wrong number of arguments to {name!r} in {self._text!r}"
             ) from e
         except ArithmeticError as e:
-            raise BnglExpressionError(
+            raise BnglArithmeticError(
                 f"{name}() could not be evaluated in {self._text!r}: {e}"
             ) from e
         except ValueError as e:
-            raise BnglExpressionError(
+            raise BnglArithmeticError(
                 f"{name}() is undefined for its argument in {self._text!r}: {e}"
             ) from e
 
 
-def evaluate_expression(text: str, symbols: dict[str, float]) -> float:
-    """Evaluate one BNGL expression against already-resolved ``symbols``."""
-    return _Parser(_tokenize(text), text, lambda n: _resolve_known(n, symbols, text)).parse()
+def evaluate_expression(text: str, symbols: dict[str, float], *,
+                        source: str | None = None) -> float:
+    """Evaluate one BNGL expression against already-resolved ``symbols``.
+
+    The value is always BNG2.pl's arithmetic. ``source`` says where the text comes from, for a
+    caller computing a value a simulation will use, and refuses the forms that BioNetGen's
+    simulators read differently from that arithmetic:
+
+    * ``None``: no refusals (BNG2.pl's own reading, as the PEtab layer wants).
+    * ``"bngl"``: model or action text that BNG2.pl reads. BNG2.pl writes most expressions into
+      the network file with parentheses (``-a^2`` as ``(-a)^2``, ``2^3^2`` as ``(2^3)^2``), so
+      the simulators agree with it. A negative number as the base of a power is the exception:
+      ``-2^2`` is copied unchanged, and run_network and bngsim read it as ``-(2^2)``. It is
+      refused.
+    * ``"network"``: text read from a network file, which run_network and bngsim read with
+      their own grammar. A minus sign directly before a power, and a chain of powers without
+      parentheses, are refused, since BNG2.pl never writes either.
+    """
+    return _Parser(_tokenize(text), text, lambda n: _resolve_known(n, symbols, text),
+                   source).parse()
 
 
 def _resolve_known(name: str, symbols: dict[str, float], text: str) -> float:

@@ -1,9 +1,10 @@
 """Unit tests for pybnf.bngsim_model.expressions (pure expression/param eval).
 
-No bngsim wheel required, so these run on the bngsim-less CI tier. They pin the
-safe-eval namespace (the ROB-5 ``rint`` home and the no-builtins sandbox), the
+No bngsim wheel required, so these run on the bngsim-less CI tier. They pin BNGL
+evaluation of action arguments (the ROB-5 ``rint`` and no code execution), the
 top-to-bottom BNGL parameter evaluation with free-parameter overrides, and the
-BNGL/.net block parsers — none of which had direct coverage before #408.
+BNGL/.net block parsers — none of which had direct coverage before #408. BNG2.pl
+oracles for the arithmetic itself are in test_bngl_math_eval.py.
 """
 
 import math
@@ -11,6 +12,7 @@ import math
 import pytest
 
 from pybnf.bngsim_model import expressions
+from pybnf.printing import PybnfError
 from pybnf.gradient.routing import IC, SeedTerm
 
 
@@ -23,8 +25,8 @@ from pybnf.gradient.routing import IC, SeedTerm
         ('2 * 3 + 1', 7.0),
         ('sqrt(16)', 4.0),
         ('exp(0)', 1.0),
-        ('log(e)', 1.0),
-        ('pow(2, 10)', 1024.0),
+        ('ln(_e())', 1.0),         # BNGL's natural log and constant
+        ('2^10', 1024.0),          # a power, not Python's exclusive or
         ('max(1, 2, 3)', 3.0),
         ('abs(-5)', 5.0),
     ],
@@ -54,31 +56,17 @@ def test_eval_numeric_extra_namespace():
     assert expressions._eval_numeric('k * 2', {'k': 21}) == 42.0
 
 
-# --------------------------------------------------------- _build_safe_eval_namespace
-def test_safe_namespace_blocks_builtins_and_seeds_math():
-    ns = expressions._build_safe_eval_namespace()
-    assert ns['__builtins__'] == {}
-    assert ns['pi'] == pytest.approx(math.pi)
-    assert ns['rint'](2.5) == 3
-    # callable math funcs are present
-    assert ns['sqrt'](9) == 3.0
-
-
-def test_safe_namespace_seed_does_not_shadow_math_names():
-    # Seeding a value named like a builtin math fn must not win over the fn:
-    # the builtin update runs after the seed, so 'sqrt' stays callable.
-    ns = expressions._build_safe_eval_namespace({'sqrt': 999, 'k': 2.0})
-    assert ns['sqrt'](16) == 4.0
-    assert ns['k'] == 2.0
+# ------------------------------------------------------------- names and functions
+def test_a_value_named_like_a_function_does_not_shadow_the_function():
+    # A symbol named like a built-in function is a value; a call is still the function.
+    assert expressions._eval_numeric('sqrt(16) + k', {'sqrt': 999.0, 'k': 2.0}) == 6.0
 
 
 @pytest.mark.parametrize('name', ['e', 'pi', 'log', 'atan2', 'ceil', 'floor', 'pow'])
-def test_safe_namespace_model_parameter_wins_over_a_math_name_bng2_lets_a_model_define(name):
+def test_a_model_parameter_named_like_a_python_math_name_is_the_parameter(name):
     """BNG2.pl 2.9.2 accepts these as parameter names and reads the parameter (its constants
     are _e and _pi); so must the #450 sync and a setConcentration expression."""
-    ns = expressions._build_safe_eval_namespace({name: 7.0, 'k': 2.0})
-    assert eval('2*%s' % name, ns) == 14.0  # noqa: S307
-    assert ns['__builtins__'] == {}
+    assert expressions._eval_numeric('2*%s' % name, {name: 7.0, 'k': 2.0}) == 14.0
 
 
 def test_evaluate_bngl_params_reads_a_parameter_named_e_or_pi_as_the_parameter():
@@ -130,7 +118,8 @@ def test_evaluate_bngl_params_param_named_like_builtin_does_not_shadow():
 
 
 def test_evaluate_bngl_params_raises_on_unresolved_name():
-    with pytest.raises(ValueError, match='could not evaluate param'):
+    # A PybnfError ends the run: every evaluation would hit the same unknown name.
+    with pytest.raises(PybnfError, match='could not evaluate param'):
         expressions._evaluate_bngl_params([('b', 'definitely_undefined_token')])
 
 
